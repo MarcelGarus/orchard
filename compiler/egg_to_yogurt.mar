@@ -852,6 +852,24 @@ fun compile(
       var fun_ = compiler.parent.egg.lookup(name.string, arg_types) or(error)
         return error[YogurtId, Error](error(error, name.src))
 
+      | Cast arguments
+      var cast_args = list[YogurtId]()
+      for both in zip(args.iter(), fun_.param_types().iter()) do {
+        var arg = both.a
+        var expected_type = both.b
+        var actual_type = builder.get(arg).type
+        var cast_arg = builder.push({
+          if builder.get(arg).op is comptime(value)
+          then YogurtOp.comptime(value.comptime_cast(expected_type))
+          else YogurtOp.call(YogurtCall {
+            function = compile_cast_fun(actual_type, expected_type, compiler.parent),
+            args = list(arg).to_slice()
+          })
+        } $ expected_type)
+        body.push(cast_arg)
+        cast_args.&.push(cast_arg)
+      }
+
       var are_all_args_comptime = true
       for arg in args do
         if not(builder.get(arg).op is comptime) then
