@@ -869,6 +869,7 @@ fun compile(
         body.push(cast_arg)
         cast_args.&.push(cast_arg)
       }
+      var args = cast_args.to_slice()
 
       var are_all_args_comptime = true
       for arg in args do
@@ -1216,6 +1217,51 @@ fun compile_cast_fun_body(
       cases.&.put(variant, body)
     }
     builder.push(YogurtOp.switch_(YogurtSwitch { condition = param, cases }) $ to)
+  }
+  case lambda(to_lambda) {
+    var from_lambda = from.lambda.unwrap()
+    var lambda_builder = yogurt_fun_builder()
+
+    var original_lambda = lambda_builder.&.push(YogurtOp.param $ from)
+    var params = list[YogurtId]()
+    for param_type in to_lambda.args do
+      params.&.push(lambda_builder.&.push(YogurtOp.param $ param_type))
+
+    var exprs = list[YogurtId]()
+
+    var lambda_return_value =
+      lambda_builder.&.push(YogurtOp.lambda_call(YogurtLambdaCall {
+        lambda = original_lambda,
+        args = params.to_slice(),
+      }) $ from_lambda.return_type.*)
+    exprs.&.push(lambda_return_value)
+
+    var cast_return_value = lambda_builder.&.push(
+      YogurtOp.call(YogurtCall {
+        function = compile_cast_fun(
+          from_lambda.return_type.*,
+          to_lambda.return_type.*,
+          compiler
+        ),
+        args = list(lambda_return_value).to_slice(),
+      }) $ to_lambda.return_type.*
+    )
+    exprs.&.push(cast_return_value)
+
+    var signature = yogurt_signature("lambda cast {from} to {to}", empty_slice[PlumType]())
+    compiler.define(signature, YogurtFun {
+      exprs = lambda_builder.exprs.to_slice(),
+      captures = some(list(original_lambda).to_slice()),
+      body = YogurtBody {
+        params = params.to_slice(),
+        exprs = exprs.to_slice(),
+        returns = cast_return_value,
+      },
+    })
+
+    builder.push(YogurtOp.lambda(YogurtLambda {
+      function = signature, captures = list(param).to_slice()
+    }) $ to)
   }
   default panic("casting {from} to {to} is not supported")
 }
