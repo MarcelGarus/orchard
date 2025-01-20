@@ -53,6 +53,8 @@ enum ByteCodeInstruction {
   mul_8, | pops two 64-bit ints, multiplies them, pushes the result as a 64-bit int
   div_8, | pops two 64-bit ints, divides them, pushes the result as a 64-bit int
   mod_8, | pops two 64-bit ints, mods them, pushes the result as a 64-bit int
+  | comparison stuff
+  compare_zero_8, | pops a 64-bit int, pushes a byte: if == 0, 0. if > 0, 1. if < 0, 2.
   | binary stuff
   and_8, | pops two 64-bit ints, ands them, pushes the result as a 64-bit int
   or_8, | pops two 64-bit ints, ors them, pushes the result as a 64-bit int
@@ -125,6 +127,7 @@ fun pop_int(vm: &Vm): Int {
   for i in 0..8 do vm.data_stack.&.pop()
   value
 }
+fun push_byte(vm: &Vm, byte: Byte) { vm.data_stack.&.push(byte) }
 fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
   var vm = Vm {
     data_stack = initial_stack.to_list(),
@@ -144,17 +147,17 @@ fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
 
     switch instruction
     case push_padding(amount) {
-      for i in 0..amount do vm.data_stack.&.push(16#aa.lower_byte())
+      for i in 0..amount do vm.&.push_byte(16#aa.lower_byte())
     }
-    case push_1(byte) vm.data_stack.&.push(byte)
+    case push_1(byte) vm.&.push_byte(byte)
     case push_8(word) vm.&.push_int(word)
     case push_1_from_stack(offset) {
       var byte = vm.data_stack.get(vm.data_stack.len - 1 - offset)
-      vm.data_stack.&.push(byte)
+      vm.&.push_byte(byte)
     }
     case push_8_from_stack(offset) {
       var start = vm.data_stack.len - 8 - offset
-      for i in 0..8 do vm.data_stack.&.push(vm.data_stack.get(start + i))
+      for i in 0..8 do vm.&.push_byte(vm.data_stack.get(start + i))
     }
     case pop(amount) vm.data_stack.&.pop(amount)
     case pop_below_top(tuple) {
@@ -178,6 +181,12 @@ fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
     case mul_8 vm.&.push_int(vm.&.pop_int() * vm.&.pop_int())
     case div_8 vm.&.push_int(vm.&.pop_int() / vm.&.pop_int())
     case mod_8 vm.&.push_int(vm.&.pop_int() % vm.&.pop_int())
+    case compare_zero_8 vm.&.push_byte(
+      switch vm.&.pop_int() <=> 0
+      case less 0.lower_byte()
+      case equal 1.lower_byte()
+      case greater 2.lower_byte()
+    )
     case and_8 vm.&.push_int(vm.&.pop_int() & vm.&.pop_int())
     case or_8 vm.&.push_int(or(vm.&.pop_int(), vm.&.pop_int()))
     case xor_8 vm.&.push_int(vm.&.pop_int() ^ vm.&.pop_int())
@@ -199,7 +208,7 @@ fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
     }
     case load_1 {
       var address = vm.&.pop_int().cast[Int, Address]()
-      vm.data_stack.&.push(address.to_reference[Byte]().*)
+      vm.&.push_byte(address.to_reference[Byte]().*)
     }
     case load_8 {
       var address = vm.&.pop_int().cast[Int, Address]()
