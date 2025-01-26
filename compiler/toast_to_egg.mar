@@ -30,24 +30,98 @@ fun restore(visible: &Visible, snapshot: VisibleSnapshot) {
   visible.vars.len = snapshot.vars_len
 }
 
-fun to_egg(toast: Toast): Result[Egg, Error] {
-  var funs = list[EggFun]()
+| Imports & Exports  
 
-  for builtin in builtins do funs.&.push(builtin.create_builtin_fun())
+struct DefInScope { module: Module, kind: DefInScopeKind }
+enum DefInScopeKind { type: ToastTypeDef, fun_: ToastFun }
+
+fun name(def: DefInScope): String {
+  switch def.kind
+  case type(type) type.name.string
+  case fun_(fun_) fun_.name.string
+}
+
+fun defs_in_scope(
+  module: Module, toasts: Map[Module, Toast]
+): Result[Slice[DefInScope], Error] {
+  var defs = list[DefInScope]()
+  for def in toasts.get(module).defs do
+    switch def
+    case import_(import_) {
+      var imported_module = module.resolve_import(import_.module) or(error)
+        return error[Slice[DefInScope], Error](error(error, invalid_src()))
+      var matched_something = false
+      for def in imported_module.exports(toasts)? do
+        if def.name() == import_.definition then {
+          defs.&.push(def)
+          matched_something = true
+        }
+      if not(matched_something) then
+        return error[Slice[DefInScope], Error](error(
+          "Tried to import {import_.definition}, but that is not exported.", invalid_src()))
+    }
+    case export {}
+    case type(type) defs.&.push(DefInScope { module, kind = DefInScopeKind.type(type) })
+    case fun_(fun_) defs.&.push(DefInScope { module, kind = DefInScopeKind.fun_(fun_) })
+  ok[Slice[DefInScope], Error](defs.to_slice())
+}
+
+fun exports(
+  module: Module, toasts: Map[Module, Toast]
+): Result[Slice[DefInScope], Error] {
+  var exports = list[DefInScope]()
+  var defs_in_scope = module.defs_in_scope(toasts)?
+  for def in toasts.get(module).defs do
+    if def is export(export) then {
+      var matched_something = false
+      for def in defs_in_scope do
+        if def.name() == export.definition then {
+          exports.&.push(def)
+          matched_something = true
+        }
+      if not(matched_something) then
+        return error[Slice[DefInScope], Error](error({
+          var b = string_builder().&
+          b."Tried to export {export.definition}, but that is not in scope. 
+            'The only things in scope:"
+          for def in defs_in_scope do b." {def.name()}"
+          b.to_string()
+        }, invalid_src()))
+    }
+  ok[Slice[DefInScope], Error](exports.to_slice())
+}
+
+| Compilation  
+
+fun to_egg(toasts: Map[Module, Toast], entry_module: Module): Result[Egg, Error] {
+  var funs = list[EggFun]()
+  for entry in toasts do {
+    var module = entry.key
+    var toast = entry.value
+    var in_scope = module.defs_in_scope(toasts)?
+    toast.to_egg(module, in_scope, funs.&)
+  }
+  ok[Egg, Error](Egg { entry_module, funs })
+}
+fun to_egg(
+  toast: Toast, module: Module, in_scope: Slice[DefInScope], funs: &List[EggFun]
+): Result[Nothing, Error] {
+  for builtin in builtins do funs.push(builtin.create_builtin_fun())
   for def in toast.defs do
     if def is fun_(fun_) then
-      funs.&.push(EggFun {
+      funs.push(EggFun {
+        module,
         name = fun_.name,
         params = {
           var params = list[EggParam]()
           for param in fun_.params do
-            params.&.push(param.name.string / param.type.to_egg(toast)?)
+            params.&.push(param.name.string / param.type.to_egg(in_scope)?)
           params.to_slice()
         },
-        return_type = fun_.return_type.to_egg(toast)?,
+        return_type = fun_.return_type.to_egg(in_scope)?,
         impl = EggFunImpl.code({
           var visible = visible()
-          var compiler = egg_code_compiler(toast).&
+          var compiler = egg_code_compiler(in_scope).&
           var body = compiler.egg_body_compiler().&
 
           for param in fun_.params do
@@ -58,16 +132,15 @@ fun to_egg(toast: Toast): Result[Egg, Error] {
           EggCode { exprs = compiler.exprs.to_slice(), body }
         })
       })
-
-  ok[Egg, Error](Egg { funs })
+  ok[Nothing, Error]({})
 }
 
-fun to_egg(type: ToastType, toast: Toast): Result[PlumType, Error] {
-  type.to_egg(toast, map[String, PlumType](), list[OngoingTypeCall](), 0)
+fun to_egg(type: ToastType, in_scope: Slice[DefInScope]): Result[PlumType, Error] {
+  type.to_egg(in_scope, map[String, PlumType](), list[OngoingTypeCall](), 0)
 }
 struct OngoingTypeCall { depth: Int, name: String, args: Slice[PlumType] }
 fun to_egg(
-  type: ToastType, toast: Toast, env: Map[String, PlumType],
+  type: ToastType, in_scope: Slice[DefInScope], env: Map[String, PlumType],
   parent_calls: List[OngoingTypeCall], depth: Int,
 ): Result[PlumType, Error] {
   switch type
@@ -83,7 +156,7 @@ fun to_egg(
     | Lower the arguments.
     var args = list[PlumType]()
     for arg in call.args do
-      args.&.push(arg.to_egg(toast, env, parent_calls, depth)?)
+      args.&.push(arg.to_egg(in_scope, env, parent_calls, depth)?)
     var args = args.to_slice()
 
     | Handle builtin types.
@@ -115,8 +188,8 @@ fun to_egg(
         return ok[PlumType, Error](PlumType.recursive(depth - call.depth))
 
     | Look for a user-defined type with the name.
-    for def in toast.defs do
-      if def is type(def) then
+    for def in in_scope do
+      if def.kind is type(def) then
         if def.name.string == name.string then {
           var inner_env = map[String, PlumType]()
           def.params.len == args.len or
@@ -127,7 +200,7 @@ fun to_egg(
           for both in zip(def.params.iter(), args.iter()) do
             inner_env.&.put(both.a.string, both.b)
           parent_calls.&.push(OngoingTypeCall { name = name.string, args, depth })
-          var type = def.type.to_egg(toast, inner_env, parent_calls, depth)?
+          var type = def.type.to_egg(in_scope, inner_env, parent_calls, depth)?
           parent_calls.&.pop()
           return ok[PlumType, Error](type)
         }
@@ -139,7 +212,7 @@ fun to_egg(
     for field in struct_ do
       fields.&.put(
         field.name.string,
-        field.type.to_egg(toast, env, parent_calls, depth + 1)?
+        field.type.to_egg(in_scope, env, parent_calls, depth + 1)?
       )
     ok[PlumType, Error](PlumType.struct_(fields))
   }
@@ -148,7 +221,7 @@ fun to_egg(
     for variant in enum_ do {
       var payloads = list[PlumType]()
       for payload in variant.payloads do
-        payloads.&.push(payload.to_egg(toast, env, parent_calls, depth + 1)?)
+        payloads.&.push(payload.to_egg(in_scope, env, parent_calls, depth + 1)?)
       | TODO: check for duplicates
       variants.&.put(variant.name.string, payloads.to_slice())
     }
@@ -157,11 +230,11 @@ fun to_egg(
   case lambda(lambda) {
     var args = list[PlumType]()
     for arg in lambda.args do
-      args.&.push(arg.to_egg(toast, env, parent_calls, depth + 1)?)
+      args.&.push(arg.to_egg(in_scope, env, parent_calls, depth + 1)?)
     ok[PlumType, Error](PlumType.lambda(LambdaType {
       args = args.to_slice(),
       return_type = lambda.return_type
-        .to_egg(toast, env, parent_calls, depth + 1)?.put_on_heap(),
+        .to_egg(in_scope, env, parent_calls, depth + 1)?.put_on_heap(),
     }))
   }
 }
@@ -169,6 +242,7 @@ fun to_egg(
 fun create_builtin_fun(builtin: Builtin): EggFun {
   var signature = builtin.signature()
   EggFun {
+    module = module("<builtin>"),
     name = "builtin_{builtin}" @ invalid_src(),
     params = signature.params,
     return_type = signature.return_type,
@@ -176,12 +250,12 @@ fun create_builtin_fun(builtin: Builtin): EggFun {
   }
 }
 
-struct EggCodeCompiler { toast: Toast, exprs: List[EggExpr] }
+struct EggCodeCompiler { in_scope: Slice[DefInScope], exprs: List[EggExpr] }
 struct EggBodyCompiler {
   parent: &EggCodeCompiler, params: List[EggId], exprs: List[EggId]
 }
-fun egg_code_compiler(toast: Toast): _ {
-  EggCodeCompiler { toast, exprs = list[EggExpr]() }
+fun egg_code_compiler(in_scope: Slice[DefInScope]): _ {
+  EggCodeCompiler { in_scope, exprs = list[EggExpr]() }
 }
 fun egg_body_compiler(parent: &EggCodeCompiler): _ {
   EggBodyCompiler { parent, params = list[EggId](), exprs = list[EggId]() }
@@ -261,7 +335,7 @@ fun to_egg(
         params = {
           var params = list[EggParam]()
           for param in lambda.params do
-            params.&.push(param.name.string / param.type.to_egg(body.parent.toast)?)
+            params.&.push(param.name.string / param.type.to_egg(body.parent.in_scope)?)
           params.to_slice()
         },
         body = lambda_body,
@@ -277,7 +351,15 @@ fun to_egg(
         case name(name) {
           switch visible.lookup(name.string)
           case some(lambda) EggExprKind.lambda_call(EggLambdaCall { lambda, args })
-          case none EggExprKind.call(EggCall { function = name, args })
+          case none {
+            var candidates = list[Tuple2[Module, String]]()
+            for def in body.parent.in_scope do
+              if def.kind is fun_(fun_) then
+                candidates.&.push(tuple(def.module, fun_.name.string))
+            EggExprKind.call(EggCall {
+              name, candidates = candidates.to_slice(), args
+            })
+          }
         }
         case symbol(symbol)
           EggExprKind.variant(EggVariant { symbol = symbol.string, payloads = args })

@@ -15,10 +15,11 @@
 
 import plum.mar
 
-struct Egg { funs: List[EggFun] }
+struct Egg { entry_module: Module, funs: List[EggFun] }
 
 struct EggFun {
-  name: StringAndSrc, params: Slice[EggParam], return_type: PlumType,
+  module: Module, name: StringAndSrc,
+  params: Slice[EggParam], return_type: PlumType,
   impl: EggFunImpl
 }
 struct EggParam { name: String, type: PlumType }
@@ -46,7 +47,11 @@ struct EggSwitch { condition: EggId, cases: Map[String, EggBody] }
 struct EggVariant { symbol: String, payloads: Slice[EggId] }
 struct EggLambda { params: Slice[EggParam], body: EggBody }
 struct EggLambdaCall { lambda: EggId, args: Slice[EggId] }
-struct EggCall { function: StringAndSrc, args: Slice[EggId] }
+struct EggCall {
+  name: StringAndSrc,
+  candidates: Slice[Tuple2[Module, String]],
+  args: Slice[EggId],
+}
 
 fun /(name: String, type: PlumType): EggParam { EggParam { name, type } }
 
@@ -61,7 +66,7 @@ fun write[W](writer: W, egg: Egg) {
   var first = true
   for fun_ in egg.funs do {
     if first then first = false else writer."\n"
-    writer."{fun_.name.string}"
+    writer."{fun_.module}:{fun_.name.string}"
     for param in fun_.params do writer." {param}"
     writer." -> {fun_.return_type} ="
     switch fun_.impl
@@ -124,7 +129,10 @@ fun write[W](writer: W, expr: EggExpr, code: EggCode, indentation: Int) {
     for arg in call.args do writer." {arg}"
   }
   case call(call) {
-    writer."call {call.function.string}"
+    writer."call {call.name.string}"
     for arg in call.args do writer." {arg}"
+    writer." (candidates:"
+    for candidate in call.candidates do writer." {candidate.a}:{candidate.b}"
+    writer.")"
   }
 }

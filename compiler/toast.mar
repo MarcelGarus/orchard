@@ -8,7 +8,15 @@
 import plum.mar
 
 struct Toast { defs: Slice[ToastDef] }
-enum ToastDef { type: ToastTypeDef, fun_: ToastFun }
+enum ToastDef {
+  import_: ToastImport,
+  export: ToastExport,
+  type: ToastTypeDef,
+  fun_: ToastFun,
+}
+
+struct ToastImport { module: String, definition: String }
+struct ToastExport { definition: String }
 
 struct ToastTypeDef {
   name: StringAndSrc, params: Slice[StringAndSrc], type: ToastType
@@ -72,19 +80,27 @@ fun write[W](writer: W, toast: Toast) {
   var first = true
   for def in toast.defs do {
     if first then first = false else writer."\n"
-    switch def
-    case type(def) {
-      writer."{def.name.string}"
-      for param in def.params do writer." {param.string}"
-      writer." = "
-      writer."{def.type}"
-    }
-    case fun_(def) {
-      writer."{def.name.string}"
-      for param in def.params do writer." {param.name.string}: {param.type}"
-      writer." -> {def.return_type} =\n"
-      writer.write(def.body, 1)
-    }
+    writer.write(def, no_indentation)
+  }
+}
+fun write[W](writer: W, def: ToastDef, indentation: Indentation) {
+  writer."{indentation}"
+  switch def
+  case import_(import_) {
+    writer."import {import_.module.debug()}.{import_.definition}"
+  }
+  case export(export) writer."export {export.definition}"
+  case type(type) {
+    writer."{type.name.string}"
+    for param in type.params do writer." {param.string}"
+    writer." = "
+    writer."{type.type}"
+  }
+  case fun_(fun_) {
+    writer."{fun_.name.string}"
+    for param in fun_.params do writer." {param.name.string}: {param.type}"
+    writer." -> {fun_.return_type} =\n"
+    writer.write(fun_.body, indentation + 1)
   }
 }
 fun write[W](writer: W, type: ToastType) {
@@ -103,25 +119,25 @@ fun write[W](writer: W, type: ToastType) {
     writer."|"
     for variant in variants do {
       writer." "
-      if variant.args.is_not_empty() then writer."("
+      if variant.payloads.is_not_empty() then writer."("
       writer."{variant.name.string}"
-      for arg in variant.args do writer." {arg.without_whitespace()}"
-      if variant.args.is_not_empty() then writer.")"
+      for payload in variant.payloads do writer." {payload.without_whitespace()}"
+      if variant.payloads.is_not_empty() then writer.")"
     }
   }
   case lambda(lambda) {
     writer."\\"
     for arg in lambda.args do writer." {arg.without_whitespace()}"
-    writer." -> {lambda.return_type.without_whitespace()}"
+    writer." -> {lambda.return_type.*.without_whitespace()}"
   }
 }
 fun write[W](writer: W, type: FormatWithoutWhitespace[ToastType]) {
   switch type.value
-  case variable(variable) writer."{variable}"
-  case call(call) writer."({call})"
-  case struct_(struct_) writer."({struct_})"
-  case enum_(enum_) writer."({enum_})"
-  case lambda(lambda) writer."({lambda})"
+  case variable writer."{type.value}"
+  case call writer."({type.value})"
+  case struct_ writer."({type.value})"
+  case enum_ writer."({type.value})"
+  case lambda writer."({type.value})"
 }
 fun write[W](writer: W, body: Slice[ToastExpr], indentation: Indentation) {
   var first = true
@@ -131,17 +147,17 @@ fun write[W](writer: W, body: Slice[ToastExpr], indentation: Indentation) {
   }
 }
 fun write[W](writer: W, expr: ToastExpr, indentation: Indentation) {
-  switch expr.kind
+  switch expr
   case int(int) writer."{indentation}{int.int}"
   case string(string) writer."{indentation}{string.string.debug()}"
   case struct_(struct_) {
     var is_first = true
-    for field in struct_ do {
+    for field in struct_.fields do {
       writer."{indentation}{if is_first then "& " else "  "}{field.name.string}:\n"
       writer.write(field.value, indentation + 2)
       is_first = false
     }
-    if struct_.is_empty() then writer."{indentation}&"
+    if struct_.fields.is_empty() then writer."{indentation}&"
   }
   case member(member) {
     writer.write(member.of.*, indentation)
@@ -161,7 +177,7 @@ fun write[W](writer: W, expr: ToastExpr, indentation: Indentation) {
   case name(name) writer."{indentation}{name.string}"
   case lambda(lambda) {
     writer."{indentation}\\"
-    for param in lambda.params do writer." {param}"
+    for param in lambda.params do writer." {param.name.string}"
     writer." =\n"
     writer.write(lambda.body.*, indentation + 1)
   }
@@ -171,8 +187,10 @@ fun write[W](writer: W, expr: ToastExpr, indentation: Indentation) {
     writer.write(call.args, indentation + 1)
   }
   case var_(var_) {
-    writer."{indentation}{var_.name} =\n"
-    writer.write(var_.value.*, indentation + 1)
+    writer."{indentation}"
+    writer.write(var_.left.*, indentation)
+    writer." =\n"
+    writer.write(var_.right.*, indentation + 1)
   }
   case body(body) writer.write(body, indentation)
 }

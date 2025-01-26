@@ -634,6 +634,40 @@ fun parse_exprs(bacons: Slice[Bacon]): Result[Slice[ToastExpr], Error] {
 | Now that we can parse types and values, let's parse type definitions and
 | function definitions!
 
+fun parse_import(bacon: Bacon): Result[Maybe[ToastImport], Error] {
+  var parser = parser(bacon.line, bacon.src)
+
+  parser.&.consume("import ") or return no_match[ToastImport]()
+
+  var module = parser.&.parse_string()? or
+    return bad_input[ToastImport](error(
+      "Expected module", parser.src_of_rest()))
+
+  parser.&.consume(".") or
+    return bad_input[ToastImport](error(
+      "Expected dot.", parser.src_of_rest()))
+
+  parser.&.consume_whitespace()
+  var definition = parser.&.parse_identifier() or
+    return bad_input[ToastImport](error(
+      "Expected imported definition.", parser.src_of_rest()))
+
+  parsed(ToastImport { module = module.string, definition = definition.string })
+}
+
+fun parse_export(bacon: Bacon): Result[Maybe[ToastExport], Error] {
+  var parser = parser(bacon.line, bacon.src)
+
+  parser.&.consume("export ") or return no_match[ToastExport]()
+
+  parser.&.consume_whitespace()
+  var definition = parser.&.parse_identifier() or
+    return bad_input[ToastExport](error(
+      "Expected exported definition.", parser.src_of_rest()))
+
+  parsed(ToastExport { definition = definition.string })
+}
+
 fun parse_type_def(bacon: Bacon): Result[Maybe[ToastTypeDef], Error] {
   var parser = parser(bacon.line, bacon.src)
 
@@ -675,7 +709,8 @@ fun parse_fun_def(bacon: Bacon): Result[Maybe[ToastFun], Error] {
   loop params.&.push(parser.&.parse_param()? or break)
 
   parser.&.consume("->") or
-    return bad_input[ToastFun](error("Expected ->", parser.src_of_rest()))
+    return bad_input[ToastFun](error(
+      "Expected -> for function {name.string}", parser.src_of_rest()))
 
   var return_type = parser.&.parse_type_atom()? or
     return bad_input[ToastFun](error(
@@ -707,6 +742,14 @@ fun to_toast(bacon: Bacon): Result[Toast, Error] {
 
   var defs = list[ToastDef]()
   for bacon in bacon.children do {
+    if bacon.parse_import()? is some(import_) then {
+      defs.&.push(ToastDef.import_(import_))
+      continue
+    }
+    if bacon.parse_export()? is some(export) then {
+      defs.&.push(ToastDef.export(export))
+      continue
+    }
     if bacon.parse_type_def()? is some(def) then {
       defs.&.push(ToastDef.type(def))
       continue

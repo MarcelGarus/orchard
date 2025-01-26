@@ -1,4 +1,5 @@
 import ../../martinaise/stdlib.mar
+import module.mar
 import error.mar
 import formatting.mar
 import type.mar
@@ -28,37 +29,11 @@ import vm.mar
 fun main(): Never {
   eprintln("Welcome to the Plum compiler!")
 
-  var content = read_file("test.plum") or {
-    eprintln("Couldn't read file")
-    exit(1)
-  }
-  var content = content.to_string()
-
-  var bacon = content.to_bacon()
-  | println("Bacon:\n{bacon}\n")
-
-  var toast = bacon.to_toast() or(error) {
+  var byte_code = module("workspace/test").compile() or(error) {
     stderr."Oh no! An error occurred:\n\n{error}\n"
     exit(1)
   }
-  | println("Toast:\n{toast}\n")
 
-  var egg = toast.to_egg() or(error) {
-    stderr."Oh no! An error occurred:\n\n{error}\n"
-    exit(1)
-  }
-  | println("Egg:\n{egg}\n")
-
-  var yogurt = egg.to_yogurt() or(error) {
-    stderr."Oh no! An error occurred:\n\n{error}\n"
-    exit(1)
-  }
-  | eprintln("Yogurt:\n{yogurt}\n")
-
-  var waffle = yogurt.to_waffle()
-  | eprintln("Waffle:\n{waffle}\n")
-
-  var byte_code = waffle.to_byte_code()
   | println("Byte Code:")
   | for i in 0..200 do {
   |   var address = byte_code + {i * stride_size_of[ByteCodeInstruction]()}
@@ -76,4 +51,42 @@ fun main(): Never {
   println()
 
   exit(0)
+}
+
+fun compile(module: Module): Result[Address, Error] {
+  var toasts = map[Module, Toast]()
+  module.parse_toasts(toasts.&)?
+  var egg = toasts.to_egg(module)?
+  eprintln("Egg:\n{egg}")
+  var yogurt = egg.to_yogurt()?
+  var waffle = yogurt.to_waffle()
+  var byte_code = waffle.to_byte_code()
+  ok[Address, Error](byte_code)
+}
+fun parse_toasts(
+  module: Module, out: &Map[Module, Toast]
+): Result[Nothing, Error] {
+  if out.contains(module) then return ok[Nothing, Error]({})
+
+  var content = none[String]()
+  for path in module.file_paths() do {
+    var bytes = read_file(path) or continue
+    content = some(bytes.to_string())
+    break
+  }
+  var content = content or
+    return error[Nothing, Error](error("Couldn't read file", invalid_src()))
+
+  var bacon = content.to_bacon()
+  var toast = bacon.to_toast()?
+  out.put(module, toast)
+
+  for def in toast.defs do
+    if def is import_(import_) then {
+      var imported =
+        module.resolve_import(import_.module) or(error)
+          return error[Nothing, Error](error(error, invalid_src()))
+      imported.parse_toasts(out)?
+    }
+  ok[Nothing, Error]({})
 }

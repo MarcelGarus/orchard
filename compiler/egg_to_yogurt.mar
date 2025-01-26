@@ -3,8 +3,11 @@
 import plum.mar
 
 fun to_yogurt(egg: Egg): Result[Yogurt, Error] {
-  var main = egg.lookup("main", list(type_int).to_slice()) or
-    return error[Yogurt, Error](error("No main function.", invalid_src()))
+  var main = egg.lookup(
+    "main",
+    list(type_int).to_slice(),
+    list(tuple(egg.entry_module, "main")).to_slice(),
+  ) or return error[Yogurt, Error](error("No main function.", invalid_src()))
   var yogurt = yogurt()
   main.compile(yogurt_compiler(egg, yogurt.&).&)?
   ok[Yogurt, Error](yogurt)
@@ -95,6 +98,7 @@ fun move_cursor_to_previous[W](writer: W, n: Int) {
 var max_preprinted_lines = 0
 
 fun print_status(compiler: &YogurtCompiler) {
+  return {}
   for i in 0..max_preprinted_lines do {
     stderr.move_cursor_to_front()
     stderr.erase_rest_of_current_line()
@@ -177,14 +181,20 @@ fun return_type(match: MatchingFun): PlumType {
 }
 
 fun lookup(
-  egg: Egg, name: String, args: Slice[PlumType],
+  egg: Egg,
+  name: String,
+  args: Slice[PlumType],
+  candidates: Slice[Tuple2[Module, String]],
 ): Result[MatchingFun, String] {
   var name_matches = list[EggFun]()
-  for fun_ in egg.funs do
-    if fun_.name.string == name then
-      name_matches.&.push(fun_)
+  for candidate in candidates do
+    if candidate.b == name then
+      | TODO: make this performant
+      for fun_ in egg.funs do
+        if fun_.module == candidate.a and fun_.name.string == candidate.b then
+          name_matches.&.push(fun_)
   if name_matches.is_empty() then
-    return error[MatchingFun, String]("There is no function named {name.debug()}.")
+    return error[MatchingFun, String]("There is no function named {name}.")
 
   var full_matches = list[Tuple2[EggFun, Substitutions]]()
   for fun_ in name_matches do {
@@ -839,8 +849,6 @@ fun compile(
       }
     }
     case call(call) {
-      var name = call.function
-
       var args = list[YogurtId]()
       for arg in call.args do args.&.push(compiler.lookup(arg))
       var args = args.to_slice()
@@ -849,8 +857,9 @@ fun compile(
       for arg in args do arg_types.&.push(builder.get(arg).type)
       var arg_types = arg_types.to_slice()
 
-      var fun_ = compiler.parent.egg.lookup(name.string, arg_types) or(error)
-        return error[YogurtId, Error](error(error, name.src))
+      var fun_ =
+        compiler.parent.egg.lookup(call.name.string, arg_types, call.candidates) or(error)
+          return error[YogurtId, Error](error(error, call.name.src))
 
       | Cast arguments
       var cast_args = list[YogurtId]()
@@ -894,7 +903,7 @@ fun compile(
           }) $ crash.b)
         }
         case comptime_error(message)
-          return error[YogurtId, Error](error(message, name.src))
+          return error[YogurtId, Error](error(message, call.name.src))
       } else {
         builder.push(
           YogurtOp.call(YogurtCall {
