@@ -33,12 +33,19 @@ fun restore(visible: &Visible, snapshot: VisibleSnapshot) {
 | Imports & Exports  
 
 struct DefInScope { module: Module, kind: DefInScopeKind }
-enum DefInScopeKind { type: ToastTypeDef, fun_: ToastFun }
+enum DefInScopeKind {
+  type: ToastTypeDef,
+  fun_: ToastFun,
+  builtin_type: PlumType,
+  builtin_fun: Builtin,
+}
 
 fun name(def: DefInScope): String {
   switch def.kind
   case type(type) type.name.string
   case fun_(fun_) fun_.name.string
+  case builtin_type(type_) type_.format()
+  case builtin_fun(builtin) builtin.format()
 }
 
 fun defs_in_scope(
@@ -49,7 +56,7 @@ fun defs_in_scope(
     switch def
     case import_(import_) {
       var imported_module = module.resolve_import(import_.module) or(error)
-        return error[Slice[DefInScope], Error](error(error, invalid_src()))
+        return error[Slice[DefInScope], Error](error(error, import_.keyword.src))
       var matched_something = false
       for def in imported_module.exports(toasts)? do
         if def.name() == import_.definition then {
@@ -58,7 +65,9 @@ fun defs_in_scope(
         }
       if not(matched_something) then
         return error[Slice[DefInScope], Error](error(
-          "Tried to import {import_.definition}, but that is not exported.", invalid_src()))
+          "Tried to import {import_.definition}, but that is not exported.",
+          import_.keyword.src
+        ))
     }
     case export {}
     case type(type) defs.&.push(DefInScope { module, kind = DefInScopeKind.type(type) })
@@ -69,6 +78,21 @@ fun defs_in_scope(
 fun exports(
   module: Module, toasts: Map[Module, Toast]
 ): Result[Slice[DefInScope], Error] {
+  if module.is_builtin() then {
+    var defs = list[DefInScope]()
+
+    for type in list(type_int, type_string, type_type, type_never) do
+      defs.&.push(DefInScope {
+        module = builtin_module, kind = DefInScopeKind.builtin_type(type)
+      })
+    for builtin in builtins do
+      defs.&.push(DefInScope {
+        module = builtin_module, kind = DefInScopeKind.builtin_fun(builtin)
+      })
+
+    return ok[Slice[DefInScope], Error](defs.to_slice())
+  }
+
   var exports = list[DefInScope]()
   var defs_in_scope = module.defs_in_scope(toasts)?
   for def in toasts.get(module).defs do
@@ -86,7 +110,7 @@ fun exports(
             'The only things in scope:"
           for def in defs_in_scope do b." {def.name()}"
           b.to_string()
-        }, invalid_src()))
+        }, export.keyword.src))
     }
   ok[Slice[DefInScope], Error](exports.to_slice())
 }
@@ -95,18 +119,21 @@ fun exports(
 
 fun to_egg(toasts: Map[Module, Toast], entry_module: Module): Result[Egg, Error] {
   var funs = list[EggFun]()
+  for builtin in builtins do funs.&.push(builtin.create_builtin_fun())
   for entry in toasts do {
     var module = entry.key
     var toast = entry.value
     var in_scope = module.defs_in_scope(toasts)?
-    toast.to_egg(module, in_scope, funs.&)
+    eprint("Defs in scope at {module}:")
+    for item in in_scope do eprint(" {item.name()}")
+    eprintln()
+    toast.to_egg(module, in_scope, funs.&)?
   }
   ok[Egg, Error](Egg { entry_module, funs })
 }
 fun to_egg(
   toast: Toast, module: Module, in_scope: Slice[DefInScope], funs: &List[EggFun]
 ): Result[Nothing, Error] {
-  for builtin in builtins do funs.push(builtin.create_builtin_fun())
   for def in toast.defs do
     if def is fun_(fun_) then
       funs.push(EggFun {
@@ -159,52 +186,47 @@ fun to_egg(
       args.&.push(arg.to_egg(in_scope, env, parent_calls, depth)?)
     var args = args.to_slice()
 
-    | Handle builtin types.
-    if name.string == "Int" then {
-      call.args.is_empty() or
-        return error[PlumType, Error](error("Called Int with args", name.src))
-      return ok[PlumType, Error](type_int)
-    }
-    if name.string == "String" then {
-      call.args.is_empty() or
-        return error[PlumType, Error](error("Called String with args", name.src))
-      return ok[PlumType, Error](type_string)
-    }
-    if name.string == "Type" then {
-      call.args.is_empty() or
-        return error[PlumType, Error](error("Called Type with args", name.src))
-      return ok[PlumType, Error](type_type)
-    }
-    if name.string == "Never" then {
-      call.args.is_empty() or
-        return return error[PlumType, Error](error("Called Never with args", name.src))
-      return ok[PlumType, Error](type_never)
-    }
-
     | Are we recursively lowering a type? If so, we need to insert a recursive
     | type instead of endlessly digging down into the type.
     for call in parent_calls do
       if call.name == name.string and call.args == args then
         return ok[PlumType, Error](PlumType.recursive(depth - call.depth))
 
-    | Look for a user-defined type with the name.
-    for def in in_scope do
-      if def.kind is type(def) then
-        if def.name.string == name.string then {
+    | Look for a type with the name.
+    for def in in_scope do {
+      switch def.kind
+      case type(type) {
+        if type.name.string == name.string then {
           var inner_env = map[String, PlumType]()
-          def.params.len == args.len or
+          type.params.len == args.len or
             return error[PlumType, Error](error(
-              "Tried to instantiate {def.name.string} with {args.len} args, but it needs {def.params.len}.",
+              "Tried to instantiate {type.name.string} with {args.len} args, but it needs {type.params.len}.",
               name.src
             ))
-          for both in zip(def.params.iter(), args.iter()) do
+          for both in zip(type.params.iter(), args.iter()) do
             inner_env.&.put(both.a.string, both.b)
           parent_calls.&.push(OngoingTypeCall { name = name.string, args, depth })
-          var type = def.type.to_egg(in_scope, inner_env, parent_calls, depth)?
+          var type = type.type.to_egg(in_scope, inner_env, parent_calls, depth)?
           parent_calls.&.pop()
           return ok[PlumType, Error](type)
         }
-    return error[PlumType, Error](error("{name.string} doesn't exist.", name.src))
+      }
+      case builtin_type(type) {
+        if type.primitive.unwrap() == name.string then {
+          return ok[PlumType, Error](type)
+        }
+      }
+      case fun_ {}
+      case builtin_fun {}
+    }
+
+    return error[PlumType, Error](error({
+      var b = string_builder().&
+      b."{name.string} doesn't exist.\nIn scope:"
+      for def in in_scope do
+        b." {def.name()}"
+      b.to_string()
+    }, name.src))
   }
   case struct_(struct_) {
     var fields = map[String, PlumType]()
@@ -242,8 +264,8 @@ fun to_egg(
 fun create_builtin_fun(builtin: Builtin): EggFun {
   var signature = builtin.signature()
   EggFun {
-    module = module("<builtin>"),
-    name = "builtin_{builtin}" @ invalid_src(),
+    module = builtin_module,
+    name = "{builtin}" @ invalid_src(),
     params = signature.params,
     return_type = signature.return_type,
     impl = EggFunImpl.builtin(builtin),
@@ -352,13 +374,14 @@ fun to_egg(
           switch visible.lookup(name.string)
           case some(lambda) EggExprKind.lambda_call(EggLambdaCall { lambda, args })
           case none {
-            var candidates = list[Tuple2[Module, String]]()
+            var candidates = set[Tuple2[Module, String]]()
             for def in body.parent.in_scope do
-              if def.kind is fun_(fun_) then
-                candidates.&.push(tuple(def.module, fun_.name.string))
-            EggExprKind.call(EggCall {
-              name, candidates = candidates.to_slice(), args
-            })
+              switch def.kind
+              case fun_(fun_) candidates.&.put(tuple(def.module, fun_.name.string))
+              case builtin_fun(fun_) candidates.&.put(tuple(def.module, "{fun_}"))
+              case type continue
+              case builtin_type continue
+            EggExprKind.call(EggCall { name, candidates, args })
           }
         }
         case symbol(symbol)

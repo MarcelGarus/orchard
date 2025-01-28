@@ -66,7 +66,8 @@ fun compile(module: Module): Result[Address, Error] {
 fun parse_toasts(
   module: Module, out: &Map[Module, Toast]
 ): Result[Nothing, Error] {
-  if out.contains(module) then return ok[Nothing, Error]({})
+  if out.contains(module) or module.is_builtin() then
+    return ok[Nothing, Error]({})
 
   var content = none[String]()
   for path in module.file_paths() do {
@@ -77,7 +78,7 @@ fun parse_toasts(
   var content = content or
     return error[Nothing, Error](error("Couldn't read file", invalid_src()))
 
-  var bacon = content.to_bacon()
+  var bacon = content.to_bacon(module)
   var toast = bacon.to_toast()?
   out.put(module, toast)
 
@@ -85,7 +86,7 @@ fun parse_toasts(
     if def is import_(import_) then {
       var imported =
         module.resolve_import(import_.module) or(error)
-          return error[Nothing, Error](error(error, invalid_src()))
+          return error[Nothing, Error](error(error, import_.keyword.src))
       imported.parse_toasts(out)?
     }
   ok[Nothing, Error]({})

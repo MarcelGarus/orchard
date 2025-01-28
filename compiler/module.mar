@@ -9,6 +9,9 @@ fun hash(hasher: &Hasher, module: Module) { hasher.hash(module.path) }
 
 fun write[W](writer: W, module: Module) { writer.write(module.path) }
 
+var builtin_module = Module { path = "builtins" }
+fun is_builtin(module: Module): Bool { module == builtin_module }
+
 fun file_paths(module: Module): Slice[String] {
   list(
     "{module.path}.plum",
@@ -24,8 +27,13 @@ fun resolve_import(base: Module, relative_import: String): Result[Module, String
       relative_import = relative_import.substr(1..relative_import.len)
     } else break
 
-  if parent_navigations == 0 then
-    return error[Module, String]("Can't import packages yet")
+  if parent_navigations == 0 then {
+    if relative_import == "builtins" then {
+      return ok[Module, String](Module { path = "builtins" })
+    }
+    return error[Module, String](
+      "Can't import packages yet (except \"builtins\")")
+  }
 
   var path =
     "{base.path.split("/").without_last(parent_navigations - 1).join("/")}/
