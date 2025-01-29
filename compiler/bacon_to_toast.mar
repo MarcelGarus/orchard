@@ -635,39 +635,105 @@ fun parse_exprs(bacons: Slice[Bacon]): Result[Slice[ToastExpr], Error] {
 | function definitions!
 
 fun parse_import(bacon: Bacon): Result[Maybe[ToastImport], Error] {
+  if bacon.line == "import" then {
+    | Multiline import.
+    var parts = list[ToastImportPart]()
+    for child in bacon.children do
+      parts.&.push(child.parse_import_part()? or
+        return bad_input[ToastImport](error("Expected import part.", child.src)))
+    return parsed(ToastImport {
+      keyword = bacon.line @ bacon.src, parts = parts.to_slice()
+    })
+  }
+
+  | Single-line import.
   var parser = parser(bacon.line, bacon.src)
 
-  var keyword = parser.&.consume("import ") or return no_match[ToastImport]()
+  var keyword = parser.&.consume("import") or return no_match[ToastImport]()
+  parser.current().is_whitespace() or return no_match[ToastImport]()
+
+  bacon.children.is_empty() or
+    return bad_input[ToastImport](error(
+      "Multi-line import should just have a line that says import.",
+      bacon.children.first().src ... bacon.children.last().src,
+    ))
 
   var module = parser.&.parse_string()? or
     return bad_input[ToastImport](error(
-      "Expected module", parser.src_of_rest()))
+      "Expected module for single-line import", parser.src_of_rest()))
 
-  parser.&.consume(".") or
-    return bad_input[ToastImport](error(
-      "Expected dot.", parser.src_of_rest()))
-
-  parser.&.consume_whitespace()
-  var definition = parser.&.parse_identifier() or
+  var names = list[String]()
+  loop names.&.push({parser.&.parse_identifier() or break}.string)
+  parser.&.ensure_is_at_end()?
+  if names.is_empty() then
     return bad_input[ToastImport](error(
       "Expected imported definition.", parser.src_of_rest()))
 
   parsed(ToastImport {
-    keyword, module = module.string, definition = definition.string
+    keyword, parts = list(ToastImportPart {
+      module = module.string, names = names.to_slice()
+    }).to_slice()
+  })
+}
+fun parse_import_part(bacon: Bacon): Result[Maybe[ToastImportPart], Error] {
+  var parser = parser(bacon.line, bacon.src)
+
+  var module = parser.&.parse_string()? or
+    return bad_input[ToastImportPart](error(
+      "Expected module in import part", parser.src_of_rest()))
+
+  var names = list[String]()
+  parser.&.consume_whitespace()
+  if parser.is_at_end() then {
+    | Our children contain the names.
+    for child in bacon.children do {
+      var parser = parser(child.line, child.src)
+      loop names.&.push({parser.&.parse_identifier() or break}.string)
+      parser.&.ensure_is_at_end()?
+    }
+  } else {
+    bacon.children.is_empty() or
+      return bad_input[ToastImportPart](error(
+        "For multiline imports, the imported names should be on separate lines 
+        'from the modules.",
+        parser.src_of_rest()
+      ))
+    loop names.&.push({parser.&.parse_identifier() or break}.string)
+    parser.&.ensure_is_at_end()?
+  }
+
+  parsed(ToastImportPart {
+    module = module.string, names = names.to_slice()
   })
 }
 
 fun parse_export(bacon: Bacon): Result[Maybe[ToastExport], Error] {
+  if bacon.line == "export" then {
+    | Multiline export.
+    var names = list[String]()
+    for child in bacon.children do {
+      var parser = parser(child.line, child.src)
+      loop names.&.push({parser.&.parse_identifier() or break}.string)
+      parser.&.ensure_is_at_end()?
+    }
+    return parsed(ToastExport {
+      keyword = bacon.line @ bacon.src, names = names.to_slice()
+    })
+  }
+  
   var parser = parser(bacon.line, bacon.src)
 
-  var keyword = parser.&.consume("export ") or return no_match[ToastExport]()
+  var keyword = parser.&.consume("export") or return no_match[ToastExport]()
+  parser.current().is_whitespace() or return no_match[ToastExport]()
 
-  parser.&.consume_whitespace()
-  var definition = parser.&.parse_identifier() or
+  var names = list[String]()
+  loop names.&.push({parser.&.parse_identifier() or break}.string)
+  parser.&.ensure_is_at_end()?
+  if names.is_empty() then
     return bad_input[ToastExport](error(
-      "Expected exported definition.", parser.src_of_rest()))
+      "Expected exported names.", parser.src_of_rest()))
 
-  parsed(ToastExport { keyword, definition = definition.string })
+  parsed(ToastExport { keyword, names = names.to_slice() })
 }
 
 fun parse_type_def(bacon: Bacon): Result[Maybe[ToastTypeDef], Error] {

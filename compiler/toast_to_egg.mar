@@ -58,19 +58,23 @@ fun defs_in_scope(
   for def in toasts.get(module).defs do
     switch def
     case import_(import_) {
-      var imported_module = module.resolve_import(import_.module) or(error)
-        return error[Slice[DefInScope], Error](error(error, import_.keyword.src))
-      var matched_something = false
-      for def in imported_module.exports(toasts)? do
-        if def.name() == import_.definition then {
-          defs.&.push(def)
-          matched_something = true
+      for part in import_.parts do {
+        var imported_module = module.resolve_import(part.module) or(error)
+          return error[Slice[DefInScope], Error](error(error, import_.keyword.src))
+        for name in part.names do {
+          var matched_something = false
+          for def in imported_module.exports(toasts)? do
+            if def.name() == name then {
+              defs.&.push(def)
+              matched_something = true
+            }
+          if not(matched_something) then
+            return error[Slice[DefInScope], Error](error(
+              "Tried to import {name}, but that is not exported.",
+              import_.keyword.src
+            ))
         }
-      if not(matched_something) then
-        return error[Slice[DefInScope], Error](error(
-          "Tried to import {import_.definition}, but that is not exported.",
-          import_.keyword.src
-        ))
+      }
     }
     case export {}
     case type(type)
@@ -108,20 +112,22 @@ fun exports(
   var defs_in_scope = module.defs_in_scope(toasts)?
   for def in toasts.get(module).defs do
     if def is export(export) then {
-      var matched_something = false
-      for def in defs_in_scope do
-        if def.name() == export.definition then {
-          exports.&.push(def)
-          matched_something = true
-        }
-      if not(matched_something) then
-        return error[Slice[DefInScope], Error](error({
-          var b = string_builder().&
-          b."Tried to export {export.definition}, but that is not in scope. 
-            'The only things in scope:"
-          for def in defs_in_scope do b." {def.name()}"
-          b.to_string()
-        }, export.keyword.src))
+      for name in export.names do {
+        var matched_something = false
+        for def in defs_in_scope do
+          if def.name() == name then {
+            exports.&.push(def)
+            matched_something = true
+          }
+        if not(matched_something) then
+          return error[Slice[DefInScope], Error](error({
+            var b = string_builder().&
+            b."Tried to export {name}, but that is not in scope. 
+              'The only things in scope:"
+            for def in defs_in_scope do b." {def.name()}"
+            b.to_string()
+          }, export.keyword.src))
+      }
     }
   ok[Slice[DefInScope], Error](exports.to_slice())
 }
