@@ -36,6 +36,7 @@ struct WaffleBody { locals: Slice[WaffleId], returns: WaffleExpr }
 
 struct WaffleExpr { size: Int, alignment: Int, kind: WaffleExprKind }
 enum WaffleExprKind {
+  | TODO: allow body?
   param,
   padding: Int,
   byte: Byte, | 8 bits
@@ -44,26 +45,34 @@ enum WaffleExprKind {
   aggregate: Slice[WaffleExpr],
   member: WaffleMember,
   switch_: WaffleSwitch,
+  | Call stuff
   call: WaffleCall,
   call_indirect: WaffleCallIndirect,
   function_ptr: WaffleSignature,
+  | Arithmetics
   add: &WaffleExpr,
   sub: &WaffleExpr,
   mul: &WaffleExpr,
   div: &WaffleExpr,
   mod: &WaffleExpr,
   compare_zero: &WaffleExpr,
+  | Bitwise operations
   and_: &WaffleExpr,
   or_: &WaffleExpr,
   xor: &WaffleExpr,
-  box: &WaffleExpr,
-  unbox: &WaffleExpr,
+  | Memory
+  malloc: &WaffleExpr,
+  free: &WaffleExpr,
+  load: &WaffleExpr,
+  store: WaffleStore,
+  | Error
   crash: &WaffleExpr,
 }
 struct WaffleMember { of: &WaffleExpr, offset: Int }
 struct WaffleSwitch { byte: &WaffleExpr, cases: Slice[WaffleBody] }
 struct WaffleCall { function: WaffleSignature, args: &WaffleExpr }
 struct WaffleCallIndirect { function_ptr: &WaffleExpr, args: &WaffleExpr }
+struct WaffleStore { pointer: &WaffleExpr, value: &WaffleExpr }
 
 fun waffle_padding(amount: Int): WaffleExpr {
   WaffleExpr {
@@ -107,7 +116,12 @@ fun waffle_switch(byte: WaffleExpr, cases: Slice[WaffleBody]): WaffleExpr {
   var size = cases.get(0).returns.size
   var alignment = 1
   for case_ in cases do {
-    size == case_.returns.size or panic("switch cases have different sizes")
+    size == case_.returns.size or panic({
+      var b = string_builder().&
+      b."switch cases have different sizes:"
+      for case_ in cases do b."\n{case_.debug()}"
+      b.to_string()
+    })
     alignment = max(alignment, case_.returns.alignment)
   }
   WaffleExpr {
@@ -203,18 +217,34 @@ fun waffle_xor(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
     kind = WaffleExprKind.xor(waffle_int_operands(left, right).put_on_heap()),
   }
 }
-fun waffle_box(expr: WaffleExpr): WaffleExpr {
+fun waffle_malloc(size: WaffleExpr): WaffleExpr {
+  size.is_word() or panic("expected pointer")
   WaffleExpr {
     size = 8, alignment = 8,
-    kind = WaffleExprKind.box(expr.put_on_heap())
+    kind = WaffleExprKind.malloc(size.put_on_heap())
   }
 }
-fun waffle_unbox(expr: WaffleExpr, size: Int, alignment: Int): WaffleExpr {
-  expr.size == 8 or panic("expected pointer")
-  expr.alignment == 8 or panic("expected pointer")
+fun waffle_free(expr: WaffleExpr): WaffleExpr {
+  expr.is_word() or panic("expected pointer")
+  WaffleExpr {
+    size = 0, alignment = 1,
+    kind = WaffleExprKind.free(expr.put_on_heap())
+  }
+}
+fun waffle_load(expr: WaffleExpr, size: Int, alignment: Int): WaffleExpr {
+  expr.is_word() or panic("expected pointer")
   WaffleExpr {
     size, alignment,
-    kind = WaffleExprKind.unbox(expr.put_on_heap())
+    kind = WaffleExprKind.load(expr.put_on_heap())
+  }
+}
+fun waffle_store(pointer: WaffleExpr, value: WaffleExpr): WaffleExpr {
+  pointer.is_word() or panic("expected pointer")
+  WaffleExpr {
+    size = 0, alignment = 1,
+    kind = WaffleExprKind.store(WaffleStore {
+      pointer = pointer.put_on_heap(), value = value.put_on_heap()
+    })
   }
 }
 fun waffle_crash(message_ptr: WaffleExpr, message_len: WaffleExpr): WaffleExpr {
@@ -227,6 +257,7 @@ fun waffle_crash(message_ptr: WaffleExpr, message_len: WaffleExpr): WaffleExpr {
     ),
   }
 }
+
 struct WaffleFunBuilder { locals: List[WaffleExpr] }
 struct WaffleBodyBuilder {
   local_exprs: &List[WaffleExpr], local_ids: List[WaffleId], alignment: Int
@@ -272,6 +303,7 @@ fun hash(hasher: &Hasher, id: WaffleId) { hasher.hash(id.index) }
 |     b." {switch param case comptime(val) "{val}:{val.type}" case runtime(type) "{type}"}"
 |   WaffleSignature { str = b.to_string() }
 | }
+fun waffle_signature(string: String): _ { WaffleSignature { string } }
 fun ==(a: WaffleSignature, b: WaffleSignature): Bool { a.string == b.string }
 fun hash(hasher: &Hasher, sig: WaffleSignature) { hasher.hash(sig.string) }
 
@@ -393,14 +425,26 @@ fun write[W](
     writer.write(ops.*, fun_, indentation)
     writer.")"
   }
-  case box(expr) {
-    writer."box("
-    writer.write(expr.*, fun_, indentation)
+  case malloc(size) {
+    writer."malloc("
+    writer.write(size.*, fun_, indentation)
     writer.")"
   }
-  case unbox(ptr) {
-    writer."unbox("
+  case free(ptr) {
+    writer."free("
     writer.write(ptr.*, fun_, indentation)
+    writer."):{expr.size}"
+  }
+  case load(ptr) {
+    writer."load("
+    writer.write(ptr.*, fun_, indentation)
+    writer."):{expr.size}"
+  }
+  case store(store) {
+    writer."store("
+    writer.write(store.pointer.*, fun_, indentation)
+    writer.", "
+    writer.write(store.value.*, fun_, indentation)
     writer."):{expr.size}"
   }
   case crash(ops) {

@@ -1,0 +1,196 @@
+| Program Using Dup and Drop Instructions to Neutralize Garbage  
+
+import plum.mar
+
+struct Pudding { funs: Map[PuddingSignature, PuddingFun] }
+struct PuddingSignature { string: String }
+
+struct PuddingFun {
+  exprs: Slice[PuddingExpr], captures: Maybe[Slice[PuddingId]], body: PuddingBody
+}
+struct PuddingId { index: Int }
+struct PuddingBody {
+  params: Slice[PuddingId], exprs: Slice[PuddingId], returns: PuddingId
+}
+struct PuddingExpr { op: PuddingOp, type: PlumType }
+
+enum PuddingOp {
+  param,
+  uninitialized,
+  comptime: YogurtValue, | TODO: change before committing
+  | int: Int,
+  | string: String,
+  | type: PlumType,
+  struct_: Map[String, PuddingId],
+  member: PuddingMember,
+  variant: PuddingVariant,
+  switch_: PuddingSwitch,
+  lambda: PuddingLambda,
+  lambda_call: PuddingLambdaCall,
+  call: PuddingCall,
+  instruction: PuddingInstruction,
+  | deref: PuddingId,
+  dup: PuddingId,
+  drop: PuddingId,
+}
+struct PuddingMember { of: PuddingId, name: String }
+struct PuddingSwitch { condition: PuddingId, cases: Map[String, PuddingBody] }
+struct PuddingVariant { symbol: String, payloads: Slice[PuddingId] }
+struct PuddingLambda { function: PuddingSignature, captures: Slice[PuddingId] }
+struct PuddingLambdaCall { lambda: PuddingId, args: Slice[PuddingId] }
+struct PuddingCall { function: PuddingSignature, args: Slice[PuddingId] }
+struct PuddingInstruction { instruction: Instruction, args: Slice[PuddingId] }
+
+| enum PuddingType {
+|   primitive: String,
+|   never,
+|   struct_: Map[String, PuddingType],
+|   enum_: Map[String, Slice[PuddingType]],
+|   pointer,
+|   | function_pointer: PuddingFunctionPointerType,
+| }
+| struct PuddingFunctionPointerType {
+|   args: Slice[PuddingType], return_type: &PuddingType
+| }
+
+| Constructing Pudding  
+
+fun $(op: PuddingOp, type: PlumType): _ { PuddingExpr { op, type } }
+
+struct PuddingFunBuilder { exprs: List[PuddingExpr] }
+struct PuddingBodyBuilder {
+  params: List[PuddingId], exprs: List[PuddingId], parent: &PuddingFunBuilder
+}
+
+fun pudding_fun_builder(): PuddingFunBuilder {
+  PuddingFunBuilder { exprs = list[PuddingExpr]() }
+}
+fun body_builder(parent: &PuddingFunBuilder): PuddingBodyBuilder {
+  PuddingBodyBuilder {
+    params = list[PuddingId](), exprs = list[PuddingId](), parent
+  }
+}
+fun create(builder: &PuddingFunBuilder, expr: PuddingExpr): PuddingId {
+  var id = PuddingId { index = builder.exprs.len }
+  builder.exprs.&.push(expr)
+  id
+}
+fun push_param(builder: &PuddingBodyBuilder, type: PlumType): PuddingId {
+  var id = builder.parent.create(PuddingOp.param $ type)
+  builder.params.&.push(id)
+  id
+}
+fun push(builder: &PuddingBodyBuilder, expr: PuddingExpr): PuddingId {
+  var id = builder.parent.create(expr)
+  builder.exprs.&.push(id)
+  id
+}
+fun get(builder: PuddingFunBuilder, id: PuddingId): PuddingExpr {
+  builder.exprs.get(id.index)
+}
+fun get(builder: PuddingBodyBuilder, id: PuddingId): PuddingExpr {
+  builder.parent.get(id)
+}
+fun returns(builder: PuddingBodyBuilder, id: PuddingId): PuddingBody {
+  PuddingBody {
+    params = builder.params.to_slice(),
+    exprs = builder.exprs.to_slice(),
+    returns = id,
+  }
+}
+fun finish(
+  builder: PuddingFunBuilder,
+  captures: Maybe[Slice[PuddingId]],
+  body: PuddingBody,
+): PuddingFun {
+  PuddingFun { exprs = builder.exprs.to_slice(), captures, body }
+}
+
+fun get(fun_: PuddingFun, id: PuddingId): PuddingExpr {
+  fun_.exprs.get(id.index)
+}
+
+fun return_type(fun_: PuddingFun): PlumType { fun_.get(fun_.body.returns).type }
+
+fun ==(a: PuddingId, b: PuddingId): Bool { a.index == b.index }
+fun hash(hasher: &Hasher, id: PuddingId) { hasher.hash(id.index) }
+
+fun pudding_signature(string: String): _ { PuddingSignature { string } }
+fun ==(a: PuddingSignature, b: PuddingSignature): Bool { a.string == b.string }
+fun hash(hasher: &Hasher, sig: PuddingSignature) { hasher.hash(sig.string) }
+
+| Writing Pudding  
+
+fun write[W](writer: W, pudding: Pudding) {
+  var first = true
+  for fun_ in pudding.funs do {
+    if first then first = false else writer."\n"
+    writer."{fun_.key}:"
+    | if fun_.value.captures is some(captures) then {
+    |   writer." (captures "
+    |   for capture in captures do writer." {capture}"
+    |   writer.")"
+    | }
+    writer.write(fun_.value.body, fun_.value, 1)
+  }
+}
+fun write[W](writer: W, signature: PuddingSignature) {
+  writer."{signature.string}"
+}
+fun write[W](writer: W, id: PuddingId) { writer."@{id.index}" }
+fun write[W](writer: W, body: PuddingBody, fun_: PuddingFun, indentation: Int) {
+  for param in body.params do writer." {param}"
+  writer."\n"
+  for id in body.exprs do {
+    var expr = fun_.get(id)
+    for i in 0..indentation do writer."  "
+    writer."{id}: {expr.type} = "
+    writer.write(expr.op, fun_, indentation)
+    writer."\n"
+  }
+  for i in 0..indentation do writer."  "
+  writer."{body.returns}"
+}
+fun write[W](writer: W, op: PuddingOp, fun_: PuddingFun, indentation: Int) {
+  switch op
+  case uninitialized writer."uninitialized"
+  case comptime(value) writer."comptime {value}"
+  case param(param) writer."param {param}"
+  case struct_(struct_) {
+    writer."&"
+    for field in struct_ do writer." {field.key}: {field.value}"
+  }
+  case member(member) writer."{member.of}.{member.name}"
+  case variant(variant) {
+    writer."variant {variant.symbol}"
+    for payload in variant.payloads do writer." {payload}"
+  }
+  case switch_(switch_) {
+    writer."switch {switch_.condition}"
+    for case_ in switch_.cases do {
+      writer."\n"
+      for i in 0..indentation do writer."  "
+      writer."  {case_.key}:"
+      writer.write(case_.value, fun_, indentation + 2)
+    }
+  }
+  case lambda(lambda) {
+    writer."lambda [capturing"
+    for capture in lambda.captures do writer." {capture}"
+    writer."] {lambda.function}"
+  }
+  case lambda_call(call) {
+    writer."call {call.lambda}"
+    for arg in call.args do writer." {arg}"
+  }
+  case call(call) {
+    writer."call \"{call.function}\""
+    for arg in call.args do writer." {arg}"
+  }
+  case instruction(instruction) {
+    writer."instruction {instruction.instruction}"
+    for arg in instruction.args do writer." {arg}"
+  }
+  case dup(id) writer."dup {id}"
+  case drop(id) writer."drop {id}"
+}

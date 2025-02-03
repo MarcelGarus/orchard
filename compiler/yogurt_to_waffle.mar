@@ -2,7 +2,7 @@
 
 import plum.mar
 
-fun to_waffle(value: YogurtValue): WaffleExpr {
+fun to_waffle(value: YogurtValue, body_builder: &WaffleBodyBuilder): WaffleExpr {
   switch value.kind
   case int(int) waffle_word(int)
   case string(string)
@@ -17,7 +17,7 @@ fun to_waffle(value: YogurtValue): WaffleExpr {
       parts.&.push(
         switch part
         case padding(amount) waffle_padding(amount)
-        case field(name) fields.get(name).to_waffle()
+        case field(name) fields.get(name).to_waffle(body_builder)
       )
     waffle_aggregate(parts.to_slice())
   }
@@ -28,9 +28,13 @@ fun to_waffle(value: YogurtValue): WaffleExpr {
       parts.&.push(
         switch part
         case padding(amount) waffle_padding(amount)
-        case payload(index) variant.payloads.get(index).to_waffle()
-        case payload_ptr(index)
-          waffle_box(variant.payloads.get(index).to_waffle())
+        case payload(index) variant.payloads.get(index).to_waffle(body_builder)
+        case payload_ptr(index) {
+          var payload = variant.payloads.get(index).to_waffle(body_builder)
+          var pointer = body_builder.local(waffle_malloc(waffle_word(payload.size)))
+          body_builder.local(waffle_store(pointer, payload))
+          pointer
+        }
         case tag(byte) waffle_byte(byte)
       )
     waffle_aggregate(parts.to_slice())
@@ -41,7 +45,8 @@ fun to_waffle(value: YogurtValue): WaffleExpr {
 
 fun to_waffle(
   expr: YogurtExpr,
-  fun_: YogurtFun, fun_builder: &WaffleFunBuilder,
+  fun_: YogurtFun,
+  fun_builder: &WaffleFunBuilder, body_builder: &WaffleBodyBuilder,
   yogurt_id_to_waffle_expr: &Map[YogurtId, WaffleExpr],
   yogurt: Yogurt,
 ): WaffleExpr {
@@ -55,7 +60,13 @@ fun to_waffle(
     for part in layout.parts do
       parts.&.push(
         switch part
-        case field(name) yogurt_id_to_waffle_expr.get(struct_.get(name))
+        case field(name) {
+          var waffle_expr = yogurt_id_to_waffle_expr.get(struct_.get(name))
+          body_builder.local(waffle_call(
+            WaffleSignature { string = "dup" }, waffle_expr, 0, 1
+          ))
+          waffle_expr
+        }
         case padding(amount) waffle_padding(amount)
       )
     waffle_aggregate(parts.to_slice())
@@ -77,8 +88,12 @@ fun to_waffle(
         switch part
         case padding(amount) waffle_padding(amount)
         case payload(index) yogurt_id_to_waffle_expr.get(variant.payloads.get(index))
-        case payload_ptr(index)
-          waffle_box(yogurt_id_to_waffle_expr.get(variant.payloads.get(index)))
+        case payload_ptr(index) {
+          var payload = yogurt_id_to_waffle_expr.get(variant.payloads.get(index))
+          var pointer = body_builder.local(waffle_malloc(waffle_word(payload.size)))
+          body_builder.local(waffle_store(pointer, payload))
+          pointer
+        }
         case tag(byte) waffle_byte(byte)
       )
     waffle_aggregate(parts.to_slice())
@@ -98,7 +113,7 @@ fun to_waffle(
         yogurt_id_to_waffle_expr.put(
           id,
           switch payload_position.boxing
-          case boxed waffle_unbox(
+          case boxed waffle_load(
             condition.waffle_member(payload_position.offset, 8, 8),
             payload_layout.size, payload_layout.alignment,
           )
@@ -223,14 +238,14 @@ fun to_waffle(
   yogurt_id_to_waffle_expr: &Map[YogurtId, WaffleExpr],
   yogurt: Yogurt,
 ): WaffleBody {
-  var builder = fun_builder.&.body()
+  var body_builder = fun_builder.&.body()
   for id in body.exprs do {
-    var expr = builder.&.local(
-      fun_.get(id).to_waffle(fun_, fun_builder, yogurt_id_to_waffle_expr, yogurt)
-    )
+    var expr = body_builder.&.local(fun_.get(id).to_waffle(
+      fun_, fun_builder, body_builder.&, yogurt_id_to_waffle_expr, yogurt
+    ))
     yogurt_id_to_waffle_expr.&.put(id, expr)
   }
-  builder.returns(yogurt_id_to_waffle_expr.get(body.returns))
+  body_builder.returns(yogurt_id_to_waffle_expr.get(body.returns))
 }
 
 fun to_waffle(fun_: YogurtFun, yogurt: Yogurt): WaffleFun {

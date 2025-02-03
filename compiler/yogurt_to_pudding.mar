@@ -1,0 +1,453 @@
+| Converting Yogurt to Pudding  
+
+import plum.mar
+
+| fun to_pudding(type: PlumType): PuddingType {
+|   switch type
+|   case primitive(name) PuddingType.primitive(name)
+|   case never PuddingType.never
+|   case struct_(plum_fields) {
+|     var fields = map[String, PuddingType]()
+|     for field in plum_fields do
+|       fields.&.put(field.key, field.value.to_pudding())
+|     PuddingType.struct_(fields)
+|   }
+|   case enum_(plum_variants) {
+|     var variants = map[String, Slice[PuddingType]]()
+|     for variant in plum_variants do {
+|       var payloads = list[PuddingType]()
+|       for payload in variant.value do
+|         payloads.&.push(
+|           if payload.is_recursive(1) then
+|             PuddingType.pointer
+|           else
+|             payload.to_pudding()
+|         )
+|       variants.&.put(variant.key, payloads.to_slice())
+|     }
+|     PuddingType.enum_(variants)
+|   }
+|   case recursive unreachable()
+| }
+
+| fun to_pudding(value: YogurtValue): PuddingExpr {
+|   switch value.kind
+|   case int(int) pudding_word(int)
+|   case string(string)
+|     pudding_aggregate(list(
+|       pudding_word(string.data.to_int()),
+|       pudding_word(string.len),
+|     ).to_slice())
+|   case struct_(fields) {
+|     var layout = value.type.memory_layout_struct()
+|     var parts = list[PuddingExpr]()
+|     for part in layout.parts do
+|       parts.&.push(
+|         switch part
+|         case padding(amount) pudding_padding(amount)
+|         case field(name) fields.get(name).to_pudding()
+|       )
+|     pudding_aggregate(parts.to_slice())
+|   }
+|   case variant(variant) {
+|     var layout = value.type.memory_layout_enum().variants.get(variant.symbol)
+|     var parts = list[PuddingExpr]()
+|     for part in layout.parts do
+|       parts.&.push(
+|         switch part
+|         case padding(amount) pudding_padding(amount)
+|         case payload(index) variant.payloads.get(index).to_pudding()
+|         case payload_ptr(index)
+|           pudding_box(variant.payloads.get(index).to_pudding())
+|         case tag(byte) pudding_byte(byte)
+|       )
+|     pudding_aggregate(parts.to_slice())
+|   }
+|   case lambda todo()
+|   case type todo()
+| }
+
+| fun to_pudding(
+|   expr: YogurtExpr, fun_: YogurtFun, builder: &PuddingBodyBuilder,
+|   yogurt_id_to_pudding_id: &Map[YogurtId, PuddingExpr],
+|   yogurt: Yogurt,
+| ): PuddingExpr {
+|   switch expr.op
+|   case param unreachable()
+|   case uninitialized unreachable()
+|   case comptime(value) value.to_pudding() | TODO
+|   case struct_(original_fields) {
+|     var fields = map[String, PuddingId]()
+|     for field in original_fields do {
+|       fields.&.put(field.key, yogurt_id_to_pudding_id.get(field.value))
+|     }
+|     PuddingOp.struct_(map(fields)) $ todo("struct type")
+|   }
+|   case member(member) {
+|     PuddingOp.member(PuddingMember {
+|       of = yogurt_id_to_pudding_id.get(member.of),
+|       name = member.name,
+|     }) $ todo("member type")
+|   }
+|   case variant(variant) {
+|     var payloads = list[PuddingId]()
+|     for payload in variant.payloads do {
+|       payloads.&.push(yogurt_id_to_pudding_id.get(variant.of))
+|     }
+|     | TODO: some of these payloads may need to be pointers. Put them on the
+|     | heap first.
+|     PuddingOp.variant(PuddingVariant {
+|       symbol = variant.symbol,
+|       payloads = payloads.to_slice(),
+|     }) $ todo("variant type")
+|   }
+|   case switch_(switch_) {
+|     var condition = yogurt_id_to_pudding_id.get(switch_.condition)
+
+|     var layout = fun_.get(switch_.condition).type.memory_layout_enum()
+
+|     for variant_layout in layout.variants do {
+|       var payloads = switch_.cases.get(variant_layout.key).params
+|       for payload in payloads.iter().enumerate() do {
+|         var id = payload.item
+|         var payload_layout = fun_.get(id).type.memory_layout()
+|         var payload_position =
+|           variant_layout.value.payload_positions.get(payload.index)
+|         yogurt_id_to_pudding_id.put(
+|           id,
+|           switch payload_position.boxing
+|           case boxed pudding_unbox(
+|             condition.pudding_member(payload_position.offset, 8, 8),
+|             payload_layout.size, payload_layout.alignment,
+|           )
+|           case unboxed condition.pudding_member(
+|             payload_position.offset,
+|             payload_layout.size, payload_layout.alignment,
+|           )
+|         )
+|       }
+|     }
+
+|     var cases = uninitialized_slice[PuddingBody](layout.tag_to_variant.size)
+|     for entry in layout.tag_to_variant do
+|       cases.&.set(
+|         entry.key.to_int(),
+|         switch_.cases.get(entry.value)
+|           .to_pudding(fun_, fun_builder, yogurt_id_to_pudding_id, yogurt)
+|       )
+
+|     pudding_switch(
+|       condition.pudding_member(layout.tag_offset, 1, 1),
+|       cases,
+|     )
+|   }
+|   case lambda(lambda) {
+|     | Build the closure (a heap-allocated struct containing all captured
+|     | variables). This allows lambdas to have a uniform representation
+|     | consisting of a pointer to the closure as well as a function pointer.
+|     var captured_types = list[PlumType]()
+|     for id in lambda.captures do captured_types.&.push(fun_.get(id).type)
+|     var closure_layout = captured_types.to_slice().memory_layout_closure()
+
+|     var parts = list[PuddingExpr]()
+|     for part in closure_layout.parts do
+|       parts.&.push(
+|         switch part
+|         case capture(index) yogurt_id_to_pudding_id.get(lambda.captures.get(index))
+|         case padding(amount) pudding_padding(amount)
+|       )
+|     var closure = pudding_aggregate(parts.to_slice())
+
+|     pudding_aggregate(list(
+|       pudding_box(closure),
+|       pudding_function_ptr(PuddingSignature { string = lambda.function.str }),
+|     ).to_slice())
+|   }
+|   case lambda_call(call) {
+|     var lambda = yogurt_id_to_pudding_id.get(call.lambda)
+|     var closure_ptr = lambda.pudding_member(0, 8, 8)
+|     var function_ptr = lambda.pudding_member(8, 8, 8)
+
+|     var arg_types = list[PlumType]()
+|     for arg in call.args do arg_types.&.push(fun_.get(arg).type)
+|     arg_types.&.push(PlumType.primitive("Int")) | closure pointer TODO: better type
+|     var arg_layout = arg_types.to_slice().memory_layout_params()
+
+|     var parts = list[PuddingExpr]()
+|     for part in arg_layout.parts do
+|       parts.&.push(
+|         switch part
+|         case padding(amount) pudding_padding(amount)
+|         case param(index) {
+|           if index == call.args.len then
+|             closure_ptr
+|           else
+|             yogurt_id_to_pudding_id.get(call.args.get(index))
+|         }
+|       )
+|     var args = pudding_aggregate(parts.to_slice())
+
+|     var return_layout = expr.type.memory_layout()
+
+|     pudding_call_indirect(
+|       function_ptr, args,
+|       return_layout.size, return_layout.alignment,
+|     )
+|   }
+|   case call(call) {
+|     var arg_types = list[PlumType]()
+|     for arg in call.args do arg_types.&.push(fun_.get(arg).type)
+|     var arg_layout = arg_types.to_slice().memory_layout_params()
+
+|     var parts = list[PuddingExpr]()
+|     for part in arg_layout.parts do
+|       parts.&.push(
+|         switch part
+|         case padding(amount) pudding_padding(amount)
+|         case param(index) yogurt_id_to_pudding_id.get(call.args.get(index))
+|       )
+|     var args = pudding_aggregate(parts.to_slice())
+
+|     var return_layout = yogurt.funs.get(call.function).return_type().memory_layout()
+
+|     pudding_call(
+|       PuddingSignature { string = call.function.str }, args,
+|       return_layout.size, return_layout.alignment,
+|     )
+|   }
+|   case instruction(instruction) {
+|     var args = instruction.args
+
+|     switch instruction.instruction
+|     case add_ints       pudding_add(    yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|     case sub_ints       pudding_sub(    yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|     case mul_ints       pudding_mul(    yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|     case div_ints       pudding_div(    yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|     case mod_ints       pudding_mod(    yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|     case and_ints       pudding_and(    yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|     case or_ints        pudding_or(     yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|     case xor_ints       pudding_xor(    yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|     case compare_ints   pudding_compare_zero(
+|                           pudding_sub(yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|                         ) | tag for enum: | Equal Greater Less
+|     case concat_strings todo("handle concat_strings")
+|     case crash          pudding_crash(     yogurt_id_to_pudding_id.get(args.get(0)), yogurt_id_to_pudding_id.get(args.get(1)))
+|   }
+| }
+
+| fun to_pudding(
+|   body: YogurtBody, fun_: YogurtFun,
+|   fun_builder: &PuddingFunBuilder,
+|   yogurt_id_to_pudding_id: &Map[YogurtId, PuddingId],
+|   yogurt: Yogurt,
+| ): PuddingBody {
+|   var body_builder = fun_builder.body_builder()
+|   for yogurt_id in body.exprs do {
+|     var pudding_id = fun_.get(yogurt_id).to_pudding(
+|       fun_, fun_builder, body_builder.&, yogurt_id_to_pudding_id, yogurt
+|     )
+|     yogurt_id_to_pudding_id.&.put(yogurt_id, pudding_id)
+|   }
+|   body_builder.returns(yogurt_id_to_pudding_id.get(body.returns))
+| }
+
+| fun to_pudding(fun_: YogurtFun, yogurt: Yogurt): PuddingFun {
+|   | var fun_builder = pudding_fun_builder()
+|   | var builder = fun_builder.&.body_builder()
+|   | var yogurt_id_to_pudding_id = map[YogurtId, PuddingExpr]()
+
+|   | var closure_ptr =
+|   |   switch fun_.captures
+|   |   case some some(builder.&.push_param(PuddingType.pointer))
+|   |   case none none[PuddingId]()
+|   | for param in fun_.body.params do {
+|   |   yogurt_id_to_pudding_id.&.put(param, builder.&.push_param(param))
+|   | }
+
+|   | if fun_.captures is some(captures) then {
+|   |   var closure_ptr = closure_ptr.unwrap()
+|   |   var captured_name_to_type = map[String, PuddingType]()
+|   |   for both in captures.iter().enumerate() do {
+|   |     var type = todo("type of {both.item} converted to PuddingType")
+|   |     captured_name_to_type.&.put("{both.index}", type)
+|   |   }
+|   |   var closure_type = PuddingType.struct_(captured_name_to_type)
+|   |   var closure = builder.&.push(PuddingOp.deref $ closure_type)
+
+|   |   for both in captures.iter().enumerate() do {
+|   |     var captured = builder.&.push(
+|   |       PuddingOp.member(PuddingMember { of = closure, name = "{both.index}" })
+|   |         $ captured_name_to_type.get("{both.index}")
+|   |     )
+|   |     yogurt_id_to_pudding_id.&.put(both.a, captured)
+|   |   }
+|   | }
+
+|   | for id in fun_.body.exprs do {
+|   |   var expr = fun_.get(id).to_pudding(
+|   |     fun_, fun_builder.&, builder.&, yogurt_id_to_pudding_id, yogurt
+|   |   )
+|   |   yogurt_id_to_pudding_id.&.put(id, expr)
+|   | }
+|   | var body = builder.returns(yogurt_id_to_pudding_id.get(body.returns))
+|   | fun_builder.finish(body)
+| }
+
+fun to_pudding(
+  expr: YogurtExpr,
+  fun_: YogurtFun,
+  fun_builder: &PuddingFunBuilder, body_builder: &PuddingBodyBuilder,
+  yogurt_id_to_pudding_id: &Map[YogurtId, PuddingId],
+  yogurt: Yogurt,
+): PuddingExpr {
+  switch expr.op
+  case param unreachable()
+  case uninitialized unreachable()
+  case comptime(value) PuddingOp.comptime(value) $ expr.type
+  case struct_(struct_) {
+    var fields = map[String, PuddingId]()
+    for field in struct_ do {
+      var id = yogurt_id_to_pudding_id.get(field.value)
+      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      fields.&.put(field.key, id)
+    }
+    PuddingOp.struct_(fields) $ expr.type
+  }
+  case member(member) {
+    var of = yogurt_id_to_pudding_id.get(member.of)
+    body_builder.push(PuddingOp.dup(of) $ PlumType.never)
+    PuddingOp.member(PuddingMember { of, name = member.name }) $ expr.type
+  }
+  case variant(variant) {
+    var payloads = list[PuddingId]()
+    for payload in variant.payloads do {
+      var id = yogurt_id_to_pudding_id.get(payload)
+      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      payloads.&.push(id)
+    }
+    PuddingOp.variant(PuddingVariant {
+      symbol = variant.symbol, payloads = payloads.to_slice()
+    }) $ expr.type
+  }
+  case switch_(switch_) {
+    var condition = yogurt_id_to_pudding_id.get(switch_.condition)
+    body_builder.push(PuddingOp.dup(condition) $ PlumType.never)
+    var cases = map[String, PuddingBody]()
+    for case_ in switch_.cases do
+      cases.&.put(case_.key, case_.value.to_pudding(
+        fun_, fun_builder, yogurt_id_to_pudding_id, yogurt
+      ))
+    PuddingOp.switch_(PuddingSwitch { condition, cases }) $ expr.type
+  }
+  case lambda(lambda) {
+    var captures = list[PuddingId]()
+    for capture in lambda.captures do {
+      var id = yogurt_id_to_pudding_id.get(capture)
+      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      captures.&.push(id)
+    }
+    PuddingOp.lambda(PuddingLambda {
+      function = PuddingSignature { string = lambda.function.str },
+      captures = captures.to_slice()
+    }) $ expr.type
+  }
+  case lambda_call(call) {
+    var lambda = yogurt_id_to_pudding_id.get(call.lambda)
+    body_builder.push(PuddingOp.dup(lambda) $ PlumType.never)
+    var args = list[PuddingId]()
+    for arg in call.args do {
+      var id = yogurt_id_to_pudding_id.get(arg)
+      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      args.&.push(id)
+    }
+    PuddingOp.lambda_call(PuddingLambdaCall {
+      lambda, args = args.to_slice()
+    }) $ expr.type
+  }
+  case call(call) {
+    var args = list[PuddingId]()
+    for arg in call.args do {
+      var id = yogurt_id_to_pudding_id.get(arg)
+      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      args.&.push(id)
+    }
+    PuddingOp.call(PuddingCall {
+      function = PuddingSignature { string = call.function.str },
+      args = args.to_slice(),
+    }) $ expr.type
+  }
+  case instruction(instruction) {
+    var args = list[PuddingId]()
+    for arg in instruction.args do {
+      var id = yogurt_id_to_pudding_id.get(arg)
+      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      args.&.push(id)
+    }
+    PuddingOp.instruction(PuddingInstruction {
+      instruction = instruction.instruction, args = args.to_slice()
+    }) $ expr.type
+  }
+}
+
+fun to_pudding(
+  body: YogurtBody,
+  fun_: YogurtFun, fun_builder: &PuddingFunBuilder,
+  yogurt_id_to_pudding_id: &Map[YogurtId, PuddingId],
+  yogurt: Yogurt,
+): PuddingBody {
+  var body_builder = fun_builder.&.body_builder()
+  for param in body.params do {
+    var id = body_builder.&.push_param(fun_.get(param).type)
+    yogurt_id_to_pudding_id.&.put(param, id)
+  }
+  for id in body.exprs do {
+    var expr = body_builder.&.push(fun_.get(id).to_pudding(
+      fun_, fun_builder, body_builder.&, yogurt_id_to_pudding_id, yogurt
+    ))
+    yogurt_id_to_pudding_id.&.put(id, expr)
+  }
+  var returns = yogurt_id_to_pudding_id.get(body.returns)
+
+  body_builder.&.push(PuddingOp.dup(returns) $ PlumType.never)
+  for param in body.params do
+    body_builder.&.push(PuddingOp.drop(yogurt_id_to_pudding_id.get(param)) $ PlumType.never)
+  for id in body.exprs do
+    body_builder.&.push(PuddingOp.drop(yogurt_id_to_pudding_id.get(id)) $ PlumType.never)
+
+  body_builder.returns(returns)
+}
+
+fun to_pudding(
+  fun_: YogurtFun, yogurt: Yogurt, funs: &Map[PuddingSignature, PuddingFun]
+): PuddingFun {
+  var fun_builder = pudding_fun_builder()
+  var yogurt_id_to_pudding_id = map[YogurtId, PuddingId]()
+
+  var captures =
+    switch fun_.captures
+    case none none[Slice[PuddingId]]()
+    case some(captures) {
+      var mapped = list[PuddingId]()
+      for capture in captures do {
+        var id = fun_builder.&.create(PuddingOp.param $ fun_.get(capture).type)
+        yogurt_id_to_pudding_id.&.put(capture, id)
+        mapped.&.push(id)
+      }
+      some(mapped.to_slice())
+    }
+
+  var body = fun_.body.to_pudding(
+    fun_, fun_builder.&, yogurt_id_to_pudding_id.&, yogurt
+  )
+  fun_builder.finish(captures, body)
+}
+
+fun to_pudding(yogurt: Yogurt): Pudding {
+  var funs = map[PuddingSignature, PuddingFun]()
+  for fun_ in yogurt.funs do
+    funs.&.put(
+      PuddingSignature { string = fun_.key.str },
+      fun_.value.to_pudding(yogurt, funs.&),
+    )
+  Pudding { funs }
+}
