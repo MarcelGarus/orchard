@@ -2,43 +2,6 @@
 
 import plum.mar
 
-| fun to_waffle(value: PuddingValue): WaffleExpr {
-|   switch value.kind
-|   case int(int) waffle_word(int)
-|   case string(string)
-|     waffle_aggregate(list(
-|       waffle_word(string.data.to_int()),
-|       waffle_word(string.len),
-|     ).to_slice())
-|   case struct_(fields) {
-|     var layout = value.type.memory_layout_struct()
-|     var parts = list[WaffleExpr]()
-|     for part in layout.parts do
-|       parts.&.push(
-|         switch part
-|         case padding(amount) waffle_padding(amount)
-|         case field(name) fields.get(name).to_waffle()
-|       )
-|     waffle_aggregate(parts.to_slice())
-|   }
-|   case variant(variant) {
-|     var layout = value.type.memory_layout_enum().variants.get(variant.symbol)
-|     var parts = list[WaffleExpr]()
-|     for part in layout.parts do
-|       parts.&.push(
-|         switch part
-|         case padding(amount) waffle_padding(amount)
-|         case payload(index) variant.payloads.get(index).to_waffle()
-|         case payload_ptr(index)
-|           variant.payloads.get(index).to_waffle().boxed()
-|         case tag(byte) waffle_byte(byte)
-|       )
-|     waffle_aggregate(parts.to_slice())
-|   }
-|   case lambda todo()
-|   case type todo()
-| }
-
 fun to_waffle(signature: PuddingSignature): WaffleSignature {
   waffle_signature(signature.string)
 }
@@ -258,7 +221,13 @@ fun to_waffle(
   switch expr.op
   case param unreachable()
   case uninitialized unreachable()
-  case comptime(value) value.to_waffle(body_builder)
+  case int(int) waffle_word(int)
+  case string(string)
+    waffle_aggregate(list(
+      waffle_word(string.data.to_int()),
+      waffle_word(string.len),
+    ).to_slice())
+  case type(type) todo("compile type")
   case struct_(struct_) {
     var layout = expr.type.memory_layout_struct()
     var parts = list[WaffleExpr]()
