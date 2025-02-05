@@ -1,0 +1,392 @@
+| Converting Pesto to Waffle  
+|
+| At some point, we need to decide how to store structs, enums, etc. in memory.
+| Memory layouting is the process that decides that. It results in memory
+| layouts, which are basically mappings between high-level types and low-level
+| memory.
+|
+| These are our requirements for choosing memory layouts:
+|
+| - Field order shouldn't matter.
+|   You should never have to reorder struct fields to get a more efficient
+|   layout.
+| - The layouting should be fast.
+|   We need to layout a lot of types and want to keep the compiler responsive.
+| - The layouting should be simple.
+|   To interoperate with other languages, the memory layouting algorithm should
+|   be simple and predictable.
+| - Layouts should be efficient.
+|   In particular, sizes of data structures should be small while still
+|   respecting the alignment requirements.
+|
+| The requirements are ordered from most important to least important. In
+| particular, if there's a really slow or complicated algorithm that always
+| chooses optimal memory layouts, we may not use that in favor of a simpler
+| algorithm that reliably chooses reasonably efficient memory layouts.
+
+import plum.mar
+
+struct MemoryLayout { size: Int, alignment: Int }
+
+| Layouting arbitrary types  
+
+fun memory_layout(type: PestoType): MemoryLayout {
+  switch type
+  case int MemoryLayout { size = 8,  alignment = 8 }
+  case pointer MemoryLayout { size = 8,  alignment = 8 }
+  case struct_ {
+    var layout = type.memory_layout_struct()
+    MemoryLayout { size = layout.size, alignment = layout.alignment }
+  }
+  case enum_(enum_) {
+    var layout = type.memory_layout_enum()
+    MemoryLayout { size = layout.size, alignment = layout.alignment }
+  }
+}
+
+| Layouting structs  
+
+struct StructLayout {
+  size: Int, alignment: Int,
+  parts: Slice[StructPart],
+  field_to_offset: Map[String, Int],
+}
+enum StructPart { field: String, padding: Int }
+
+struct FieldMemoryLayout { size: Int, alignment: Int, name: String }
+fun evenness(layout: FieldMemoryLayout): Int {
+  if layout.size.is_multiple_of(8) then return 8
+  if layout.size.is_multiple_of(4) then return 4
+  if layout.size.is_multiple_of(2) then return 2
+  1
+}
+fun <=>(a: FieldMemoryLayout, b: FieldMemoryLayout): Ordering {
+  if a.evenness() != b.evenness() then
+    return {a.evenness() <=> b.evenness()}.flip()
+  a.name <=> b.name
+}
+
+fun is_all_minus_one(list: Slice[Int]): Bool {
+  for item in list do if item != -1 then return false
+  true
+}
+
+| TODO: think about recursive structs. error? allow but like never?
+fun memory_layout_struct(type: PestoType): StructLayout {
+  var fields = type.struct_.unwrap()
+
+  | Layout the individual fields.
+  var layouts = list[FieldMemoryLayout]()
+  for field in fields do {
+    var layout = field.value.memory_layout()
+    layouts.&.push(FieldMemoryLayout {
+      name = field.key, size = layout.size, alignment = layout.alignment
+    })
+  }
+  var layouts = layouts.to_slice()
+
+  | Choose in which order to place the fields:
+  | - first, by the "evenness" of the field's size
+  |   - fields where the size is a multiple of 8
+  |   - fields where the size is a multiple of 4
+  |   - fields where the size is a multiple of 2
+  |   - fields where the size is a multiple of 1
+  | - second, by decreasing size
+  | - third, by increasing name (this makes the sort and memory layout
+  |   deterministic, even if multiple definitions of the struct use different
+  |   field orderings)
+  layouts.&.sort()
+
+  | Place the fields.
+  var bytes = list[Int]() | every item is one byte, index into layouts, -1 is padding
+  for field in layouts.iter().enumerate() do {
+    var index = field.index
+    var field = field.item
+
+    | See if the field fits in a padding.
+    var offset = 0
+    var was_placed_in_padding = loop {
+      if offset + field.size > bytes.len then break(false)
+      if bytes.to_slice().subslice(offset ..+ field.size).is_all_minus_one()
+      then {
+        for i in offset ..+ field.size do bytes.&.set(i, index)
+        break(true)
+      }
+      offset = offset + field.alignment
+    }
+    if not(was_placed_in_padding) then {
+      | Add the field to the end.
+      var padding = bytes.len.round_up_to_multiple_of(field.alignment) - bytes.len
+      for i in 0..padding    do bytes.&.push(-1)
+      for i in 0..field.size do bytes.&.push(index)
+    }
+  }
+
+  var parts = list[StructPart]()
+  var field_to_offset = map[String, Int]()
+  var offset = 0
+  loop {
+    if offset >= bytes.len then break
+    var value = bytes.get(offset)
+    var end = offset + 1
+    loop {
+      if end >= bytes.len then break
+      if bytes.get(end) != value then break
+      end = end + 1
+    }
+    if value == -1 then
+      parts.&.push(StructPart.padding(end - offset))
+    else {
+      var name = layouts.get(value).name
+      parts.&.push(StructPart.field(name))
+      field_to_offset.&.put(name, offset)
+    }
+    offset = end
+  }
+  var size = bytes.len
+  var alignment = 1
+  for field in layouts do alignment = max(alignment, field.alignment)
+
+  StructLayout { size, alignment, parts = parts.to_slice(), field_to_offset }
+}
+
+| Layouting enums  
+
+struct EnumLayout {
+  size: Int,
+  alignment: Int,
+  variants: Map[String, VariantLayout],
+  tag_offset: Int,
+  tag_to_variant: Map[Byte, String],
+}
+struct VariantLayout { parts: Slice[VariantPart] }
+enum VariantPart { payload, padding: Int, tag: Byte }
+
+fun memory_layout_enum(type: PestoType): EnumLayout {
+  var variants = type.enum_.unwrap()
+
+  | Choose mapping between variants/symbols (Strings) and tags (Bytes). We just
+  | order variants by name so that the tags are chosen deterministically, even
+  | if multiple definitions of the enum use different orderings.
+  var variant_names = list[String]()
+  for variant in variants do variant_names.&.push(variant.key)
+  variant_names.to_slice().&.sort()
+
+  var tag_to_variant = map[Byte, String]()
+  for variant in variant_names.iter().enumerate() do
+    tag_to_variant.&.put(variant.index.lower_byte(), variant.item)
+
+  var variant_to_tag = map[String, Byte]()
+  for variant in variant_names.iter().enumerate() do
+    variant_to_tag.&.put(variant.item, variant.index.lower_byte())
+
+  | Layout the individual variants.
+  var payload_layouts = map[String, MemoryLayout]()
+  for variant in variants do
+    payload_layouts.&.put(variant.key, variant.value.memory_layout())
+
+  | Calculate maximum size and alignment.
+  var max_payload_size = 0
+  var max_payload_alignment = 1
+  for layout in payload_layouts do {
+    max_payload_size = max(max_payload_size, layout.value.size)
+    max_payload_alignment = max(max_payload_alignment, layout.value.alignment)
+  }
+
+  | Create parts.
+  var variant_layouts = map[String, VariantLayout]()
+  for variant in variants do
+    variant_layouts.&.put(variant.key, VariantLayout {
+      parts = list(
+        VariantPart.payload,
+        VariantPart.padding(
+          max_payload_size - payload_layouts.get(variant.key).size
+        ),
+        VariantPart.tag(variant_to_tag.get(variant.key))
+      ).to_slice()
+    })
+
+  EnumLayout {
+    size = max_payload_size + 1,
+    alignment = max_payload_alignment,
+    variants = variant_layouts,
+    tag_offset = max_payload_size,
+    tag_to_variant,
+  }
+}
+
+| Converting Pesto to Waffle  
+
+fun to_waffle(
+  expr: PestoExpr,
+  fun_: PestoFun,
+  fun_builder: &WaffleFunBuilder, body_builder: &WaffleBodyBuilder,
+  mapping: &Map[PestoId, WaffleExpr], pesto: Pesto,
+): WaffleExpr {
+  switch expr.op
+  case param unreachable()
+  case int(int) waffle_word(int)
+  case string(string)
+    waffle_aggregate(list(
+      waffle_word(string.data.to_int()),
+      waffle_word(string.len),
+    ).to_slice())
+  case struct_(struct_) {
+    var layout = expr.type.memory_layout_struct()
+    var parts = list[WaffleExpr]()
+    for part in layout.parts do
+      parts.&.push(
+        switch part
+        case field(name) mapping.get(struct_.get(name))
+        case padding(amount) waffle_padding(amount)
+      )
+    waffle_aggregate(parts.to_slice())
+  }
+  case member(member) {
+    var struct_layout = fun_.get(member.of).type.memory_layout_struct()
+    var field_layout = expr.type.memory_layout()
+    mapping.get(member.of).waffle_member(
+      struct_layout.field_to_offset.get(member.name),
+      field_layout.size,
+      field_layout.alignment,
+    )
+  }
+  case variant(variant) {
+    var layout = expr.type.memory_layout_enum().variants.get(variant.symbol)
+    var parts = list[WaffleExpr]()
+    for part in layout.parts do
+      parts.&.push(
+        switch part
+        case payload mapping.get(variant.payload)
+        case padding(amount) waffle_padding(amount)
+        case tag(byte) waffle_byte(byte)
+      )
+    waffle_aggregate(parts.to_slice())
+  }
+  case switch_(switch_) {
+    var condition = mapping.get(switch_.condition)
+    var layout = fun_.get(switch_.condition).type.memory_layout_enum()
+
+    for variant_layout in layout.variants do {
+      var payload = switch_.cases.get(variant_layout.key).param
+      var layout = fun_.get(payload).type.memory_layout()
+      mapping.put(
+        payload, condition.waffle_member(0, layout.size, layout.alignment)
+      )
+    }
+
+    var cases = uninitialized_slice[WaffleBody](layout.tag_to_variant.size)
+    for entry in layout.tag_to_variant do
+      cases.&.set(
+        entry.key.to_int(),
+        switch_.cases.get(entry.value)
+          .to_waffle(fun_, fun_builder, mapping, pesto)
+      )
+
+    waffle_switch(condition.waffle_member(layout.tag_offset, 1, 1), cases)
+  }
+  case function_ptr(function)
+    waffle_function_ptr(WaffleSignature { string = function.string })
+  case call(call) {
+    var return_layout = pesto.funs.get(call.function).return_type().memory_layout()
+    waffle_call(
+      WaffleSignature { string = call.function.string }, mapping.get(call.args),
+      return_layout.size, return_layout.alignment,
+    )
+  }
+  case call_indirect(call) {
+    var return_layout = expr.type.memory_layout()
+    waffle_call_indirect(
+      mapping.get(call.function), mapping.get(call.args),
+      return_layout.size, return_layout.alignment,
+    )
+  }
+  case call_instruction(call) {
+    var args = call.args
+
+    switch call.instruction
+    case add_ints       waffle_add(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case sub_ints       waffle_sub(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case mul_ints       waffle_mul(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case div_ints       waffle_div(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case mod_ints       waffle_mod(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case and_ints       waffle_and(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case or_ints        waffle_or(     mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case xor_ints       waffle_xor(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case compare_ints   waffle_compare_zero(
+                          waffle_sub(mapping.get(args.get(0)), mapping.get(args.get(1)))
+                        ) | tag for enum: | Equal Greater Less
+    case concat_strings todo("handle concat_strings")
+    case crash          waffle_crash(     mapping.get(args.get(0)), mapping.get(args.get(1)))
+  }
+  case new(value) {
+    var value = mapping.get(value)
+    var ptr = body_builder.&.local(waffle_malloc(waffle_word(8 + value.size)))
+    body_builder.local(waffle_store(ptr,
+      waffle_aggregate(list(waffle_word(1), value).to_slice())
+    ))
+    ptr
+  }
+  case load(ptr) {
+    var layout = expr.type.memory_layout()
+    waffle_load(
+      waffle_add(mapping.get(ptr), waffle_word(8)),
+      layout.size, layout.alignment
+    )
+  }
+  case dup(ptr) {
+    var ptr = mapping.get(ptr)
+    var new_refcount = body_builder.&.local(waffle_add(waffle_load(ptr, 8, 8), waffle_word(1)))
+    body_builder.&.local(waffle_store(ptr, new_refcount))
+    new_refcount
+  }
+  case drop(ptr) {
+    var ptr = mapping.get(ptr)
+    var new_refcount = body_builder.&.local(waffle_sub(waffle_load(ptr, 8, 8), waffle_word(1)))
+    body_builder.&.local(waffle_store(ptr, new_refcount))
+    new_refcount
+  }
+  case free(ptr) waffle_free(mapping.get(ptr))
+}
+
+| Assumes parameters to be in the mapping.
+fun to_waffle(
+  body: PestoBody,
+  fun_: PestoFun, fun_builder: &WaffleFunBuilder,
+  mapping: &Map[PestoId, WaffleExpr],
+  pesto: Pesto,
+): WaffleBody {
+  var body_builder = fun_builder.&.body()
+  for id in body.exprs do {
+    var expr = body_builder.&.local(fun_.get(id).to_waffle(
+      fun_, fun_builder, body_builder.&, mapping, pesto
+    ))
+    mapping.&.put(id, expr)
+  }
+  body_builder.returns(mapping.get(body.returns))
+}
+
+fun to_waffle(fun_: PestoFun, pesto: Pesto): WaffleFun {
+  | When you call a function, we expect the parameters to already be on the
+  | stack, layouted efficiently:
+  |
+  | ... param1 param3 param2
+
+  var param_layout = fun_.get(fun_.body.param).type.memory_layout()
+  var fun_builder = waffle_fun_builder(param_layout.size, param_layout.alignment)
+  var param = waffle_local(
+    WaffleId { index = 0 }, param_layout.size, param_layout.alignment
+  )
+  var mapping = map(fun_.body.param -> param)
+  var body = fun_.body.to_waffle(fun_, fun_builder.&, mapping.&, pesto)
+  fun_builder.finish(body)
+}
+
+fun to_waffle(pesto: Pesto): Waffle {
+  var funs = map[WaffleSignature, WaffleFun]()
+  for fun_ in pesto.funs do
+    funs.&.put(
+      WaffleSignature { string = fun_.key.string }, fun_.value.to_waffle(pesto)
+    )
+  Waffle { funs }
+}

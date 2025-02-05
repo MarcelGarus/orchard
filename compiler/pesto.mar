@@ -1,0 +1,201 @@
+| Pointers, Enums, Structures, and Tamed Operations  
+|
+| A representation of the program where complex types have been replaced with
+| simpler C-like types: (untyped) pointers, (associated) enums, and structures.
+| In particular, lambdas have been removed.
+
+import plum.mar
+
+struct Pesto { funs: Map[PestoSignature, PestoFun] }
+struct PestoSignature { string: String }
+
+struct PestoFun { exprs: Slice[PestoExpr], body: PestoBody }
+struct PestoId { index: Int }
+struct PestoBody {
+  param: PestoId, exprs: Slice[PestoId], returns: PestoId
+}
+struct PestoExpr { op: PestoOp, type: PestoType }
+
+enum PestoOp {
+  param,
+  int: Int,
+  string: String,
+  struct_: Map[String, PestoId],
+  member: PestoMember,
+  variant: PestoVariant,
+  switch_: PestoSwitch,
+  function_ptr: PestoSignature,
+  call: PestoCall,
+  call_indirect: PestoCallIndirect,
+  call_instruction: PestoCallInstruction,
+  | Memory
+  new: PestoId, | allocates the value on the heap, refcount 1
+  load: PestoId,
+  free: PestoId,   | frees the pointer's memory, refcount should be 0
+  dup: PestoId,    | increments the pointer's refcount by 1
+  drop: PestoId,   | decrements the pointer's refcount by 1
+}
+struct PestoMember { of: PestoId, name: String }
+struct PestoVariant { symbol: String, payload: PestoId }
+struct PestoSwitch { condition: PestoId, cases: Map[String, PestoBody] }
+struct PestoCall { function: PestoSignature, args: PestoId }
+struct PestoCallIndirect { function: PestoId, args: PestoId }
+struct PestoCallInstruction { instruction: Instruction, args: Slice[PestoId] }
+
+enum PestoType {
+  int,
+  pointer,
+  struct_: Map[String, PestoType],
+  enum_: Map[String, PestoType],
+}
+
+| Constructing Pesto  
+
+fun pesto(): _ { Pesto { funs = map[PestoSignature, PestoFun]() } }
+
+fun $(op: PestoOp, type: PestoType): _ { PestoExpr { op, type } }
+
+var pesto_nothing =
+  PestoOp.struct_(map[String, PestoId]()) 
+    $ PestoType.struct_(map[String, PestoType]())
+
+| fun pesto_int(int: Int): PestoExpr { PestoOp.int(int) $ PestoType.int }
+| fun pesto_string(string: String): PestoExpr {
+|   PestoOp.string(string)
+|     $ PestoType.struct_(map(
+|         "ptr" -> PestoType.pointer,
+|         "len" -> PestoType.int,
+|       ))
+| }
+| fun pesto_struct(fields: Map[String, PestoId], type: PestoType): PestoExpr {
+|   PestoOp.type(type) $ PestoType.struct_(map[String, PestoType]())
+| }
+
+fun get(fun_: PestoFun, id: PestoId): PestoExpr { fun_.exprs.get(id.index) }
+
+fun ==(a: PestoId, b: PestoId): Bool { a.index == b.index }
+fun hash(hasher: &Hasher, id: PestoId) { hasher.hash(id.index) }
+
+fun return_type(fun_: PestoFun): PestoType { fun_.get(fun_.body.returns).type }
+
+fun pesto_signature(string: String): _ { PestoSignature { string } }
+fun ==(a: PestoSignature, b: PestoSignature): Bool { a.string == b.string }
+fun hash(hasher: &Hasher, sig: PestoSignature) { hasher.hash(sig.string) }
+
+
+
+struct PestoFunBuilder { exprs: List[PestoExpr] }
+struct PestoBodyBuilder {
+  param: PestoId, exprs: List[PestoId], parent: &PestoFunBuilder
+}
+fun pesto_fun_builder(): PestoFunBuilder {
+  PestoFunBuilder { exprs = list[PestoExpr]() }
+}
+fun body_builder(builder: &PestoFunBuilder, param: PestoType): PestoBodyBuilder {
+  var param = builder.create(PestoOp.param $ param)
+  PestoBodyBuilder { param, exprs = list[PestoId](), parent = builder }
+}
+fun create(builder: &PestoFunBuilder, expr: PestoExpr): PestoId {
+  var id = PestoId { index = builder.exprs.len }
+  builder.exprs.&.push(expr)
+  id
+}
+fun push(builder: &PestoBodyBuilder, expr: PestoExpr): PestoId {
+  var id = builder.parent.create(expr)
+  builder.exprs.&.push(id)
+  id
+}
+fun get(builder: PestoFunBuilder, id: PestoId): PestoExpr {
+  builder.exprs.get(id.index)
+}
+fun get(builder: PestoBodyBuilder, id: PestoId): PestoExpr {
+  builder.parent.get(id)
+}
+fun finish(builder: PestoBodyBuilder, returns: PestoId): PestoBody {
+  PestoBody { param = builder.param, exprs = builder.exprs.to_slice(), returns }
+}
+fun finish(builder: PestoFunBuilder, body: PestoBody): PestoFun {
+  PestoFun { exprs = builder.exprs.to_slice(), body }
+}
+
+| Writing Pesto  
+
+fun write[W](writer: W, pesto: Pesto) {
+  var first = true
+  for fun_ in pesto.funs do {
+    if first then first = false else writer."\n"
+    writer."{fun_.key}:"
+    writer.write(fun_.value.body, fun_.value, 1)
+  }
+}
+fun write[W](writer: W, signature: PestoSignature) { writer."{signature.string}" }
+fun write[W](writer: W, id: PestoId) { writer."@{id.index}" }
+fun write[W](writer: W, type: PestoType) {
+  switch type
+  case int writer."int"
+  case pointer writer."pointer"
+  case struct_(fields) {
+    writer."(&"
+    for field in fields do writer." {field.key}: {field.value}"
+    writer.")"
+  }
+  case enum_(variants) {
+    writer."(|"
+    for variant in variants do writer." ({variant.key} {variant.value})"
+    writer.")"
+  }
+}
+fun write[W](writer: W, body: PestoBody, fun_: PestoFun, indentation: Int) {
+  writer." {body.param}\n"
+  for id in body.exprs do {
+    var expr = fun_.get(id)
+    for i in 0..indentation do writer."  "
+    writer."{id}: {expr.type} = "
+    writer.write(expr.op, fun_, indentation)
+    writer."\n"
+  }
+  for i in 0..indentation do writer."  "
+  writer."{body.returns}"
+}
+fun write[W](writer: W, op: PestoOp, fun_: PestoFun, indentation: Int) {
+  switch op
+  case param(param) writer."param {param}"
+  case int(int) writer."int {int}"
+  case string(string) writer."string {string}"
+  case struct_(fields) {
+    writer."&"
+    for field in fields do writer." {field.key}: {field.value}"
+  }
+  case member(member) writer."{member.of}.{member.name}"
+  case variant(variant) writer."variant {variant.symbol} {variant.payload}"
+  case switch_(switch_) {
+    writer."switch {switch_.condition}"
+    for case_ in switch_.cases do {
+      writer."\n"
+      for i in 0..indentation do writer."  "
+      writer."  {case_.key}:"
+      writer.write(case_.value, fun_, indentation + 2)
+    }
+  }
+  case function_ptr(signature) writer."&({signature})"
+  case call(call) writer."call \"{call.function}\" {call.args}"
+  case call_indirect(call) writer."call *\"{call.function}\" {call.args}"
+  case call_instruction(call) {
+    writer."call instruction {call.instruction}"
+    for arg in call.args do writer." {arg}"
+  }
+  case new(value) writer."new {value}"
+  case load(value) writer."load {value}"
+  case free(value) writer."free {value}"
+  case dup(value) writer."dup {value}"
+  case drop(value) writer."drop {value}"
+}
+
+
+
+
+|
+|
+| 
+| 
+|
