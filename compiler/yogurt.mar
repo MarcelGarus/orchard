@@ -2,8 +2,7 @@
 
 import plum.mar
 
-struct Yogurt { funs: Map[YogurtSignature, YogurtFun] }
-struct YogurtSignature { str: String }
+struct Yogurt { funs: Map[String, YogurtFun] }
 
 struct YogurtFun {
   exprs: Slice[YogurtExpr], captures: Maybe[Slice[YogurtId]], body: YogurtBody
@@ -24,9 +23,7 @@ enum YogurtValueKind {
   type: PlumType,
 }
 struct YogurtVariantValue { symbol: String, payloads: Slice[YogurtValue] }
-struct YogurtLambdaValue {
-  captures: Slice[YogurtValue], function: YogurtSignature
-}
+struct YogurtLambdaValue { function: String, captures: Slice[YogurtValue] }
 
 enum YogurtOp {
   param,
@@ -44,12 +41,12 @@ enum YogurtOp {
 struct YogurtMember { of: YogurtId, name: String }
 struct YogurtSwitch { condition: YogurtId, cases: Map[String, YogurtBody] }
 struct YogurtVariant { symbol: String, payloads: Slice[YogurtId] }
-struct YogurtLambda { function: YogurtSignature, captures: Slice[YogurtId] }
+struct YogurtLambda { function: String, captures: Slice[YogurtId] }
 struct YogurtLambdaCall { lambda: YogurtId, args: Slice[YogurtId] }
-struct YogurtCall { function: YogurtSignature, args: Slice[YogurtId] }
+struct YogurtCall { function: String, args: Slice[YogurtId] }
 struct YogurtInstruction { instruction: Instruction, args: Slice[YogurtId] }
 
-fun yogurt(): _ { Yogurt { funs = map[YogurtSignature, YogurtFun]() } }
+fun yogurt(): _ { Yogurt { funs = map[String, YogurtFun]() } }
 
 fun $(kind: YogurtValueKind, type: PlumType): _ { YogurtValue { kind, type } }
 
@@ -108,20 +105,18 @@ fun get(fun_: YogurtFun, id: YogurtId): YogurtExpr { fun_.exprs.get(id.int) }
 fun ==(a: YogurtId, b: YogurtId): Bool { a.int == b.int }
 fun hash(hasher: &Hasher, id: YogurtId) { hasher.hash(id.int) }
 
-fun yogurt_signature(name: String, params: Slice[PlumType]): YogurtSignature {
+fun signature(name: String, params: Slice[PlumType]): String {
   var b = string_builder().&
   b."{name}"
   for param in params do b." {param}"
-  YogurtSignature { str = b.to_string() }
+  b.to_string()
 }
-fun yogurt_signature(name: String, args: Slice[YogurtValue]): YogurtSignature {
+fun signature(name: String, args: Slice[YogurtValue]): String {
   var b = string_builder().&
   b."{name}"
   for arg in args do b." {arg}"
-  YogurtSignature { str = b.to_string() }
+  b.to_string()
 }
-fun ==(a: YogurtSignature, b: YogurtSignature): Bool { a.str == b.str }
-fun hash(hasher: &Hasher, sig: YogurtSignature) { hasher.hash(sig.str) }
 
 fun return_type(fun_: YogurtFun): PlumType { fun_.get(fun_.body.returns).type }
 
@@ -138,7 +133,6 @@ fun write[W](writer: W, yogurt: Yogurt) {
     writer.write(fun_.value.body, fun_.value, 1)
   }
 }
-fun write[W](writer: W, signature: YogurtSignature) { writer."{signature.str}" }
 fun write[W](writer: W, id: YogurtId) { writer."@{id.int}" }
 fun write[W](writer: W, body: YogurtBody, fun_: YogurtFun, indentation: Int) {
   for param in body.params do writer." {param}"

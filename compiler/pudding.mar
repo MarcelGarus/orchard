@@ -2,8 +2,7 @@
 
 import plum.mar
 
-struct Pudding { funs: Map[PuddingSignature, PuddingFun] }
-struct PuddingSignature { string: String }
+struct Pudding { funs: Map[String, PuddingFun] }
 
 struct PuddingFun {
   exprs: Slice[PuddingExpr], captures: Maybe[Slice[PuddingId]], body: PuddingBody
@@ -34,22 +33,10 @@ enum PuddingOp {
 struct PuddingMember { of: PuddingId, name: String }
 struct PuddingSwitch { condition: PuddingId, cases: Map[String, PuddingBody] }
 struct PuddingVariant { symbol: String, payloads: Slice[PuddingId] }
-struct PuddingLambda { function: PuddingSignature, captures: Slice[PuddingId] }
+struct PuddingLambda { function: String, captures: Slice[PuddingId] }
 struct PuddingLambdaCall { lambda: PuddingId, args: Slice[PuddingId] }
-struct PuddingCall { function: PuddingSignature, args: Slice[PuddingId] }
+struct PuddingCall { function: String, args: Slice[PuddingId] }
 struct PuddingInstruction { instruction: Instruction, args: Slice[PuddingId] }
-
-| enum PuddingType {
-|   primitive: String,
-|   never,
-|   struct_: Map[String, PuddingType],
-|   enum_: Map[String, Slice[PuddingType]],
-|   pointer,
-|   | function_pointer: PuddingFunctionPointerType,
-| }
-| struct PuddingFunctionPointerType {
-|   args: Slice[PuddingType], return_type: &PuddingType
-| }
 
 | Constructing Pudding  
 
@@ -113,10 +100,6 @@ fun return_type(fun_: PuddingFun): PlumType { fun_.get(fun_.body.returns).type }
 fun ==(a: PuddingId, b: PuddingId): Bool { a.index == b.index }
 fun hash(hasher: &Hasher, id: PuddingId) { hasher.hash(id.index) }
 
-fun pudding_signature(string: String): _ { PuddingSignature { string } }
-fun ==(a: PuddingSignature, b: PuddingSignature): Bool { a.string == b.string }
-fun hash(hasher: &Hasher, sig: PuddingSignature) { hasher.hash(sig.string) }
-
 | Writing Pudding  
 
 fun write[W](writer: W, pudding: Pudding) {
@@ -124,16 +107,13 @@ fun write[W](writer: W, pudding: Pudding) {
   for fun_ in pudding.funs do {
     if first then first = false else writer."\n"
     writer."{fun_.key}:"
-    | if fun_.value.captures is some(captures) then {
-    |   writer." (captures "
-    |   for capture in captures do writer." {capture}"
-    |   writer.")"
-    | }
+    if fun_.value.captures is some(captures) then {
+      writer." (captures "
+      for capture in captures do writer." {capture}"
+      writer.")"
+    }
     writer.write(fun_.value.body, fun_.value, 1)
   }
-}
-fun write[W](writer: W, signature: PuddingSignature) {
-  writer."{signature.string}"
 }
 fun write[W](writer: W, id: PuddingId) { writer."@{id.index}" }
 fun write[W](writer: W, body: PuddingBody, fun_: PuddingFun, indentation: Int) {

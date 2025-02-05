@@ -33,7 +33,7 @@ struct YogurtCompiler {
   egg: Egg,
   yogurt: &Yogurt,
 }
-enum YogurtStackEntry { compiling: YogurtSignature, running: YogurtSignature }
+enum YogurtStackEntry { compiling: String, running: String }
 
 fun yogurt_compiler(egg: Egg, yogurt: &Yogurt): YogurtCompiler {
   YogurtCompiler { stack = list[YogurtStackEntry](), egg, yogurt }
@@ -45,7 +45,7 @@ fun ==(a: YogurtStackEntry, b: YogurtStackEntry): Bool {
   case running(a)   if b is running(b)   then a == b else false
 }
 
-fun start_running(compiler: &YogurtCompiler, signature: YogurtSignature) {
+fun start_running(compiler: &YogurtCompiler, signature: String) {
   compiler.stack.&.push(YogurtStackEntry.running(signature))
   compiler.print_status()
 }
@@ -53,13 +53,11 @@ fun done_running(compiler: &YogurtCompiler) {
   compiler.stack.&.pop().running or panic("wasn't running something")
   compiler.print_status()
 }
-fun is_currently_running(
-  compiler: YogurtCompiler, signature: YogurtSignature
-): Bool {
+fun is_currently_running(compiler: YogurtCompiler, signature: String): Bool {
   compiler.stack.iter().&.contains(YogurtStackEntry.running(signature))
 }
 
-fun start_compiling(compiler: &YogurtCompiler, signature: YogurtSignature) {
+fun start_compiling(compiler: &YogurtCompiler, signature: String) {
   compiler.stack.&.push(YogurtStackEntry.compiling(signature))
   compiler.print_status()
 }
@@ -67,21 +65,17 @@ fun done_compiling(compiler: &YogurtCompiler) {
   compiler.stack.&.pop().compiling or panic("wasn't running something")
   compiler.print_status()
 }
-fun is_currently_compiling(
-  compiler: YogurtCompiler, signature: YogurtSignature
-): Bool {
+fun is_currently_compiling(compiler: YogurtCompiler, signature: String): Bool {
   compiler.stack.iter().&.contains(YogurtStackEntry.compiling(signature))
 }
 
-fun define(
-  compiler: &YogurtCompiler, signature: YogurtSignature, fun_: YogurtFun
-) {
+fun define(compiler: &YogurtCompiler, signature: String, fun_: YogurtFun) {
   compiler.yogurt.funs.&.put(signature, fun_)
 }
-fun is_defined(compiler: YogurtCompiler, signature: YogurtSignature): Bool {
+fun is_defined(compiler: YogurtCompiler, signature: String): Bool {
   compiler.yogurt.funs.contains(signature)
 }
-fun get(compiler: YogurtCompiler, signature: YogurtSignature): YogurtFun {
+fun get(compiler: YogurtCompiler, signature: String): YogurtFun {
   compiler.yogurt.funs.get(signature)
 }
 
@@ -120,10 +114,10 @@ fun print_status(compiler: &YogurtCompiler) {
     var signature = comptime_and_signature.b
 
     if comptime then stderr.write_ansi_escape_sequence("[32m")
-    if signature.str.len > 60 then
-      stderr."{signature.str.substr(0..57)}..."
+    if signature.len > 60 then
+      stderr."{signature.substr(0..57)}..."
     else
-      stderr."{signature}"
+      stderr.write(signature)
     if comptime then stderr.write_ansi_escape_sequence("[0m")
     stderr."\n"
 
@@ -242,7 +236,7 @@ enum ComptimeResult {
 fun run(
   match: MatchingFun, args: Slice[YogurtValue], compiler: &YogurtCompiler
 ): ComptimeResult {
-  var signature = yogurt_signature(match.name(), args)
+  var signature = signature(match.name(), args)
 
   if compiler.is_currently_running(signature) then
     panic("infinite comptime recursion") | TODO: report the error
@@ -441,13 +435,13 @@ fun comptime_cast(value: YogurtValue, target: PlumType): YogurtValue {
 
 fun compile(
   match: MatchingFun, compiler: &YogurtCompiler
-): Result[YogurtSignature, Error] {
+): Result[String, Error] {
   var param_types = match.param_types()
-  var signature = yogurt_signature(match.name(), param_types)
+  var signature = signature(match.name(), param_types)
 
   if compiler.is_defined(signature) or compiler.is_currently_compiling(signature)
   then
-    return ok[YogurtSignature, Error](signature)
+    return ok[String, Error](signature)
   compiler.start_compiling(signature)
 
   var fun_ =
@@ -472,7 +466,7 @@ fun compile(
       var actual_return_type = builder.get(body.returns).type
       if claimed_return_type != actual_return_type then {
         actual_return_type.is_assignable_to(claimed_return_type) or
-          return error[YogurtSignature, Error](error(
+          return error[String, Error](error(
             "Return types don't match:\n
             'claimed type: {claimed_return_type}\n
             ' actual type: {actual_return_type}",
@@ -510,7 +504,7 @@ fun compile(
 
   compiler.define(signature, fun_)
   compiler.done_compiling()
-  ok[YogurtSignature, Error](signature)
+  ok[String, Error](signature)
 }
 
 fun compile(
@@ -758,7 +752,7 @@ fun compile(
           returns = lambda_compiler.lookup(lambda.body.returns),
         }
 
-        var function = yogurt_signature("lambda-{expr.src}", empty_slice[PlumType]())
+        var function = signature("lambda-{expr.src}", empty_slice[PlumType]())
         compiler.parent.define(function, YogurtFun {
           exprs = lambda_builder.exprs.to_slice(),
           captures = some(inner_captures.to_slice()),
@@ -830,7 +824,7 @@ fun compile(
 
       if comptime_result and false then {
         | body.push(builder.push(YogurtOp.lambda_call(YogurtCall {
-        |   function = yogurt_signature(name.string, arg_params), args
+        |   function = signature(name.string, arg_params), args
         | }) $ type))
         | if compiled_fun.body.returns.int == -1 then {
         |   return error[YogurtId, Error](error(
@@ -1013,7 +1007,7 @@ fun get(body: YogurtBodyBuilder, id: YogurtId): YogurtExpr {
 fun compile(
   builtin: Builtin, param_types: Slice[PlumType], context: &YogurtCompiler,
 ): Result[YogurtFun, Error] {
-  var signature = yogurt_signature("{builtin}", param_types)
+  var signature = signature("{builtin}", param_types)
 
   var fun_builder = yogurt_fun_builder()
   var body = YogurtBodyBuilder {
@@ -1131,8 +1125,8 @@ fun compile(
 }
 fun compile_cast_fun(
   from: PlumType, to: PlumType, compiler: &YogurtCompiler
-): YogurtSignature {
-  var signature = yogurt_signature("cast {from} to {to}", empty_slice[PlumType]())
+): String {
+  var signature = signature("cast {from} to {to}", empty_slice[PlumType]())
 
   if compiler.is_defined(signature) or compiler.is_currently_compiling(signature)
   then
@@ -1259,7 +1253,7 @@ fun compile_cast_fun_body(
     )
     exprs.&.push(cast_return_value)
 
-    var signature = yogurt_signature("lambda cast {from} to {to}", empty_slice[PlumType]())
+    var signature = signature("lambda cast {from} to {to}", empty_slice[PlumType]())
     compiler.define(signature, YogurtFun {
       exprs = lambda_builder.exprs.to_slice(),
       captures = some(list(original_lambda).to_slice()),

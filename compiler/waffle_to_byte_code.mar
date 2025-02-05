@@ -8,12 +8,13 @@ import plum.mar
 
 struct ByteCodeBuilder {
   instructions: &List[ByteCodeInstruction],
-  patches: &List[Tuple2[&ByteCodeInstruction, WaffleSignature]],
+  patches: &List[Patch],
   waffle: Waffle,
 }
+struct Patch { where: &ByteCodeInstruction, signature: String }
 struct FunByteCodeBuilder {
   instructions: &List[ByteCodeInstruction],
-  patches: &List[Tuple2[&ByteCodeInstruction, WaffleSignature]],
+  patches: &List[Patch],
   stack_mapping: Map[WaffleId, Int],
   stack_size: Int,
   fun_: WaffleFun,
@@ -98,8 +99,8 @@ fun to_byte_code(waffle: Waffle): Address {
   var instructions = list[ByteCodeInstruction]()
   instructions.&.reserve_uninitialized(2000) | TODO
   instructions.len = 0
-  var signature_to_address = map[WaffleSignature, Address]()
-  var patches = list[Tuple2[&ByteCodeInstruction, WaffleSignature]]()
+  var signature_to_address = map[String, Address]()
+  var patches = list[Patch]()
   var builder = ByteCodeBuilder {
     instructions = instructions.&, patches = patches.&, waffle
   }
@@ -109,10 +110,10 @@ fun to_byte_code(waffle: Waffle): Address {
     fun_.value.compile(builder.&)
   }
   for patch in patches do
-    patch.a.cast[&ByteCodeInstruction, &Address]().* =
-      signature_to_address.get(patch.b)
+    patch.where.cast[&ByteCodeInstruction, &Address]().* =
+      signature_to_address.get(patch.signature)
 
-  signature_to_address.get(WaffleSignature { string = "main Int" })
+  signature_to_address.get("main Int")
 }
 fun compile(fun_: WaffleFun, builder: &ByteCodeBuilder) {
   var params_id = WaffleId { index = 0 }
@@ -199,7 +200,7 @@ fun compile(expr: WaffleExpr, builder: &FunByteCodeBuilder) {
     call.args.compile(builder)
     var call_ref = builder.instructions.ref_of_next()
     builder.emit(ByteCodeInstruction.call(null))
-    builder.patches.push(tuple(call_ref, call.function))
+    builder.patches.push(Patch { where = call_ref, signature = call.function })
     builder.stack_size = builder.stack_size - call.args.size + expr.size
     builder.emit(ByteCodeInstruction.pop_below_top(tuple(expr.size, padding)))
   }
@@ -219,7 +220,7 @@ fun compile(expr: WaffleExpr, builder: &FunByteCodeBuilder) {
   case function_ptr(signature) {
     var ref = builder.instructions.ref_of_next()
     builder.emit(ByteCodeInstruction.push_8(0))
-    builder.patches.&.push(tuple(ref, signature))
+    builder.patches.push(Patch { where = ref, signature })
   }
   case add(args) { args.compile(builder) builder.emit(ByteCodeInstruction.add_8) }
   case sub(args) { args.compile(builder) builder.emit(ByteCodeInstruction.sub_8) }

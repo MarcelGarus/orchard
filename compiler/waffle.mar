@@ -24,8 +24,7 @@
 
 import plum.mar
 
-struct Waffle { funs: Map[WaffleSignature, WaffleFun] }
-struct WaffleSignature { string: String }
+struct Waffle { funs: Map[String, WaffleFun] }
 
 | Functions here don't explicitly contain parameters. Instead, the local @0
 | represents the parameters. @0 is guaranteed to exist and be on the stack when
@@ -48,7 +47,7 @@ enum WaffleExprKind {
   | Call stuff
   call: WaffleCall,
   call_indirect: WaffleCallIndirect,
-  function_ptr: WaffleSignature,
+  function_ptr: String,
   | Arithmetics
   add: &WaffleExpr,
   sub: &WaffleExpr,
@@ -70,7 +69,7 @@ enum WaffleExprKind {
 }
 struct WaffleMember { of: &WaffleExpr, offset: Int }
 struct WaffleSwitch { byte: &WaffleExpr, cases: Slice[WaffleBody] }
-struct WaffleCall { function: WaffleSignature, args: &WaffleExpr }
+struct WaffleCall { function: String, args: &WaffleExpr }
 struct WaffleCallIndirect { function_ptr: &WaffleExpr, args: &WaffleExpr }
 struct WaffleStore { pointer: &WaffleExpr, value: &WaffleExpr }
 
@@ -131,7 +130,7 @@ fun waffle_switch(byte: WaffleExpr, cases: Slice[WaffleBody]): WaffleExpr {
 }
 | The size and alignment are of the returned value, not the arguments.
 fun waffle_call(
-  function: WaffleSignature, args: WaffleExpr, size: Int, alignment: Int
+  function: String, args: WaffleExpr, size: Int, alignment: Int
 ): WaffleExpr {
   WaffleExpr {
     size, alignment,
@@ -149,7 +148,7 @@ fun waffle_call_indirect(
     })
   }
 }
-fun waffle_function_ptr(signature: WaffleSignature): WaffleExpr {
+fun waffle_function_ptr(signature: String): WaffleExpr {
   WaffleExpr {
     size = 8, alignment = 8, kind = WaffleExprKind.function_ptr(signature)
   }
@@ -294,19 +293,7 @@ fun get(fun_: WaffleFun, id: WaffleId): WaffleExpr { fun_.locals.get(id.index) }
 fun ==(a: WaffleId, b: WaffleId): Bool { a.index == b.index }
 fun hash(hasher: &Hasher, id: WaffleId) { hasher.hash(id.index) }
 
-| fun waffle_signature(
-|   name: String, params: Slice[WaffleParam]
-| ): WaffleSignature {
-|   var b = string_builder().&
-|   b."{name}"
-|   for param in params do
-|     b." {switch param case comptime(val) "{val}:{val.type}" case runtime(type) "{type}"}"
-|   WaffleSignature { str = b.to_string() }
-| }
-fun waffle_signature(string: String): _ { WaffleSignature { string } }
-fun ==(a: WaffleSignature, b: WaffleSignature): Bool { a.string == b.string }
-fun hash(hasher: &Hasher, sig: WaffleSignature) { hasher.hash(sig.string) }
-
+| Writing Waffle  
 
 fun write[W](writer: W, waffle: Waffle) {
   var first = true
@@ -315,9 +302,6 @@ fun write[W](writer: W, waffle: Waffle) {
     writer."{fun_.key}: (@0:{fun_.value.get(WaffleId { index = 0 }).size} contains args)\n"
     writer.write(fun_.value.body, fun_.value, 1)
   }
-}
-fun write[W](writer: W, signature: WaffleSignature) {
-  writer."{signature.string}"
 }
 fun write[W](writer: W, id: WaffleId) { writer."@{id.index}" }
 fun write[W](writer: W, body: WaffleBody, fun_: WaffleFun, indentation: Int) {

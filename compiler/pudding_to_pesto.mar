@@ -2,10 +2,6 @@
 
 import plum.mar
 
-fun to_pesto(signature: PuddingSignature): PestoSignature {
-  pesto_signature(signature.string)
-}
-
 fun to_pesto(type: PlumType): PestoType {
   switch type
   case primitive(name) {
@@ -67,8 +63,8 @@ fun is_recursive(type: PlumType, depth: Int): Bool {
 | Creates a function that accepts a value of the given type, traverses that
 | value, and calls dup on all inner members. If it reaches a pointer, it instead
 | just increments that pointer's reference count.
-fun compile_dup_fun(type: PlumType, pesto: &Pesto): PestoSignature {
-  var signature = pesto_signature("dup {type}")
+fun compile_dup_fun(type: PlumType, pesto: &Pesto): String {
+  var signature = "dup {type}"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
 
@@ -137,8 +133,8 @@ fun compile_dup_fun(type: PlumType, pesto: &Pesto): PestoSignature {
 | zero, it drops the pointed-to value and frees the allocation. For lambdas
 | where the closure reaches a reference count of zero, it uses the free function
 | pointer to free the closure.
-fun compile_drop_fun(type: PlumType, pesto: &Pesto): PestoSignature {
-  var signature = pesto_signature("drop {type}")
+fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
+  var signature = "drop {type}"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
 
@@ -270,8 +266,8 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): PestoSignature {
 | Accepts a pointer to a closure that captures the given types. Frees it.
 fun compile_closure_free_fun(
   captured_types: Slice[PlumType], pesto: &Pesto
-): PestoSignature {
-  var signature = pesto_signature("free {captured_types}")
+): String {
+  var signature = "free closure {captured_types}"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
 
@@ -391,7 +387,7 @@ fun to_pesto(
 
       | Create a function pointer to the lambda body.
       var lambda_body_fun_ptr = builder.push(
-        PestoOp.function_ptr(lambda.function.to_pesto()) $ PestoType.pointer
+        PestoOp.function_ptr(lambda.function) $ PestoType.pointer
       )
 
       | Create a function pointer to a function for freeing the closure.
@@ -450,7 +446,7 @@ fun to_pesto(
         builder.push(PestoOp.struct_(arg_values) $ PestoType.struct_(arg_types))
       }
 
-      PestoOp.call(PestoCall { function = call.function.to_pesto(), args })
+      PestoOp.call(PestoCall { function = call.function, args })
     }
     case instruction(instruction) {
       var args = list[PestoId]()
@@ -535,6 +531,6 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
 fun to_pesto(pudding: Pudding): Pesto {
   var pesto = pesto()
   for fun_ in pudding.funs do
-    pesto.funs.&.put(fun_.key.to_pesto(), fun_.value.to_pesto(pesto.&))
+    pesto.funs.&.put(fun_.key, fun_.value.to_pesto(pesto.&))
   pesto
 }
