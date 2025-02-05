@@ -2,16 +2,14 @@
 
 import plum.mar
 
-fun to_pudding(
-  value: YogurtValue, body_builder: &PuddingBodyBuilder
-): PuddingExpr {
+fun to_pudding(value: YogurtValue, builder: &PuddingBodyBuilder): PuddingExpr {
   switch value.kind
   case int(int) PuddingOp.int(int) $ type_int
   case string(string) PuddingOp.string(string) $ type_string
   case struct_(struct_) {
     var fields = map[String, PuddingId]()
     for field in struct_ do {
-      var id = body_builder.push(field.value.to_pudding(body_builder))
+      var id = builder.push(field.value.to_pudding(builder))
       fields.&.put(field.key, id)
     }
     PuddingOp.struct_(fields) $ value.type
@@ -19,7 +17,7 @@ fun to_pudding(
   case variant(variant) {
     var payloads = list[PuddingId]()
     for payload in variant.payloads do {
-      var id = body_builder.push(payload.to_pudding(body_builder))
+      var id = builder.push(payload.to_pudding(builder))
       payloads.&.push(id)
     }
     PuddingOp.variant(PuddingVariant {
@@ -29,7 +27,7 @@ fun to_pudding(
   case lambda(lambda) {
     var captures = list[PuddingId]()
     for capture in lambda.captures do {
-      var id = body_builder.push(capture.to_pudding(body_builder))
+      var id = builder.push(capture.to_pudding(builder))
       captures.&.push(id)
     }
     PuddingOp.lambda(PuddingLambda {
@@ -42,33 +40,33 @@ fun to_pudding(
 fun to_pudding(
   expr: YogurtExpr,
   fun_: YogurtFun,
-  fun_builder: &PuddingFunBuilder, body_builder: &PuddingBodyBuilder,
+  fun_builder: &PuddingFunBuilder, builder: &PuddingBodyBuilder,
   mapping: &Map[YogurtId, PuddingId],
   yogurt: Yogurt,
 ): PuddingExpr {
   switch expr.op
   case param unreachable()
   case uninitialized unreachable()
-  case comptime(value) value.to_pudding(body_builder)
+  case comptime(value) value.to_pudding(builder)
   case struct_(struct_) {
     var fields = map[String, PuddingId]()
     for field in struct_ do {
       var id = mapping.get(field.value)
-      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      builder.push(PuddingOp.dup(id) $ PlumType.never)
       fields.&.put(field.key, id)
     }
     PuddingOp.struct_(fields) $ expr.type
   }
   case member(member) {
     var of = mapping.get(member.of)
-    body_builder.push(PuddingOp.dup(of) $ PlumType.never)
+    builder.push(PuddingOp.dup(of) $ PlumType.never)
     PuddingOp.member(PuddingMember { of, name = member.name }) $ expr.type
   }
   case variant(variant) {
     var payloads = list[PuddingId]()
     for payload in variant.payloads do {
       var id = mapping.get(payload)
-      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      builder.push(PuddingOp.dup(id) $ PlumType.never)
       payloads.&.push(id)
     }
     PuddingOp.variant(PuddingVariant {
@@ -77,7 +75,7 @@ fun to_pudding(
   }
   case switch_(switch_) {
     var condition = mapping.get(switch_.condition)
-    body_builder.push(PuddingOp.dup(condition) $ PlumType.never)
+    builder.push(PuddingOp.dup(condition) $ PlumType.never)
     var cases = map[String, PuddingBody]()
     for case_ in switch_.cases do
       cases.&.put(case_.key, case_.value.to_pudding(
@@ -89,7 +87,7 @@ fun to_pudding(
     var captures = list[PuddingId]()
     for capture in lambda.captures do {
       var id = mapping.get(capture)
-      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      builder.push(PuddingOp.dup(id) $ PlumType.never)
       captures.&.push(id)
     }
     PuddingOp.lambda(PuddingLambda {
@@ -98,11 +96,11 @@ fun to_pudding(
   }
   case lambda_call(call) {
     var lambda = mapping.get(call.lambda)
-    body_builder.push(PuddingOp.dup(lambda) $ PlumType.never)
+    builder.push(PuddingOp.dup(lambda) $ PlumType.never)
     var args = list[PuddingId]()
     for arg in call.args do {
       var id = mapping.get(arg)
-      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      builder.push(PuddingOp.dup(id) $ PlumType.never)
       args.&.push(id)
     }
     PuddingOp.lambda_call(PuddingLambdaCall {
@@ -113,7 +111,7 @@ fun to_pudding(
     var args = list[PuddingId]()
     for arg in call.args do {
       var id = mapping.get(arg)
-      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      builder.push(PuddingOp.dup(id) $ PlumType.never)
       args.&.push(id)
     }
     PuddingOp.call(PuddingCall {
@@ -124,7 +122,7 @@ fun to_pudding(
     var args = list[PuddingId]()
     for arg in instruction.args do {
       var id = mapping.get(arg)
-      body_builder.push(PuddingOp.dup(id) $ PlumType.never)
+      builder.push(PuddingOp.dup(id) $ PlumType.never)
       args.&.push(id)
     }
     PuddingOp.instruction(PuddingInstruction {
@@ -138,26 +136,26 @@ fun to_pudding(
   fun_: YogurtFun, fun_builder: &PuddingFunBuilder,
   mapping: &Map[YogurtId, PuddingId], yogurt: Yogurt,
 ): PuddingBody {
-  var body_builder = fun_builder.&.body_builder()
+  var builder = fun_builder.&.body_builder()
   for param in body.params do {
-    var id = body_builder.&.push_param(fun_.get(param).type)
+    var id = builder.&.push_param(fun_.get(param).type)
     mapping.&.put(param, id)
   }
   for id in body.exprs do {
-    var expr = body_builder.&.push(fun_.get(id).to_pudding(
-      fun_, fun_builder, body_builder.&, mapping, yogurt
+    var expr = builder.&.push(fun_.get(id).to_pudding(
+      fun_, fun_builder, builder.&, mapping, yogurt
     ))
     mapping.&.put(id, expr)
   }
   var returns = mapping.get(body.returns)
 
-  body_builder.&.push(PuddingOp.dup(returns) $ PlumType.never)
+  builder.&.push(PuddingOp.dup(returns) $ PlumType.never)
   for param in body.params do
-    body_builder.&.push(PuddingOp.drop(mapping.get(param)) $ PlumType.never)
+    builder.&.push(PuddingOp.drop(mapping.get(param)) $ PlumType.never)
   for id in body.exprs do
-    body_builder.&.push(PuddingOp.drop(mapping.get(id)) $ PlumType.never)
+    builder.&.push(PuddingOp.drop(mapping.get(id)) $ PlumType.never)
 
-  body_builder.returns(returns)
+  builder.returns(returns)
 }
 
 fun to_pudding(fun_: YogurtFun, yogurt: Yogurt, pudding: &Pudding): PuddingFun {

@@ -218,9 +218,8 @@ fun memory_layout_enum(type: PestoType): EnumLayout {
 | Converting Pesto to Waffle  
 
 fun to_waffle(
-  expr: PestoExpr,
-  fun_: PestoFun,
-  fun_builder: &WaffleFunBuilder, body_builder: &WaffleBodyBuilder,
+  expr: PestoExpr, fun_: PestoFun,
+  fun_builder: &WaffleFunBuilder, builder: &WaffleBodyBuilder,
   mapping: &Map[PestoId, WaffleExpr], pesto: Pesto,
 ): WaffleExpr {
   switch expr.op
@@ -320,8 +319,8 @@ fun to_waffle(
   }
   case new(value) {
     var value = mapping.get(value)
-    var ptr = body_builder.&.local(waffle_malloc(waffle_word(8 + value.size)))
-    body_builder.local(waffle_store(ptr,
+    var ptr = builder.&.local(waffle_malloc(waffle_word(8 + value.size)))
+    builder.local(waffle_store(ptr,
       waffle_aggregate(list(waffle_word(1), value).to_slice())
     ))
     ptr
@@ -335,14 +334,14 @@ fun to_waffle(
   }
   case dup(ptr) {
     var ptr = mapping.get(ptr)
-    var new_refcount = body_builder.&.local(waffle_add(waffle_load(ptr, 8, 8), waffle_word(1)))
-    body_builder.&.local(waffle_store(ptr, new_refcount))
+    var new_refcount = builder.&.local(waffle_add(waffle_load(ptr, 8, 8), waffle_word(1)))
+    builder.&.local(waffle_store(ptr, new_refcount))
     new_refcount
   }
   case drop(ptr) {
     var ptr = mapping.get(ptr)
-    var new_refcount = body_builder.&.local(waffle_sub(waffle_load(ptr, 8, 8), waffle_word(1)))
-    body_builder.&.local(waffle_store(ptr, new_refcount))
+    var new_refcount = builder.&.local(waffle_sub(waffle_load(ptr, 8, 8), waffle_word(1)))
+    builder.&.local(waffle_store(ptr, new_refcount))
     new_refcount
   }
   case free(ptr) waffle_free(mapping.get(ptr))
@@ -355,14 +354,14 @@ fun to_waffle(
   mapping: &Map[PestoId, WaffleExpr],
   pesto: Pesto,
 ): WaffleBody {
-  var body_builder = fun_builder.&.body()
+  var builder = fun_builder.&.body()
   for id in body.exprs do {
-    var expr = body_builder.&.local(fun_.get(id).to_waffle(
-      fun_, fun_builder, body_builder.&, mapping, pesto
+    var expr = builder.&.local(fun_.get(id).to_waffle(
+      fun_, fun_builder, builder.&, mapping, pesto
     ))
     mapping.&.put(id, expr)
   }
-  body_builder.returns(mapping.get(body.returns))
+  builder.returns(mapping.get(body.returns))
 }
 
 fun to_waffle(fun_: PestoFun, pesto: Pesto): WaffleFun {
