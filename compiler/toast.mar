@@ -31,7 +31,7 @@ enum ToastType {
 }
 struct ToastTypeCall { name: StringAndSrc, args: Slice[ToastType] }
 struct ToastTypeField { name: StringAndSrc, type: ToastType }
-struct ToastTypeVariant { name: StringAndSrc, payloads: Slice[ToastType] }
+struct ToastTypeVariant { name: StringAndSrc, type: ToastType }
 struct ToastTypeLambda { args: Slice[ToastType], return_type: &ToastType }
 
 struct ToastFun {
@@ -46,7 +46,7 @@ enum ToastExpr {
   string: StringAndSrc,
   struct_: ToastStruct,
   member: ToastMember,
-  symbol: StringAndSrc,
+  enum_: ToastEnum,
   switch_: ToastSwitch,
   name: StringAndSrc,
   lambda: ToastLambda,
@@ -55,13 +55,14 @@ enum ToastExpr {
   body: Slice[ToastExpr],
 }
 struct ToastStruct { ampersand: StringAndSrc, fields: Slice[ToastField] }
+struct ToastEnum { pipe: StringAndSrc, name: StringAndSrc, value: &ToastExpr }
 struct ToastField { name: StringAndSrc, value: ToastExpr }
 struct ToastMember { of: &ToastExpr, name: StringAndSrc }
 struct ToastSwitch {
   condition: &ToastExpr, percent: StringAndSrc, cases: Slice[ToastCase]
 }
 struct ToastCase {
-  symbol: StringAndSrc, payloads: Slice[StringAndSrc], body: ToastExpr
+  symbol: StringAndSrc, payload: Maybe[StringAndSrc], body: ToastExpr
 }
 struct ToastLambda {
   backslash: StringAndSrc, params: Slice[ToastParam], body: &ToastExpr
@@ -164,7 +165,6 @@ fun write[W](writer: W, expr: ToastExpr, indentation: Indentation) {
     writer.write(member.of.*, indentation)
     writer."\n{indentation}.{member.name.string}"
   }
-  case symbol(symbol) writer."{symbol.string}"
   case switch_(switch_) {
     writer.write(switch_.condition.*, indentation)
     var is_first = true
@@ -208,7 +208,7 @@ fun src(expr: ToastExpr): Src {
         struct_.ampersand.src
   }
   case member(member) member.of.src() ... member.name.src
-  case symbol(symbol) symbol.src
+  case enum_(enum_) enum_.pipe.src ... enum_.value.src()
   case switch_(switch_) {
     switch_.percent.src ...
       if switch_.cases.last_maybe() is some(case_) then

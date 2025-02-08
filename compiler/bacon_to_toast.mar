@@ -109,6 +109,13 @@ fun parse_identifier(parser: &LineParser): Maybe[StringAndSrc] {
   some(identifier @ parser.src_of(start..end))
 }
 
+| Parses a non-uppercase identifier (also allows punctuation).
+fun parse_name(parser: &LineParser): Maybe[StringAndSrc] {
+  parser.consume_whitespace()
+  not(parser.current().is_upper()) or return none[StringAndSrc]()
+  parser.parse_identifier()
+}
+
 | Parsing Types  
 |
 | Plum has structural typing. Even though you usually don't think about it that
@@ -184,10 +191,52 @@ fun parse_lambda_type(parser: &LineParser): Result[Maybe[ToastType], Error] {
   }))
 }
 
+fun parse_struct_type(parser: &LineParser): Result[Maybe[ToastType], Error] {
+  parser.consume("&") or return no_match[ToastType]()
+
+  var fields = list[ToastTypeField]()
+  loop {
+    var name = parser.&.parse_name() or break {}
+
+    parser.&.consume(":") or
+      return bad_input[ToastType](error(
+        "Expected colon after field name.", parser.src_of_rest()))
+
+    var type = parser.&.parse_type_atom()? or
+      return bad_input[ToastType](error(
+        "Expected type of field.", parser.src_of_rest()))
+
+    fields.&.push(ToastTypeField { name, type })
+  }
+  parsed(ToastType.struct_(fields.to_slice()))
+}
+
+fun parse_enum_type(parser: &LineParser): Result[Maybe[ToastType], Error] {
+  parser.consume("|") or return no_match[ToastType]()
+
+  var variants = list[ToastTypeVariant]()
+  loop {
+    var name = parser.&.parse_name() or break {}
+
+    var has_explicit_type = parser.&.consume(":") is some
+
+    var type = if has_explicit_type then {
+      parser.&.parse_type_atom()? or
+        return bad_input[ToastType](error(
+          "Expected type of variant.", parser.src_of_rest()))
+    } else ToastType.struct_(empty_slice[ToastTypeField]())
+
+    variants.&.push(ToastTypeVariant { name, type })
+  }
+  parsed(ToastType.enum_(variants.to_slice()))
+}
+
 | Parses a type that may contain whitespace.
 fun parse_type_expr(parser: &LineParser): Result[Maybe[ToastType], Error] {
   if parser.parse_lambda_type()? is some(type) then return parsed(type)
-  if parser.parse_symbol() is some(name) then {
+  if parser.parse_struct_type()? is some(type) then return parsed(type)
+  if parser.parse_enum_type()? is some(type) then return parsed(type)
+  if parser.parse_type_name() is some(name) then {
     var args = list[ToastType]()
     loop args.&.push(parser.parse_type_atom()? or break)
     return parsed(ToastType.call(ToastTypeCall { name, args = args.to_slice() }))
@@ -239,21 +288,30 @@ fun parse_enum_type(bacon: Bacon): Result[Maybe[ToastType], Error] {
   for child in bacon.children do {
     var parser = parser(child.line, child.src)
 
-    var name = parser.&.parse_symbol() or
+    var name = parser.&.parse_name() or
       return bad_input[ToastType](error(
         "Expected variant name.", parser.src_of_rest()))
 
-    var payloads =
+    var has_explicit_type = parser.&.consume(":") is some
+
+    var type = if has_explicit_type then {
       if child.children.is_empty() then {
-        var payloads = parser.&.parse_type_atoms()?
+        var type = parser.&.parse_type_expr()? or
+          return bad_input[ToastType](error(
+            "Expected type of variant.", parser.src_of_rest()))
         parser.&.ensure_is_at_end()?
-        payloads
+        type
       } else {
         parser.&.ensure_is_at_end()?
-        child.children.parse_types()?
+        var children = child.children.parse_types()?
+        children.len == 1 or
+          return bad_input[ToastType](error(
+            "Variant can only have one type.", parser.src_of_rest()))
+        children.get(0)
       }
+    } else ToastType.struct_(empty_slice[ToastTypeField]())
 
-    variants.&.push(ToastTypeVariant { name, payloads })
+    variants.&.push(ToastTypeVariant { name, type })
   }
 
   parsed(ToastType.enum_(variants.to_slice()))
@@ -290,20 +348,6 @@ fun parse_types(bacons: Slice[Bacon]): Result[Slice[ToastType], Error] {
 | Parsing Values  
 |
 | With types handled above, this part parses expressions on the value level.
-
-| Parses a non-uppercase identifier (also allows punctuation).
-fun parse_name(parser: &LineParser): Maybe[StringAndSrc] {
-  parser.consume_whitespace()
-  not(parser.current().is_upper()) or return none[StringAndSrc]()
-  parser.parse_identifier()
-}
-
-| Parses an uppercase identifier.
-fun parse_symbol(parser: &LineParser): Maybe[StringAndSrc] {
-  parser.consume_whitespace()
-  parser.current().is_upper() or return none[StringAndSrc]()
-  parser.parse_identifier()
-}
 
 fun parse_int(parser: &LineParser): Maybe[IntAndSrc] {
   parser.consume_whitespace()
@@ -354,12 +398,55 @@ fun parse_atom(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
     else if parser.parse_int()     is some(int)    then ToastExpr.int(int)
     else if parser.parse_string()? is some(string) then ToastExpr.string(string)
     else if parser.parse_name()    is some(name)   then ToastExpr.name(name)
-    else if parser.parse_symbol()  is some(symbol) then ToastExpr.symbol(symbol)
     else return no_match[ToastExpr]()
 
   loop expr = parser.parse_suffix_member(expr)? or break
 
   parsed(expr)
+}
+
+fun parse_struct(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
+  var ampersand = parser.consume("&") or return no_match[ToastExpr]()
+  var fields = list[ToastField]()
+  loop {
+    var name = parser.&.parse_name() or break {}
+
+    parser.&.consume(":") or
+      return bad_input[ToastExpr](error(
+        "Expected colon after field name.", parser.src_of_rest()))
+
+    var value = parser.&.parse_atom()? or
+      return bad_input[ToastExpr](error(
+        "Expected value of field.", parser.src_of_rest()))
+
+    fields.&.push(ToastField { name, value })
+  }
+
+  parsed(ToastExpr.struct_(ToastStruct {
+    ampersand, fields = fields.to_slice()
+  }))
+}
+
+fun parse_enum(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
+  var pipe = parser.consume("|") or return no_match[ToastExpr]()
+  var name = parser.&.parse_name() or
+    return bad_input[ToastExpr](error(
+      "Expected name of variant.", parser.src_of_rest()))
+  var value =
+    if parser.&.consume(":") is some then {
+      parser.&.parse_atom()? or
+        return bad_input[ToastExpr](error(
+          "Expected value of variant.", parser.src_of_rest()))
+    } else {
+      ToastExpr.struct_(ToastStruct {
+        ampersand = "&" @ pipe.src,
+        fields = empty_slice[ToastField](),
+      })
+    }
+
+  parsed(ToastExpr.enum_(ToastEnum {
+    pipe, name, value = value.put_on_heap()
+  }))
 }
 
 fun parse_suffix_member(
@@ -375,7 +462,9 @@ fun parse_suffix_member(
 | Parses an expression that may contain whitespace but doesn't contain pipes
 | (except in parentheses).
 fun parse_unpiped_expr(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
-  var expr = parser.parse_atom()? or return no_match[ToastExpr]()
+  var expr = parser.parse_atom()? or
+    parser.parse_struct()? or
+    parser.parse_enum()? or return no_match[ToastExpr]()
 
   var args = list[ToastExpr]()
   loop args.&.push(parser.parse_atom()? or break)
@@ -456,6 +545,50 @@ fun parse_struct(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
   }))
 }
 
+fun parse_enum(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
+  bacon.line == "|" or return no_match[ToastExpr]()
+  var pipe = "|" @ bacon.src
+
+  bacon.children.len == 1 or
+    return bad_input[ToastExpr](error(
+      "Enum literals can only have one variant.", bacon.src))
+  var child = bacon.children.get(0)
+
+  var parser = parser(child.line, child.src)
+  var name = parser.&.parse_name() or
+    return bad_input[ToastExpr](error(
+      "Expected name of variant.", parser.src_of_rest()))
+  var value =
+    if parser.&.consume(":") is some then {
+      if child.children.is_empty() then {
+        parser.&.parse_expr()? or
+          return bad_input[ToastExpr](error(
+            "Expected value of variant.", parser.src_of_rest()))
+      } else {
+        child.children.len == 1 or
+          return bad_input[ToastExpr](error(
+            "Expected variant can only have one value.", parser.src_of_rest()))
+        var grandchild = child.children.get(0)
+        grandchild.parse_expr()? or
+          return bad_input[ToastExpr](error(
+            "Expected value of variant.", parser.src_of_rest()))
+      }
+    } else {
+      child.children.is_empty() or
+          return bad_input[ToastExpr](error(
+            "Expected variant to not have a value.", parser.src_of_rest()))
+      ToastExpr.struct_(ToastStruct {
+        ampersand = "&" @ bacon.src,
+        fields = empty_slice[ToastField](),
+      })
+    }
+  
+
+  parsed(ToastExpr.enum_(ToastEnum {
+    pipe, name, value = value.put_on_heap()
+  }))
+}
+
 fun parse_lambda(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
   var parser = parser(bacon.line, bacon.src)
 
@@ -515,24 +648,29 @@ fun parse_switch(
   for case_ in bacon.children do {
     var parser = parser(case_.line, case_.src)
 
-    var symbol = parser.&.parse_symbol() or
+    var symbol = parser.&.parse_name() or
       return bad_input[ToastExpr](error(
-        "Expected the symbol of a case.", parser.src_of_rest()))
+        "Expected the name of an enum variant.", parser.src_of_rest()))
 
-    var payloads = list[StringAndSrc]()
-    loop payloads.&.push(parser.&.parse_name() or break)
-    var payloads = payloads.to_slice()
+    var payload =
+      if parser.&.consume(":") is some then {
+        var name = parser.&.parse_name() or
+          return bad_input[ToastExpr](error(
+            "Expected a name for the enum payload.", parser.src_of_rest()))
+        some(name)
+      } else
+        none[StringAndSrc]()
 
-    var colon = parser.&.consume(":") or
+    var arrow = parser.&.consume("->") or
       return bad_input[ToastExpr](error(
-        "Expected a colon.", parser.src_of_rest()))
+        "Expected an arrow.", parser.src_of_rest()))
 
     var body =
       if parser.cursor == parser.input.len then {
         var children = case_.children.parse_exprs()?
         if children.is_empty() then
           return bad_input[ToastExpr](error(
-            "Expected the body of the case.", colon.src))
+            "Expected the body of the case.", arrow.src))
         ToastExpr.body(children)
       } else {
         var expr = parser.&.parse_expr()? or
@@ -544,7 +682,7 @@ fun parse_switch(
             "A case is neither single- nor multi-line.", parser.src_of_rest()))
         expr
       }
-    cases.&.push(ToastCase { symbol, payloads, body })
+    cases.&.push(ToastCase { symbol, payload, body })
   }
 
   parsed(ToastExpr.switch_(ToastSwitch {
@@ -554,6 +692,7 @@ fun parse_switch(
 
 fun parse_expr(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
   if bacon.parse_struct()? is some(struct_) then return parsed(struct_)
+  if bacon.parse_enum()? is some(enum_) then return parsed(enum_)
   if bacon.parse_lambda()? is some(lambda)  then return parsed(lambda)
 
   var parser = parser(bacon.line, bacon.src)
@@ -739,10 +878,10 @@ fun parse_export(bacon: Bacon): Result[Maybe[ToastExport], Error] {
 fun parse_type_def(bacon: Bacon): Result[Maybe[ToastTypeDef], Error] {
   var parser = parser(bacon.line, bacon.src)
 
-  var name = parser.&.parse_symbol() or return no_match[ToastTypeDef]()
+  var name = parser.&.parse_type_name() or return no_match[ToastTypeDef]()
 
   var params = list[StringAndSrc]()
-  loop params.&.push(parser.&.parse_name() or break)
+  loop params.&.push(parser.&.parse_type_variable() or break)
 
   parser.&.consume("=") or
     return bad_input[ToastTypeDef](error(

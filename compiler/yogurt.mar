@@ -18,11 +18,11 @@ enum YogurtValueKind {
   int: Int,
   string: String,
   struct_: Map[String, YogurtValue],
-  variant: YogurtVariantValue,
+  enum_: YogurtEnumValue,
   lambda: YogurtLambdaValue,
   type: PlumType,
 }
-struct YogurtVariantValue { symbol: String, payloads: Slice[YogurtValue] }
+struct YogurtEnumValue { symbol: String, payload: &YogurtValue }
 struct YogurtLambdaValue { function: String, captures: Slice[YogurtValue] }
 
 enum YogurtOp {
@@ -31,7 +31,7 @@ enum YogurtOp {
   comptime: YogurtValue,
   struct_: Map[String, YogurtId],
   member: YogurtMember,
-  variant: YogurtVariant,
+  enum_: YogurtEnum,
   switch_: YogurtSwitch,
   lambda: YogurtLambda,
   lambda_call: YogurtLambdaCall,
@@ -40,7 +40,7 @@ enum YogurtOp {
 }
 struct YogurtMember { of: YogurtId, name: String }
 struct YogurtSwitch { condition: YogurtId, cases: Map[String, YogurtBody] }
-struct YogurtVariant { symbol: String, payloads: Slice[YogurtId] }
+struct YogurtEnum { symbol: String, payload: YogurtId }
 struct YogurtLambda { function: String, captures: Slice[YogurtId] }
 struct YogurtLambdaCall { lambda: YogurtId, args: Slice[YogurtId] }
 struct YogurtCall { function: String, args: Slice[YogurtId] }
@@ -53,6 +53,8 @@ fun $(kind: YogurtValueKind, type: PlumType): _ { YogurtValue { kind, type } }
 fun $(op: YogurtOp, type: PlumType): _ { YogurtExpr { op, type } }
 fun to_expr(value: YogurtValue): _ { YogurtOp.comptime(value) $ value.type }
 
+var yogurt_value_nothing =
+  YogurtValueKind.struct_(map[String, YogurtValue]()) $ type_nothing
 fun yogurt_value_int(int: Int): _ { YogurtValueKind.int(int) $ type_int }
 fun yogurt_value_string(string: String): YogurtValue {
   YogurtValueKind.string(string) $ type_string
@@ -73,31 +75,22 @@ fun yogurt_value_struct(
 fun yogurt_value_type(type: PlumType): YogurtValue {
   YogurtValueKind.type(type) $ type_type
 }
-fun yogurt_value_symbol(symbol: String): YogurtValue {
-  YogurtValueKind.variant(YogurtVariantValue {
-    symbol, payloads = empty_slice[YogurtValue]()
-  }) $ PlumType.enum_(map(symbol -> empty_slice[PlumType]()))
-}
-fun yogurt_value_variant(symbol: String, payloads: Slice[YogurtValue]): YogurtValue {
-  var payload_types = list[PlumType]()
-  for payload in payloads do payload_types.&.push(payload.type)
-  YogurtValueKind.variant(YogurtVariantValue { symbol, payloads })
-    $ PlumType.enum_(map(symbol -> payload_types.to_slice()))
+fun yogurt_value_enum(symbol: String, payload: YogurtValue): YogurtValue {
+  YogurtValueKind.enum_(YogurtEnumValue {
+    symbol, payload = payload.put_on_heap()
+  }) $ PlumType.enum_(map(symbol -> payload.type))
 }
 fun yogurt_value_list(items: Slice[YogurtValue], item_type: PlumType): YogurtValue {
-  println("building comptime list of items: {items}")
-  YogurtValueKind.variant(
-    if items.get_maybe(0) is some(item) then
-      YogurtVariantValue {
-        symbol = "More",
-        payloads = list(
-          item,
-          yogurt_value_list(items.subslice(1..items.len), item_type)
-        ).to_slice()
-      }
-    else
-      YogurtVariantValue { symbol = "Empty", payloads = empty_slice[YogurtValue]() }
-  ) $ type_list(item_type)
+  if items.get_maybe(0) is some(item) then
+    yogurt_value_enum(
+      "more",
+      yogurt_value_struct(map(
+        "item" -> item,
+        "rest" -> yogurt_value_list(items.subslice(1..items.len), item_type)
+      ))
+    )
+  else
+    yogurt_value_enum("empty", yogurt_value_nothing)
 }
 
 fun get(fun_: YogurtFun, id: YogurtId): YogurtExpr { fun_.exprs.get(id.index) }
@@ -197,11 +190,7 @@ fun write[W](writer: W, value: YogurtValue) {
     for field in struct_ do writer." {field.key}: {field.value}"
     writer.")"
   }
-  case variant(variant) {
-    writer."({variant.symbol}"
-    for payload in variant.payloads do writer." {payload}"
-    writer.")"
-  }
+  case enum_(enum_) writer."(| {enum_.symbol} {enum_.payload})"
   case lambda(lambda) {
     writer."\\ [capturing"
     for captured in lambda.captures do writer." {captured}"

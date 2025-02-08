@@ -26,27 +26,28 @@ enum PlumType {
   primitive: String,
   never,
   struct_: Map[String, PlumType],
-  enum_: Map[String, Slice[PlumType]],
+  enum_: Map[String, PlumType],
   lambda: LambdaType,
   recursive: Int, | how many levels above this should we continue?
 }
 struct LambdaType { args: Slice[PlumType], return_type: &PlumType }
 
+var type_nothing = PlumType.struct_(map[String, PlumType]())
 var type_int = PlumType.primitive("Int")
 var type_string = PlumType.primitive("String")
 var type_type = PlumType.primitive("Type")
 var type_never = PlumType.never
 var type_ordering = PlumType.enum_(map(
-  "Less"    -> empty_slice[PlumType](),
-  "Equal"   -> empty_slice[PlumType](),
-  "Greater" -> empty_slice[PlumType](),
+  "Less"    -> type_nothing,
+  "Equal"   -> type_nothing,
+  "Greater" -> type_nothing,
 ))
 var type_type_info = PlumType.enum_(map(
-  "Int"    -> empty_slice[PlumType](),
-  "String" -> empty_slice[PlumType](),
-  "Struct" -> list(type_list(type_field)).to_slice(),
-  "Enum"   -> list(type_list(type_variant)).to_slice(),
-  "Type"   -> empty_slice[PlumType](),
+  "Int"    -> type_nothing,
+  "String" -> type_nothing,
+  "Struct" -> type_list(type_field),
+  "Enum"   -> type_list(type_variant),
+  "Type"   -> type_nothing,
 ))
 var type_field = PlumType.struct_(map(
   "name" -> type_string,
@@ -58,8 +59,11 @@ var type_variant = PlumType.struct_(map(
 ))
 fun type_list(item: PlumType): PlumType {
   PlumType.enum_(map(
-    "Empty" -> empty_slice[PlumType](),
-    "More"  -> list(item, PlumType.recursive(1)).to_slice(),
+    "Empty" -> type_nothing,
+    "More"  -> PlumType.struct_(map(
+      "item" -> item,
+      "rest" -> PlumType.recursive(2),
+    )),
   ))
 }
 
@@ -99,15 +103,8 @@ fun write[W](writer: W, type: PlumType) {
     writer.")"
   }
   case enum_(variants) {
-    writer."(| "
-    var first = true
-    for variant in variants do {
-      if first then first = false else writer." "
-      if variant.value.is_not_empty() then writer."("
-      writer."{variant.key}"
-      for arg in variant.value do writer." {arg}"
-      if variant.value.is_not_empty() then writer.")"
-    }
+    writer."(|"
+    for variant in variants do writer." {variant.key}: {variant.value}"
     writer.")"
   }
   case lambda(lambda) {
@@ -283,12 +280,9 @@ fun specialize(
     PlumType.struct_(fields)
   }
   case enum_(enum_) {
-    var variants = map[String, Slice[PlumType]]()
-    for variant in enum_ do {
-      var args = list[PlumType]()
-      for arg in variant.value do args.&.push(arg.specialize(substitutions))
-      variants.&.put(variant.key, args.to_slice())
-    }
+    var variants = map[String, PlumType]()
+    for variant in enum_ do
+      variants.&.put(variant.key, variant.value.specialize(substitutions))
     PlumType.enum_(variants)
   }
   case lambda(lambda) {
@@ -367,37 +361,24 @@ fun extend_one_level(type: PlumType): PlumType {
     new_fields
   })
   case enum_(variants) PlumType.enum_({
-    var new_variants = map[String, Slice[PlumType]]()
+    var new_variants = map[String, PlumType]()
     for variant in variants do
       new_variants.&.put(variant.key, {
-        var args = list[PlumType]()
-        for arg in variant.value.iter().enumerate() do
-          args.&.push({
-            | Type that is the original enum except the variant that we navigate into.
-            | This variant has been replaced with a recursive type.
-            var extension = {
-              var ext_variants = map[String, Slice[PlumType]]()
-              for ext_variant in variants do
-                ext_variants.&.put(
-                  ext_variant.key,
-                  if ext_variant.key == variant.key then {
-                    var ext_args = list[PlumType]()
-                    for ext_arg in variant.value.iter().enumerate() do
-                      ext_args.&.push(
-                        if arg.index == ext_arg.index then
-                          PlumType.recursive(-1)
-                        else
-                          ext_arg.item
-                      )
-                    ext_args.to_slice()
-                  }
-                  else ext_variant.value
-                )
-              PlumType.enum_(ext_variants)
-            }
-            arg.item.extend_recursive_types(1, extension)
-          })
-        args.to_slice()
+        | Type that is the original enum except the variant that we navigate into.
+        | This variant has been replaced with a recursive type.
+        var extension = {
+          var ext_variants = map[String, PlumType]()
+          for ext_variant in variants do
+            ext_variants.&.put(
+              ext_variant.key,
+              if ext_variant.key == variant.key then
+                PlumType.recursive(-1)
+              else
+                ext_variant.value
+            )
+          PlumType.enum_(ext_variants)
+        }
+        variant.value.extend_recursive_types(1, extension)
       })
     new_variants
   })
@@ -427,14 +408,11 @@ fun extend_recursive_types(
     PlumType.struct_(new_fields)
   }
   case enum_(variants) {
-    var new_variants = map[String, Slice[PlumType]]()
+    var new_variants = map[String, PlumType]()
     for variant in variants do
-      new_variants.&.put(variant.key, {
-        var args = list[PlumType]()
-        for arg in variant.value do
-          args.&.push(arg.extend_recursive_types(level + 1, extension))
-        args.to_slice()
-      })
+      new_variants.&.put(
+        variant.key, variant.value.extend_recursive_types(level + 1, extension)
+      )
     PlumType.enum_(new_variants)
   }
   case lambda(lambda)
@@ -466,14 +444,11 @@ fun replace_recursive_level(type: PlumType, from: Int, to: Int): PlumType {
     PlumType.struct_(new_fields)
   }
   case enum_(variants) {
-    var new_variants = map[String, Slice[PlumType]]()
+    var new_variants = map[String, PlumType]()
     for variant in variants do
-      new_variants.&.put(variant.key, {
-        var args = list[PlumType]()
-        for arg in variant.value do
-          args.&.push(arg.replace_recursive_level(from, to))
-        args.to_slice()
-      })
+      new_variants.&.put(
+        variant.key, variant.value.replace_recursive_level(from, to)
+      )
     PlumType.enum_(new_variants)
   }
   case lambda(lambda)
@@ -545,11 +520,9 @@ fun is_equivalent_logic(
     a_variants.size == b_variants.size or return false
 
     for a_variant in a_variants do {
-      var a_args = a_variant.value
-      var b_args = b_variants.get_maybe(a_variant.key) or return false
-      a_args.len == b_args.len or return false
-      for both in zip(a_args.iter(), b_args.iter()) do
-        is_equivalent(both.a, both.b, currently_comparing) or return false
+      var a_arg = a_variant.value
+      var b_arg = b_variants.get_maybe(a_variant.key) or return false
+      is_equivalent(a_arg, b_arg, currently_comparing) or return false
     }
     true
   }
@@ -650,20 +623,16 @@ fun union_logic(
   }
   case enum_(a_variants) {
     var b_variants = b.enum_ or return none[PlumType]()
-    var variants = map[String, Slice[PlumType]]()
+    var variants = map[String, PlumType]()
     for variant in a_variants do variants.&.put(variant.key, variant.value)
     for variant in b_variants do {
       var key = variant.key
-      var b_args = variant.value
+      var b_arg = variant.value
       variants.&.put(key, {
-        if variants.get_maybe(key) is some(a_args) then {
-          a_args.len == b_args.len or return none[PlumType]()
-          var args = list[PlumType]()
-          for both in zip(a_args.iter(), b_args.iter()) do
-            args.&.push(union(both.a, both.b, currently_unioning) or
-              return none[PlumType]())
-          args.to_slice()
-        } else b_args
+        if variants.get_maybe(key) is some(a_arg) then
+          union(a_arg, b_arg, currently_unioning) or return none[PlumType]()
+        else
+          b_arg
       })
     }
     some(PlumType.enum_(variants))

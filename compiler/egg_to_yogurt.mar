@@ -341,7 +341,7 @@ fun run(builtin: Builtin, args: Slice[YogurtValue]): ComptimeResult {
         case less "Less"
         case equal "Equal"
         case greater "Greater"
-      yogurt_value_symbol(symbol).comptime_cast(type_ordering)
+      yogurt_value_enum(symbol, yogurt_value_nothing).comptime_cast(type_ordering)
     }
     case concat_strings {
       var a = args.get(0).kind.string.unwrap()
@@ -360,10 +360,10 @@ fun run(builtin: Builtin, args: Slice[YogurtValue]): ComptimeResult {
       var type = args.get(0).kind.type.unwrap()
       {
         switch type.extend_one_level()
-        case primitive(name) yogurt_value_symbol(name)
-        case never yogurt_value_symbol("Never")
+        case primitive(name) yogurt_value_enum(name, yogurt_value_nothing)
+        case never yogurt_value_enum("never", yogurt_value_nothing)
         case struct_(struct_)
-          yogurt_value_variant("Struct", list(yogurt_value_list({
+          yogurt_value_enum("struct", yogurt_value_list({
             var fields = list[YogurtValue]()
             for field in struct_ do {
               fields.&.push(yogurt_value_struct(map(
@@ -372,23 +372,18 @@ fun run(builtin: Builtin, args: Slice[YogurtValue]): ComptimeResult {
               )))
             }
             fields.to_slice()
-          }, type_field)).to_slice())
+          }, type_field))
         case enum_(enum_)
-          yogurt_value_variant("Enum", list(yogurt_value_list({
+          yogurt_value_enum("enum", yogurt_value_list({
             var variants = list[YogurtValue]()
             for variant in enum_ do {
               variants.&.push(yogurt_value_struct(map(
                 "name" -> yogurt_value_string(variant.key),
-                "args" -> yogurt_value_list({
-                  var args = list[YogurtValue]()
-                  for arg in variant.value do
-                    args.&.push(yogurt_value_type(arg))
-                  args.to_slice()
-                }, type_type),
+                "type" -> yogurt_value_type(variant.value),
               )))
             }
             variants.to_slice()
-          }, type_variant)).to_slice())
+          }, type_variant))
         case lambda todo()
         case recursive unreachable()
       }.comptime_cast(type_type_info)
@@ -412,17 +407,13 @@ fun comptime_cast(value: YogurtValue, target: PlumType): YogurtValue {
       fields
     }) $ target
   }
-  case variant(variant) {
-    YogurtValueKind.variant(YogurtVariantValue {
-      symbol = variant.symbol,
-      payloads = {
-        var payloads = list[YogurtValue]()
-        var payload_types =
-          target.extend_one_level().enum_.unwrap().get(variant.symbol)
-        for both in zip(variant.payloads.iter(), payload_types.iter()) do
-          payloads.&.push(both.a.comptime_cast(both.b))
-        payloads.to_slice()
-      }
+  case enum_(enum_) {
+    YogurtValueKind.enum_(YogurtEnumValue {
+      symbol = enum_.symbol,
+      payload =
+        enum_.payload.comptime_cast(
+          target.extend_one_level().enum_.unwrap().get(enum_.symbol)
+        ).put_on_heap()
     }) $ target
   }
   case lambda todo("comptime cast lambdas")
@@ -532,7 +523,6 @@ fun compile(
     case param unreachable()
     case int(int) builder.push(yogurt_value_int(int).to_expr())
     case string(string) builder.push(yogurt_value_string(string).to_expr())
-    case symbol(symbol) builder.push(yogurt_value_symbol(symbol).to_expr())
     case struct_(struct_) {
       var fields = map[String, YogurtId]()
       var field_types = map[String, PlumType]()
@@ -579,6 +569,23 @@ fun compile(
         else YogurtOp.member(YogurtMember { of, name = member.name })
       } $ type)
     }
+    case enum_(enum_) {
+      var symbol = enum_.symbol
+      var payload = compiler.lookup(enum_.payload)
+      var payload_type = builder.get(payload).type
+      var type = PlumType.enum_(map(enum_.symbol -> payload_type))
+
+      var is_comptime = builder.get(payload).op is comptime
+
+      builder.push(
+        if is_comptime then
+          yogurt_value_enum(
+            symbol, builder.get(payload).op.comptime.unwrap()
+          ).comptime_cast(type).to_expr()
+        else
+          YogurtOp.enum_(YogurtEnum { symbol, payload }) $ type
+      )
+    }
     case switch_(switch_) {
       var condition = compiler.lookup(switch_.condition)
       var condition_expr = builder.get(condition)
@@ -588,8 +595,7 @@ fun compile(
           "Switched on non-enum: {condition_type}", expr.src
         ))
 
-      | Make sure all variants are handled, that no extra variants are handled,
-      | and that the number of parameters of each case match the variant args.
+      | Make sure all variants are handled, that no extra variants are handled.
       for variant in condition_variants do
         switch_.cases.contains(variant.key) or
           return error[YogurtId, Error](error(
@@ -602,30 +608,18 @@ fun compile(
             "you switch on {condition_type} and you try to handle the non-existent {case_.key} variant",
             expr.src
           ))
-      for case_ in switch_.cases do {
-        var variant_args = condition_variants.get(case_.key)
-        var case_params = case_.value.params
-        variant_args.len == case_params.len or
-          return error[YogurtId, Error](error(
-            "{case_.key} has {variant_args.len} args, but your case binds {case_params.len}",
-            expr.src
-          ))
-      }
 
       if condition_expr.op is comptime(condition_value) then {
         | If the condition is comptime-known, then we only compile the
         | corresponding branch.
-        var actual_variant = condition_value.kind.variant.unwrap()
+        var actual_variant = condition_value.kind.enum_.unwrap()
         var case_ = switch_.cases.get(actual_variant.symbol)
 
-        var params = list[YogurtId]()
-        for payload in actual_variant.payloads do
-          params.&.push(builder.push(payload.to_expr()))
-        var params = params.to_slice()
-        for both in zip(case_.params.iter(), params.iter()) do
-          compiler.&.add_mapping(both.a, both.b)
+        var payload = builder.push(actual_variant.payload.to_expr())
+        if case_.params.is_not_empty() then
+          compiler.add_mapping(case_.params.get(0), payload)
 
-        var case_body = case_.compile(params, builder, compiler)?
+        var case_body = case_.compile(list(payload).to_slice(), builder, compiler)?
 
         for id in case_body.params do body.push(id)
         for id in case_body.exprs do body.push(id)
@@ -640,27 +634,11 @@ fun compile(
         var case_types = list[PlumType]()
         for variant in condition_variants do {
           var case_ = switch_.cases.get(variant.key)
+          var param = builder.push(YogurtOp.param $ variant.value)
+          if case_.params.is_not_empty() then
+            compiler.&.add_mapping(case_.params.get(0), param)
 
-          var params = none[Slice[YogurtId]]()
-          if condition_expr.op is comptime(condition_value) then {
-            var actual_variant = condition_value.kind.variant.unwrap()
-            if actual_variant.symbol == variant.key then {
-              var ids = list[YogurtId]()
-              for payload in actual_variant.payloads do
-                ids.&.push(builder.push(payload.to_expr()))
-              params = some(ids.to_slice())
-            }
-          }
-          var params = params or {
-            var ids = list[YogurtId]()
-            for type in variant.value do
-              ids.&.push(builder.push(YogurtOp.param $ type))
-            ids.to_slice()
-          }
-          for both in zip(case_.params.iter(), params.iter()) do
-            compiler.&.add_mapping(both.a, both.b)
-
-          var body = case_.compile(params, builder, compiler)?
+          var body = case_.compile(list(param).to_slice(), builder, compiler)?
           cases.&.put(variant.key, body)
           case_types.&.push(builder.get(body.returns).type)
         }
@@ -677,14 +655,12 @@ fun compile(
             var old_body = case_.value
             var new_exprs = list[YogurtId]()
             for expr in old_body.exprs do new_exprs.&.push(expr)
-            var new_returns = builder.push({
-              if case_expr.op is comptime(value)
-              then YogurtOp.comptime(value.comptime_cast(common_type))
-              else YogurtOp.call(YogurtCall {
+            var new_returns = builder.push(
+              YogurtOp.call(YogurtCall {
                 function = compile_cast_fun(case_type, common_type, compiler.parent),
                 args = list(old_body.returns).to_slice()
-              })
-            } $ common_type)
+              }) $ common_type
+            )
             new_exprs.&.push(new_returns)
             cases.&.put(case_.key, YogurtBody {
               params = old_body.params,
@@ -694,14 +670,14 @@ fun compile(
           }
         }
 
-        if condition_expr.op is comptime(value) then {
-          var value = value.kind.variant.unwrap()
-          var variant = value.symbol
-          var case_body = cases.get(variant)
-          for id in case_body.params do body.push(id)
-          for id in case_body.exprs do body.push(id)
-          case_body.returns
-        } else
+        | if condition_expr.op is comptime(value) then {
+        |   var value = value.kind.enum_.unwrap()
+        |   var symbol = value.symbol
+        |   var case_body = cases.get(symbol)
+        |   for id in case_body.params do body.push(id)
+        |   for id in case_body.exprs do body.push(id)
+        |   case_body.returns
+        | } else
           builder.push(
             YogurtOp.switch_(YogurtSwitch { condition, cases }) $ common_type
           )
@@ -908,39 +884,6 @@ fun compile(
         )
       }
     }
-    case variant(variant) {
-      var symbol = variant.symbol
-
-      var payloads = list[YogurtId]()
-      var payload_types = list[PlumType]()
-      for payload in variant.payloads do {
-        var payload = compiler.lookup(payload)
-        var type = builder.get(payload).type
-        payloads.&.push(payload)
-        payload_types.&.push(type)
-      }
-      var payloads = payloads.to_slice()
-      var payload_types = payload_types.to_slice()
-      var type = PlumType.enum_(map(symbol -> payload_types))
-
-      var is_comptime = true
-      for payload in payloads do
-        if not(builder.get(payload).op is comptime) then is_comptime = false
-
-      builder.push({
-        if is_comptime
-        then YogurtOp.comptime(YogurtValueKind.variant(YogurtVariantValue {
-          symbol,
-          payloads = {
-            var comptime_payloads = list[YogurtValue]()
-            for payload in payloads do
-              comptime_payloads.&.push(builder.get(payload).op.comptime.unwrap())
-            comptime_payloads.to_slice()
-          }
-        }) $ type)
-        else YogurtOp.variant(YogurtVariant { symbol, payloads })
-      } $ type)
-    }
   body.push(id)
   ok[YogurtId, Error](id)
 }
@@ -977,9 +920,7 @@ fun collect_captured(
   case struct_(struct_)
     for field in struct_ do field.value.collect_captured(ignore, captured)
   case member(member) member.of.collect_captured(ignore, captured)
-  case symbol {}
-  case variant(variant)
-    for payload in variant.payloads do payload.collect_captured(ignore, captured)
+  case enum_(enum_) enum_.payload.collect_captured(ignore, captured)
   case switch_(switch_) {
     switch_.condition.collect_captured(ignore, captured)
     for case_ in switch_.cases do
@@ -1186,40 +1127,30 @@ fun compile_cast_fun_body(
   case enum_(to_variants) {
     var cases = map[String, YogurtBody]()
     for entry in from.extend_one_level().enum_.unwrap() do {
-      var variant = entry.key
-      var from_payloads = entry.value
-      var to_payloads = to_variants.get(variant)
+      var symbol = entry.key
+      var from_payload_type = entry.value
+      var to_payload_type = to_variants.get(symbol)
 
       var case_builder = YogurtBodyBuilder {
         parent = builder.parent, body = list[YogurtId]()
       }
+      var from_payload = builder.parent.push(YogurtOp.param $ from_payload_type)
+      var to_payload = case_builder.&.push(YogurtOp.call(YogurtCall {
+        function = compile_cast_fun(from_payload_type, to_payload_type, compiler),
+        args = list(from_payload).to_slice(),
+      }) $ to_payload_type)
 
-      var from_payloads_ids = list[YogurtId]()
-      for payload in from_payloads do
-        from_payloads_ids.&.push(builder.parent.push(YogurtOp.param $ payload))
-      var to_payloads_ids = list[YogurtId]()
-      for both in zip(zip(from_payloads.iter(), to_payloads.iter()), from_payloads_ids.iter()) do {
-        var from_payload_type = both.a.a
-        var to_payload_type = both.a.b
-        var from_payload_id = both.b
-
-        to_payloads_ids.&.push(case_builder.&.push(YogurtOp.call(YogurtCall {
-          function = compile_cast_fun(from_payload_type, to_payload_type, compiler),
-          args = list(from_payload_id).to_slice(),
-        }) $ to_payload_type))
-      }
-
-      var cast = case_builder.&.push(YogurtOp.variant(YogurtVariant {
-        symbol = variant, payloads = to_payloads_ids.to_slice()
+      var cast = case_builder.&.push(YogurtOp.enum_(YogurtEnum {
+        symbol, payload = to_payload
       }) $ to)
 
       var body = YogurtBody {
-        params = from_payloads_ids.to_slice(),
+        params = list(from_payload).to_slice(),
         exprs = case_builder.body.to_slice(),
         returns = cast,
       }
 
-      cases.&.put(variant, body)
+      cases.&.put(symbol, body)
     }
     builder.push(YogurtOp.switch_(YogurtSwitch { condition = param, cases }) $ to)
   }

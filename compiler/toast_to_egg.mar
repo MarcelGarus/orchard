@@ -253,14 +253,13 @@ fun to_egg(
     ok[PlumType, Error](PlumType.struct_(fields))
   }
   case enum_(enum_) {
-    var variants = map[String, Slice[PlumType]]()
-    for variant in enum_ do {
-      var payloads = list[PlumType]()
-      for payload in variant.payloads do
-        payloads.&.push(payload.to_egg(in_scope, env, parent_calls, depth + 1)?)
-      | TODO: check for duplicates
-      variants.&.put(variant.name.string, payloads.to_slice())
-    }
+    var variants = map[String, PlumType]()
+    | TODO: check for duplicates
+    for variant in enum_ do
+      variants.&.put(
+        variant.name.string,
+        variant.type.to_egg(in_scope, env, parent_calls, depth + 1)?
+      )
     ok[PlumType, Error](PlumType.enum_(variants))
   }
   case lambda(lambda) {
@@ -334,14 +333,18 @@ fun to_egg(
         of, name = member.name.string
       }) @ member.name.src)
     }
-    case symbol(symbol) body.push(EggExprKind.symbol(symbol.string) @ symbol.src)
+    case enum_(enum_)
+      body.push(EggExprKind.enum_(EggEnum {
+        symbol = enum_.name.string,
+        payload = enum_.value.to_egg(body, visible)?
+      }) @ enum_.pipe.src)
     case switch_(switch_) {
       var condition = switch_.condition.to_egg(body, visible)?
       var cases = map[String, EggBody]()
       for case_ in switch_.cases do {
         var snapshot = visible.snapshot()
         var case_body = body.parent.egg_body_compiler().&
-        for payload in case_.payloads do
+        if case_.payload is some(payload) then
           visible.define(payload.string, case_body.push_param(payload.src))
         var returns = case_.body.to_egg(case_body, visible)?
         var case_body = case_body.finish(returns)
@@ -400,8 +403,6 @@ fun to_egg(
             EggExprKind.call(EggCall { name, candidates, args })
           }
         }
-        case symbol(symbol)
-          EggExprKind.variant(EggVariant { symbol = symbol.string, payloads = args })
         default {
           var lambda = call.function.to_egg(body, visible)?
           EggExprKind.lambda_call(EggLambdaCall { lambda, args })
