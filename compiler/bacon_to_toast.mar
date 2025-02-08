@@ -399,9 +399,6 @@ fun parse_atom(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
     else if parser.parse_string()? is some(string) then ToastExpr.string(string)
     else if parser.parse_name()    is some(name)   then ToastExpr.name(name)
     else return no_match[ToastExpr]()
-
-  loop expr = parser.parse_suffix_member(expr)? or break
-
   parsed(expr)
 }
 
@@ -449,19 +446,9 @@ fun parse_enum(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
   }))
 }
 
-fun parse_suffix_member(
-  parser: &LineParser, expr: ToastExpr
-): Result[Maybe[ToastExpr], Error] {
-  parser.consume(".") or return no_match[ToastExpr]()
-  var name = parser.parse_name() or
-    return bad_input[ToastExpr](error(
-      "Expected name of the field", parser.src_of_rest()))
-  parsed(ToastExpr.member(ToastMember { of = expr.put_on_heap(), name }))
-}
-
 | Parses an expression that may contain whitespace but doesn't contain pipes
 | (except in parentheses).
-fun parse_unpiped_expr(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
+fun parse_undotted_expr(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
   var expr = parser.parse_atom()? or
     parser.parse_struct()? or
     parser.parse_enum()? or return no_match[ToastExpr]()
@@ -478,9 +465,9 @@ fun parse_unpiped_expr(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
 
 | Parses an expression that may include whitespace and pipes.
 fun parse_expr(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
-  var expr = parser.parse_unpiped_expr()? or return no_match[ToastExpr]()
+  var expr = parser.parse_undotted_expr()? or return no_match[ToastExpr]()
 
-  loop expr = parser.parse_suffix_pipe(expr)? or break
+  loop expr = parser.parse_suffix_dot(expr)? or break
 
   var cursor_before = parser.cursor
   if parser.consume("=") is some(equal_sign) then {
@@ -495,14 +482,14 @@ fun parse_expr(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
   parsed(expr)
 }
 
-fun parse_suffix_pipe(
-  parser: &LineParser, expr: ToastExpr
+fun parse_suffix_dot(
+  parser: &LineParser, left: ToastExpr
 ): Result[Maybe[ToastExpr], Error] {
-  parser.consume("|") or return no_match[ToastExpr]()
-  var piped_into = parser.parse_unpiped_expr()? or
+  parser.consume(".") or return no_match[ToastExpr]()
+  var right = parser.parse_undotted_expr()? or
     return bad_input[ToastExpr](error(
       "Expected expression", parser.src_of_rest()))
-  parsed(piped_call(expr, piped_into))
+  parsed(dot(left, right))
 }
 
 fun parse_struct(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
@@ -719,23 +706,26 @@ fun parse_expr(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
   parsed(expr)
 }
 
-fun parse_pipe(
+fun parse_dot(
   bacon: Bacon, previous: ToastExpr
 ): Result[Maybe[ToastExpr], Error] {
-  bacon.line == "|" or return no_match[ToastExpr]()
+  var parser = parser(bacon.line, bacon.src)
+  var dot = parser.&.consume(".") or return no_match[ToastExpr]()
 
-  var children = bacon.children.parse_exprs()?
-  children.len == 1 or
-    return bad_input[ToastExpr](error(
-      "Pipe with multiple children",
-      bacon.src.with_range(bacon.src.range.start..{bacon.src.range.start + 1})
-    ))
-  var piped_into = children.get(0)
-  parsed(piped_call(previous, piped_into))
+  var right = Bacon {
+    line = bacon.line.substr(1..bacon.line.len),
+    children = bacon.children,
+    src = bacon.src,
+  }.parse_expr()? or
+      return bad_input[ToastExpr](error(
+        "Dot with nothing on the right.", dot.src
+      ))
+
+  parsed(dot(previous, right))
 }
 
-fun piped_call(left: ToastExpr, piped_into: ToastExpr): ToastExpr {
-  if piped_into is call(call) then {
+fun dot(left: ToastExpr, right: ToastExpr): ToastExpr {
+  if right is call(call) then {
     var args = list(left)
     for arg in call.args do args.&.push(arg)
     ToastExpr.call(ToastCall {
@@ -743,7 +733,7 @@ fun piped_call(left: ToastExpr, piped_into: ToastExpr): ToastExpr {
     })
   } else
     ToastExpr.call(ToastCall {
-      function = piped_into.put_on_heap(), args = list(left).to_slice()
+      function = right.put_on_heap(), args = list(left).to_slice()
     })
 }
 
@@ -757,7 +747,7 @@ fun parse_exprs(bacons: Slice[Bacon]): Result[Slice[ToastExpr], Error] {
     loop {
       var next = bacons.get_maybe(i + 1) or break
       if      next.parse_switch(expr)? is some(new) then { expr = new }
-      else if next.parse_pipe(expr)?   is some(new) then { expr = new }
+      else if next.parse_dot(expr)?    is some(new) then { expr = new }
       else break
       i = i + 1
     }

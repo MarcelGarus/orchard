@@ -153,29 +153,30 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
             instruction = Instruction.compare_ints,
             args = list(new_refcount, zero).to_slice(),
           }) $ PestoType.enum_(map(
-            "Less" -> pesto_nothing.type,
-            "Greater" -> pesto_nothing.type,
-            "Equal" -> pesto_nothing.type,
+            "less" -> pesto_nothing.type,
+            "greater" -> pesto_nothing.type,
+            "equal" -> pesto_nothing.type,
           )))
         builder.push(PestoOp.switch_(PestoSwitch {
           condition = ordering,
           cases = map(
-            "Less" -> { | Never runs in practice; refcount is always >= 0.
+            "less" -> { | Never runs in practice; refcount is always >= 0.
               var builder = fun_builder.body_builder(pesto_nothing.type).&
               builder.finish(builder.push(pesto_nothing))
             },
-            "Greater" -> {
+            "greater" -> {
               var builder = fun_builder.body_builder(pesto_nothing.type).&
               builder.finish(builder.push(pesto_nothing))
             },
-            "Equal" -> {
+            "equal" -> {
+              var outer_builder = builder
               var builder = fun_builder.body_builder(pesto_nothing.type).&
-              var value = builder.push(PestoOp.load(builder.param)
+              var value = builder.push(PestoOp.load(outer_builder.param)
                 $ variant.value.to_pesto())
               builder.push(PestoOp.call(PestoCall {
                 function = variant.value.compile_drop_fun(pesto), args = value
               }) $ pesto_nothing.type)
-              builder.push(PestoOp.free(builder.param) $ pesto_nothing.type)
+              builder.push(PestoOp.free(outer_builder.param) $ pesto_nothing.type)
               builder.finish(builder.push(pesto_nothing))
             },
           ),
@@ -201,22 +202,22 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
       instruction = Instruction.compare_ints,
       args = list(new_refcount, zero).to_slice(),
     }) $ PestoType.enum_(map(
-      "Less" -> pesto_nothing.type,
-      "Greater" -> pesto_nothing.type,
-      "Equal" -> pesto_nothing.type,
+      "less" -> pesto_nothing.type,
+      "greater" -> pesto_nothing.type,
+      "equal" -> pesto_nothing.type,
     )))
     builder.push(PestoOp.switch_(PestoSwitch {
       condition = ordering,
       cases = map(
-        "Less" -> { | Never runs in practice; refcount is always >= 0.
+        "less" -> { | Never runs in practice; refcount is always >= 0.
           var builder = fun_builder.body_builder(pesto_nothing.type).&
           builder.finish(builder.push(pesto_nothing))
         },
-        "Greater" -> {
+        "greater" -> {
           var builder = fun_builder.body_builder(pesto_nothing.type).&
           builder.finish(builder.push(pesto_nothing))
         },
-        "Equal" -> {
+        "equal" -> {
           var outer_builder = builder
           var builder = fun_builder.body_builder(pesto_nothing.type).&
           var free_fun_ptr = builder.push(PestoOp.member(PestoMember {
@@ -279,10 +280,6 @@ fun to_pesto(
   expr: PuddingExpr, fun_: PuddingFun,
   builder: &PestoBodyBuilder, mapping: &Map[PuddingId, PestoId], pesto: &Pesto
 ): PestoId {
-  | eprint("Compiling ")
-  | stderr.write(expr.op, fun_, 0)
-  | eprintln()
-
   var type = expr.type.to_pesto()
   var op =
     switch expr.op
@@ -318,16 +315,16 @@ fun to_pesto(
       for case_ in switch_.cases do {
         var payload_type = builder.get(condition).type.enum_.unwrap().get(case_.key)
         var builder = builder.parent.body_builder(payload_type).&
-        for payload in case_.value.params.iter().enumerate() do {
-          var plum_type = fun_.get(payload.item).type
-          var actual_type = payload_type.struct_.unwrap().get("{payload.index}")
-
-          var value = builder.push(PestoOp.member(PestoMember {
-            of = builder.param, name = "{payload.index}"
-          }) $ actual_type)
-          if actual_type is ptr then
-            value = builder.push(PestoOp.load(value) $ plum_type.to_pesto())
-          mapping.put(payload.item, value)
+        if case_.value.params.get_maybe(0) is some(plum_payload) then {
+          var payload =
+            if payload_type is ptr then
+              builder.push(
+                PestoOp.load(builder.param)
+                  $ fun_.get(plum_payload).type.to_pesto()
+              )
+            else
+              builder.param
+          mapping.put(plum_payload, payload)
         }
         var returns = case_.value.to_pesto(fun_, builder, mapping, pesto)
         var body = builder.finish(returns)

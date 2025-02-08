@@ -48,6 +48,14 @@ enum PestoType {
   enum_: Map[String, PestoType],
 }
 
+fun ==(a: PestoType, b: PestoType): Bool {
+  switch a
+  case int         b is int
+  case ptr         b is ptr
+  case struct_(aa) if b is struct_(bb) then aa == bb else false
+  case enum_(aa)   if b is enum_(bb)   then aa == bb else false
+}
+
 | Constructing Pesto  
 
 fun pesto(): _ { Pesto { funs = map[String, PestoFun]() } }
@@ -122,12 +130,16 @@ fun write[W](writer: W, type: PestoType) {
   }
   case enum_(variants) {
     writer."(|"
-    for variant in variants do writer." ({variant.key} {variant.value})"
+    for variant in variants do
+      if variant.value == PestoType.struct_(map[String, PestoType]()) then
+        writer." {variant.key}"
+      else
+        writer." {variant.key}: {variant.value}"
     writer.")"
   }
 }
 fun write[W](writer: W, body: PestoBody, fun_: PestoFun, indentation: Int) {
-  writer." {body.param}\n"
+  writer." {body.param}: {fun_.get(body.param).type}\n"
   for id in body.exprs do {
     var expr = fun_.get(id)
     for i in 0..indentation do writer."  "
@@ -154,7 +166,7 @@ fun write[W](writer: W, op: PestoOp, fun_: PestoFun, indentation: Int) {
     for case_ in switch_.cases do {
       writer."\n"
       for i in 0..indentation do writer."  "
-      writer."  {case_.key}:"
+      writer."  {case_.key} -> "
       writer.write(case_.value, fun_, indentation + 2)
     }
   }

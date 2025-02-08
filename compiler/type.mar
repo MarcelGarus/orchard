@@ -38,16 +38,16 @@ var type_string = PlumType.primitive("String")
 var type_type = PlumType.primitive("Type")
 var type_never = PlumType.never
 var type_ordering = PlumType.enum_(map(
-  "Less"    -> type_nothing,
-  "Equal"   -> type_nothing,
-  "Greater" -> type_nothing,
+  "less"    -> type_nothing,
+  "equal"   -> type_nothing,
+  "greater" -> type_nothing,
 ))
 var type_type_info = PlumType.enum_(map(
-  "Int"    -> type_nothing,
-  "String" -> type_nothing,
-  "Struct" -> type_list(type_field),
-  "Enum"   -> type_list(type_variant),
-  "Type"   -> type_nothing,
+  "int"    -> type_nothing,
+  "string" -> type_nothing,
+  "struct" -> type_list(type_field),
+  "enum"   -> type_list(type_variant),
+  "type"   -> type_nothing,
 ))
 var type_field = PlumType.struct_(map(
   "name" -> type_string,
@@ -59,8 +59,8 @@ var type_variant = PlumType.struct_(map(
 ))
 fun type_list(item: PlumType): PlumType {
   PlumType.enum_(map(
-    "Empty" -> type_nothing,
-    "More"  -> PlumType.struct_(map(
+    "empty" -> type_nothing,
+    "more"  -> PlumType.struct_(map(
       "item" -> item,
       "rest" -> PlumType.recursive(2),
     )),
@@ -94,17 +94,17 @@ fun write[W](writer: W, type: PlumType) {
   case primitive(name) writer."{name}"
   case never writer."Never"
   case struct_(fields) {
-    writer."(& "
-    var first = true
-    for field in fields do {
-      if first then first = false else writer." "
-      writer."{field.key}: {field.value}"
-    }
+    writer."(&"
+    for field in fields do writer." {field.key}: {field.value}"
     writer.")"
   }
   case enum_(variants) {
     writer."(|"
-    for variant in variants do writer." {variant.key}: {variant.value}"
+    for variant in variants do
+      if variant.value == PlumType.struct_(map[String, PlumType]()) then
+        writer." {variant.key}"
+      else
+        writer." {variant.key}: {variant.value}"
     writer.")"
   }
   case lambda(lambda) {

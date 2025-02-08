@@ -143,6 +143,12 @@ fun memory_layout_struct(type: PestoType): StructLayout {
     }
     offset = end
   }
+  | For the purpose of accessing zero-sized fields, claim that they are at the
+  | beginning of the struct.
+  for field in layouts do
+    if field.size == 0 then
+      field_to_offset.&.put(field.name, 0)
+
   var size = bytes.len
   var alignment = 1
   for field in layouts do alignment = max(alignment, field.alignment)
@@ -313,7 +319,7 @@ fun to_waffle(
     case xor_ints       waffle_xor(    mapping.get(args.get(0)), mapping.get(args.get(1)))
     case compare_ints   waffle_compare_zero(
                           waffle_sub(mapping.get(args.get(0)), mapping.get(args.get(1)))
-                        ) | tag for enum: | Equal Greater Less
+                        ) | tag for enum: | equal greater less
     case concat_strings todo("handle concat_strings")
     case crash          waffle_crash(     mapping.get(args.get(0)), mapping.get(args.get(1)))
   }
@@ -365,11 +371,6 @@ fun to_waffle(
 }
 
 fun to_waffle(fun_: PestoFun, pesto: Pesto): WaffleFun {
-  | When you call a function, we expect the parameters to already be on the
-  | stack, layouted efficiently:
-  |
-  | ... param1 param3 param2
-
   var param_layout = fun_.get(fun_.body.param).type.memory_layout()
   var fun_builder = waffle_fun_builder(param_layout.size, param_layout.alignment)
   var param = waffle_local(
