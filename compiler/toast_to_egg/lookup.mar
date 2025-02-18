@@ -1,0 +1,119 @@
+| Looking up Functions  
+
+import mod.mar
+
+struct UncompiledFun {
+  name: StringAndSrc, params: Slice[PlumType], impl: UncompiledFunImpl
+}
+enum UncompiledFunImpl {
+  local: LocalUncompiledFun, imported: String, builtin: Builtin
+}
+struct LocalUncompiledFun { module: Module, fun_: ToastFun }
+
+fun module(fun_: UncompiledFun): Module {
+  switch fun_.impl
+  case local(fun_) fun_.module
+  case builtin builtin_module
+  case imported unreachable()
+}
+
+fun collect_all_funs(
+  toasts: Map[Module, Toast], types: Map[String, PlumTypeDef]
+): Result[Tuple2[Map[String, UncompiledFun], Map[Module, Set[String]]], Error] {
+  var funs = map[String, UncompiledFun]()
+  var visible = map[Module, Set[String]]()
+
+  for entry in toasts do {
+    var module = entry.key
+    var toast = entry.value
+    var visible_in_this_module = set[String]()
+
+    for def in toast.defs do
+      | TODO: handle multiple functions with same signature
+      switch def
+      case fun_(fun_) {
+        var params = list[PlumType]()
+        for param in fun_.params do
+          params.&.push(param.type.compile(module, types)?)
+        var params = params.to_slice()
+
+        var signature = signature(module, fun_.name.string, params)
+
+        visible_in_this_module.&.put(signature)
+        funs.&.put(signature, UncompiledFun {
+          name = fun_.name,
+          params,
+          impl = UncompiledFunImpl.local(LocalUncompiledFun { module, fun_ })
+        })
+      }
+      case import_(import_) {
+        for part in import_.parts do {
+          var imported_module = module.resolve_import(part.module) or(error)
+            return error[
+              Tuple2[Map[String, UncompiledFun], Map[Module, Set[String]]],
+              Error,
+            ](error(
+              error, import_.keyword.src
+            ))
+          | TODO: filter out functions more elegantly!
+          for signature in part.signatures do
+            if not(signature.name.string.chars().get(0).is_upper()) then {
+              var params = list[PlumType]()
+              for param in signature.args do
+                params.&.push(param.compile(module, types)?)
+              var params = params.to_slice()
+
+              var our_signature =
+                signature(module, signature.name.string, params)
+              var referred_signature =
+                signature(imported_module, signature.name.string, params)
+
+              visible_in_this_module.&.put(our_signature)
+              funs.&.put(our_signature, UncompiledFun {
+                name = signature.name,
+                params,
+                impl = UncompiledFunImpl.imported(referred_signature),
+              })
+            }
+        }
+      }
+      default {}
+
+    visible.&.put(module, visible_in_this_module)
+  }
+  ok[Tuple2[Map[String, UncompiledFun], Map[Module, Set[String]]], Error](tuple(
+    funs, visible
+  ))
+}
+
+| struct MatchingFun { fun_: ToastFun, substitutions: Substitutions }
+
+| fun name(match: MatchingFun): String { match.fun_.name.string }
+| fun param_types(match: MatchingFun): Slice[PlumType] {
+|   var types = list[PlumType]()
+|   for param in match.fun_.params do
+|     types.&.push(param.type.specialize(match.substitutions))
+|   types.to_slice()
+| }
+| fun return_type(match: MatchingFun): PlumType {
+|   match.fun_.return_type.specialize(match.substitutions)
+| }
+
+
+
+fun matches(
+  candidate: ToastSignature, name: String, args: Slice[PlumType],
+  types: Map[String, PlumType],
+): Bool {
+  if candidate.name != name then return false
+
+  var params = list[PlumType]()
+  for arg in candidates.args do params.&.push(arg.compile(types))
+  var params = params.to_slice()
+
+  var constraints = constraints()
+  var substitutions = args.match_against(params, constraints) or return false
+  constraints.check_coherency() or return false
+
+  true
+}

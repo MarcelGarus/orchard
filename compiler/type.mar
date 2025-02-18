@@ -131,21 +131,19 @@ fun write[W](writer: W, type: PlumType) {
 | Never          -> Never         ? {}
 | | Foo Bar      -> | Foo Bar Baz ? {}
 fun match_against(
-  concrete: PlumType, generic: PlumType, constraints: TypeVariableConstraints
+  concrete: PlumType, generic: PlumType, constraints: &TypeVariableConstraints
 ): Maybe[Substitutions] {
   concrete.match_against(
-    generic, constraints.&,
-    list[Tuple2[PlumType, PlumType]]().&
+    generic, constraints, list[Tuple2[PlumType, PlumType]]().&
   ) or return none[Substitutions]()
   constraints.check_coherency()
 }
 fun match_against(
   concrete: Slice[PlumType], generic: Slice[PlumType],
-  constraints: TypeVariableConstraints
+  constraints: &TypeVariableConstraints
 ): Maybe[Substitutions] {
   concrete.match_against(
-    generic, constraints.&,
-    list[Tuple2[PlumType, PlumType]]().&
+    generic, constraints, list[Tuple2[PlumType, PlumType]]().&
   ) or return none[Substitutions]()
   constraints.check_coherency()
 }
@@ -155,6 +153,7 @@ struct Substitutions { substitutions: Map[String, PlumType] }
 struct TypeVariableConstraints {
   constraints: List[Tuple2[String, PlumType]]
 }
+
 fun constraints(): TypeVariableConstraints {
   TypeVariableConstraints {
     constraints = list[Tuple2[String, PlumType]]()
@@ -262,6 +261,14 @@ fun match_against(
   true
 }
 
+fun write[W](writer: W, substitutions: Substitutions) {
+  var first = true
+  for substitution in substitutions.substitutions do {
+    if first then first = false else writer.", "
+    writer."{substitution.key} = {substitution.value}"
+  }
+}
+
 
 | Specializing types  
 | For example, specializing (List t) using {t -> Int} to (List Int).
@@ -273,27 +280,35 @@ fun specialize(
   case primitive(name)
     substitutions.substitutions.get_maybe(name) or PlumType.primitive(name)
   case never PlumType.never
-  case struct_(struct_) {
-    var fields = map[String, PlumType]()
-    for field in struct_ do
-      fields.&.put(field.key, field.value.specialize(substitutions))
-    PlumType.struct_(fields)
-  }
-  case enum_(enum_) {
-    var variants = map[String, PlumType]()
-    for variant in enum_ do
-      variants.&.put(variant.key, variant.value.specialize(substitutions))
-    PlumType.enum_(variants)
-  }
-  case lambda(lambda) {
-    var args = list[PlumType]()
-    for arg in lambda.args do args.&.push(arg.specialize(substitutions))
+  case struct_(fields) PlumType.struct_(fields.specialize(substitutions))
+  case enum_(variants) PlumType.enum_(variants.specialize(substitutions))
+  case lambda(lambda)
     PlumType.lambda(LambdaType {
-      args = args.to_slice(),
+      args = lambda.args.specialize(substitutions),
       return_type = lambda.return_type.specialize(substitutions).put_on_heap(),
     })
-  }
   case recursive(level) PlumType.recursive(level)
+}
+fun specialize(
+  types: Map[String, PlumType], substitutions: Substitutions
+): Map[String, PlumType] {
+  var specialized = map[String, PlumType]()
+  for entry in types do
+    specialized.&.put(entry.key, entry.value.specialize(substitutions))
+  specialized
+}
+fun specialize(
+  types: Slice[PlumType], substitutions: Substitutions
+): Slice[PlumType] {
+  var specialized = list[PlumType]()
+  for type in types do specialized.&.push(type.specialize(substitutions))
+  specialized.to_slice()
+}
+fun specialize(a: Substitutions, b: Substitutions): Substitutions {
+  var result = map[String, PlumType]()
+  for entry in a.substitutions do
+    result.&.put(entry.key, entry.value.specialize(b))
+  Substitutions { substitutions = result }
 }
 
 

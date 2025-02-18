@@ -1,0 +1,411 @@
+
+fun compile(
+  fun_: ToastFun, module: Module,
+  visible_by_module: Map[Module, Set[String]],
+  funs: Map[String, UncompiledFun], types: Map[String, PlumTypeDef],
+): Result[EggFun, Error] {
+  eprintln("compiling {fun_.name.string}")
+
+  var visible = visible()
+  var dag = dag[EggExpr]()
+  var body = body_builder(dag.&).&
+
+  var param_types = list[PlumType]()
+  for param in fun_.params do {
+    var type = param.type.compile(module, types)?
+    var id = body.push_param(type, param.name.src)
+    visible.&.define(param.name.string, id)
+    param_types.&.push(type)
+  }
+  var param_types = param_types.to_slice()
+
+  var returned = fun_.body.compile(body, module, visible.&, EggContext {
+    visible_by_module, funs, types
+  })?
+
+  var return_type = fun_.return_type.compile(module, types)?
+  var returned = body.push_cast(returned, return_type, fun_.name.src)
+
+  var body = body.finish(returned)
+
+  ok[EggFun, Error](EggFun { module, name = fun_.name, dag, body })
+}
+
+| Body Builder  
+
+struct EggBodyBuilder {
+  dag: &Dag[EggExpr], params: List[Id], children: List[Id]
+}
+fun body_builder(dag: &Dag[EggExpr]): _ {
+  EggBodyBuilder { dag, params = list[Id](), children = list[Id]() }
+}
+fun finish(body: EggBodyBuilder, id: Id): EggBody {
+  EggBody {
+    params = body.params.to_slice(),
+    children = body.children.to_slice(),
+    returns = id,
+  }
+}
+fun push_param(body: &EggBodyBuilder, type: PlumType, src: Src): Id {
+  var id = body.dag.&.put(EggOp.param.expr(type, src))
+  body.params.&.push(id)
+  id
+}
+fun push(body: &EggBodyBuilder, expr: EggExpr): Id {
+  var id = body.dag.&.put(expr)
+  body.children.&.push(id)
+  id
+}
+fun get(body: EggBodyBuilder, id: Id): EggExpr { body.dag.get(id) }
+fun type_of(body: EggBodyBuilder, id: Id): PlumType { body.get(id).type }
+fun src_of(body: EggBodyBuilder, id: Id): Src { body.get(id).src }
+
+| Compiling Functions  
+
+struct EggContext {
+  | stack: &EggStack,
+  visible_by_module: Map[Module, Set[String]],
+  funs: Map[String, UncompiledFun],
+  types: Map[String, PlumTypeDef],
+}
+
+fun compile(
+  toast: ToastExpr, body: &EggBodyBuilder, module: Module, visible: &Visible,
+  context: EggContext,
+): Result[Id, Error] {
+  ok[Id, Error](
+    switch toast
+    case int(int) body.push(EggOp.int(int.int).expr(type_int, int.src))
+    case string(string)
+      body.push(EggOp.string(string.string).expr(type_string, string.src))
+    case struct_(struct_) {
+      var fields = map[String, Id]()
+      var types = map[String, PlumType]()
+      | TODO: check for duplicates
+      for field in struct_.fields do {
+        var name = field.name.string
+        var value = field.value.compile(body, module, visible, context)?
+        var type = body.type_of(value)
+        fields.&.put(name, value)
+        types.&.put(name, type)
+      }
+
+      body.push(
+        EggOp.struct_(fields)
+          .expr(PlumType.struct_(types), struct_.ampersand.src)
+      )
+    }
+    case enum_(enum_) {
+      var name = enum_.name.string
+      var value = enum_.value.compile(body, module, visible, context)?
+      var type = PlumType.enum_(map(name -> body.type_of(value)))
+      body.push(EggOp.enum_(EggEnum { name, value }).expr(type, enum_.pipe.src))
+    }
+    case switch_(switch_) {
+      | Compile the condition.
+      eprintln("condition: {switch_.condition.debug()}")
+      var condition = switch_.condition.compile(body, module, visible, context)?
+      var condition_type = body.type_of(condition).extend_one_level()
+      var variant_types = condition_type.enum_
+        or return error[Id, Error](error(
+          "Switched on non-enum: {condition_type}", switch_.percent.src
+        ))
+
+      | TODO: !!!
+      | Make sure all variants are handled and that no extra variants are
+      | handled.
+      | for variant in variant_types do {
+      |   switch_.cases.contains(variant.key) or
+      |     return error[YogurtId, Error](error(
+      |       "You switch on {condition_type}, but you don't handle the 
+      |       '{variant.key} variant.",
+      |       switch_.percent.src
+      |     ))
+      | }
+      | for case_ in switch_.cases do
+      |   condition_variants.contains(case_.key) or
+      |     return error[YogurtId, Error](error(
+      |       "You switch on {condition_type} and you try to handle the 
+      |       'non-existent {case_.key} variant.",
+      |       switch_.percent.src
+      |     ))
+
+      | Compile the individual cases.
+      var case_compilers = map[String, Tuple2[EggBodyBuilder, Id]]()
+      var case_types = list[PlumType]()
+      for case_ in switch_.cases do {
+        var symbol = case_.symbol.string
+        var snapshot = visible.snapshot()
+        var case_body = body_builder(body.dag).&
+        if case_.payload is some(binding) then {
+          var payload_type = variant_types.get(symbol)
+          var payload = case_body.push_param(payload_type, binding.src)
+          visible.define(binding.string, payload)
+        }
+        var returns = case_.body.compile(case_body, module, visible, context)?
+        visible.restore(snapshot)
+        case_compilers.&.put(symbol, tuple(case_body.*, returns))
+        case_types.&.push(case_body.type_of(returns))
+      }
+      var common_type = union(case_types.to_slice()) or
+        return error[Id, Error](error(
+          "Couldn't union types {case_types}", switch_.percent.src
+        ))
+      var cases = map[String, EggBody]()
+      for compiler in case_compilers do {
+        var symbol = compiler.key
+        var returns = compiler.value.b
+        var compiler = compiler.value.a
+        var actual_return = compiler.&.push_cast(
+          returns, common_type, switch_.percent.src
+        )
+        cases.&.put(symbol, compiler.finish(actual_return))
+      }
+
+      body.push(
+        EggOp.switch_(EggSwitch { condition, cases })
+          .expr(common_type, switch_.percent.src)
+      )
+    }
+    case name(name)
+      visible.lookup(name.string) or
+        return error[Id, Error](error(
+          "Unknown referenced name {name.string}.", name.src
+        ))
+    case lambda(lambda) {
+      var snapshot = visible.snapshot()
+      var lambda_body = body_builder(body.dag).&
+      var param_types = list[PlumType]()
+      for param in lambda.params do {
+        var name = param.name.string
+        var type = param.type.compile(module, context.types)?
+        var src = param.name.src
+        param_types.&.push(type)
+        visible.define(name, lambda_body.push_param(type, src))
+      }
+      var returns = lambda.body.compile(lambda_body, module, visible, context)?
+      var return_type = lambda_body.type_of(returns)
+      var lambda_body = lambda_body.finish(returns)
+      visible.restore(snapshot)
+
+      body.push(
+        EggOp.lambda(lambda_body).expr(
+          PlumType.lambda(LambdaType {
+            args = param_types.to_slice(),
+            return_type = return_type.put_on_heap(),
+          }),
+          lambda.backslash.src
+        )
+      )
+    }
+    case call(call) {
+      var args = list[Id]()
+      for arg in call.args do
+        args.&.push(arg.compile(body, module, visible, context)?)
+      var args = args.to_slice()
+
+      var arg_types = list[PlumType]()
+      for arg in args do arg_types.&.push(body.type_of(arg))
+      var arg_types = arg_types.to_slice()
+
+      | Find the function name -- either some(String) if it's a function call
+      | or none if it's a lambda call.
+      var function_name =
+        switch call.function.*
+        case name(name) {
+          | Check if the call is actually a struct access.
+          if arg_types.len == 1 then
+            if arg_types.get(0) is struct_(fields) then
+              if fields.contains(name.string) then {
+                | This is a struct access!
+                var struct_ = args.get(0)
+                var field_type = body.type_of(struct_).extend_one_level()
+                  .struct_.unwrap().get(name.string)
+                return ok[Id, Error](body.push(
+                  EggOp.member(EggMember {
+                    of = struct_, name = name.string
+                  }).expr(field_type, name.src)
+                ))
+              }
+
+          switch visible.lookup(name.string)
+          case some none[StringAndSrc]()
+          case none some(name)
+        }
+        default none[StringAndSrc]()
+
+      switch function_name
+      case some(name) { | top-level function
+        | Look for a matching function.
+        var signature_and_substitutions = {
+          var visible_funs = context.visible_by_module.get(module)
+
+          var name_matches = list[Tuple2[String, UncompiledFun]]()
+          for signature in visible_funs do {
+            var fun_ = context.funs.get(signature)
+            fun_.name.string == name.string or continue
+            name_matches.&.push(tuple(signature, fun_))
+          }
+
+          if name_matches.is_empty() then
+            return error[Id, Error](error(
+              {
+                var b = string_builder().&
+                b."There is no function named {name.string} in scope. Visible 
+                  'functions:"
+                for signature in visible_funs do
+                  b."\n- {signature}"
+                b.to_string()
+              },
+              name.src,
+            ))
+
+          var full_matches = list[Tuple2[String, Substitutions]]()
+          for item in name_matches do {
+            var signature = item.a
+            var fun_ = item.b
+            var constraints = constraints()
+            arg_types.match_against(fun_.params, constraints.&) or continue
+            var substitutions = constraints.check_coherency() or continue
+            full_matches.&.push(tuple(signature, substitutions))
+          }
+
+          if full_matches.is_empty() then
+            return error[Id, Error](error(
+              {
+                var b = string_builder().&
+                b."There is no matching function named {name.string} for the 
+                  'args {arg_types}. These functions have mismatched types:"
+                for item in name_matches do {
+                  var signature = item.a
+                  b."\n- {signature}"
+                  var fun_ = item.b
+                  var constraints = constraints()
+                  arg_types.match_against(fun_.params, constraints.&) or {
+                    b."  (doesn't match types)"
+                    continue
+                  }
+                  var substitutions = constraints.check_coherency() or {
+                    b."  (impossible constraints:"
+                    for constraint in constraints.constraints do
+                      b." {constraint}"
+                    b.")"
+                    continue
+                  }
+                }
+                b.to_string()
+              },
+              name.src,
+            ))
+          if full_matches.len > 1 then
+            return error[Id, Error]({
+              var b = string_builder().&
+              b."Multiple functions match {name.string} {arg_types}:"
+              for match in full_matches do
+                b."\n  {match.a}  (with {match.b.debug()})"
+              error(b.to_string(), name.src)
+            })
+          full_matches.get(0)
+        }
+
+        var signature     = signature_and_substitutions.a
+        var substitutions = signature_and_substitutions.b
+        var fun_ = context.funs.get(signature)
+        var expected_arg_types = fun_.params.specialize(substitutions)
+        var return_type =
+          loop
+            switch fun_.impl
+            case local(local_fun) {
+              var return_type = local_fun.fun_.return_type
+                .compile(local_fun.module, context.types)?
+                .specialize(substitutions)
+              break(return_type)
+            }
+            case imported(new_signature) {
+              | TODO: make sure the function is exported
+              | TODO: attribute error to import
+              | TODO: update substitutions
+              signature = new_signature
+
+              for builtin in builtins do {
+                var builtin_types = builtin.signature()
+                var param_types = builtin_types.params
+                var return_type = builtin_types.return_type
+                var builtin_signature = {
+                  var b = string_builder().&
+                  b."{builtin_module}.{builtin}"
+                  for param in param_types do b." {param}"
+                  b.to_string()
+                }
+                if builtin_signature == signature then
+                  return ok[Id, Error](body.push(
+                    EggOp.call(EggCall {
+                      callee = EggCallee.builtin(builtin), args
+                    }).expr(return_type, name.src)
+                  ))
+                else eprintln("no match: {builtin_signature}")
+              }
+              
+              fun_ = context.funs.get_maybe(new_signature) or
+                return error[Id, Error](error(
+                  "Function {new_signature} doesn't exist.", name.src
+                ))
+            }
+            case builtin(builtin) break(builtin.signature().return_type)
+
+        | Cast arguments
+        var cast_args = list[Id]()
+        for both in zip(args.iter(), expected_arg_types.iter()) do {
+          var arg = both.a
+          var expected_type = both.b
+          cast_args.&.push(body.push_cast(arg, expected_type, name.src))
+        }
+        var args = cast_args.to_slice()
+
+        | Call the function.
+        body.push(
+          EggOp.call(EggCall {
+            callee = EggCallee.fun_(MatchingFun { signature, substitutions }),
+            args,
+          }).expr(return_type, name.src)
+        )
+      }
+      case none { | lambda
+        var lambda = call.function.compile(body, module, visible, context)?
+        var lambda_type = body.type_of(lambda)
+        var lambda_type = lambda_type.lambda or
+          return return error[Id, Error](error(
+            "Tried to call non-lambda: {lambda_type}",
+            call.function.src(),
+          ))
+        | TODO: check that argument types are compatible!!!!
+        body.push(
+          EggOp.call(EggCall { callee = EggCallee.lambda(lambda), args })
+            .expr(lambda_type.return_type.*, call.function.src())
+        )
+      }
+    }
+    case var_(var_) {
+      var name = var_.left.name or return error[Id, Error](error(
+        "Variables have to be lowercase.", var_.equal_sign.src
+      ))
+
+      var value = var_.right.compile(body, module, visible, context)?
+      visible.define(name.string, value)
+      value
+    }
+    case body(exprs) {
+      var last = none[Id]()
+      for expr in exprs do
+        last = some(expr.compile(body, module, visible, context)?)
+      last or unreachable()
+    }
+  )
+}
+
+fun push_cast(body: &EggBodyBuilder, from: Id, to_type: PlumType, src: Src): Id {
+  var from_type = body.dag.get(from).type
+  if from_type == to_type
+  then from
+  else body.push(EggOp.cast(from).expr(to_type, src))
+}

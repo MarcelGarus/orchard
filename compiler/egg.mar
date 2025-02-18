@@ -15,119 +15,103 @@
 
 import plum.mar
 
-struct Egg { entry_module: Module, funs: List[EggFun] }
+struct Egg { entry_module: Module, funs: Map[String, EggFun] }
 
 struct EggFun {
-  module: Module, name: StringAndSrc,
-  params: Slice[EggParam], return_type: PlumType,
-  impl: EggFunImpl
+  module: Module, name: StringAndSrc, dag: Dag[EggExpr], body: EggBody
 }
-struct EggParam { name: String, type: PlumType }
-enum EggFunImpl { code: EggCode, builtin: Builtin }
-struct EggCode { exprs: Slice[EggExpr], body: EggBody }
-struct EggId { int: Int }
-struct EggBody { params: Slice[EggId], exprs: Slice[EggId], returns: EggId }
+struct EggBody { params: Slice[Id], children: Slice[Id], returns: Id }
 
-struct EggExpr { kind: EggExprKind, src: Src }
-enum EggExprKind {
+struct EggExpr { op: EggOp, type: PlumType, src: Src }
+enum EggOp {
   param,
   int: Int,
   string: String,
-  struct_: Map[String, EggId],
+  struct_: Map[String, Id],
   member: EggMember,
   enum_: EggEnum,
   switch_: EggSwitch,
-  lambda: EggLambda,
-  lambda_call: EggLambdaCall,
+  lambda: EggBody,
   call: EggCall,
+  cast: Id,
+  type: PlumType,
 }
-struct EggMember { of: EggId, name: String }
-struct EggSwitch { condition: EggId, cases: Map[String, EggBody] }
-struct EggEnum { name: String, value: EggId }
-struct EggLambda { params: Slice[EggParam], body: EggBody }
-struct EggLambdaCall { lambda: EggId, args: Slice[EggId] }
-struct EggCall {
-  name: StringAndSrc,
-  candidates: Set[Tuple2[Module, String]],
-  args: Slice[EggId],
+struct EggMember { of: Id, name: String }
+struct EggSwitch { condition: Id, cases: Map[String, EggBody] }
+struct EggEnum { name: String, value: Id }
+struct EggCall { callee: EggCallee, args: Slice[Id] }
+enum EggCallee { lambda: Id, fun_: MatchingFun, builtin: Builtin }
+struct MatchingFun { signature: String, substitutions: Substitutions }
+
+fun expr(op: EggOp, type: PlumType, src: Src): EggExpr {
+  EggExpr { op, type, src }
 }
 
-fun /(name: String, type: PlumType): EggParam { EggParam { name, type } }
-
-fun @(kind: EggExprKind, src: Src): EggExpr { EggExpr { kind, src } }
-
-fun ==(a: EggId, b: EggId): Bool { a.int == b.int }
-fun hash(hasher: &Hasher, id: EggId) { hasher.hash(id.int) }
-
-fun get(code: EggCode, id: EggId): EggExpr { code.exprs.get(id.int) }
+fun param_types(fun_: EggFun): Slice[PlumType] {
+  var types = list[PlumType]()
+  for param in fun_.body.params do types.&.push(fun_.dag.get(param).type)
+  types.to_slice()
+}
+fun return_type(fun_: EggFun): PlumType {
+  fun_.dag.get(fun_.body.returns).type
+}
 
 fun write[W](writer: W, egg: Egg) {
   var first = true
   for fun_ in egg.funs do {
+    var signature = fun_.key
+    var fun_ = fun_.value
     if first then first = false else writer."\n"
-    writer."{fun_.module}:{fun_.name.string}"
-    for param in fun_.params do writer." {param}"
-    writer." -> {fun_.return_type} ="
-    switch fun_.impl
-    case code(code) writer.write(code.body, code, 1)
-    case builtin(builtin) writer." ..."
+    writer."{signature} = "
+    writer.write(fun_.body, fun_.dag, 1)
   }
 }
-fun write[W](writer: W, id: EggId) { writer."@{id.int}" }
-fun write[W](writer: W, body: EggBody, code: EggCode, indentation: Int) {
+fun write[W](writer: W, body: EggBody, dag: Dag[EggExpr], indentation: Int) {
   for param in body.params do writer." {param}"
   writer."\n"
-  for id in body.exprs do {
+  for id in body.children do {
     for i in 0..indentation do writer."  "
-    writer."{id} = "
-    writer.write(code.get(id), code, indentation)
+    writer."{id}: {dag.get(id).type} = "
+    writer.write(dag.get(id), dag, indentation)
     writer."\n"
   }
   for i in 0..indentation do writer."  "
   writer."{body.returns}"
 }
-fun write[W](writer: W, param: EggParam) {
-  writer."{param.name}: {param.type}"
-}
-fun write[W](writer: W, expr: EggExpr, code: EggCode, indentation: Int) {
-  switch expr.kind
+fun write[W](writer: W, expr: EggExpr, dag: Dag[EggExpr], indentation: Int) {
+  switch expr.op
   case param(param) writer."param {param}"
   case int(int) writer."int {int}"
   case string(string) writer."string {string.debug()}"
   case struct_(struct_) {
     writer."&"
-    for field in struct_ do {
-      writer."\n"
-      for i in 0..indentation do writer."  "
-      writer."  {field.key}: {field.value}"
-    }
+    for field in struct_ do writer." {field.key}: {field.value}"
   }
   case member(member) writer."{member.of}.{member.name}"
-  case enum_(enum_) writer."enum {enum_.name} {enum_.value}"
+  case enum_(enum_) writer."| {enum_.name}: {enum_.value}"
   case switch_(switch_) {
     writer."switch {switch_.condition}"
     for case_ in switch_.cases do {
       writer."\n"
       for i in 0..indentation do writer."  "
       writer."  {case_.key}:"
-      writer.write(case_.value, code, indentation + 2)
+      writer.write(case_.value, dag, indentation + 2)
     }
   }
   case lambda(lambda) {
     writer."lambda"
-    for param in lambda.params do writer." {param}"
-    writer." ="
-    writer.write(lambda.body, code, indentation + 1)
-  }
-  case lambda_call(call) {
-    writer."call {call.lambda}"
-    for arg in call.args do writer." {arg}"
+    writer.write(lambda, dag, indentation + 1)
   }
   case call(call) {
-    writer."call {call.name.string}"
+    writer."call {call.callee}"
     for arg in call.args do writer." {arg}"
-    writer." (candidates:"
-    for candidate in call.candidates do writer." {candidate.a}:{candidate.b}"
-    writer.")"
   }
+  case cast(cast) writer."cast {cast}"
+  case type(type) writer."type {type}"
+}
+fun write[W](writer: W, callee: EggCallee) {
+  switch callee
+  case lambda(lambda) writer."{lambda}"
+  case fun_(fun_) writer."{fun_.signature} with {fun_.substitutions}"
+  case builtin(builtin) writer."{builtin}"
 }

@@ -2,47 +2,18 @@
 
 import plum.mar
 
-fun to_pudding(value: YogurtValue, builder: &PuddingBodyBuilder): PuddingExpr {
-  switch value.kind
-  case int(int) PuddingOp.int(int) $ type_int
-  case string(string) PuddingOp.string(string) $ type_string
-  case struct_(struct_) {
-    var fields = map[String, PuddingId]()
-    for field in struct_ do {
-      var id = builder.push(field.value.to_pudding(builder))
-      fields.&.put(field.key, id)
-    }
-    PuddingOp.struct_(fields) $ value.type
-  }
-  case enum_(enum_)
-    PuddingOp.enum_(PuddingEnum {
-      name = enum_.name,
-      value = builder.push(enum_.value.to_pudding(builder)),
-    }) $ value.type
-  case lambda(lambda) {
-    var captures = list[PuddingId]()
-    for capture in lambda.captures do {
-      var id = builder.push(capture.to_pudding(builder))
-      captures.&.push(id)
-    }
-    PuddingOp.lambda(PuddingLambda {
-      function = lambda.function, captures = captures.to_slice()
-    }) $ value.type
-  }
-  case type(type) PuddingOp.type(type) $ type_type
-}
-
 fun to_pudding(
   expr: YogurtExpr,
   fun_: YogurtFun,
   fun_builder: &PuddingFunBuilder, builder: &PuddingBodyBuilder,
-  mapping: &Map[YogurtId, PuddingId],
+  mapping: &Map[Id, PuddingId],
   yogurt: Yogurt,
 ): PuddingExpr {
   switch expr.op
   case param unreachable()
   case uninitialized unreachable()
-  case comptime(value) value.to_pudding(builder)
+  case int(int) PuddingOp.int(int) $ type_int
+  case string(string) PuddingOp.string(string) $ type_string
   case struct_(struct_) {
     var fields = map[String, PuddingId]()
     for field in struct_ do {
@@ -53,6 +24,7 @@ fun to_pudding(
     PuddingOp.struct_(fields) $ expr.type
   }
   case member(member) {
+    | TODO: dup extracted member, not the original of (that is not freed at the end)
     var of = mapping.get(member.of)
     builder.push(PuddingOp.dup(of) $ PlumType.never)
     PuddingOp.member(PuddingMember { of, name = member.name }) $ expr.type
@@ -83,19 +55,6 @@ fun to_pudding(
       function = lambda.function, captures = captures.to_slice()
     }) $ expr.type
   }
-  case lambda_call(call) {
-    var lambda = mapping.get(call.lambda)
-    builder.push(PuddingOp.dup(lambda) $ PlumType.never)
-    var args = list[PuddingId]()
-    for arg in call.args do {
-      var id = mapping.get(arg)
-      builder.push(PuddingOp.dup(id) $ PlumType.never)
-      args.&.push(id)
-    }
-    PuddingOp.lambda_call(PuddingLambdaCall {
-      lambda, args = args.to_slice()
-    }) $ expr.type
-  }
   case call(call) {
     var args = list[PuddingId]()
     for arg in call.args do {
@@ -103,35 +62,51 @@ fun to_pudding(
       builder.push(PuddingOp.dup(id) $ PlumType.never)
       args.&.push(id)
     }
-    PuddingOp.call(PuddingCall {
-      function = call.function, args = args.to_slice(),
-    }) $ expr.type
-  }
-  case instruction(instruction) {
-    var args = list[PuddingId]()
-    for arg in instruction.args do {
-      var id = mapping.get(arg)
-      builder.push(PuddingOp.dup(id) $ PlumType.never)
-      args.&.push(id)
+    var args = args.to_slice()
+
+    switch call.callee
+    case lambda(lambda) {
+      var lambda = mapping.get(lambda)
+      builder.push(PuddingOp.dup(lambda) $ PlumType.never)
+      PuddingOp.lambda_call(PuddingLambdaCall { lambda, args }) $ expr.type
     }
-    PuddingOp.instruction(PuddingInstruction {
-      instruction = instruction.instruction, args = args.to_slice()
-    }) $ expr.type
+    case fun_(fun_) {
+      PuddingOp.call(PuddingCall { function = fun_, args }) $ expr.type
+    }
+    case builtin(builtin) {
+      PuddingOp.instruction(PuddingInstruction {
+        instruction =
+          switch builtin
+          case add_ints Instruction.add_ints
+          case sub_ints Instruction.sub_ints
+          case mul_ints Instruction.mul_ints
+          case div_ints Instruction.div_ints
+          case mod_ints Instruction.mod_ints
+          case and_ints Instruction.and_ints
+          case or_ints Instruction.or_ints
+          case xor_ints Instruction.xor_ints
+          case compare_ints Instruction.compare_ints
+          case concat_strings Instruction.concat_strings
+          case crash Instruction.crash,
+        args,
+      }) $ expr.type
+    }
   }
+  case type(type) PuddingOp.type(type) $ type_type
 }
 
 fun to_pudding(
   body: YogurtBody,
   fun_: YogurtFun, fun_builder: &PuddingFunBuilder,
-  mapping: &Map[YogurtId, PuddingId], yogurt: Yogurt,
+  mapping: &Map[Id, PuddingId], yogurt: Yogurt,
 ): PuddingBody {
   var builder = fun_builder.&.body_builder()
   for param in body.params do {
-    var id = builder.&.push_param(fun_.get(param).type)
+    var id = builder.&.push_param(fun_.dag.get(param).type)
     mapping.&.put(param, id)
   }
-  for id in body.exprs do {
-    var expr = builder.&.push(fun_.get(id).to_pudding(
+  for id in body.children do {
+    var expr = builder.&.push(fun_.dag.get(id).to_pudding(
       fun_, fun_builder, builder.&, mapping, yogurt
     ))
     mapping.&.put(id, expr)
@@ -141,7 +116,7 @@ fun to_pudding(
   builder.&.push(PuddingOp.dup(returns) $ PlumType.never)
   for param in body.params do
     builder.&.push(PuddingOp.drop(mapping.get(param)) $ PlumType.never)
-  for id in body.exprs do
+  for id in body.children do
     builder.&.push(PuddingOp.drop(mapping.get(id)) $ PlumType.never)
 
   builder.returns(returns)
@@ -149,7 +124,7 @@ fun to_pudding(
 
 fun to_pudding(fun_: YogurtFun, yogurt: Yogurt, pudding: &Pudding): PuddingFun {
   var fun_builder = pudding_fun_builder()
-  var mapping = map[YogurtId, PuddingId]()
+  var mapping = map[Id, PuddingId]()
 
   var captures =
     switch fun_.captures
@@ -157,7 +132,7 @@ fun to_pudding(fun_: YogurtFun, yogurt: Yogurt, pudding: &Pudding): PuddingFun {
     case some(captures) {
       var mapped = list[PuddingId]()
       for capture in captures do {
-        var id = fun_builder.&.create(PuddingOp.param $ fun_.get(capture).type)
+        var id = fun_builder.&.create(PuddingOp.param $ fun_.dag.get(capture).type)
         mapping.&.put(capture, id)
         mapped.&.push(id)
       }
@@ -172,7 +147,9 @@ fun to_pudding(fun_: YogurtFun, yogurt: Yogurt, pudding: &Pudding): PuddingFun {
 
 fun to_pudding(yogurt: Yogurt): Pudding {
   var pudding = pudding()
-  for fun_ in yogurt.funs do
+  for fun_ in yogurt.funs do {
+    eprintln("Compiling {fun_.key}")
     pudding.funs.&.put(fun_.key, fun_.value.to_pudding(yogurt, pudding.&))
+  }
   pudding
 }

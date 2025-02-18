@@ -1,0 +1,322 @@
+| Compiling Types  
+|
+| Types from multiple modules may refer to each other. So, we first build a map
+| from module-prefixed type names to the PlumType, a structural representation
+| of types.
+
+import mod.mar
+
+struct TypeSignature { module: Module, name: String }
+
+var builtin_types =
+  list(type_int, type_string, type_type, type_never).to_slice()
+
+fun prefix_calls_with_module(type: ToastType, module: Module): ToastType {
+  switch type
+  case variable type
+  case call(call) {
+    var name = call.name
+
+    var args = list[ToastType]()
+    for arg in call.args do
+      args.&.push(arg.prefix_calls_with_module(module))
+    var args = args.to_slice()
+
+    ToastType.call(ToastTypeCall {
+      name = "{module}.{name.string}" @ name.src, args
+    })
+  }
+  case struct_(struct_) {
+    var fields = list[ToastTypeField]()
+    for field in struct_ do
+      fields.&.push(ToastTypeField {
+        name = field.name, type = field.type.prefix_calls_with_module(module)
+      })
+    var fields = fields.to_slice()
+
+    ToastType.struct_(fields)
+  }
+  case enum_(enum_) {
+    var variants = list[ToastTypeVariant]()
+    for variant in enum_ do
+      variants.&.push(ToastTypeVariant {
+        name = variant.name,
+        type = variant.type.prefix_calls_with_module(module),
+      })
+    var variants = variants.to_slice()
+
+    ToastType.enum_(variants)
+  }
+  case lambda(lambda) {
+    var args = list[ToastType]()
+    for arg in lambda.args do args.&.push(arg.prefix_calls_with_module(module))
+    var args = args.to_slice()
+
+    var return_type = lambda.return_type.prefix_calls_with_module(module)
+
+    ToastType.lambda(ToastTypeLambda {
+      args, return_type = return_type.put_on_heap()
+    })
+  }
+}
+
+struct PlumTypeDef { params: Slice[String], type: PlumType }
+
+struct OngoingTypeCall { name: String, args: Slice[PlumType], depth: Int }
+fun compile(
+  type: ToastType, env: Map[String, PlumType],
+  parent_calls: List[OngoingTypeCall], depth: Int,
+  defs: Map[String, ToastTypeDef],
+): Result[PlumType, Error] {
+  switch type
+  case variable(variable) {
+    for builtin in builtin_types do
+      if variable.string == "${builtin}" then
+        return ok[PlumType, Error](builtin)
+    var type = env.get_maybe(variable.string) or
+      return error[PlumType, Error](error(
+        "Tried to use {variable.string}, but that type doesn't exist.",
+        variable.src
+      ))
+    ok[PlumType, Error](type)
+  }
+  case call(call) {
+    var name = call.name
+
+    | Lower the arguments.
+    var args = list[PlumType]()
+    for arg in call.args do
+      args.&.push(arg.compile(env, parent_calls, depth, defs)?)
+    var args = args.to_slice()
+
+    | Are we recursively lowering a type? If so, we need to insert a recursive
+    | type instead of endlessly digging down into the type.
+    for call in parent_calls do
+      if call.name == name.string and call.args == args then
+        return ok[PlumType, Error](PlumType.recursive(depth - call.depth))
+
+    | Look for a type with the name.
+    var called_def = defs.get_maybe(name.string) or
+      return error[PlumType, Error](error(
+        "Tried to use {name.string}, but that type doesn't exist.",
+        name.src
+      ))
+
+    called_def.params.len == call.args.len or
+      return error[PlumType, Error](error(
+        "Tried to use {name.string} with {call.args.len} arguments, but it 
+        'needs {called_def.params.len}.",
+        name.src
+      ))
+
+    var inner_env = map[String, PlumType]()
+    for arg in zip(called_def.params.iter(), args.iter()) do
+      inner_env.&.put(arg.a.string, arg.b)
+
+    parent_calls.&.push(OngoingTypeCall { name = name.string, args, depth })
+    var type = called_def.type.compile(inner_env, parent_calls, depth, defs)?
+    parent_calls.&.pop()
+
+    ok[PlumType, Error](type)
+  }
+  case struct_(struct_) {
+    var fields = map[String, PlumType]()
+    | TODO: check for duplicates
+    for field in struct_ do
+      fields.&.put(
+        field.name.string,
+        field.type.compile(env, parent_calls, depth + 1, defs)?
+      )
+    ok[PlumType, Error](PlumType.struct_(fields))
+  }
+  case enum_(enum_) {
+    var variants = map[String, PlumType]()
+    | TODO: check for duplicates
+    for variant in enum_ do
+      variants.&.put(
+        variant.name.string,
+        variant.type.compile(env, parent_calls, depth + 1, defs)?
+      )
+    ok[PlumType, Error](PlumType.enum_(variants))
+  }
+  case lambda(lambda) {
+    var args = list[PlumType]()
+    for arg in lambda.args do
+      args.&.push(arg.compile(env, parent_calls, depth + 1, defs)?)
+    var args = args.to_slice()
+
+    var return_type =
+      lambda.return_type.compile(env, parent_calls, depth + 1, defs)?
+
+    ok[PlumType, Error](PlumType.lambda(LambdaType {
+      args, return_type = return_type.put_on_heap()
+    }))
+  }
+}
+
+fun compile_all_types(
+  toasts: Map[Module, Toast]
+): Result[Map[String, PlumTypeDef], Error] {
+  var defs = map[String, ToastTypeDef]()
+  for type in builtin_types do
+    defs.&.put("{builtin_module}.{type}", ToastTypeDef {
+      name = "{type}" @ invalid_src(),
+      params = empty_slice[StringAndSrc](),
+      type = ToastType.variable("${type}" @ invalid_src())
+    })
+  for entry in toasts do {
+    var module = entry.key
+    var toast = entry.value
+    for def in toast.defs do
+      switch def
+      case type(def)
+        defs.&.put("{module}.{def.name.string}", ToastTypeDef {
+          name = def.name,
+          params = def.params,
+          type = def.type.prefix_calls_with_module(module),
+        })
+      case import_(import_)
+        for part in import_.parts do {
+          var imported_module = module.resolve_import(part.module) or(error)
+            return error[Map[String, PlumTypeDef], Error](error(
+              error, import_.keyword.src
+            ))
+          | TODO: filter out functions more elegantly?
+          for signature in part.signatures do
+            if signature.name.string.chars().get(0).is_upper() then {
+              var params = list[StringAndSrc]()
+              var args = list[ToastType]()
+              for arg in signature.args do {
+                var name = arg.variable or
+                  return error[Map[String, PlumTypeDef], Error](error(
+                    "Type imports should only have type variables as arguments, 
+                    'but {signature.name.string} doesn't: {arg}",
+                    signature.name.src,
+                  ))
+                params.&.push(name)
+                args.&.push(arg)
+              }
+              var params = params.to_slice()
+              var args = args.to_slice()
+
+              | TODO: assert that args have different names
+              defs.&.put("{module}.{signature.name.string}", ToastTypeDef {
+                name = "{module}.{signature.name.string}" @ signature.name.src,
+                params,
+                type = ToastType.call(ToastTypeCall {
+                  name = "{imported_module}.{signature.name.string}"
+                    @ import_.keyword.src,
+                  args,
+                })
+              })
+            }
+        }
+      default {}
+  }
+
+  | TODO: Currently, all type definitions are compiled completely isolated from
+  | each other. That means we do a lot of work multiple times. For example, if
+  | "Foo = Maybe Int", we've already figured out that "Foo = | some: Int none",
+  | and we later compile several types containing "Foo", we look up the
+  | definition of "Foo" as "Maybe Int" several times and recompile it. Maybe we
+  | can instead pass down the compiled_defs directly into the compile function?
+  var compiled_defs = map[String, PlumTypeDef]()
+  for def in defs do {
+    var params = list[String]()
+    var env = map[String, PlumType]()
+    var args = list[PlumType]()
+    for param in def.value.params do {
+      var type = PlumType.primitive(param.string)
+      params.&.push(param.string)
+      env.&.put(param.string, type)
+      args.&.push(type)
+    }
+    var params = params.to_slice()
+    var args = args.to_slice()
+
+    var type = def.value.type.compile(
+      env, list(OngoingTypeCall { name = def.key, args, depth = 0 }), 0, defs,
+    )?
+
+    compiled_defs.&.put(def.key, PlumTypeDef { params, type })
+  }
+
+  | for def in compiled_defs do
+  |   eprintln("{def.key}: {def.value}")
+
+  ok[Map[String, PlumTypeDef], Error](compiled_defs)
+}
+
+fun compile(
+  type: ToastType, defs: Map[String, PlumTypeDef]
+): Result[PlumType, Error] {
+  switch type
+  case variable(variable) {
+    for builtin in builtin_types do
+      if variable.string == "${builtin}" then
+        return ok[PlumType, Error](builtin)
+    ok[PlumType, Error](PlumType.primitive(variable.string))
+  }
+  case call(call) {
+    var name = call.name
+
+    | Lower the arguments.
+    var args = list[PlumType]()
+    for arg in call.args do args.&.push(arg.compile(defs)?)
+    var args = args.to_slice()
+
+    | Look for a type with the name.
+    var called_def = defs.get_maybe(name.string) or
+      return error[PlumType, Error](error(
+        "Tried to use {name.string}, but that type doesn't exist.",
+        name.src
+      ))
+
+    called_def.params.len == call.args.len or
+      return error[PlumType, Error](error(
+        "Tried to use {name.string} with {call.args.len} arguments, but it 
+        'needs {called_def.params.len}.",
+        name.src
+      ))
+
+    var inner_env = map[String, PlumType]()
+    for arg in zip(called_def.params.iter(), args.iter()) do
+      inner_env.&.put(arg.a, arg.b)
+    var type = called_def.type.specialize(Substitutions {
+      substitutions = inner_env
+    })
+
+    ok[PlumType, Error](type)
+  }
+  case struct_(struct_) {
+    var fields = map[String, PlumType]()
+    | TODO: check for duplicates
+    for field in struct_ do
+      fields.&.put(field.name.string, field.type.compile(defs)?)
+    ok[PlumType, Error](PlumType.struct_(fields))
+  }
+  case enum_(enum_) {
+    var variants = map[String, PlumType]()
+    | TODO: check for duplicates
+    for variant in enum_ do
+      variants.&.put(variant.name.string, variant.type.compile(defs)?)
+    ok[PlumType, Error](PlumType.enum_(variants))
+  }
+  case lambda(lambda) {
+    var args = list[PlumType]()
+    for arg in lambda.args do args.&.push(arg.compile(defs)?)
+    var args = args.to_slice()
+
+    var return_type = lambda.return_type.compile(defs)?
+
+    ok[PlumType, Error](PlumType.lambda(LambdaType {
+      args, return_type = return_type.put_on_heap()
+    }))
+  }
+}
+
+fun compile(
+  type: ToastType, module: Module, defs: Map[String, PlumTypeDef]
+): Result[PlumType, Error] {
+  type.prefix_calls_with_module(module).compile(defs)
+}

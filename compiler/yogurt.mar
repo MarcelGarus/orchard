@@ -1,113 +1,61 @@
 | Your Official Graph Using Resolved Types  
+|
+| Starting from the main function, called functions are compiled to the Yogurt.
+| Generic functions are specilized for concrete types. Casts are turned into
+| calls of casting functions.
+| TODO: Think about making bodys accept only a single parameter and turning
+| closures into explicit structs.
 
 import plum.mar
 
 struct Yogurt { funs: Map[String, YogurtFun] }
 
 struct YogurtFun {
-  exprs: Slice[YogurtExpr], captures: Maybe[Slice[YogurtId]], body: YogurtBody
+  dag: Dag[YogurtExpr], captures: Maybe[Slice[Id]], body: YogurtBody
 }
-struct YogurtId { index: Int }
-struct YogurtBody {
-  params: Slice[YogurtId], exprs: Slice[YogurtId], returns: YogurtId
-}
+struct YogurtBody { params: Slice[Id], children: Slice[Id], returns: Id }
 struct YogurtExpr { op: YogurtOp, type: PlumType }
-
-struct YogurtValue { type: PlumType, kind: YogurtValueKind }
-enum YogurtValueKind {
-  int: Int,
-  string: String,
-  struct_: Map[String, YogurtValue],
-  enum_: YogurtEnumValue,
-  lambda: YogurtLambdaValue,
-  type: PlumType,
-}
-struct YogurtEnumValue { name: String, value: &YogurtValue }
-struct YogurtLambdaValue { function: String, captures: Slice[YogurtValue] }
 
 enum YogurtOp {
   param,
   uninitialized,
-  comptime: YogurtValue,
-  struct_: Map[String, YogurtId],
+  int: Int,
+  string: String,
+  struct_: Map[String, Id],
   member: YogurtMember,
   enum_: YogurtEnum,
   switch_: YogurtSwitch,
   lambda: YogurtLambda,
-  lambda_call: YogurtLambdaCall,
   call: YogurtCall,
-  instruction: YogurtInstruction,
+  type: PlumType,
 }
-struct YogurtMember { of: YogurtId, name: String }
-struct YogurtSwitch { condition: YogurtId, cases: Map[String, YogurtBody] }
-struct YogurtEnum { name: String, value: YogurtId }
-struct YogurtLambda { function: String, captures: Slice[YogurtId] }
-struct YogurtLambdaCall { lambda: YogurtId, args: Slice[YogurtId] }
-struct YogurtCall { function: String, args: Slice[YogurtId] }
-struct YogurtInstruction { instruction: Instruction, args: Slice[YogurtId] }
+struct YogurtMember { of: Id, name: String }
+struct YogurtSwitch { condition: Id, cases: Map[String, YogurtBody] }
+struct YogurtEnum { name: String, value: Id }
+struct YogurtLambda { function: String, captures: Slice[Id] }
+struct YogurtCall { callee: YogurtCallee, args: Slice[Id] }
+enum YogurtCallee { lambda: Id, fun_: String, builtin: YogurtBuiltin }
+
+enum YogurtBuiltin {
+  | byte operations
+  | TODO: add when we have bytes
+  | int operations
+  add_ints, sub_ints, mul_ints, div_ints, mod_ints, and_ints, or_ints, xor_ints,
+  compare_ints,
+  | string operations
+  concat_strings,
+  | error stuff
+  crash,
+}
 
 fun yogurt(): _ { Yogurt { funs = map[String, YogurtFun]() } }
 
-fun $(kind: YogurtValueKind, type: PlumType): _ { YogurtValue { kind, type } }
-
 fun $(op: YogurtOp, type: PlumType): _ { YogurtExpr { op, type } }
-fun to_expr(value: YogurtValue): _ { YogurtOp.comptime(value) $ value.type }
 
-var yogurt_value_nothing =
-  YogurtValueKind.struct_(map[String, YogurtValue]()) $ type_nothing
-fun yogurt_value_int(int: Int): _ { YogurtValueKind.int(int) $ type_int }
-fun yogurt_value_string(string: String): YogurtValue {
-  YogurtValueKind.string(string) $ type_string
-}
-fun yogurt_value_struct(fields: Map[String, YogurtValue]): YogurtValue {
-  var field_types = map[String, PlumType]()
-  for field in fields do field_types.&.put(field.key, field.value.type)
-  YogurtValueKind.struct_(fields) $ PlumType.struct_(field_types)
-}
-fun yogurt_value_struct(
-  type: PlumType, fields: Map[String, YogurtValue]
-): YogurtValue {
-  for field in fields do
-    field.value.type == type.struct_.unwrap().get(field.key)
-      or panic("field has wrong type")
-  YogurtValueKind.struct_(fields) $ type
-}
-fun yogurt_value_type(type: PlumType): YogurtValue {
-  YogurtValueKind.type(type) $ type_type
-}
-fun yogurt_value_enum(name: String, value: YogurtValue): YogurtValue {
-  YogurtValueKind.enum_(YogurtEnumValue {
-    name, value = value.put_on_heap()
-  }) $ PlumType.enum_(map(name -> value.type))
-}
-fun yogurt_value_list(items: Slice[YogurtValue], item_type: PlumType): YogurtValue {
-  if items.get_maybe(0) is some(item) then
-    yogurt_value_enum(
-      "more",
-      yogurt_value_struct(map(
-        "item" -> item,
-        "rest" -> yogurt_value_list(items.subslice(1..items.len), item_type)
-      ))
-    )
-  else
-    yogurt_value_enum("empty", yogurt_value_nothing)
-}
-
-fun get(fun_: YogurtFun, id: YogurtId): YogurtExpr { fun_.exprs.get(id.index) }
-
-fun ==(a: YogurtId, b: YogurtId): Bool { a.index == b.index }
-fun hash(hasher: &Hasher, id: YogurtId) { hasher.hash(id.index) }
-
-fun signature(name: String, params: Slice[PlumType]): String {
+fun signature(module: Module, name: String, params: Slice[PlumType]): String {
   var b = string_builder().&
-  b."{name}"
+  b."{module}.{name}"
   for param in params do b." {param}"
-  b.to_string()
-}
-fun signature(name: String, args: Slice[YogurtValue]): String {
-  var b = string_builder().&
-  b."{name}"
-  for arg in args do b." {arg}"
   b.to_string()
 }
 
@@ -126,12 +74,11 @@ fun write[W](writer: W, yogurt: Yogurt) {
     writer.write(fun_.value.body, fun_.value, 1)
   }
 }
-fun write[W](writer: W, id: YogurtId) { writer."@{id.index}" }
 fun write[W](writer: W, body: YogurtBody, fun_: YogurtFun, indentation: Int) {
   for param in body.params do writer." {param}"
   writer."\n"
-  for id in body.exprs do {
-    var expr = fun_.get(id)
+  for id in body.children do {
+    var expr = fun_.dag.get(id)
     for i in 0..indentation do writer."  "
     writer."{id}: {expr.type} = "
     writer.write(expr.op, fun_, indentation)
@@ -143,7 +90,8 @@ fun write[W](writer: W, body: YogurtBody, fun_: YogurtFun, indentation: Int) {
 fun write[W](writer: W, op: YogurtOp, fun_: YogurtFun, indentation: Int) {
   switch op
   case uninitialized writer."uninitialized"
-  case comptime(value) writer."comptime {value}"
+  case int(int) writer."int {int}"
+  case string(string) writer."string {string}"
   case param(param) writer."param {param}"
   case struct_(struct_) {
     writer."&"
@@ -165,33 +113,15 @@ fun write[W](writer: W, op: YogurtOp, fun_: YogurtFun, indentation: Int) {
     for capture in lambda.captures do writer." {capture}"
     writer."] {lambda.function}"
   }
-  case lambda_call(call) {
-    writer."call {call.lambda}"
-    for arg in call.args do writer." {arg}"
-  }
   case call(call) {
-    writer."call \"{call.function}\""
+    writer."call {call.callee}"
     for arg in call.args do writer." {arg}"
   }
-  case instruction(instruction) {
-    writer."instruction {instruction.instruction}"
-    for arg in instruction.args do writer." {arg}"
-  }
+  case type(type) writer."type {type}"
 }
-fun write[W](writer: W, value: YogurtValue) {
-  switch value.kind
-  case int(int) writer."{int}"
-  case string(string) writer."{string.debug()}"
-  case struct_(struct_) {
-    writer."(&"
-    for field in struct_ do writer." {field.key}: {field.value}"
-    writer.")"
-  }
-  case enum_(enum_) writer."(| {enum_.name} {enum_.value})"
-  case lambda(lambda) {
-    writer."\\ [capturing"
-    for captured in lambda.captures do writer." {captured}"
-    writer."] {lambda.function}"
-  }
-  case type(type) writer."{type}"
+fun write[W](writer: W, callee: YogurtCallee) {
+  switch callee
+  case lambda(lambda) writer."{lambda}"
+  case fun_(fun_) writer."{fun_}"
+  case builtin(builtin) writer."{builtin.debug()}"
 }

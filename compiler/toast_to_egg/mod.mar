@@ -1,0 +1,41 @@
+| Converting Toast To Egg  
+
+import ../plum.mar
+import visible.mar
+import types.mar
+import lookup.mar
+| import stack.mar | TODO: deal with this or remove
+| import run_fun.mar | TODO: deal with this or remove
+import compile_fun.mar
+
+fun to_egg(toasts: Map[Module, Toast], entry_module: Module): Result[Egg, Error] {
+  var types = compile_all_types(toasts)?
+  var stuff = collect_all_funs(toasts, types)?
+  var funs = stuff.a
+  var visible_by_module = stuff.b
+
+  for entry in funs do
+    eprintln("{entry.key}: {
+      switch entry.value.impl
+      case local "local"
+      case imported(sig) sig
+      case builtin(builtin) "{builtin}"
+    }")
+
+  var compiled_funs = map[String, EggFun]()
+  for entry in funs do {
+    var signature = entry.key
+    var fun_ = entry.value
+    switch fun_.impl
+    case local(fun_) {
+      var compiled = fun_.fun_.compile(
+        fun_.module, visible_by_module, funs, types
+      )?
+      compiled_funs.&.put(signature, compiled)
+    }
+    case imported {}
+    case builtin {}
+  }
+
+  ok[Egg, Error](Egg { entry_module, funs = compiled_funs })
+}

@@ -6,7 +6,7 @@ fun to_pesto(type: PlumType): PestoType {
   switch type
   case primitive(name) {
     if name == "Int" then PestoType.int
-    else unreachable()
+    else panic("primitive type {name}")
   }
   case never PestoType.struct_(map[String, PestoType]())
   case struct_(struct_) {
@@ -54,6 +54,38 @@ fun is_recursive(type: PlumType, depth: Int): Bool {
   case recursive(level) level >= depth
 }
 
+fun contains_ptr(type: PestoType): Bool {
+  switch type
+  case int false
+  case ptr true
+  case struct_(fields) {
+    for field in fields do if field.value.contains_ptr() then return true
+    false
+  }
+  case enum_(variants) {
+    for variant in variants do if variant.value.contains_ptr() then return true
+    false
+  }
+}
+
+fun push_dup(
+  builder: &PestoBodyBuilder, id: PestoId, type: PlumType, pesto: &Pesto
+): PestoId {
+  if not(type.to_pesto().contains_ptr()) then return id
+  builder.push(PestoOp.call(PestoCall {
+    function = type.compile_dup_fun(pesto), args = id
+  }) $ pesto_nothing.type)
+}
+
+fun push_drop(
+  builder: &PestoBodyBuilder, id: PestoId, type: PlumType, pesto: &Pesto
+): PestoId {
+  if not(type.to_pesto().contains_ptr()) then return id
+  builder.push(PestoOp.call(PestoCall {
+    function = type.compile_drop_fun(pesto), args = id
+  }) $ pesto_nothing.type)
+}
+
 | Creates a function that accepts a value of the given type, traverses that
 | value, and calls dup on all inner members. If it reaches a pointer, it instead
 | just increments that pointer's reference count.
@@ -73,9 +105,7 @@ fun compile_dup_fun(type: PlumType, pesto: &Pesto): String {
       var value = builder.push(PestoOp.member(PestoMember {
         of = builder.param, name = field.key
       }) $ field.value.to_pesto())
-      builder.push(PestoOp.call(PestoCall {
-        function = field.value.compile_dup_fun(pesto), args = value
-      }) $ pesto_nothing.type)
+      builder.push_dup(value, field.value, pesto)
     }
   case enum_(variants) {
     var type = type.to_pesto()
@@ -84,13 +114,10 @@ fun compile_dup_fun(type: PlumType, pesto: &Pesto): String {
       var payload_type = builder.get(builder.param).type
         .enum_.unwrap().get(variant.key)
       var builder = builder.parent.body_builder(payload_type).&
-      if payload_type is ptr then {
+      if payload_type is ptr then
         builder.push(PestoOp.dup(builder.param) $ PestoType.int)
-      } else {
-        builder.push(PestoOp.call(PestoCall {
-          function = variant.value.compile_dup_fun(pesto), args = builder.param
-        }) $ pesto_nothing.type)
-      }
+      else
+        builder.push_dup(builder.param, variant.value, pesto)
       cases.&.put(variant.key, builder.finish(builder.push(pesto_nothing)))
     }
     builder.push(PestoOp.switch_(PestoSwitch {
@@ -134,9 +161,7 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
       var value = builder.push(PestoOp.member(PestoMember {
         of = builder.param, name = field.key
       }) $ field.value.to_pesto())
-      builder.push(PestoOp.call(PestoCall {
-        function = field.value.compile_drop_fun(pesto), args = value
-      }) $ pesto_nothing.type)
+      builder.push_drop(value, field.value, pesto)
     }
   case enum_(variants) {
     var type = type.to_pesto()
@@ -181,11 +206,9 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
             },
           ),
         }) $ pesto_nothing.type)
-      } else {
-        builder.push(PestoOp.call(PestoCall {
-          function = variant.value.compile_drop_fun(pesto), args = builder.param
-        }) $ pesto_nothing.type)
-      }
+      } else
+        builder.push_drop(builder.param, variant.value, pesto)
+
       cases.&.put(variant.key, builder.finish(builder.push(pesto_nothing)))
     }
     builder.push(PestoOp.switch_(PestoSwitch {
@@ -263,9 +286,7 @@ fun compile_closure_free_fun(
     var value = builder.push(PestoOp.member(PestoMember {
       of = closure, name = "{capture.index}"
     }) $ capture.item.to_pesto())
-    builder.push(PestoOp.call(PestoCall {
-      function = capture.item.compile_drop_fun(pesto), args = value
-    }) $ pesto_nothing.type)
+    builder.push_drop(value, capture.item, pesto)
   }
   builder.push(PestoOp.free(builder.param) $ pesto_nothing.type)
 
@@ -421,15 +442,9 @@ fun to_pesto(
       })
     }
     case dup(value)
-      PestoOp.call(PestoCall {
-        function = fun_.get(value).type.compile_dup_fun(pesto),
-        args = mapping.get(value)
-      })
+      return builder.push_dup(mapping.get(value), fun_.get(value).type, pesto)
     case drop(value)
-      PestoOp.call(PestoCall {
-        function = fun_.get(value).type.compile_drop_fun(pesto),
-        args = mapping.get(value)
-      })
+      return builder.push_drop(mapping.get(value), fun_.get(value).type, pesto)
   builder.push(op $ type)
 }
 
@@ -494,7 +509,9 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
 
 fun to_pesto(pudding: Pudding): Pesto {
   var pesto = pesto()
-  for fun_ in pudding.funs do
+  for fun_ in pudding.funs do {
+    eprintln("compiling {fun_.key}")
     pesto.funs.&.put(fun_.key, fun_.value.to_pesto(pesto.&))
+  }
   pesto
 }

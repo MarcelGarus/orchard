@@ -171,7 +171,8 @@ fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
     case jump(address) current_call.* = address
     case jump_table(table) {
       var byte = vm.data_stack.&.pop()
-      current_call.* = table.get(byte.to_int())
+      current_call.* = table.get_maybe(byte.to_int())
+        or panic("Tried to use a jump_table of len {table.len} with index {byte}")
     }
     case call(target) vm.call_stack.&.push(target)
     case call_indirect {
@@ -179,20 +180,52 @@ fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
       vm.call_stack.&.push(target)
     }
     case ret vm.call_stack.&.pop().ignore()
-    case add_8 vm.&.push_int(vm.&.pop_int() + vm.&.pop_int())
-    case sub_8 vm.&.push_int(vm.&.pop_int() - vm.&.pop_int())
-    case mul_8 vm.&.push_int(vm.&.pop_int() * vm.&.pop_int())
-    case div_8 vm.&.push_int(vm.&.pop_int() / vm.&.pop_int())
-    case mod_8 vm.&.push_int(vm.&.pop_int() % vm.&.pop_int())
+    case add_8 vm.&.push_int({
+      var b = vm.&.pop_int()
+      var a = vm.&.pop_int()
+      a + b
+    })
+    case sub_8 vm.&.push_int({
+      var b = vm.&.pop_int()
+      var a = vm.&.pop_int()
+      a - b
+    })
+    case mul_8 vm.&.push_int({
+      var b = vm.&.pop_int()
+      var a = vm.&.pop_int()
+      a * b
+    })
+    case div_8 vm.&.push_int({
+      var b = vm.&.pop_int()
+      var a = vm.&.pop_int()
+      a / b
+    })
+    case mod_8 vm.&.push_int({
+      var b = vm.&.pop_int()
+      var a = vm.&.pop_int()
+      a % b
+    })
     case compare_zero_8 vm.&.push_byte(
       switch vm.&.pop_int() <=> 0
-      case less 0.lower_byte()
-      case equal 1.lower_byte()
-      case greater 2.lower_byte()
+      case equal 0.lower_byte()
+      case greater 1.lower_byte()
+      case less 2.lower_byte()
     )
-    case and_8 vm.&.push_int(vm.&.pop_int() & vm.&.pop_int())
-    case or_8 vm.&.push_int(or(vm.&.pop_int(), vm.&.pop_int()))
-    case xor_8 vm.&.push_int(vm.&.pop_int() ^ vm.&.pop_int())
+    case and_8 vm.&.push_int({
+      var b = vm.&.pop_int()
+      var a = vm.&.pop_int()
+      a & b
+    })
+    case or_8 vm.&.push_int({
+      var b = vm.&.pop_int()
+      var a = vm.&.pop_int()
+      {or(a, b)}
+    })
+    case xor_8 vm.&.push_int({
+      var b = vm.&.pop_int()
+      var a = vm.&.pop_int()
+      a ^ b
+    })
     case malloc {
       var alignment = vm.data_stack.&.pop().to_int()
       var size = vm.&.pop_int()

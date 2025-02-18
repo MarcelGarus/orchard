@@ -16,8 +16,9 @@ enum ToastDef {
 }
 
 struct ToastImport { keyword: StringAndSrc, parts: Slice[ToastImportPart] }
-struct ToastImportPart { module: String, names: Slice[String] }
-struct ToastExport { keyword: StringAndSrc, names: Slice[String] }
+struct ToastImportPart { module: String, signatures: Slice[ToastSignature] }
+struct ToastExport { keyword: StringAndSrc, signatures: Slice[ToastSignature] }
+struct ToastSignature { name: StringAndSrc, args: Slice[ToastType] }
 
 struct ToastTypeDef {
   name: StringAndSrc, params: Slice[StringAndSrc], type: ToastType
@@ -76,6 +77,28 @@ struct StringAndSrc { string: String, src: Src }
 fun @(int: Int, src: Src): _ { IntAndSrc { int, src } }
 fun @(string: String, src: Src): _ { StringAndSrc { string, src } }
 
+fun ==(a: &ToastType, b: &ToastType): Bool { a.* == b.* }
+fun ==(a: ToastType, b: ToastType): Bool {
+  switch a
+  case variable(a) if b is variable(b) then a.string == b.string else false
+  case call(a)     if b is call(b)     then a == b else false
+  case struct_(a)  if b is struct_(b)  then a == b else false
+  case enum_(a)    if b is enum_(b)    then a == b else false
+  case lambda(a)   if b is lambda(b)   then a == b else false
+}
+fun ==(a: ToastTypeCall, b: ToastTypeCall): Bool {
+  a.name.string == b.name.string and a.args == b.args
+}
+fun ==(a: ToastTypeField, b: ToastTypeField): Bool {
+  a.name.string == b.name.string and a.type == b.type
+}
+fun ==(a: ToastTypeVariant, b: ToastTypeVariant): Bool {
+  a.name.string == b.name.string and a.type == b.type
+}
+fun ==(a: ToastTypeLambda, b: ToastTypeLambda): Bool {
+  a.args == b.args and a.return_type == b.return_type
+}
+
 fun write[W](writer: W, toast: Toast) {
   var first = true
   for def in toast.defs do {
@@ -87,9 +110,24 @@ fun write[W](writer: W, def: ToastDef, indentation: Indentation) {
   writer."{indentation}"
   switch def
   case import_(import_) {
-    writer."import {import_.module.debug()}.{import_.definition}"
+    writer."import"
+    for part in import_.parts do {
+      writer."\n  {part.module.debug()}"
+      var first = true
+      for signature in part.signatures do {
+        if first then first = false else writer.","
+        writer." {signature}"
+      }
+    }
   }
-  case export(export) writer."export {export.definition}"
+  case export(export) {
+    writer."export"
+    var first = true
+    for signature in export.signatures do {
+      if first then first = false else writer.","
+      writer." {signature}"
+    }
+  }
   case type(type) {
     writer."{type.name.string}"
     for param in type.params do writer." {param.string}"
@@ -102,6 +140,10 @@ fun write[W](writer: W, def: ToastDef, indentation: Indentation) {
     writer." -> {fun_.return_type} =\n"
     writer.write(fun_.body, indentation + 1)
   }
+}
+fun write[W](writer: W, signature: ToastSignature) {
+  writer."{signature.name.string}"
+  for arg in signature.args do writer." {arg}"
 }
 fun write[W](writer: W, type: ToastType) {
   switch type
@@ -117,13 +159,7 @@ fun write[W](writer: W, type: ToastType) {
   }
   case enum_(variants) {
     writer."|"
-    for variant in variants do {
-      writer." "
-      if variant.payloads.is_not_empty() then writer."("
-      writer."{variant.name.string}"
-      for payload in variant.payloads do writer." {payload.without_whitespace()}"
-      if variant.payloads.is_not_empty() then writer.")"
-    }
+    for variant in variants do writer." {variant.name.string}: {variant.type}"
   }
   case lambda(lambda) {
     writer."\\"
@@ -159,9 +195,9 @@ fun write[W](writer: W, expr: ToastExpr, indentation: Indentation) {
     }
     if struct_.fields.is_empty() then writer."{indentation}&"
   }
-  case member(member) {
-    writer.write(member.of.*, indentation)
-    writer."\n{indentation}.{member.name.string}"
+  case enum_(enum_) {
+    writer."{indentation}| {enum_.name.string}:\n"
+    writer.write(enum_.value.*, indentation + 2)
   }
   case switch_(switch_) {
     writer.write(switch_.condition.*, indentation)
