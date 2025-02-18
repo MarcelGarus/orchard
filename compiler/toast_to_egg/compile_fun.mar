@@ -81,11 +81,15 @@ fun compile(
     case struct_(struct_) {
       var fields = map[String, Id]()
       var types = map[String, PlumType]()
-      | TODO: check for duplicates
       for field in struct_.fields do {
         var name = field.name.string
         var value = field.value.compile(body, module, visible, context)?
         var type = body.type_of(value)
+        if fields.contains(name) then
+          return error[Id, Error](error(
+            "{name} is in the struct multiple times.",
+            struct_.ampersand.src,
+          ))
         fields.&.put(name, value)
         types.&.put(name, type)
       }
@@ -111,24 +115,27 @@ fun compile(
           "Switched on non-enum: {condition_type}", switch_.percent.src
         ))
 
-      | TODO: !!!
-      | Make sure all variants are handled and that no extra variants are
-      | handled.
-      | for variant in variant_types do {
-      |   switch_.cases.contains(variant.key) or
-      |     return error[YogurtId, Error](error(
-      |       "You switch on {condition_type}, but you don't handle the 
-      |       '{variant.key} variant.",
-      |       switch_.percent.src
-      |     ))
-      | }
-      | for case_ in switch_.cases do
-      |   condition_variants.contains(case_.key) or
-      |     return error[YogurtId, Error](error(
-      |       "You switch on {condition_type} and you try to handle the 
-      |       'non-existent {case_.key} variant.",
-      |       switch_.percent.src
-      |     ))
+      | Make sure that no variant is handled twice, that all variants are
+      | handled, and that no extra variants are handled.
+      var handled_variants = set[String]()
+      for case_ in switch_.cases do {
+        if handled_variants.contains(case_.symbol.string) then
+          return error[Id, Error](error(
+            "{case_.symbol.string} is handled multiple times.",
+            switch_.percent.src,
+          ))
+        handled_variants.&.put(case_.symbol.string)
+      }
+      for variant in variant_types do
+        if not(handled_variants.contains(variant.key)) then
+          return error[Id, Error](error(
+            "{variant.key} is not handled.", switch_.percent.src
+          ))
+      for variant in handled_variants do
+        if not(variant_types.contains(variant)) then
+          return error[Id, Error](error(
+            "Handling non-existent variant {variant}.", switch_.percent.src
+          ))
 
       | Compile the individual cases.
       var case_compilers = map[String, Tuple2[EggBodyBuilder, Id]]()
@@ -345,7 +352,6 @@ fun compile(
                   ))
                 else eprintln("no match: {builtin_signature}")
               }
-              
               fun_ = context.funs.get_maybe(new_signature) or
                 return error[Id, Error](error(
                   "Function {new_signature} doesn't exist.", name.src
@@ -378,7 +384,23 @@ fun compile(
             "Tried to call non-lambda: {lambda_type}",
             call.function.src(),
           ))
-        | TODO: check that argument types are compatible!!!!
+
+        | Cast arguments
+        var cast_args = list[Id]()
+        for both in zip(args.iter(), lambda_type.args.iter()) do {
+          var arg = both.a
+          var expected_type = both.b
+          body.type_of(arg).is_assignable_to(expected_type) or
+            return return error[Id, Error](error(
+              "Tried to call lambda with wrong types.",
+              call.function.src(),
+            ))
+          cast_args.&.push(
+            body.push_cast(arg, expected_type, call.function.src())
+          )
+        }
+        var args = cast_args.to_slice()
+
         body.push(
           EggOp.call(EggCall { callee = EggCallee.lambda(lambda), args })
             .expr(lambda_type.return_type.*, call.function.src())
