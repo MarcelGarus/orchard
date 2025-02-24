@@ -299,7 +299,7 @@ fun compile_closure_free_fun(
 
 fun to_pesto(
   expr: PuddingExpr, fun_: PuddingFun,
-  builder: &PestoBodyBuilder, mapping: &Map[PuddingId, PestoId], pesto: &Pesto
+  builder: &PestoBodyBuilder, mapping: &Map[Id, PestoId], pesto: &Pesto
 ): PestoId {
   var type = expr.type.to_pesto()
   var op =
@@ -341,7 +341,7 @@ fun to_pesto(
             if payload_type is ptr then
               builder.push(
                 PestoOp.load(builder.param)
-                  $ fun_.get(plum_payload).type.to_pesto()
+                  $ fun_.dag.get(plum_payload).type.to_pesto()
               )
             else
               builder.param
@@ -361,7 +361,7 @@ fun to_pesto(
         for id in lambda.captures.iter().enumerate() do {
           var key = "{id.index}"
           values.&.put(key, mapping.get(id.item))
-          types.&.put(key, fun_.get(id.item).type.to_pesto())
+          types.&.put(key, fun_.dag.get(id.item).type.to_pesto())
         }
         PestoOp.struct_(values) $ PestoType.struct_(types)
       }
@@ -378,7 +378,7 @@ fun to_pesto(
       | Create a function pointer to a function for freeing the closure.
       var captured_plum_types = {
         var types = list[PlumType]()
-        for id in lambda.captures do types.&.push(fun_.get(id).type)
+        for id in lambda.captures do types.&.push(fun_.dag.get(id).type)
         types.to_slice()
       }
       var free_fun_ptr = builder.push(
@@ -410,7 +410,7 @@ fun to_pesto(
         for arg in call.args.iter().enumerate() do {
           var key = "{arg.index}"
           arg_values.&.put(key, mapping.get(arg.item))
-          arg_types.&.put(key, fun_.get(arg.item).type.to_pesto())
+          arg_types.&.put(key, fun_.dag.get(arg.item).type.to_pesto())
         }
         arg_values.&.put("closure", closure_ptr)
         arg_types.&.put("closure", PestoType.ptr)
@@ -426,7 +426,7 @@ fun to_pesto(
         for arg in call.args.iter().enumerate() do {
           var key = "{arg.index}"
           arg_values.&.put(key, mapping.get(arg.item))
-          arg_types.&.put(key, fun_.get(arg.item).type.to_pesto())
+          arg_types.&.put(key, fun_.dag.get(arg.item).type.to_pesto())
         }
         builder.push(PestoOp.struct_(arg_values) $ PestoType.struct_(arg_types))
       }
@@ -442,9 +442,9 @@ fun to_pesto(
       })
     }
     case dup(value)
-      return builder.push_dup(mapping.get(value), fun_.get(value).type, pesto)
+      return builder.push_dup(mapping.get(value), fun_.dag.get(value).type, pesto)
     case drop(value)
-      return builder.push_drop(mapping.get(value), fun_.get(value).type, pesto)
+      return builder.push_drop(mapping.get(value), fun_.dag.get(value).type, pesto)
   builder.push(op $ type)
 }
 
@@ -452,10 +452,10 @@ fun to_pesto(
 | already been added.
 fun to_pesto(
   body: PuddingBody, fun_: PuddingFun,
-  builder: &PestoBodyBuilder, mapping: &Map[PuddingId, PestoId], pesto: &Pesto
+  builder: &PestoBodyBuilder, mapping: &Map[Id, PestoId], pesto: &Pesto
 ): PestoId {
   for id in body.exprs do
-    mapping.put(id, fun_.get(id).to_pesto(fun_, builder, mapping, pesto))
+    mapping.put(id, fun_.dag.get(id).to_pesto(fun_, builder, mapping, pesto))
   mapping.get(body.returns)
 }
 
@@ -465,7 +465,9 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
   var param_type = {
     var param_types = map[String, PestoType]()
     for param in fun_.body.params.iter().enumerate() do
-      param_types.&.put("{param.index}", fun_.get(param.item).type.to_pesto())
+      param_types.&.put(
+        "{param.index}", fun_.dag.get(param.item).type.to_pesto()
+      )
     if fun_.captures is some then
       param_types.&.put("closure", PestoType.ptr)
     PestoType.struct_(param_types)
@@ -473,13 +475,13 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
 
   var fun_builder = pesto_fun_builder().&
   var builder = fun_builder.body_builder(param_type).&
-  var mapping = map[PuddingId, PestoId]().&
+  var mapping = map[Id, PestoId]().&
 
   | Extract the individual arguments and captured values from the struct.
   for param in fun_.body.params.iter().enumerate() do {
     var id = builder.push(PestoOp.member(PestoMember {
       of = builder.param, name = "{param.index}"
-    }) $ fun_.get(param.item).type.to_pesto())
+    }) $ fun_.dag.get(param.item).type.to_pesto())
     mapping.put(param.item, id)
   }
   if fun_.captures is some(captures) then {
@@ -490,7 +492,9 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
     var closure_type = {
       var fields = map[String, PestoType]()
       for capture in captures.iter().enumerate() do
-        fields.&.put("{capture.index}", fun_.get(capture.item).type.to_pesto())
+        fields.&.put(
+          "{capture.index}", fun_.dag.get(capture.item).type.to_pesto()
+        )
       PestoType.struct_(fields)
     }
     var closure = builder.push(PestoOp.load(closure_ptr) $ closure_type)
@@ -498,7 +502,7 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
     for capture in captures.iter().enumerate() do {
       var id = builder.push(PestoOp.member(PestoMember {
         of = closure, name = "{capture.index}"
-      }) $ fun_.get(capture.item).type.to_pesto())
+      }) $ fun_.dag.get(capture.item).type.to_pesto())
       mapping.put(capture.item, id)
     }
   }
