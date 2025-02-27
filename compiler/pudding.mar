@@ -5,12 +5,9 @@ import plum.mar
 struct Pudding { funs: Map[String, PuddingFun] }
 
 struct PuddingFun {
-  exprs: Slice[PuddingExpr], captures: Maybe[Slice[PuddingId]], body: PuddingBody
+  dag: Dag[PuddingExpr], captures: Maybe[Slice[Id]], body: PuddingBody
 }
-struct PuddingId { index: Int }
-struct PuddingBody {
-  params: Slice[PuddingId], exprs: Slice[PuddingId], returns: PuddingId
-}
+struct PuddingBody { params: Slice[Id], exprs: Slice[Id], returns: Id }
 struct PuddingExpr { op: PuddingOp, type: PlumType }
 
 enum PuddingOp {
@@ -19,7 +16,7 @@ enum PuddingOp {
   int: Int,
   string: String,
   type: PlumType,
-  struct_: Map[String, PuddingId],
+  struct_: Map[String, Id],
   member: PuddingMember,
   enum_: PuddingEnum,
   switch_: PuddingSwitch,
@@ -27,16 +24,16 @@ enum PuddingOp {
   lambda_call: PuddingLambdaCall,
   call: PuddingCall,
   instruction: PuddingInstruction,
-  dup: PuddingId,
-  drop: PuddingId,
+  dup: Id,
+  drop: Id,
 }
-struct PuddingMember { of: PuddingId, name: String }
-struct PuddingSwitch { condition: PuddingId, cases: Map[String, PuddingBody] }
-struct PuddingEnum { name: String, value: PuddingId }
-struct PuddingLambda { function: String, captures: Slice[PuddingId] }
-struct PuddingLambdaCall { lambda: PuddingId, args: Slice[PuddingId] }
-struct PuddingCall { function: String, args: Slice[PuddingId] }
-struct PuddingInstruction { instruction: Instruction, args: Slice[PuddingId] }
+struct PuddingMember { of: Id, name: String }
+struct PuddingSwitch { condition: Id, cases: Map[String, PuddingBody] }
+struct PuddingEnum { name: String, value: Id }
+struct PuddingLambda { function: String, captures: Slice[Id] }
+struct PuddingLambdaCall { lambda: Id, args: Slice[Id] }
+struct PuddingCall { function: String, args: Slice[Id] }
+struct PuddingInstruction { instruction: Instruction, args: Slice[Id] }
 
 | Constructing Pudding  
 
@@ -44,63 +41,7 @@ fun pudding(): Pudding { Pudding { funs = map[String, PuddingFun]() } }
 
 fun $(op: PuddingOp, type: PlumType): _ { PuddingExpr { op, type } }
 
-struct PuddingFunBuilder { exprs: List[PuddingExpr] }
-struct PuddingBodyBuilder {
-  params: List[PuddingId], exprs: List[PuddingId], parent: &PuddingFunBuilder
-}
-
-fun pudding_fun_builder(): PuddingFunBuilder {
-  PuddingFunBuilder { exprs = list[PuddingExpr]() }
-}
-fun body_builder(parent: &PuddingFunBuilder): PuddingBodyBuilder {
-  PuddingBodyBuilder {
-    params = list[PuddingId](), exprs = list[PuddingId](), parent
-  }
-}
-fun create(builder: &PuddingFunBuilder, expr: PuddingExpr): PuddingId {
-  var id = PuddingId { index = builder.exprs.len }
-  builder.exprs.&.push(expr)
-  id
-}
-fun push_param(builder: &PuddingBodyBuilder, type: PlumType): PuddingId {
-  var id = builder.parent.create(PuddingOp.param $ type)
-  builder.params.&.push(id)
-  id
-}
-fun push(builder: &PuddingBodyBuilder, expr: PuddingExpr): PuddingId {
-  var id = builder.parent.create(expr)
-  builder.exprs.&.push(id)
-  id
-}
-fun get(builder: PuddingFunBuilder, id: PuddingId): PuddingExpr {
-  builder.exprs.get(id.index)
-}
-fun get(builder: PuddingBodyBuilder, id: PuddingId): PuddingExpr {
-  builder.parent.get(id)
-}
-fun returns(builder: PuddingBodyBuilder, id: PuddingId): PuddingBody {
-  PuddingBody {
-    params = builder.params.to_slice(),
-    exprs = builder.exprs.to_slice(),
-    returns = id,
-  }
-}
-fun finish(
-  builder: PuddingFunBuilder,
-  captures: Maybe[Slice[PuddingId]],
-  body: PuddingBody,
-): PuddingFun {
-  PuddingFun { exprs = builder.exprs.to_slice(), captures, body }
-}
-
-fun get(fun_: PuddingFun, id: PuddingId): PuddingExpr {
-  fun_.exprs.get(id.index)
-}
-
 fun return_type(fun_: PuddingFun): PlumType { fun_.get(fun_.body.returns).type }
-
-fun ==(a: PuddingId, b: PuddingId): Bool { a.index == b.index }
-fun hash(hasher: &Hasher, id: PuddingId) { hasher.hash(id.index) }
 
 | Writing Pudding  
 
@@ -117,12 +58,11 @@ fun write[W](writer: W, pudding: Pudding) {
     writer.write(fun_.value.body, fun_.value, 1)
   }
 }
-fun write[W](writer: W, id: PuddingId) { writer."@{id.index}" }
 fun write[W](writer: W, body: PuddingBody, fun_: PuddingFun, indentation: Int) {
   for param in body.params do writer." {param}"
   writer."\n"
   for id in body.exprs do {
-    var expr = fun_.get(id)
+    var expr = fun_.dag.get(id)
     for i in 0..indentation do writer."  "
     writer."{id}: {expr.type} = "
     writer.write(expr.op, fun_, indentation)

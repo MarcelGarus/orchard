@@ -1,148 +1,230 @@
 | Converting Yogurt to Pudding  
+|
+| IDs in the Yogurt and Pudding are the same. Generally, the Pudding is also
+| very similar to the Yogurt in terms of abstraction. The only difference is
+| that it contains additional dup/drop instructions for incrementing and
+| decrementing the reference counts of values.
+| Every value in the Pudding is reference counted. Later on, some of the
+| reference counting operations are simplified (for example, if a type doesn't
+| require any heap allocations, no reference counting occurs because it is
+| always copied).
 
 import plum.mar
 
+fun put(dag: &Dag[PuddingExpr], id: Id, expr: PuddingExpr): Id {
+  dag.nodes.&.set(id.index, expr)
+  id
+}
+fun put_dup(dag: &Dag[PuddingExpr], id: Id): Id {
+  dag.put(PuddingOp.dup(id) $ PlumType.never)
+}
+fun put_drop(dag: &Dag[PuddingExpr], id: Id): Id {
+  dag.put(PuddingOp.drop(id) $ PlumType.never)
+}
+
+fun require(
+  rev_body: &List[Id], id: Id, dag: &Dag[PuddingExpr], needed_later_on: &Set[Id]
+) {
+  if needed_later_on.contains(id) then
+    rev_body.push(dag.put_dup(id))
+  else
+    needed_later_on.put(id)
+}
+
 fun to_pudding(
-  expr: YogurtExpr,
-  fun_: YogurtFun,
-  fun_builder: &PuddingFunBuilder, builder: &PuddingBodyBuilder,
-  mapping: &Map[Id, PuddingId],
+  id: Id,
+  fun_: YogurtFun, | TODO: is the DAG enough?
+  dag: &Dag[PuddingExpr], rev_body: &List[Id], needed_later_on: &Set[Id],
   yogurt: Yogurt,
-): PuddingExpr {
+) {
+  var expr = fun_.dag.get(id)
+  var type = expr.type
+
+  if not(needed_later_on.contains(id)) then
+    rev_body.&.push(dag.put_drop(id))
+  else
+    needed_later_on.remove(id)
+
   switch expr.op
   case param unreachable()
   case uninitialized unreachable()
-  case int(int) PuddingOp.int(int) $ type_int
-  case string(string) PuddingOp.string(string) $ type_string
-  case struct_(struct_) {
-    var fields = map[String, PuddingId]()
-    for field in struct_ do {
-      var id = mapping.get(field.value)
-      builder.push(PuddingOp.dup(id) $ PlumType.never)
-      fields.&.put(field.key, id)
-    }
-    PuddingOp.struct_(fields) $ expr.type
+  case int(int) rev_body.push(dag.put(id, PuddingOp.int(int) $ type))
+  case string(string)
+    rev_body.push(dag.put(id, PuddingOp.string(string) $ type))
+  case struct_(fields) {
+    rev_body.push(dag.put(id, PuddingOp.struct_(fields) $ type))
+    for field in fields do rev_body.require(field.value, dag, needed_later_on)
   }
   case member(member) {
-    | TODO: dup extracted member, not the original of (that is not freed at the end)
-    var of = mapping.get(member.of)
-    builder.push(PuddingOp.dup(of) $ PlumType.never)
-    PuddingOp.member(PuddingMember { of, name = member.name }) $ expr.type
+    if needed_later_on.contains(member.of) then {
+      rev_body.push(dag.put_dup(id))
+      rev_body.push(dag.put(
+        id, PuddingOp.member(PuddingMember {
+          of = member.of, name = member.name
+        }) $ type
+      ))
+    } else {
+      rev_body.push(dag.put_drop(member.of))
+      rev_body.push(dag.put_dup(id))
+      rev_body.push(dag.put(
+        id, PuddingOp.member(PuddingMember {
+          of = member.of, name = member.name
+        }) $ type
+      ))
+      rev_body.require(member.of, dag, needed_later_on)
+    }
   }
   case enum_(enum_) {
-    var value = mapping.get(enum_.value)
-    builder.push(PuddingOp.dup(value) $ PlumType.never)
-    PuddingOp.enum_(PuddingEnum { name = enum_.name, value }) $ expr.type
+    rev_body.push(dag.put(
+      id, PuddingOp.enum_(PuddingEnum {
+        name = enum_.name, value = enum_.value
+      }) $ type
+    ))
+    rev_body.require(enum_.value, dag, needed_later_on)
   }
   case switch_(switch_) {
-    var condition = mapping.get(switch_.condition)
-    builder.push(PuddingOp.dup(condition) $ PlumType.never)
+    | Lower the individual cases.
     var cases = map[String, PuddingBody]()
-    for case_ in switch_.cases do
+    var needed_by_branches = map[String, Set[Id]]()
+    for case_ in switch_.cases do {
+      var needed_by_this_branch = set[Id]()
+      for id in needed_later_on do needed_by_this_branch.&.put(id)
       cases.&.put(case_.key, case_.value.to_pudding(
-        fun_, fun_builder, mapping, yogurt
+        fun_, dag, needed_by_this_branch.&, yogurt
       ))
-    PuddingOp.switch_(PuddingSwitch { condition, cases }) $ expr.type
+      needed_by_branches.&.put(case_.key, needed_by_this_branch)
+    }
+
+    | Figure out the IDs that all branches need.
+    for entry in needed_by_branches do
+      for id in entry.value do needed_later_on.&.put(id)
+
+    | If a branch doesn't use IDs that other branches use, drop those at the
+    | start of the branch body.
+    for case_ in cases do {
+      var needed_by_this_branch = needed_by_branches.get(case_.key)
+      var diff_to_other_branches = set[Id]()
+      for id in needed_later_on do
+        if not(needed_by_this_branch.contains(id)) then
+          diff_to_other_branches.&.put(id)
+
+      var drops = list(
+        dag.put_dup(case_.value.params.get(0)),
+        dag.put_drop(switch_.condition),
+      )
+      for id in diff_to_other_branches do drops.&.push(dag.put_drop(id))
+
+      cases.&.put(case_.key, PuddingBody {
+        params = case_.value.params,
+        exprs = {drops + case_.value.exprs.to_list()}.to_slice(),
+        returns = case_.value.returns,
+      })
+    }
+    | todo("switch")
+    rev_body.push(dag.put(
+      id, PuddingOp.switch_(PuddingSwitch {
+        condition = switch_.condition, cases
+      }) $ type
+    ))
+    rev_body.require(switch_.condition, dag, needed_later_on)
   }
   case lambda(lambda) {
-    var captures = list[PuddingId]()
-    for capture in lambda.captures do {
-      var id = mapping.get(capture)
-      builder.push(PuddingOp.dup(id) $ PlumType.never)
-      captures.&.push(id)
-    }
-    PuddingOp.lambda(PuddingLambda {
-      function = lambda.function, captures = captures.to_slice()
-    }) $ expr.type
+    rev_body.push(dag.put(
+      id, PuddingOp.lambda(PuddingLambda {
+        function = lambda.function, captures = lambda.captures
+      }) $ type
+    ))
+    for capture in lambda.captures do
+      rev_body.require(capture, dag, needed_later_on)
   }
   case call(call) {
-    var args = list[PuddingId]()
-    for arg in call.args do {
-      var id = mapping.get(arg)
-      builder.push(PuddingOp.dup(id) $ PlumType.never)
-      args.&.push(id)
-    }
-    var args = args.to_slice()
-
     switch call.callee
     case lambda(lambda) {
-      var lambda = mapping.get(lambda)
-      builder.push(PuddingOp.dup(lambda) $ PlumType.never)
-      PuddingOp.lambda_call(PuddingLambdaCall { lambda, args }) $ expr.type
+      rev_body.push(dag.put(
+        id, PuddingOp.lambda_call(PuddingLambdaCall {
+          lambda, args = call.args
+        }) $ type
+      ))
+      rev_body.require(lambda, dag, needed_later_on)
     }
-    case fun_(fun_) {
-      PuddingOp.call(PuddingCall { function = fun_, args }) $ expr.type
-    }
+    case fun_(fun_)
+      rev_body.push(dag.put(
+        id, PuddingOp.call(PuddingCall {
+          function = fun_, args = call.args
+        }) $ type
+      ))
     case builtin(builtin) {
-      PuddingOp.instruction(PuddingInstruction {
-        instruction =
-          switch builtin
-          case add_ints Instruction.add_ints
-          case sub_ints Instruction.sub_ints
-          case mul_ints Instruction.mul_ints
-          case div_ints Instruction.div_ints
-          case mod_ints Instruction.mod_ints
-          case and_ints Instruction.and_ints
-          case or_ints Instruction.or_ints
-          case xor_ints Instruction.xor_ints
-          case compare_ints Instruction.compare_ints
-          case concat_strings Instruction.concat_strings
-          case crash Instruction.crash,
-        args,
-      }) $ expr.type
+      rev_body.push(dag.put(
+        id, PuddingOp.instruction(PuddingInstruction {
+          instruction =
+            switch builtin
+            case add_ints Instruction.add_ints
+            case sub_ints Instruction.sub_ints
+            case mul_ints Instruction.mul_ints
+            case div_ints Instruction.div_ints
+            case mod_ints Instruction.mod_ints
+            case and_ints Instruction.and_ints
+            case or_ints Instruction.or_ints
+            case xor_ints Instruction.xor_ints
+            case compare_ints Instruction.compare_ints
+            case concat_strings Instruction.concat_strings
+            case crash Instruction.crash,
+          args = call.args,
+        }) $ type
+      ))
     }
+    for arg in call.args do rev_body.require(arg, dag, needed_later_on)
   }
-  case type(type) PuddingOp.type(type) $ type_type
+  case type(ty) rev_body.push(dag.put(PuddingOp.type(ty) $ type))
 }
 
 fun to_pudding(
   body: YogurtBody,
-  fun_: YogurtFun, fun_builder: &PuddingFunBuilder,
-  mapping: &Map[Id, PuddingId], yogurt: Yogurt,
+  fun_: YogurtFun, | TODO: is the DAG enough?
+  dag: &Dag[PuddingExpr],
+  needed_later_on: &Set[Id], | which yogurt ids are needed later on
+  yogurt: Yogurt, | TODO: is this needed?
 ): PuddingBody {
-  var builder = fun_builder.&.body_builder()
+  var rev_body = list[Id]()
+
+  rev_body.&.require(body.returns, dag, needed_later_on)
+
+  for id in body.children.rev_iter() do
+    id.to_pudding(fun_, dag, rev_body.&, needed_later_on, yogurt)
+
+  var params = list[Id]()
   for param in body.params do {
-    var id = builder.&.push_param(fun_.dag.get(param).type)
-    mapping.&.put(param, id)
+    if not(needed_later_on.contains(param)) then
+      rev_body.&.push(dag.put_drop(param))
+    else
+      needed_later_on.remove(param)
+    params.&.push(dag.put(param, PuddingOp.param $ fun_.dag.get(param).type))
   }
-  for id in body.children do {
-    var expr = builder.&.push(fun_.dag.get(id).to_pudding(
-      fun_, fun_builder, builder.&, mapping, yogurt
-    ))
-    mapping.&.put(id, expr)
-  }
-  var returns = mapping.get(body.returns)
+  var params = params.to_slice()
 
-  builder.&.push(PuddingOp.dup(returns) $ PlumType.never)
-  for param in body.params do
-    builder.&.push(PuddingOp.drop(mapping.get(param)) $ PlumType.never)
-  for id in body.children do
-    builder.&.push(PuddingOp.drop(mapping.get(id)) $ PlumType.never)
+  var exprs = list[Id]()
+  for id in rev_body.to_slice().rev_iter() do exprs.&.push(id)
+  var exprs = exprs.to_slice()
 
-  builder.returns(returns)
+  PuddingBody { params, exprs, returns = body.returns }
 }
 
 fun to_pudding(fun_: YogurtFun, yogurt: Yogurt, pudding: &Pudding): PuddingFun {
-  var fun_builder = pudding_fun_builder()
-  var mapping = map[Id, PuddingId]()
+  var dag = dag[PuddingExpr]()
 
-  var captures =
-    switch fun_.captures
-    case none none[Slice[PuddingId]]()
-    case some(captures) {
-      var mapped = list[PuddingId]()
-      for capture in captures do {
-        var id = fun_builder.&.create(PuddingOp.param $ fun_.dag.get(capture).type)
-        mapping.&.put(capture, id)
-        mapped.&.push(id)
-      }
-      some(mapped.to_slice())
-    }
+  | The IDs in the Yogurt and Pudding are the same. So, we first reserve IDs for
+  | all Yogurt expressions so that the additional dup/drop expressions get
+  | bigger IDs.
+  for i in 0..{fun_.dag.nodes.len} do
+    dag.&.put(PuddingOp.uninitialized $ PlumType.never)
 
-  var body = fun_.body.to_pudding(
-    fun_, fun_builder.&, mapping.&, yogurt
-  )
-  fun_builder.finish(captures, body)
+  if fun_.captures is some(captures) then
+    for id in captures do
+      dag.&.put(id, PuddingOp.param $ fun_.dag.get(id).type)
+
+  var body = fun_.body.to_pudding(fun_, dag.&, set[Id]().&, yogurt)
+
+  PuddingFun { dag, captures = fun_.captures, body }
 }
 
 fun to_pudding(yogurt: Yogurt): Pudding {

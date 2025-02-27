@@ -117,6 +117,14 @@ fun write[W](writer: W, instruction: ByteCodeInstruction) {
   case crash writer."crash"
 }
 
+fun vm_log(string: String) {
+  stdout.write(string)
+}
+
+fun push_byte(vm: &Vm, byte: Byte) { vm.data_stack.&.push(byte) }
+fun get_byte(vm: Vm, offset: Int): Byte {
+  vm.data_stack.get(vm.data_stack.len - offset - 1)
+}
 fun push_int(vm: &Vm, int: Int) {
   var int_bytes = Slice[Byte] {
     data = int.&.to_address(),
@@ -124,13 +132,16 @@ fun push_int(vm: &Vm, int: Int) {
   }
   for byte in int_bytes do vm.data_stack.&.push(byte)
 }
+fun get_int(vm: Vm, offset: Int): Int {
+  vm.data_stack.get_ref(vm.data_stack.len - offset - 8)
+    .to_address().to_reference[Int]().*
+}
 fun pop_int(vm: &Vm): Int {
-  var value = vm.data_stack.get_ref(vm.data_stack.len - 8).to_address()
-    .to_reference[Int]().*
+  var value = vm.get_int(0)
   for i in 0..8 do vm.data_stack.&.pop()
   value
 }
-fun push_byte(vm: &Vm, byte: Byte) { vm.data_stack.&.push(byte) }
+
 fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
   var vm = Vm {
     data_stack = initial_stack.to_list(),
@@ -146,21 +157,29 @@ fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
     current_call += stride_size_of[ByteCodeInstruction]()
 
     | stdout."{vm}\n"
-    | stdout."running {instruction.debug()}\n"
+    vm_log("running {instruction.debug()}")
 
     switch instruction
     case push_padding(amount) {
       for i in 0..amount do vm.&.push_byte(16#aa.lower_byte())
     }
-    case push_1(byte) vm.&.push_byte(byte)
-    case push_8(int) vm.&.push_int(int)
-    case push_1_from_stack(offset) {
-      var byte = vm.data_stack.get(vm.data_stack.len - 1 - offset)
+    case push_1(byte) {
       vm.&.push_byte(byte)
+      vm_log(" -> {byte}")
+    }
+    case push_8(int) {
+      vm.&.push_int(int)
+      vm_log(" -> {int}")
+    }
+    case push_1_from_stack(offset) {
+      var byte = vm.get_byte(offset)
+      vm.&.push_byte(byte)
+      vm_log(" -> {byte}")
     }
     case push_8_from_stack(offset) {
-      var start = vm.data_stack.len - 8 - offset
-      for i in 0..8 do vm.&.push_byte(vm.data_stack.get(start + i))
+      var value = vm.get_int(offset)
+      vm.&.push_int(value)
+      vm_log(" -> {value}")
     }
     case pop(amount) vm.data_stack.&.pop(amount)
     case pop_below_top(tuple) {
@@ -173,6 +192,7 @@ fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
       var byte = vm.data_stack.&.pop()
       current_call.* = table.get_maybe(byte.to_int())
         or panic("Tried to use a jump_table of len {table.len} with index {byte}")
+      vm_log(" -> {byte}")
     }
     case call(target) vm.call_stack.&.push(target)
     case call_indirect {
@@ -231,6 +251,7 @@ fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
       var size = vm.&.pop_int()
       var address = malloc(size, alignment)
       vm.&.push_int(address.cast[Address, Int]())
+      vm_log(" -> {address}")
     }
     case free {}
     case store_1 {
@@ -257,6 +278,8 @@ fun call(address: Address, initial_stack: Slice[Byte]): Slice[Byte] {
       var msg = String { data, len }
       panic("VM crashed: {msg}")
     }
+
+    vm_log("\n")
   }
 
   vm.data_stack.to_slice()
