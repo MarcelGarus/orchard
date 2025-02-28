@@ -1,0 +1,240 @@
+import mod.mar
+
+fun count_references(
+  expr: WaffleExpr, dag: Dag[WaffleExpr], out: &Map[Id, Int]
+) {
+  switch expr.kind
+  case param {}
+  case padding {}
+  case byte {}
+  case int {}
+  case local(id) {
+    var count = out.get_ref_or_put_default(id, 0)
+    count.* = count.* + 1
+  }
+  case aggregate(aggregate)
+    for part in aggregate do part.count_references(dag, out)
+  case member(member) member.of.count_references(dag, out)
+  case switch_(switch_) {
+    switch_.byte.count_references(dag, out)
+    for case_ in switch_.cases do case_.count_references(dag, out)
+  }
+  case call(call) call.args.count_references(dag, out)
+  case call_indirect(call) {
+    call.function_ptr.count_references(dag, out)
+    call.args.count_references(dag, out)
+  }
+  case function_ptr(signature) {}
+  case add(args) args.count_references(dag, out)
+  case sub(args) args.count_references(dag, out)
+  case mul(args) args.count_references(dag, out)
+  case div(args) args.count_references(dag, out)
+  case mod(args) args.count_references(dag, out)
+  case compare_zero(arg) arg.count_references(dag, out)
+  case and_(args) args.count_references(dag, out)
+  case or_(args)  args.count_references(dag, out)
+  case xor(args)  args.count_references(dag, out)
+  case malloc(size) size.count_references(dag, out)
+  case free(args) args.count_references(dag, out)
+  case load(ptr) ptr.count_references(dag, out)
+  case store(store) {
+    store.ptr.count_references(dag, out)
+    store.value.count_references(dag, out)
+  }
+  case crash(args) args.count_references(dag, out)
+}
+fun count_references(
+  body: WaffleBody, dag: Dag[WaffleExpr], out: &Map[Id, Int]
+) {
+  for local in body.locals do dag.get(local).count_references(dag, out)
+}
+
+| Tries to nest the previous local inside the expression. If an impure
+| expression happens before the previous local is used (such as a call, store,
+| etc.), then we cannot nest the previous local directly in here because that
+| would change the order of impure expressions. In that case, this function
+| returns none.
+fun nest_locals_with_one_immediate_usage(
+  expr: WaffleExpr, dag: &Dag[WaffleExpr], previous_local: Id, used: &Bool
+): Result[WaffleExpr, Nothing] {
+  var kind =
+    switch expr.kind
+    case param unreachable()
+    case padding(amount) WaffleExprKind.padding(amount)
+    case byte(byte) WaffleExprKind.byte(byte)
+    case int(int) WaffleExprKind.int(int)
+    case local(id) {
+      if id == previous_local then {
+        used.* = true
+        eprintln("using previous local {dag.get(id).debug()}")
+        return ok[WaffleExpr, Nothing](dag.get(id))
+      } else
+        WaffleExprKind.local(id)
+    }
+    case aggregate(aggregate) {
+      var parts = list[WaffleExpr]()
+      for part in aggregate do
+        parts.&.push(
+          part.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+        )
+      WaffleExprKind.aggregate(parts.to_slice())
+    }
+    case member(member) {
+      var of = member.of.nest_locals_with_one_immediate_usage(
+        dag, previous_local, used
+      )?
+      WaffleExprKind.member(WaffleMember {
+        of = of.put_on_heap(), offset = member.offset
+      })
+    }
+    case switch_(switch_) {
+      return error[WaffleExpr, Nothing]({})
+      | var byte = switch_.byte.nest_locals_with_one_immediate_usage(dag)?
+      | WaffleExprKind.switch_(WaffleSwitch {
+      |   byte = byte.put_on_heap(), cases = switch_cases
+      | })
+    }
+    case call(call) {
+      var args =
+        call.args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+      if not(used.*) then return error[WaffleExpr, Nothing]({})
+      WaffleExprKind.call(WaffleCall {
+        function = call.function, args = args.put_on_heap()
+      })
+    }
+    case call_indirect(call) {
+      var function_ptr =
+        call.function_ptr.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+      var args =
+        call.args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+      if not(used.*) then return error[WaffleExpr, Nothing]({})
+      WaffleExprKind.call_indirect(WaffleCallIndirect {
+        function_ptr = function_ptr.put_on_heap(),
+        args = args.put_on_heap(),
+      })
+    }
+    case function_ptr(signature) WaffleExprKind.function_ptr(signature)
+    case add(args)
+      WaffleExprKind.add(
+        args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+          .put_on_heap()
+      )
+    case sub(args)
+      WaffleExprKind.sub(
+        args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+          .put_on_heap()
+      )
+    case mul(args)
+      WaffleExprKind.mul(
+        args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+          .put_on_heap()
+      )
+    case div(args)
+      WaffleExprKind.div(
+        args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+          .put_on_heap()
+      )
+    case mod(args)
+      WaffleExprKind.mod(
+        args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+          .put_on_heap()
+      )
+    case compare_zero(arg)
+      WaffleExprKind.compare_zero(
+        arg.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+          .put_on_heap()
+      )
+    case and_(args)
+      WaffleExprKind.and_(
+        args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+          .put_on_heap()
+      )
+    case or_(args)
+      WaffleExprKind.or_(
+        args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+          .put_on_heap()
+      )
+    case xor(args)
+      WaffleExprKind.xor(
+        args.nest_locals_with_one_immediate_usage(dag, previous_local, used)?
+          .put_on_heap()
+      )
+    case malloc(size) {
+      var size = size.nest_locals_with_one_immediate_usage(
+        dag, previous_local, used
+      )?
+      if not(used.*) then return error[WaffleExpr, Nothing]({})
+      WaffleExprKind.malloc(size.put_on_heap())
+    }
+    case free(free) {
+      var free = free.nest_locals_with_one_immediate_usage(
+        dag, previous_local, used
+      )?
+      if not(used.*) then return error[WaffleExpr, Nothing]({})
+      WaffleExprKind.free(free.put_on_heap())
+    }
+    case load(ptr) {
+      var ptr = ptr.nest_locals_with_one_immediate_usage(
+        dag, previous_local, used
+      )?
+      if not(used.*) then return error[WaffleExpr, Nothing]({})
+      WaffleExprKind.load(ptr.put_on_heap())
+    }
+    case store(store) {
+      var ptr = store.ptr.nest_locals_with_one_immediate_usage(
+        dag, previous_local, used
+      )?
+      var value = store.value.nest_locals_with_one_immediate_usage(
+        dag, previous_local, used
+      )?
+      if not(used.*) then return error[WaffleExpr, Nothing]({})
+      WaffleExprKind.store(WaffleStore {
+        ptr = ptr.put_on_heap(), value = value.put_on_heap()
+      })
+    }
+    case crash(args) {
+      var args = args.nest_locals_with_one_immediate_usage(
+        dag, previous_local, used
+      )?
+      if not(used.*) then return error[WaffleExpr, Nothing]({})
+      WaffleExprKind.crash(args.put_on_heap())
+    }
+
+  ok[WaffleExpr, Nothing](WaffleExpr {
+    kind, size = expr.size, alignment = expr.alignment
+  })
+}
+
+
+| Nests expressions with exactly one occurrence instead of having locals if that
+| does not cross a call.
+fun nest_locals_with_one_immediate_usage(
+  body: WaffleBody, dag: &Dag[WaffleExpr]
+): WaffleBody {
+  var num_references = map[Id, Int]()
+  for local in body.locals do
+    dag.get(local).count_references(dag.*, num_references.&)
+  body.returns.count_references(dag.*, num_references.&)
+
+  var locals = list[Id]()
+  for i in 0..body.locals.len do {
+    var local = body.locals.get(i)
+    locals.&.push(local)
+
+    var previous = locals.get_maybe(i - 1) or continue
+    num_references.get(previous) == 1 or continue
+
+    var used = false
+    var new_version =
+      dag.get(local).nest_locals_with_one_immediate_usage(dag, previous, used.&)
+        or continue
+    if used then {
+      dag.set(local, new_version)
+      locals.&.pop() | pop current
+      locals.&.pop() | pop previous
+      locals.&.push(local) | push current
+    }
+  }
+
+  WaffleBody { locals = locals.to_slice(), returns = body.returns }
+}
