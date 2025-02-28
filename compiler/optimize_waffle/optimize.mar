@@ -50,17 +50,47 @@ fun optimize(expr: WaffleExpr, dag: &Dag[WaffleExpr]): WaffleExpr {
       else
         WaffleExprKind.local(local)
     }
-    case aggregate(aggregate) {
-      var parts = list[WaffleExpr]()
-      for part in aggregate do {
-        var part = part.optimize(dag)
+    case aggregate(parts) {
+      | Optimize parts individually.
+      var parts_1 = list[WaffleExpr]()
+      for part in parts do
+        parts_1.&.push(part.optimize(dag))
+
+      | Remove zero-sized pure parts.
+      var parts_2 = list[WaffleExpr]()
+      for part in parts_1 do {
         if part.size == 0 and part.is_pure() then continue
-        parts.&.push(part.optimize(dag))
+        parts_2.&.push(part)
       }
-      if parts.len == 1 then
-        return parts.get(0)
+
+      | Merge adjacent members of the same local.
+      | {@0.0:8, @0.8:8, foo} -> {@0.0:16, foo}
+      var parts_3 = list[WaffleExpr]()
+      for part in parts_2 do {
+        parts_3.&.push(part)
+        var member = part.kind.member or continue
+        var local = member.of.kind.local or continue
+        var previous = parts_3.get_maybe(parts_3.len - 2) or continue
+        var previous_member = previous.kind.member or continue
+        var previous_local = previous_member.of.kind.local or continue
+        previous_local == local or continue
+        previous_member.offset + previous.size == member.offset or continue
+        | Merge them!
+        parts_3.&.pop()
+        parts_3.&.pop()
+        parts_3.&.push(WaffleExpr {
+          kind = WaffleExprKind.member(WaffleMember {
+            of = member.of, offset = previous_member.offset
+          }),
+          size = previous.size + part.size,
+          alignment = max(previous.alignment, part.alignment),
+        }.optimize(dag))
+      }
+
+      if parts_3.len == 1 then
+        return parts_3.get(0)
       else
-        WaffleExprKind.aggregate(parts.to_slice())
+        WaffleExprKind.aggregate(parts_3.to_slice())
     }
     case member(member) {
       var of = member.of.optimize(dag)
