@@ -1,0 +1,438 @@
+import plum.mar
+
+| Ground Builder  
+| In order to make it easy to generate Ground byte code and for this to not get
+| out of sync with our comptime model of the stack, we have a GroundBuilder. Its
+| emit function pushes an instruction to the instruction buffer and also updates
+| the stack model (except some instructions where you have to manually adjust
+| the stack).
+
+struct GroundBuilder {
+  instructions: &List[GroundInstruction],
+  patches: &List[Patch],
+  waffle: Waffle,
+}
+struct Patch { where: Int, what: PatchWhat }
+enum PatchWhat {
+  call: String,
+  push_indirect: String,
+}
+struct FunGroundBuilder {
+  instructions: &List[GroundInstruction],
+  patches: &List[Patch],
+  stack_mapping: Map[WaffleId, Int],
+  stack_size: Int,
+  fun_: WaffleFun,
+  waffle: Waffle,
+}
+
+fun add_mapping(builder: &FunGroundBuilder, id: WaffleId, absolute_offset: Int) {
+  builder.stack_mapping.&.put(id, absolute_offset)
+}
+
+| Functions for all Ground instructions.
+
+fun add_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.add_8)
+  builder.stack_size = builder.stack_size - 8 - 8 + 8
+}
+fun sub_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.sub_8)
+  builder.stack_size = builder.stack_size - 8 - 8 + 8
+}
+fun mul_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.mul_8)
+  builder.stack_size = builder.stack_size - 8 - 8 + 8
+}
+fun div_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.div_8)
+  builder.stack_size = builder.stack_size - 8 - 8 + 8
+}
+fun mod_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.mod_8)
+  builder.stack_size = builder.stack_size - 8 - 8 + 8
+}
+fun compare_zero_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.compare_zero_8)
+  builder.stack_size = builder.stack_size - 8 + 1
+}
+fun and_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.and_8)
+  builder.stack_size = builder.stack_size - 8 - 8 + 8
+}
+fun or_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.or_8)
+  builder.stack_size = builder.stack_size - 8 - 8 + 8
+}
+fun xor_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.xor_8)
+  builder.stack_size = builder.stack_size - 8 - 8 + 8
+}
+fun push_padding(builder: &FunGroundBuilder, amount: Byte) {
+  if amount.to_int() == 0 then return {}
+  builder.instructions.push(GroundInstruction.push_padding(amount))
+  builder.stack_size = builder.stack_size + amount.to_int()
+}
+fun push_1(builder: &FunGroundBuilder, value: Byte) {
+  builder.instructions.push(GroundInstruction.push_1(value))
+  builder.stack_size = builder.stack_size + 1
+}
+fun push_8(builder: &FunGroundBuilder, value: Int) {
+  builder.instructions.push(GroundInstruction.push_8(value))
+  builder.stack_size = builder.stack_size + 8
+}
+fun push_1_from_stack(builder: &FunGroundBuilder, start: Int) {
+  builder.instructions.push(GroundInstruction.push_1_from_stack(
+    builder.stack_size - start - 1
+  ))
+  builder.stack_size = builder.stack_size + 1
+}
+fun push_8_from_stack(builder: &FunGroundBuilder, start: Int) {
+  builder.instructions.push(GroundInstruction.push_8_from_stack(
+    builder.stack_size - start - 8
+  ))
+  builder.stack_size = builder.stack_size + 8
+}
+fun pop(builder: &FunGroundBuilder, amount: Byte) {
+  if amount.to_int() == 0 then return {}
+  builder.instructions.push(GroundInstruction.pop(amount))
+  builder.stack_size = builder.stack_size - amount.to_int()
+}
+fun pop_below_top(builder: &FunGroundBuilder, skip: Int, amount: Byte) {
+  if amount.to_int() == 0 then return {}
+  if skip == 0 then return builder.pop(amount)
+  builder.instructions.push(GroundInstruction.pop_below_top(tuple(skip, amount)))
+  builder.stack_size = builder.stack_size - amount.to_int()
+}
+fun malloc(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.malloc)
+  builder.stack_size = builder.stack_size - 1 - 8 + 8
+}
+fun free(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.free)
+  builder.stack_size = builder.stack_size - 1 - 8 - 8
+}
+fun store_1(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.store_1)
+  builder.stack_size = builder.stack_size - 1 - 8
+}
+fun store_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.store_8)
+  builder.stack_size = builder.stack_size - 8 - 8
+}
+fun load_1(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.load_1)
+  builder.stack_size = builder.stack_size - 8 + 1
+}
+fun load_8(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.load_8)
+  builder.stack_size = builder.stack_size - 8 + 8
+}
+fun crash(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.crash)
+  | TODO: how does this affect the stack?
+  todo("figure out")
+}
+fun jump_placeholder(builder: &FunGroundBuilder): Int {
+  var index = builder.instructions.len
+  builder.instructions.push(GroundInstruction.jump(0))
+  index
+}
+fun patch_jump(builder: &FunGroundBuilder, index: Int, target: Int) {
+  builder.instructions.set(index, GroundInstruction.jump(target))
+}
+fun jump_table_placeholder(builder: &FunGroundBuilder): Int {
+  var index = builder.instructions.len
+  builder.instructions.push(GroundInstruction.jump_table(empty_slice[Int]()))
+  builder.stack_size = builder.stack_size - 1
+  index
+}
+fun patch_jump_table(builder: &FunGroundBuilder, index: Int, targets: Slice[Int]) {
+  builder.instructions.set(index, GroundInstruction.jump_table(empty_slice[Int]()))
+}
+fun call(builder: &FunGroundBuilder, signature: String, fun_stack_diff: Int) {
+  var index = builder.instructions.len
+  builder.instructions.push(GroundInstruction.call(0)) | placeholder
+  builder.stack_size = builder.stack_size + fun_stack_diff
+  builder.patches.push(Patch {
+    where = index, what = PatchWhat.call(signature)
+  })
+}
+fun push_indirect(builder: &FunGroundBuilder, signature: String) {
+  var index = builder.instructions.len
+  builder.instructions.push(GroundInstruction.push_indirect(0)) | placeholder
+  builder.stack_size = builder.stack_size + 8
+  builder.patches.push(Patch {
+    where = index, what = PatchWhat.push_indirect(signature)
+  })
+}
+fun call_indirect(builder: &FunGroundBuilder, fun_stack_diff: Int) {
+  builder.instructions.push(GroundInstruction.call_indirect)
+  builder.stack_size = builder.stack_size - 8 + fun_stack_diff
+}
+fun return_(builder: &FunGroundBuilder) {
+  builder.instructions.push(GroundInstruction.return_)
+}
+
+| Macro instructions that actually consist of multiple instructions
+
+fun push_padding(builder: &FunGroundBuilder, amount: Int) {
+  loop if amount < 256 then break else {
+    builder.push_padding(255.lower_byte())
+    amount = amount - 255
+  }
+  builder.push_padding(amount.lower_byte())
+}
+fun pop(builder: &FunGroundBuilder, amount: Int) {
+  loop if amount < 256 then break else {
+    builder.pop(255.lower_byte())
+    amount = amount - 255
+  }
+  builder.pop(amount.lower_byte())
+}
+fun pop_below_top(builder: &FunGroundBuilder, skip: Int, amount: Int) {
+  loop if amount < 256 then break else {
+    builder.pop_below_top(skip, 255.lower_byte())
+    amount = amount - 255
+  }
+  builder.pop_below_top(skip, amount.lower_byte())
+}
+
+fun align_to(builder: &FunGroundBuilder, alignment: Int): Int {
+  var padding = builder.stack_size.round_up_to_multiple_of(alignment)
+    - builder.stack_size
+  builder.push_padding(padding)
+  padding
+}
+fun copy_from_stack(builder: &FunGroundBuilder, start: Int, size: Int) {
+  if start + size > builder.stack_size then
+    panic("called copy_from_stack, but {start} + {size} > {builder.stack_size}")
+  var cursor = 0
+  loop if cursor + 8 > size then break else {
+    builder.push_8_from_stack(start + cursor)
+    cursor = cursor + 8
+  }
+  loop if cursor == size then break else {
+    builder.push_1_from_stack(start + cursor)
+    cursor = cursor + 1
+  }
+}
+fun copy_from_stack(builder: &FunGroundBuilder, id: WaffleId, size: Int) {
+  builder.copy_from_stack(builder.stack_mapping.get(id), size)
+}
+
+| Compilation from Waffle to Byte Code  
+
+fun to_ground(waffle: Waffle): Ground {
+  var instructions = list[GroundInstruction]()
+  var signature_to_offset = map[String, Int]()
+  var patches = list[Patch]()
+  var builder = GroundBuilder {
+    instructions = instructions.&, patches = patches.&, waffle
+  }
+
+  var entry_point = "workspace/test/playground.main Int"
+  signature_to_offset.&.put(entry_point, 0)
+  waffle.funs.get(entry_point).compile(builder.&)
+
+  for fun_ in waffle.funs do {
+    if fun_.key == entry_point then continue
+    signature_to_offset.&.put(fun_.key, instructions.len)
+    fun_.value.compile(builder.&)
+  }
+
+  for patch in patches do {
+    var patched =
+      switch patch.what
+      case call(target) GroundInstruction.call(signature_to_offset.get(target))
+      case push_indirect(target)
+        GroundInstruction.push_indirect(signature_to_offset.get(target))
+    instructions.&.set(patch.where, patched)
+  }
+
+  Ground { instructions = instructions.to_slice() }
+}
+fun compile(fun_: WaffleFun, builder: &GroundBuilder) {
+  var params_id = WaffleId { index = 0 }
+  var params = fun_.locals.get(0)
+  var builder = FunGroundBuilder {
+    instructions = builder.instructions, patches = builder.patches,
+    stack_mapping = map(params_id -> 0), stack_size = params.size,
+    fun_, waffle = builder.waffle,
+  }.&
+
+  | Now, the stack contains the params.
+  fun_.body.compile(builder)
+  | Now, the stack contains the params and the return value.
+  builder.pop_below_top(fun_.body.returns.size, fun_.locals.get(0).size)
+  | Now, the stack contains the return value.
+  builder.return_()
+}
+fun compile(body: WaffleBody, builder: &FunGroundBuilder) {
+  var stack_size_at_body_start = builder.stack_size
+
+  for local in body.locals do {
+    var expr = builder.fun_.get(local)
+    builder.align_to(expr.alignment)
+    builder.add_mapping(local, builder.stack_size)
+    stderr."local {local} is at {builder.stack_size}\n"
+    expr.compile(builder)
+    builder.stack_size >= builder.stack_mapping.get(local) or
+      panic("removed too much from the stack")
+  }
+
+  builder.align_to(body.returns.alignment)
+  var locals_size = builder.stack_size - stack_size_at_body_start
+  body.returns.compile(builder)
+
+  var return_value_size = body.returns.size
+
+  builder.pop_below_top(return_value_size, locals_size)
+}
+
+| Compiles an expression. Assumes that the stack is already aligned for the
+| expression.
+fun compile(expr: WaffleExpr, builder: &FunGroundBuilder) {
+  stderr."compiling "
+  stderr.write(expr, builder.fun_, 0)
+  stderr.", stack size is {builder.stack_size}\n"
+
+  switch expr.kind
+  case param unreachable()
+  case padding(amount) builder.push_padding(amount)
+  case byte(byte) builder.push_1(byte)
+  case int(int) builder.push_8(int)
+  case local(local) builder.copy_from_stack(local, expr.size)
+  case aggregate(aggregate) for field in aggregate do field.compile(builder)
+  case member(member) {
+    var padding = builder.align_to(member.of.alignment)
+    member.of.compile(builder)
+    var amount_before_member = padding + member.offset
+    var amount_after_member  = member.of.size - expr.size - member.offset
+    builder.pop(amount_after_member)
+    builder.pop_below_top(expr.size, amount_before_member)
+  }
+  case switch_(switch_) {
+    switch_.byte.compile(builder)
+
+    var jump_table_index = builder.jump_table_placeholder()
+    var stack_size_at_start_of_case = builder.stack_size
+
+    var table = list[Int]()
+    var end_jumps = list[Int]()
+    for case_ in switch_.cases do {
+      table.&.push(builder.instructions.len)
+      builder.stack_size = stack_size_at_start_of_case
+      case_.compile(builder)
+      end_jumps.&.push(builder.jump_placeholder())
+    }
+    var end = builder.instructions.len
+    for jump in end_jumps do builder.patch_jump(jump, end)
+    builder.patch_jump_table(jump_table_index, table.to_slice())
+  }
+  case call(call) {
+    var padding = builder.align_to(call.args.alignment)
+    call.args.compile(builder)
+    builder.call(call.function, 0 - call.args.size + expr.size)
+    builder.pop_below_top(expr.size, padding)
+  }
+  case call_indirect(call) {
+    var padding = builder.align_to(call.args.alignment)
+    call.args.compile(builder)
+    var more_padding = builder.align_to(8)
+    call.function_ptr.compile(builder)
+    var stack_diff = 0
+      - more_padding   | the function consumes the padding. TODO: Does it?
+      - call.args.size | as well as the arguments
+      + expr.size      | and pushes its result
+    builder.call_indirect(stack_diff)
+    builder.pop_below_top(expr.size, padding)
+  }
+  case function_ptr(signature) builder.push_indirect(signature)
+  case add(args)         { args.compile(builder)  builder.add_8() }
+  case sub(args)         { args.compile(builder)  builder.sub_8() }
+  case mul(args)         { args.compile(builder)  builder.mul_8() }
+  case div(args)         { args.compile(builder)  builder.div_8() }
+  case mod(args)         { args.compile(builder)  builder.mod_8() }
+  case compare_zero(arg) { arg.compile(builder)   builder.compare_zero_8() }
+  case and_(args)        { args.compile(builder)  builder.and_8() }
+  case or_(args)         { args.compile(builder)  builder.or_8() }
+  case xor(args)         { args.compile(builder)  builder.xor_8() }
+  case malloc(size) {
+    size.compile(builder)
+    builder.push_1(8.lower_byte())
+    builder.malloc()
+  }
+  case free(free) {
+    var padding = builder.align_to(8)
+    free.compile(builder) | aggregate of pointer and size
+    builder.push_1(8.lower_byte())
+    builder.free()
+    builder.pop_below_top(8, padding)
+  }
+  case load(ptr) {
+    var padding = builder.align_to(8)
+    | Compute the pointer to be unboxed.
+    var ptr_start = builder.stack_size
+    ptr.compile(builder)
+
+    | Copy the data from the heap.
+    var data_start = builder.stack_size
+    var cursor = 0
+    loop if cursor + 8 > expr.size then break else {
+      builder.push_8_from_stack(ptr_start)
+      builder.push_8(cursor)
+      builder.add_8()
+      builder.load_8() | TODO: alignment
+      cursor = cursor + 8
+    }
+    loop if cursor == expr.size then break else {
+      var padding = builder.align_to(8)
+      builder.push_8_from_stack(ptr_start)
+      builder.push_8(cursor)
+      builder.add_8()
+      builder.load_1()
+      builder.pop_below_top(1, padding)
+      cursor = cursor + 1
+    }
+    builder.pop_below_top(expr.size, 8 + padding)
+  }
+  case store(store) {
+    | Compute the data to be boxed.
+    var padding_before_data = builder.align_to(8)
+    var data_start = builder.stack_size
+    store.value.compile(builder)
+
+    | Compute the pointer.
+    var padding_after_data = builder.align_to(8)
+    var ptr_start = builder.stack_size
+    store.ptr.compile(builder)
+
+    | Copy the data to the heap.
+    var cursor = 0
+    loop if cursor + 8 > store.value.size then break else {
+      eprintln("cursor: {cursor}, stack size: {builder.stack_size}")
+      builder.push_8_from_stack(ptr_start)
+      builder.push_8(cursor)
+      builder.add_8()
+      builder.push_8_from_stack(data_start + cursor)
+      builder.store_8()
+      cursor = cursor + 8
+    }
+    loop if cursor == store.value.size then break else {
+      builder.push_8_from_stack(ptr_start)
+      builder.push_8(cursor)
+      builder.add_8()
+      builder.push_1_from_stack(data_start + cursor)
+      builder.store_1()
+      cursor = cursor + 1
+    }
+    builder.pop_below_top(
+      8, padding_after_data + store.value.size + padding_before_data
+    )
+  }
+  case crash(args) {
+    todo("crash args")
+    builder.crash()
+  }
+}
