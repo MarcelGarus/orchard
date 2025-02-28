@@ -52,8 +52,15 @@ fun optimize(expr: WaffleExpr, dag: &Dag[WaffleExpr]): WaffleExpr {
     }
     case aggregate(aggregate) {
       var parts = list[WaffleExpr]()
-      for part in aggregate do parts.&.push(part.optimize(dag))
-      WaffleExprKind.aggregate(parts.to_slice())
+      for part in aggregate do {
+        var part = part.optimize(dag)
+        if part.size == 0 and part.is_pure() then continue
+        parts.&.push(part.optimize(dag))
+      }
+      if parts.len == 1 then
+        return parts.get(0)
+      else
+        WaffleExprKind.aggregate(parts.to_slice())
     }
     case member(member) {
       WaffleExprKind.member(WaffleMember {
