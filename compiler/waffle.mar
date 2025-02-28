@@ -283,8 +283,8 @@ fun write[W](writer: W, waffle: Waffle) {
 
     var signature = fun_.key
     var fun_ = fun_.value
-    
-    writer."{signature}: (@0:{fun_.dag.get(id(0)).size} contains args)\n"
+
+    writer."{signature}:\n{indentation(1)}param {id(0)}:{fun_.dag.get(id(0)).size}"
     writer.write(fun_.body, fun_.dag, indentation(1))
   }
 }
@@ -293,126 +293,106 @@ fun write[W](
 ) {
   for id in body.locals do {
     var expr = dag.get(id)
-    writer."{indentation}{id}:{expr.size} = "
-    writer.write(expr, dag, indentation)
-    writer."\n"
+    writer."\n{indentation}local {id}:{expr.size} =\n"
+    writer.write(expr, dag, indentation + 1)
   }
-  writer."{indentation}"
+  writer."\n"
   writer.write(body.returns, dag, indentation)
 }
 fun write[W](
   writer: W, expr: WaffleExpr, dag: Dag[WaffleExpr], indentation: Indentation
 ) {
+  writer."{indentation}"
   switch expr.kind
   case param unreachable()
   case padding(amount) writer."padding:{amount}"
-  case byte(byte) writer."{byte}:1"
-  case int(int) writer."{int}:8"
+  case byte(byte) writer."byte {byte}"
+  case int(int) writer."int {int}"
   case local(id) writer."{id}"
   case aggregate(aggregate) {
-    writer."\{"
-    var first = true
+    writer."aggregate"
     for field in aggregate do {
-      if first then first = false else writer.", "
+      writer."\n"
       writer.write(field, dag, indentation + 1)
     }
-    writer."\}"
   }
   case member(member) {
-    writer.write(member.of.*, dag, indentation)
-    writer.".{member.offset}:{expr.size}"
+    writer."member at {member.offset}:{expr.size}\n"
+    writer.write(member.of.*, dag, indentation + 1)
   }
   case switch_(switch_) {
-    writer.write(switch_.byte.*, dag, indentation)
-    writer." %"
+    writer."switch\n"
+    writer.write(switch_.byte.*, dag, indentation + 1)
     for case_ in switch_.cases.iter().enumerate() do {
-      writer."\n{indentation}  {case_.index} ->\n"
+      writer."\n{indentation + 1}case {case_.index} ->"
       writer.write(case_.item, dag, indentation + 2)
     }
   }
   case call(call) {
-    writer."(\"{call.function}\" "
-    writer.write(call.args.*, dag, indentation)
-    writer.")"
+    writer."call \"{call.function}\"\n"
+    writer.write(call.args.*, dag, indentation + 1)
   }
   case call_indirect(call) {
-    writer."(*("
-    writer.write(call.function_ptr.*, dag, indentation)
-    writer.") "
-    writer.write(call.args.*, dag, indentation)
-    writer.")"
+    writer."call_indirect\n"
+    writer.write(call.function_ptr.*, dag, indentation + 1)
+    writer.write(call.args.*, dag, indentation + 1)
   }
-  case function_ptr(signature) writer."&({signature})"
+  case function_ptr(signature) writer."function_ptr of \"{signature}\""
   case add(ops) {
-    writer."(add "
-    writer.write(ops.*, dag, indentation)
-    writer.")"
+    writer."add\n"
+    writer.write(ops.*, dag, indentation + 1)
   }
   case sub(ops) {
-    writer."(sub "
-    writer.write(ops.*, dag, indentation)
-    writer.")"
+    writer."sub\n"
+    writer.write(ops.*, dag, indentation + 1)
   }
   case mul(ops) {
-    writer."(mul "
-    writer.write(ops.*, dag, indentation)
-    writer.")"
+    writer."mul\n"
+    writer.write(ops.*, dag, indentation + 1)
   }
   case div(ops) {
-    writer."(div "
-    writer.write(ops.*, dag, indentation)
-    writer.")"
+    writer."div\n"
+    writer.write(ops.*, dag, indentation + 1)
   }
   case mod(ops) {
-    writer."(mod "
-    writer.write(ops.*, dag, indentation)
-    writer.")"
+    writer."mod\n"
+    writer.write(ops.*, dag, indentation + 1)
   }
   case compare_zero(op) {
-    writer."(compare_zero "
-    writer.write(op.*, dag, indentation)
-    writer.")"
+    writer."compare_zero\n"
+    writer.write(op.*, dag, indentation + 1)
   }
   case and_(ops) {
-    writer."(and "
-    writer.write(ops.*, dag, indentation)
-    writer.")"
+    writer."and\n"
+    writer.write(ops.*, dag, indentation + 1)
   }
   case or_(ops) {
-    writer."(or "
-    writer.write(ops.*, dag, indentation)
-    writer.")"
+    writer."or\n"
+    writer.write(ops.*, dag, indentation + 1)
   }
   case xor(ops) {
-    writer."(xor "
-    writer.write(ops.*, dag, indentation)
-    writer.")"
+    writer."xor\n"
+    writer.write(ops.*, dag, indentation + 1)
   }
   case malloc(size) {
-    writer."malloc("
-    writer.write(size.*, dag, indentation)
-    writer.")"
+    writer."malloc\n"
+    writer.write(size.*, dag, indentation + 1)
   }
   case free(ptr) {
-    writer."free("
-    writer.write(ptr.*, dag, indentation)
-    writer."):{expr.size}"
+    writer."free\n"
+    writer.write(ptr.*, dag, indentation + 1)
   }
   case load(ptr) {
-    writer."load("
-    writer.write(ptr.*, dag, indentation)
-    writer."):{expr.size}"
+    writer."load {expr.size}\n"
+    writer.write(ptr.*, dag, indentation + 1)
   }
   case store(store) {
-    writer."store("
-    writer.write(store.ptr.*, dag, indentation)
-    writer.", "
-    writer.write(store.value.*, dag, indentation)
-    writer."):{expr.size}"
+    writer."store\n"
+    writer.write(store.ptr.*, dag, indentation + 1)
+    writer.write(store.value.*, dag, indentation + 1)
   }
   case crash(ops) {
-    writer."(crash "
-    writer.write(ops.*, dag, indentation)
-    writer.")"
+    writer."crash\n"
+    writer.write(ops.*, dag, indentation + 1)
   }
 }
