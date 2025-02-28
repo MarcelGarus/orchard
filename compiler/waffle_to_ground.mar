@@ -300,12 +300,27 @@ fun compile(expr: WaffleExpr, builder: &FunGroundBuilder) {
   case local(local) builder.copy_from_stack(local, expr.size)
   case aggregate(aggregate) for field in aggregate do field.compile(builder)
   case member(member) {
-    var padding = builder.align_to(member.of.alignment)
-    member.of.compile(builder)
-    var amount_before_member = padding + member.offset
-    var amount_after_member  = member.of.size - expr.size - member.offset
-    builder.pop(amount_after_member)
-    builder.pop_below_top(expr.size, amount_before_member)
+    | Quite often, you see things like @0.0:8 in the Waffle – for example, if
+    | we have an aggregate representing the arguments of a function and we want
+    | to get a single argument, we extract that argument.
+    | Lowering this in a naive way (first lowering @0, then lowering the member
+    | access) leads to crazy amounts of copying: We copy the entire local
+    | aggregate to the top of the stack, just to then discard the majority to
+    | extract the field we want.
+    | So, here, we special-case that pattern.
+    if member.of.kind is local(local) then {
+      builder.copy_from_stack(
+        builder.stack_mapping.get(local) + member.offset,
+        expr.size,
+      )
+    } else {
+      var padding = builder.align_to(member.of.alignment)
+      member.of.compile(builder)
+      var amount_before_member = padding + member.offset
+      var amount_after_member  = member.of.size - expr.size - member.offset
+      builder.pop(amount_after_member)
+      builder.pop_below_top(expr.size, amount_before_member)
+    }
   }
   case switch_(switch_) {
     switch_.byte.compile(builder)
