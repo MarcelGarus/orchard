@@ -26,12 +26,11 @@ import plum.mar
 
 struct Waffle { funs: Map[String, WaffleFun] }
 
-| Functions here don't explicitly contain parameters. Instead, the local @0
-| represents the parameters. @0 is guaranteed to exist and be on the stack when
-| the function starts executing.
-struct WaffleFun { locals: Slice[WaffleExpr], body: WaffleBody }
-struct WaffleId { index: Int } | index into the WaffleFun's locals
-struct WaffleBody { locals: Slice[WaffleId], returns: WaffleExpr }
+| Here, functions have explicit parameters. Instead, the local @0 represents the
+| parameters. @0 is guaranteed to exist and be on the stack when the function
+| starts executing.
+struct WaffleFun { dag: Dag[WaffleExpr], body: WaffleBody }
+struct WaffleBody { locals: Slice[Id], returns: WaffleExpr }
 
 struct WaffleExpr { size: Int, alignment: Int, kind: WaffleExprKind }
 enum WaffleExprKind {
@@ -40,7 +39,7 @@ enum WaffleExprKind {
   padding: Int,
   byte: Byte, | 8 bits
   int: Int,  | 64 bits
-  local: WaffleId,
+  local: Id,
   aggregate: Slice[WaffleExpr],
   member: WaffleMember,
   switch_: WaffleSwitch,
@@ -84,7 +83,7 @@ fun waffle_byte(byte: Byte): WaffleExpr {
 fun waffle_int(int: Int): WaffleExpr {
   WaffleExpr { size = 8, alignment = 8, kind = WaffleExprKind.int(int) }
 }
-fun waffle_local(id: WaffleId, size: Int, alignment: Int): WaffleExpr {
+fun waffle_local(id: Id, size: Int, alignment: Int): WaffleExpr {
   WaffleExpr { size, alignment, kind = WaffleExprKind.local(id) }
 }
 fun waffle_aggregate(fields: Slice[WaffleExpr]): WaffleExpr {
@@ -259,41 +258,21 @@ fun waffle_crash(message_ptr: WaffleExpr, message_len: WaffleExpr): WaffleExpr {
   }
 }
 
-struct WaffleFunBuilder { locals: List[WaffleExpr] }
 struct WaffleBodyBuilder {
-  local_exprs: &List[WaffleExpr], local_ids: List[WaffleId], alignment: Int
+  dag: &Dag[WaffleExpr], locals: List[Id], alignment: Int
 }
-fun waffle_fun_builder(args_size: Int, args_alignment: Int): WaffleFunBuilder {
-  WaffleFunBuilder {
-    locals = list(WaffleExpr {
-      size = args_size, alignment = args_alignment,
-      kind = WaffleExprKind.param,
-    })
-  }
-}
-fun body(builder: &WaffleFunBuilder): WaffleBodyBuilder {
-  WaffleBodyBuilder {
-    local_exprs = builder.locals.&, local_ids = list[WaffleId](), alignment = 1
-  }
+fun body_builder(dag: &Dag[WaffleExpr]): WaffleBodyBuilder {
+  WaffleBodyBuilder { dag, locals = list[Id](), alignment = 1 }
 }
 fun local(builder: &WaffleBodyBuilder, expr: WaffleExpr): WaffleExpr {
-  var id = WaffleId { index = builder.local_exprs.len }
-  builder.local_exprs.push(expr)
-  builder.local_ids.&.push(id)
+  var id = builder.dag.put(expr)
+  builder.locals.&.push(id)
   builder.alignment = max(builder.alignment, expr.alignment)
   waffle_local(id, expr.size, expr.alignment)
 }
-fun returns(builder: WaffleBodyBuilder, expr: WaffleExpr): WaffleBody {
-  WaffleBody { locals = builder.local_ids.to_slice(), returns = expr }
+fun finish(builder: WaffleBodyBuilder, returns: WaffleExpr): WaffleBody {
+  WaffleBody { locals = builder.locals.to_slice(), returns }
 }
-fun finish(builder: WaffleFunBuilder, body: WaffleBody): WaffleFun {
-  WaffleFun { locals = builder.locals.to_slice(), body }
-}
-
-fun get(fun_: WaffleFun, id: WaffleId): WaffleExpr { fun_.locals.get(id.index) }
-
-fun ==(a: WaffleId, b: WaffleId): Bool { a.index == b.index }
-fun hash(hasher: &Hasher, id: WaffleId) { hasher.hash(id.index) }
 
 | Writing Waffle  
 
@@ -301,24 +280,28 @@ fun write[W](writer: W, waffle: Waffle) {
   var first = true
   for fun_ in waffle.funs do {
     if first then first = false else writer."\n"
-    writer."{fun_.key}: (@0:{fun_.value.get(WaffleId { index = 0 }).size} contains args)\n"
-    writer.write(fun_.value.body, fun_.value, 1)
+
+    var signature = fun_.key
+    var fun_ = fun_.value
+    
+    writer."{signature}: (@0:{fun_.dag.get(id(0)).size} contains args)\n"
+    writer.write(fun_.body, fun_.dag, indentation(1))
   }
-}
-fun write[W](writer: W, id: WaffleId) { writer."@{id.index}" }
-fun write[W](writer: W, body: WaffleBody, fun_: WaffleFun, indentation: Int) {
-  for id in body.locals do {
-    var expr = fun_.get(id)
-    for i in 0..indentation do writer."  "
-    writer."{id}:{expr.size} = "
-    writer.write(expr, fun_, indentation)
-    writer."\n"
-  }
-  for i in 0..indentation do writer."  "
-  writer.write(body.returns, fun_, indentation)
 }
 fun write[W](
-  writer: W, expr: WaffleExpr, fun_: WaffleFun, indentation: Int
+  writer: W, body: WaffleBody, dag: Dag[WaffleExpr], indentation: Indentation
+) {
+  for id in body.locals do {
+    var expr = dag.get(id)
+    writer."{indentation}{id}:{expr.size} = "
+    writer.write(expr, dag, indentation)
+    writer."\n"
+  }
+  writer."{indentation}"
+  writer.write(body.returns, dag, indentation)
+}
+fun write[W](
+  writer: W, expr: WaffleExpr, dag: Dag[WaffleExpr], indentation: Indentation
 ) {
   switch expr.kind
   case param unreachable()
@@ -331,111 +314,106 @@ fun write[W](
     var first = true
     for field in aggregate do {
       if first then first = false else writer.", "
-      writer.write(field, fun_, indentation + 1)
+      writer.write(field, dag, indentation + 1)
     }
     writer."\}"
   }
   case member(member) {
-    writer.write(member.of.*, fun_, indentation)
+    writer.write(member.of.*, dag, indentation)
     writer.".{member.offset}:{expr.size}"
   }
   case switch_(switch_) {
-    writer.write(switch_.byte.*, fun_, indentation)
+    writer.write(switch_.byte.*, dag, indentation)
     writer." %"
     for case_ in switch_.cases.iter().enumerate() do {
-      writer."\n"
-      for i in 0..indentation do writer."  "
-      writer."  {case_.index} -> \{"
-      writer."\n"
-      writer.write(case_.item, fun_, indentation + 2)
-      writer."\n"
-      for i in 0..indentation do writer."  "
-      writer."  \}"
+      writer."\n{indentation}  {case_.index} -> \{\n"
+      writer.write(case_.item, dag, indentation + 2)
+      writer."\n{indentation}\}"
     }
   }
   case call(call) {
     writer."({call.function} "
-    writer.write(call.args.*, fun_, indentation)
+    writer.write(call.args.*, dag, indentation)
     writer.")"
   }
   case call_indirect(call) {
     writer."(*("
-    writer.write(call.function_ptr.*, fun_, indentation)
+    writer.write(call.function_ptr.*, dag, indentation)
     writer.") "
-    writer.write(call.args.*, fun_, indentation)
+    writer.write(call.args.*, dag, indentation)
     writer.")"
   }
   case function_ptr(signature) writer."&({signature})"
   case add(ops) {
     writer."(add "
-    writer.write(ops.*, fun_, indentation)
+    writer.write(ops.*, dag, indentation)
     writer.")"
   }
   case sub(ops) {
     writer."(sub "
-    writer.write(ops.*, fun_, indentation)
+    writer.write(ops.*, dag, indentation)
     writer.")"
   }
   case mul(ops) {
     writer."(mul "
-    writer.write(ops.*, fun_, indentation)
+    writer.write(ops.*, dag, indentation)
     writer.")"
   }
   case div(ops) {
     writer."(div "
-    writer.write(ops.*, fun_, indentation)
+    writer.write(ops.*, dag, indentation)
     writer.")"
   }
   case mod(ops) {
     writer."(mod "
-    writer.write(ops.*, fun_, indentation)
+    writer.write(ops.*, dag, indentation)
     writer.")"
   }
   case compare_zero(op) {
     writer."(compare_zero "
-    writer.write(op.*, fun_, indentation)
+    writer.write(op.*, dag, indentation)
     writer.")"
   }
   case and_(ops) {
     writer."(and "
-    writer.write(ops.*, fun_, indentation)
+    writer.write(ops.*, dag, indentation)
     writer.")"
   }
   case or_(ops) {
     writer."(or "
-    writer.write(ops.*, fun_, indentation)
+    writer.write(ops.*, dag, indentation)
     writer.")"
   }
   case xor(ops) {
     writer."(xor "
-    writer.write(ops.*, fun_, indentation)
+    writer.write(ops.*, dag, indentation)
     writer.")"
   }
   case malloc(size) {
     writer."malloc("
-    writer.write(size.*, fun_, indentation)
+    writer.write(size.*, dag, indentation)
     writer.")"
   }
   case free(ptr) {
     writer."free("
-    writer.write(ptr.*, fun_, indentation)
+    writer.write(ptr.*, dag, indentation)
     writer."):{expr.size}"
   }
   case load(ptr) {
     writer."load("
-    writer.write(ptr.*, fun_, indentation)
+    writer.write(ptr.*, dag, indentation)
     writer."):{expr.size}"
   }
   case store(store) {
     writer."store("
-    writer.write(store.ptr.*, fun_, indentation)
+    writer.write(store.ptr.*, dag, indentation)
     writer.", "
-    writer.write(store.value.*, fun_, indentation)
+    writer.write(store.value.*, dag, indentation)
     writer."):{expr.size}"
   }
   case crash(ops) {
     writer."(crash "
-    writer.write(ops.*, fun_, indentation)
+    writer.write(ops.*, dag, indentation)
     writer.")"
   }
 }

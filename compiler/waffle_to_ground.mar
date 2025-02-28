@@ -20,13 +20,13 @@ enum PatchWhat {
 struct FunGroundBuilder {
   instructions: &List[GroundInstruction],
   patches: &List[Patch],
-  stack_mapping: Map[WaffleId, Int],
+  stack_mapping: Map[Id, Int],
   stack_size: Int,
   fun_: WaffleFun,
   waffle: Waffle,
 }
 
-fun add_mapping(builder: &FunGroundBuilder, id: WaffleId, absolute_offset: Int) {
+fun add_mapping(builder: &FunGroundBuilder, id: Id, absolute_offset: Int) {
   builder.stack_mapping.&.put(id, absolute_offset)
 }
 
@@ -217,7 +217,7 @@ fun copy_from_stack(builder: &FunGroundBuilder, start: Int, size: Int) {
     cursor = cursor + 1
   }
 }
-fun copy_from_stack(builder: &FunGroundBuilder, id: WaffleId, size: Int) {
+fun copy_from_stack(builder: &FunGroundBuilder, id: Id, size: Int) {
   builder.copy_from_stack(builder.stack_mapping.get(id), size)
 }
 
@@ -253,18 +253,17 @@ fun to_ground(waffle: Waffle): Ground {
   Ground { instructions = instructions.to_slice() }
 }
 fun compile(fun_: WaffleFun, builder: &GroundBuilder) {
-  var params_id = WaffleId { index = 0 }
-  var params = fun_.locals.get(0)
+  var params = id(0)
   var builder = FunGroundBuilder {
     instructions = builder.instructions, patches = builder.patches,
-    stack_mapping = map(params_id -> 0), stack_size = params.size,
+    stack_mapping = map(params -> 0), stack_size = fun_.dag.get(params).size,
     fun_, waffle = builder.waffle,
   }.&
 
   | Now, the stack contains the params.
   fun_.body.compile(builder)
   | Now, the stack contains the params and the return value.
-  builder.pop_below_top(fun_.body.returns.size, fun_.locals.get(0).size)
+  builder.pop_below_top(fun_.body.returns.size, fun_.dag.get(id(0)).size)
   | Now, the stack contains the return value.
   builder.return_()
 }
@@ -272,7 +271,7 @@ fun compile(body: WaffleBody, builder: &FunGroundBuilder) {
   var stack_size_at_body_start = builder.stack_size
 
   for local in body.locals do {
-    var expr = builder.fun_.get(local)
+    var expr = builder.fun_.dag.get(local)
     builder.align_to(expr.alignment)
     builder.add_mapping(local, builder.stack_size)
     stderr."local {local} is at {builder.stack_size}\n"
@@ -293,10 +292,6 @@ fun compile(body: WaffleBody, builder: &FunGroundBuilder) {
 | Compiles an expression. Assumes that the stack is already aligned for the
 | expression.
 fun compile(expr: WaffleExpr, builder: &FunGroundBuilder) {
-  stderr."compiling "
-  stderr.write(expr, builder.fun_, 0)
-  stderr.", stack size is {builder.stack_size}\n"
-
   switch expr.kind
   case param unreachable()
   case padding(amount) builder.push_padding(amount)

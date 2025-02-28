@@ -225,8 +225,7 @@ fun memory_layout_enum(type: PestoType): EnumLayout {
 
 fun to_waffle(
   expr: PestoExpr, fun_: PestoFun,
-  fun_builder: &WaffleFunBuilder, builder: &WaffleBodyBuilder,
-  mapping: &Map[PestoId, WaffleExpr], pesto: Pesto,
+  builder: &WaffleBodyBuilder, mapping: &Map[PestoId, WaffleExpr], pesto: Pesto,
 ): WaffleExpr {
   switch expr.op
   case param unreachable()
@@ -285,7 +284,7 @@ fun to_waffle(
       cases.&.set(
         entry.key.to_int(),
         switch_.cases.get(entry.value)
-          .to_waffle(fun_, fun_builder, mapping, pesto)
+          .to_waffle(fun_, builder.dag, mapping, pesto)
       )
 
     waffle_switch(condition.waffle_member(layout.tag_offset, 1, 1), cases)
@@ -359,30 +358,31 @@ fun to_waffle(
 
 | Assumes parameters to be in the mapping.
 fun to_waffle(
-  body: PestoBody,
-  fun_: PestoFun, fun_builder: &WaffleFunBuilder,
-  mapping: &Map[PestoId, WaffleExpr],
-  pesto: Pesto,
+  body: PestoBody, fun_: PestoFun,
+  dag: &Dag[WaffleExpr], mapping: &Map[PestoId, WaffleExpr],
+  pesto: Pesto, | TODO: is this used?
 ): WaffleBody {
-  var builder = fun_builder.&.body()
+  var builder = body_builder(dag)
   for id in body.exprs do {
     var expr = builder.&.local(fun_.get(id).to_waffle(
-      fun_, fun_builder, builder.&, mapping, pesto
+      fun_, builder.&, mapping, pesto
     ))
     mapping.&.put(id, expr)
   }
-  builder.returns(mapping.get(body.returns))
+  builder.finish(mapping.get(body.returns))
 }
 
 fun to_waffle(fun_: PestoFun, pesto: Pesto): WaffleFun {
   var param_layout = fun_.get(fun_.body.param).type.memory_layout()
-  var fun_builder = waffle_fun_builder(param_layout.size, param_layout.alignment)
-  var param = waffle_local(
-    WaffleId { index = 0 }, param_layout.size, param_layout.alignment
-  )
+  var dag = dag[WaffleExpr]()
+  dag.&.put(WaffleExpr {
+    size = param_layout.size, alignment = param_layout.alignment,
+    kind = WaffleExprKind.param,
+  })
+  var param = waffle_local(id(0), param_layout.size, param_layout.alignment)
   var mapping = map(fun_.body.param -> param)
-  var body = fun_.body.to_waffle(fun_, fun_builder.&, mapping.&, pesto)
-  fun_builder.finish(body)
+  var body = fun_.body.to_waffle(fun_, dag.&, mapping.&, pesto)
+  WaffleFun { dag, body }
 }
 
 fun to_waffle(pesto: Pesto): Waffle {

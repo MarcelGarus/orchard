@@ -34,7 +34,7 @@ fun should_inline(expr: WaffleExpr): Bool {
   case crash false
 }
 
-fun inline(expr: WaffleExpr, locals: &Slice[WaffleExpr]): WaffleExpr {
+fun inline(expr: WaffleExpr, dag: &Dag[WaffleExpr]): WaffleExpr {
   var kind =
     switch expr.kind
     case param unreachable()
@@ -42,7 +42,7 @@ fun inline(expr: WaffleExpr, locals: &Slice[WaffleExpr]): WaffleExpr {
     case byte(byte) WaffleExprKind.byte(byte)
     case int(int) WaffleExprKind.int(int)
     case local(local) {
-      var referenced = locals.get(local.index)
+      var referenced = dag.get(local)
       if referenced.should_inline() then
         return referenced
       else
@@ -50,72 +50,69 @@ fun inline(expr: WaffleExpr, locals: &Slice[WaffleExpr]): WaffleExpr {
     }
     case aggregate(aggregate) {
       var parts = list[WaffleExpr]()
-      for part in aggregate do
-        parts.&.push(part.inline(locals))
+      for part in aggregate do parts.&.push(part.inline(dag))
       WaffleExprKind.aggregate(parts.to_slice())
     }
     case member(member) {
       WaffleExprKind.member(WaffleMember {
-        of = member.of.inline(locals).put_on_heap(),
+        of = member.of.inline(dag).put_on_heap(),
         offset = member.offset,
       })
     }
     case switch_(switch_) {
       var cases = list[WaffleBody]()
       for case_ in switch_.cases do
-        cases.&.push(case_.inline(locals))
+        cases.&.push(case_.inline(dag))
       WaffleExprKind.switch_(WaffleSwitch {
-        byte = switch_.byte.inline(locals).put_on_heap(),
+        byte = switch_.byte.inline(dag).put_on_heap(),
         cases = cases.to_slice(),
       })
     }
     case call(call) {
       WaffleExprKind.call(WaffleCall {
         function = call.function,
-        args = call.args.inline(locals).put_on_heap(),
+        args = call.args.inline(dag).put_on_heap(),
       })
     }
     case call_indirect(call) {
       WaffleExprKind.call_indirect(WaffleCallIndirect {
-        function_ptr = call.function_ptr.inline(locals).put_on_heap(),
-        args = call.args.inline(locals).put_on_heap(),
+        function_ptr = call.function_ptr.inline(dag).put_on_heap(),
+        args = call.args.inline(dag).put_on_heap(),
       })
     }
     case function_ptr(signature) WaffleExprKind.function_ptr(signature)
-    case add(args) { WaffleExprKind.add(args.inline(locals).put_on_heap()) }
-    case sub(args) { WaffleExprKind.sub(args.inline(locals).put_on_heap()) }
-    case mul(args) { WaffleExprKind.mul(args.inline(locals).put_on_heap()) }
-    case div(args) { WaffleExprKind.div(args.inline(locals).put_on_heap()) }
-    case mod(args) { WaffleExprKind.mod(args.inline(locals).put_on_heap()) }
+    case add(args) { WaffleExprKind.add(args.inline(dag).put_on_heap()) }
+    case sub(args) { WaffleExprKind.sub(args.inline(dag).put_on_heap()) }
+    case mul(args) { WaffleExprKind.mul(args.inline(dag).put_on_heap()) }
+    case div(args) { WaffleExprKind.div(args.inline(dag).put_on_heap()) }
+    case mod(args) { WaffleExprKind.mod(args.inline(dag).put_on_heap()) }
     case compare_zero(arg) {
-      WaffleExprKind.compare_zero(arg.inline(locals).put_on_heap())
+      WaffleExprKind.compare_zero(arg.inline(dag).put_on_heap())
     }
-    case and_(args)        { WaffleExprKind.and_(args.inline(locals).put_on_heap()) }
-    case or_(args)         { WaffleExprKind.or_(args.inline(locals).put_on_heap()) }
-    case xor(args)         { WaffleExprKind.xor(args.inline(locals).put_on_heap()) }
-    case malloc(size) { WaffleExprKind.malloc(size.inline(locals).put_on_heap()) }
-    case free(free) { WaffleExprKind.free(free.inline(locals).put_on_heap()) }
+    case and_(args)        { WaffleExprKind.and_(args.inline(dag).put_on_heap()) }
+    case or_(args)         { WaffleExprKind.or_(args.inline(dag).put_on_heap()) }
+    case xor(args)         { WaffleExprKind.xor(args.inline(dag).put_on_heap()) }
+    case malloc(size) { WaffleExprKind.malloc(size.inline(dag).put_on_heap()) }
+    case free(free) { WaffleExprKind.free(free.inline(dag).put_on_heap()) }
     case load(ptr) {
-      WaffleExprKind.load(ptr.inline(locals).put_on_heap())
+      WaffleExprKind.load(ptr.inline(dag).put_on_heap())
     }
     case store(store) {
       WaffleExprKind.store(WaffleStore {
-        ptr = store.ptr.inline(locals).put_on_heap(),
-        value = store.value.inline(locals).put_on_heap(),
+        ptr = store.ptr.inline(dag).put_on_heap(),
+        value = store.value.inline(dag).put_on_heap(),
       })
     }
     case crash(args)
-      WaffleExprKind.crash(args.inline(locals).put_on_heap())
+      WaffleExprKind.crash(args.inline(dag).put_on_heap())
   WaffleExpr { kind, size = expr.size, alignment = expr.alignment }
 }
 
 | Assumes parameters to be in the mapping.
 fun inline(
-  body: WaffleBody, locals: &Slice[WaffleExpr],
+  body: WaffleBody, dag: &Dag[WaffleExpr],
 ): WaffleBody {
   for local in body.locals do
-    locals.set(local.index, locals.get(local.index).inline(locals))
-  WaffleBody {
-    locals = body.locals, returns = body.returns.inline(locals)
-  }
+    dag.set(local, dag.get(local).inline(dag))
+  WaffleBody { locals = body.locals, returns = body.returns.inline(dag) }
 }
