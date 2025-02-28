@@ -1,0 +1,102 @@
+| Optimizing the Waffle  
+
+import plum.mar
+
+fun optimize(
+  expr: WaffleExpr, fun_: WaffleFun,
+  fun_builder: &WaffleFunBuilder, builder: &WaffleBodyBuilder,
+): WaffleExpr {
+  var kind =
+    switch expr.kind
+    case param unreachable()
+    case padding(amount) WaffleExprKind.padding(amount)
+    case byte(byte) WaffleExprKind.byte(byte)
+    case int(int) WaffleExprKind.int(int)
+    case local(local) WaffleExprKind.local(local)
+    case aggregate(aggregate) {
+      var parts = list[WaffleExpr]()
+      for part in aggregate do
+        parts.&.push(part.optimize(fun_, fun_builder, builder))
+      WaffleExprKind.aggregate(parts.to_slice())
+    }
+    case member(member) {
+      WaffleExprKind.member(WaffleMember {
+        of = member.of.optimize(fun_, fun_builder, builder).put_on_heap(),
+        offset = member.offset,
+      })
+    }
+    case switch_(switch_) {
+      var cases = list[WaffleBody]()
+      for case_ in switch_.cases do
+        cases.&.push(case_.optimize(fun_, fun_builder))
+      WaffleExprKind.switch_(WaffleSwitch {
+        byte = switch_.byte.optimize(fun_, fun_builder, builder).put_on_heap(),
+        cases = cases.to_slice(),
+      })
+    }
+    case call(call) {
+      WaffleExprKind.call(WaffleCall {
+        function = call.function,
+        args = call.args.optimize(fun_, fun_builder, builder).put_on_heap(),
+      })
+    }
+    case call_indirect(call) {
+      WaffleExprKind.call_indirect(WaffleCallIndirect {
+        function_ptr = call.function_ptr.optimize(fun_, fun_builder, builder).put_on_heap(),
+        args = call.args.optimize(fun_, fun_builder, builder).put_on_heap(),
+      })
+    }
+    case function_ptr(signature) WaffleExprKind.function_ptr(signature)
+    case add(args) { WaffleExprKind.add(args.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case sub(args) { WaffleExprKind.sub(args.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case mul(args) { WaffleExprKind.mul(args.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case div(args) { WaffleExprKind.div(args.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case mod(args) { WaffleExprKind.mod(args.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case compare_zero(arg) {
+      WaffleExprKind.compare_zero(arg.optimize(fun_, fun_builder, builder).put_on_heap())
+    }
+    case and_(args)        { WaffleExprKind.and_(args.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case or_(args)         { WaffleExprKind.or_(args.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case xor(args)         { WaffleExprKind.xor(args.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case malloc(size) { WaffleExprKind.malloc(size.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case free(free) { WaffleExprKind.free(free.optimize(fun_, fun_builder, builder).put_on_heap()) }
+    case load(ptr) {
+      WaffleExprKind.load(ptr.optimize(fun_, fun_builder, builder).put_on_heap())
+    }
+    case store(store) {
+      WaffleExprKind.store(WaffleStore {
+        ptr = store.ptr.optimize(fun_, fun_builder, builder).put_on_heap(),
+        value = store.value.optimize(fun_, fun_builder, builder).put_on_heap(),
+      })
+    }
+    case crash(args)
+      WaffleExprKind.crash(args.optimize(fun_, fun_builder, builder).put_on_heap())
+  WaffleExpr { kind, size = expr.size, alignment = expr.alignment }
+}
+
+| Assumes parameters to be in the mapping.
+fun optimize(
+  body: WaffleBody,
+  fun_: WaffleFun, fun_builder: &WaffleFunBuilder,
+): WaffleBody {
+  var builder = fun_builder.&.body()
+  for local in body.locals do {
+    var expr = builder.&.local(fun_.get(local).optimize(
+      fun_, fun_builder, builder.&
+    ))
+  }
+  builder.returns(body.returns)
+}
+
+fun optimize(fun_: WaffleFun): WaffleFun {
+  var param = fun_.get(WaffleId { index = 0 })
+  var fun_builder = waffle_fun_builder(param.size, param.alignment)
+  var body = fun_.body.optimize(fun_, fun_builder.&)
+  fun_builder.finish(body)
+}
+
+fun optimize(waffle: Waffle): Waffle {
+  var funs = map[String, WaffleFun]()
+  for fun_ in waffle.funs do funs.&.put(fun_.key, fun_.value.optimize())
+  Waffle { funs }
+}
