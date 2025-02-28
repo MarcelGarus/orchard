@@ -367,21 +367,31 @@ fun to_waffle(
     var expr = builder.&.local(fun_.get(id).to_waffle(
       fun_, builder.&, mapping, pesto
     ))
-    mapping.&.put(id, expr)
+    mapping.put(id, expr)
   }
   builder.finish(mapping.get(body.returns))
 }
 
 fun to_waffle(fun_: PestoFun, pesto: Pesto): WaffleFun {
-  var param_layout = fun_.get(fun_.body.param).type.memory_layout()
   var dag = dag[WaffleExpr]()
-  dag.&.put(WaffleExpr {
+  var builder = body_builder(dag.&)
+  var mapping = map[PestoId, WaffleExpr]()
+
+  var param_layout = fun_.get(fun_.body.param).type.memory_layout()
+  var param = builder.&.local(WaffleExpr {
     size = param_layout.size, alignment = param_layout.alignment,
     kind = WaffleExprKind.param,
   })
-  var param = waffle_local(id(0), param_layout.size, param_layout.alignment)
-  var mapping = map(fun_.body.param -> param)
-  var body = fun_.body.to_waffle(fun_, dag.&, mapping.&, pesto)
+  mapping.&.put(fun_.body.param, param)
+
+  for id in fun_.body.exprs do {
+    var expr = builder.&.local(fun_.get(id).to_waffle(
+      fun_, builder.&, mapping.&, pesto
+    ))
+    mapping.&.put(id, expr)
+  }
+  var body = builder.finish(mapping.get(fun_.body.returns))
+
   WaffleFun { dag, body }
 }
 
