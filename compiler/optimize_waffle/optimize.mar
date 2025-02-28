@@ -34,7 +34,9 @@ fun should_inline(expr: WaffleExpr): Bool {
   case crash false
 }
 
-fun inline(expr: WaffleExpr, dag: &Dag[WaffleExpr]): WaffleExpr {
+| Optimizes the expression. This function assumes that all expressions that this
+| expressions depends on are in the dag and already optimized.
+fun optimize(expr: WaffleExpr, dag: &Dag[WaffleExpr]): WaffleExpr {
   var kind =
     switch expr.kind
     case param unreachable()
@@ -50,69 +52,70 @@ fun inline(expr: WaffleExpr, dag: &Dag[WaffleExpr]): WaffleExpr {
     }
     case aggregate(aggregate) {
       var parts = list[WaffleExpr]()
-      for part in aggregate do parts.&.push(part.inline(dag))
+      for part in aggregate do parts.&.push(part.optimize(dag))
       WaffleExprKind.aggregate(parts.to_slice())
     }
     case member(member) {
       WaffleExprKind.member(WaffleMember {
-        of = member.of.inline(dag).put_on_heap(),
+        of = member.of.optimize(dag).put_on_heap(),
         offset = member.offset,
       })
     }
     case switch_(switch_) {
       var cases = list[WaffleBody]()
       for case_ in switch_.cases do
-        cases.&.push(case_.inline(dag))
+        cases.&.push(case_.optimize(dag))
       WaffleExprKind.switch_(WaffleSwitch {
-        byte = switch_.byte.inline(dag).put_on_heap(),
+        byte = switch_.byte.optimize(dag).put_on_heap(),
         cases = cases.to_slice(),
       })
     }
     case call(call) {
       WaffleExprKind.call(WaffleCall {
         function = call.function,
-        args = call.args.inline(dag).put_on_heap(),
+        args = call.args.optimize(dag).put_on_heap(),
       })
     }
     case call_indirect(call) {
       WaffleExprKind.call_indirect(WaffleCallIndirect {
-        function_ptr = call.function_ptr.inline(dag).put_on_heap(),
-        args = call.args.inline(dag).put_on_heap(),
+        function_ptr = call.function_ptr.optimize(dag).put_on_heap(),
+        args = call.args.optimize(dag).put_on_heap(),
       })
     }
     case function_ptr(signature) WaffleExprKind.function_ptr(signature)
-    case add(args) { WaffleExprKind.add(args.inline(dag).put_on_heap()) }
-    case sub(args) { WaffleExprKind.sub(args.inline(dag).put_on_heap()) }
-    case mul(args) { WaffleExprKind.mul(args.inline(dag).put_on_heap()) }
-    case div(args) { WaffleExprKind.div(args.inline(dag).put_on_heap()) }
-    case mod(args) { WaffleExprKind.mod(args.inline(dag).put_on_heap()) }
+    case add(args) { WaffleExprKind.add(args.optimize(dag).put_on_heap()) }
+    case sub(args) { WaffleExprKind.sub(args.optimize(dag).put_on_heap()) }
+    case mul(args) { WaffleExprKind.mul(args.optimize(dag).put_on_heap()) }
+    case div(args) { WaffleExprKind.div(args.optimize(dag).put_on_heap()) }
+    case mod(args) { WaffleExprKind.mod(args.optimize(dag).put_on_heap()) }
     case compare_zero(arg) {
-      WaffleExprKind.compare_zero(arg.inline(dag).put_on_heap())
+      WaffleExprKind.compare_zero(arg.optimize(dag).put_on_heap())
     }
-    case and_(args)        { WaffleExprKind.and_(args.inline(dag).put_on_heap()) }
-    case or_(args)         { WaffleExprKind.or_(args.inline(dag).put_on_heap()) }
-    case xor(args)         { WaffleExprKind.xor(args.inline(dag).put_on_heap()) }
-    case malloc(size) { WaffleExprKind.malloc(size.inline(dag).put_on_heap()) }
-    case free(free) { WaffleExprKind.free(free.inline(dag).put_on_heap()) }
+    case and_(args)        { WaffleExprKind.and_(args.optimize(dag).put_on_heap()) }
+    case or_(args)         { WaffleExprKind.or_(args.optimize(dag).put_on_heap()) }
+    case xor(args)         { WaffleExprKind.xor(args.optimize(dag).put_on_heap()) }
+    case malloc(size) { WaffleExprKind.malloc(size.optimize(dag).put_on_heap()) }
+    case free(free) { WaffleExprKind.free(free.optimize(dag).put_on_heap()) }
     case load(ptr) {
-      WaffleExprKind.load(ptr.inline(dag).put_on_heap())
+      WaffleExprKind.load(ptr.optimize(dag).put_on_heap())
     }
     case store(store) {
       WaffleExprKind.store(WaffleStore {
-        ptr = store.ptr.inline(dag).put_on_heap(),
-        value = store.value.inline(dag).put_on_heap(),
+        ptr = store.ptr.optimize(dag).put_on_heap(),
+        value = store.value.optimize(dag).put_on_heap(),
       })
     }
     case crash(args)
-      WaffleExprKind.crash(args.inline(dag).put_on_heap())
+      WaffleExprKind.crash(args.optimize(dag).put_on_heap())
   WaffleExpr { kind, size = expr.size, alignment = expr.alignment }
 }
 
-| Assumes parameters to be in the mapping.
-fun inline(
-  body: WaffleBody, dag: &Dag[WaffleExpr],
-): WaffleBody {
+fun optimize(body: WaffleBody, dag: &Dag[WaffleExpr]): WaffleBody {
   for local in body.locals do
-    dag.set(local, dag.get(local).inline(dag))
-  WaffleBody { locals = body.locals, returns = body.returns.inline(dag) }
+    dag.set(local, dag.get(local).optimize(dag))
+
+  WaffleBody {
+    locals = body.locals,
+    returns = body.returns.optimize(dag)
+  }.tree_shake(dag.*)
 }

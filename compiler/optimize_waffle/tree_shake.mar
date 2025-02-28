@@ -81,81 +81,23 @@ fun collect_referenced(body: WaffleBody, dag: Dag[WaffleExpr], out: &Set[Id]) {
   for local in body.locals do dag.get(local).collect_referenced(dag, out)
 }
 
-fun tree_shake(expr: WaffleExpr, dag: &Dag[WaffleExpr]): WaffleExpr {
-  var kind =
-    switch expr.kind
-    case param unreachable()
-    case padding(amount) WaffleExprKind.padding(amount)
-    case byte(byte) WaffleExprKind.byte(byte)
-    case int(int) WaffleExprKind.int(int)
-    case local(local) WaffleExprKind.local(local)
-    case aggregate(aggregate) {
-      var parts = list[WaffleExpr]()
-      for part in aggregate do parts.&.push(part.tree_shake(dag))
-      WaffleExprKind.aggregate(parts.to_slice())
-    }
-    case member(member) {
-      WaffleExprKind.member(WaffleMember {
-        of = member.of.tree_shake(dag).put_on_heap(),
-        offset = member.offset,
-      })
-    }
-    case switch_(switch_) {
-      var cases = list[WaffleBody]()
-      for case_ in switch_.cases do cases.&.push(case_.tree_shake(dag))
-      WaffleExprKind.switch_(WaffleSwitch {
-        byte = switch_.byte.tree_shake(dag).put_on_heap(),
-        cases = cases.to_slice(),
-      })
-    }
-    case call(call) {
-      WaffleExprKind.call(WaffleCall {
-        function = call.function,
-        args = call.args.tree_shake(dag).put_on_heap(),
-      })
-    }
-    case call_indirect(call) {
-      WaffleExprKind.call_indirect(WaffleCallIndirect {
-        function_ptr = call.function_ptr.tree_shake(dag).put_on_heap(),
-        args = call.args.tree_shake(dag).put_on_heap(),
-      })
-    }
-    case function_ptr(signature) WaffleExprKind.function_ptr(signature)
-    case add(args) WaffleExprKind.add(args.tree_shake(dag).put_on_heap())
-    case sub(args) WaffleExprKind.sub(args.tree_shake(dag).put_on_heap())
-    case mul(args) WaffleExprKind.mul(args.tree_shake(dag).put_on_heap())
-    case div(args) WaffleExprKind.div(args.tree_shake(dag).put_on_heap())
-    case mod(args) WaffleExprKind.mod(args.tree_shake(dag).put_on_heap())
-    case compare_zero(arg)
-      WaffleExprKind.compare_zero(arg.tree_shake(dag).put_on_heap())
-    case and_(args)   WaffleExprKind.and_(args.tree_shake(dag).put_on_heap())
-    case or_(args)    WaffleExprKind.or_(args.tree_shake(dag).put_on_heap())
-    case xor(args)    WaffleExprKind.xor(args.tree_shake(dag).put_on_heap())
-    case malloc(size) WaffleExprKind.malloc(size.tree_shake(dag).put_on_heap())
-    case free(free)   WaffleExprKind.free(free.tree_shake(dag).put_on_heap())
-    case load(ptr)    WaffleExprKind.load(ptr.tree_shake(dag).put_on_heap())
-    case store(store) 
-      WaffleExprKind.store(WaffleStore {
-        ptr = store.ptr.tree_shake(dag).put_on_heap(),
-        value = store.value.tree_shake(dag).put_on_heap(),
-      })
-    case crash(args) WaffleExprKind.crash(args.tree_shake(dag).put_on_heap())
-
-  WaffleExpr { kind, size = expr.size, alignment = expr.alignment }
-}
-
-| Assumes parameters to be in the mapping.
-fun tree_shake(body: WaffleBody, dag: &Dag[WaffleExpr]): WaffleBody {
+| Tree shakes the body. Assumes that expressions within this body are already
+| optimized. This function is shallow, only removing unnecessary locals from the
+| current body (not inner bodies).
+fun tree_shake(body: WaffleBody, dag: Dag[WaffleExpr]): WaffleBody {
+  | We go through the body from the bottom to the top, tracking which locals are
+  | used referenced later in the body. This way, when we encounter an
+  | expression, we know immediately whether we can throw it away.
   var referenced_later_on = set[Id]()
-  var rev_locals = list[Id]()
+  body.returns.collect_referenced(dag, referenced_later_on.&)
 
+  var rev_locals = list[Id]()
   for local in body.locals.rev_iter() do {
     var expr = dag.get(local)
 
     if not(referenced_later_on.contains(local)) and expr.is_pure() then continue
-    var expr = expr.tree_shake(dag)
-    expr.collect_referenced(dag.*, referenced_later_on.&)
-    dag.set(local, expr)
+
+    expr.collect_referenced(dag, referenced_later_on.&)
     rev_locals.&.push(local)
   }
   var locals = list[Id]()
