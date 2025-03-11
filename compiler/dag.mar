@@ -1,14 +1,33 @@
 | Directed Acyclic Graph  
+|
+| Most compiler stages represent the program as a directed acyclic graph (DAG).
+|
+| This file contains the data structure for that: The Dag[T] owns the nodes of
+| the graph (usually, these will be Plum expressions). The expressions
+| themselves only contain Ids, which can be used to refer to other expressions
+| in the Dag.
+|
+| Having a uniform Id type instead of compiler-stage-specific IDs such as
+| PuddingId, PestoId, etc. does make the compiler a bit less type-safe, but it
+| simplifies the handling of Ids. For example, we only need one implementation
+| for ==, hash, and write.
 
 import plum.mar
 
-struct Dag[T] { nodes: List[T] }
-
+| A reference to a node in a Dag.
 struct Id { index: Int }
 
-fun dag[T](): Dag[T] { Dag { nodes = list[T]() } }
-
 fun id(index: Int): Id { Id { index } }
+
+fun ==(a: Id, b: Id): Bool { a.index == b.index }
+fun hash(hasher: &Hasher, id: Id) { hasher.hash(id.index) }
+
+fun write[W](writer: W, id: Id) { writer."@{id.index}" }
+
+| A Dag is just a bunch of nodes.
+struct Dag[T] { nodes: List[T] }
+
+fun dag[T](): Dag[T] { Dag { nodes = list[T]() } }
 
 fun put[T](dag: &Dag[T], node: T): Id {
   var id = id(dag.nodes.len)
@@ -18,7 +37,3 @@ fun put[T](dag: &Dag[T], node: T): Id {
 fun get[T](dag: Dag[T], id: Id): T { dag.nodes.get(id.index) }
 fun set[T](dag: &Dag[T], id: Id, node: T) { dag.nodes.&.set(id.index, node) }
 
-fun ==(a: Id, b: Id): Bool { a.index == b.index }
-fun hash(hasher: &Hasher, id: Id) { hasher.hash(id.index) }
-
-fun write[W](writer: W, id: Id) { writer."@{id.index}" }

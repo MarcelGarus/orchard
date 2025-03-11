@@ -102,8 +102,8 @@ fun assert_no_closure(type: YogurtType): PlumType {
 }
 
 fun push_dup(
-  builder: &PestoBodyBuilder, id: PestoId, type: YogurtType, pesto: &Pesto
-): PestoId {
+  builder: &PestoBodyBuilder, id: Id, type: YogurtType, pesto: &Pesto
+): Id {
   if not(type.to_pesto().contains_ptr()) then return id
   builder.push(PestoOp.call(PestoCall {
     function = type.compile_dup_fun(pesto), args = id
@@ -111,8 +111,8 @@ fun push_dup(
 }
 
 fun push_drop(
-  builder: &PestoBodyBuilder, id: PestoId, type: YogurtType, pesto: &Pesto
-): PestoId {
+  builder: &PestoBodyBuilder, id: Id, type: YogurtType, pesto: &Pesto
+): Id {
   if not(type.to_pesto().contains_ptr()) then return id
   builder.push(PestoOp.call(PestoCall {
     function = type.compile_drop_fun(pesto), args = id
@@ -127,8 +127,8 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
 
-  var fun_builder = pesto_fun_builder().&
-  var builder = fun_builder.body_builder(type.to_pesto()).&
+  var dag = dag[PestoExpr]()
+  var builder = body_builder(dag.&, type.to_pesto()).&
 
   switch type
   case primitive {}
@@ -147,7 +147,7 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
     do {
       var payload_type = builder.get(builder.param).type
         .enum_.unwrap().get(variant.key)
-      var builder = builder.parent.body_builder(payload_type).&
+      var builder = body_builder(dag.&, payload_type).&
       if payload_type is ptr then
         builder.push(PestoOp.dup(builder.param) $ PestoType.int)
       else
@@ -169,7 +169,7 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
   case recursive unreachable()
 
   var body = builder.finish(builder.push(pesto_nothing))
-  var fun_ = fun_builder.finish(body)
+  var fun_ = PestoFun { dag, body }
 
   pesto.funs.&.put(signature, fun_)
   signature
@@ -186,8 +186,8 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
 
-  var fun_builder = pesto_fun_builder().&
-  var builder = fun_builder.body_builder(type.to_pesto()).&
+  var dag = dag[PestoExpr]()
+  var builder = body_builder(dag.&, type.to_pesto()).&
 
   switch type
   case primitive {}
@@ -206,7 +206,7 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
     do {
       var payload_type = builder.get(builder.param).type
         .enum_.unwrap().get(variant.key)
-      var builder = builder.parent.body_builder(payload_type).&
+      var builder = body_builder(dag.&, payload_type).&
       if payload_type is ptr then {
         var new_refcount = builder.push(PestoOp.drop(builder.param) $ PestoType.int)
         var zero = builder.push(PestoOp.int(0) $ PestoType.int)
@@ -223,16 +223,16 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
           condition = ordering,
           cases = map(
             "less" -> { | Never runs in practice; refcount is always >= 0.
-              var builder = fun_builder.body_builder(pesto_nothing.type).&
+              var builder = body_builder(dag.&, pesto_nothing.type).&
               builder.finish(builder.push(pesto_nothing))
             },
             "greater" -> {
-              var builder = fun_builder.body_builder(pesto_nothing.type).&
+              var builder = body_builder(dag.&, pesto_nothing.type).&
               builder.finish(builder.push(pesto_nothing))
             },
             "equal" -> {
               var outer_builder = builder
-              var builder = fun_builder.body_builder(pesto_nothing.type).&
+              var builder = body_builder(dag.&, pesto_nothing.type).&
               var value = builder.push(PestoOp.load(outer_builder.param)
                 $ variant.value.compile().to_pesto())
               builder.push(PestoOp.call(PestoCall {
@@ -271,16 +271,16 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
       condition = ordering,
       cases = map(
         "less" -> { | Never runs in practice; refcount is always >= 0.
-          var builder = fun_builder.body_builder(pesto_nothing.type).&
+          var builder = body_builder(dag.&, pesto_nothing.type).&
           builder.finish(builder.push(pesto_nothing))
         },
         "greater" -> {
-          var builder = fun_builder.body_builder(pesto_nothing.type).&
+          var builder = body_builder(dag.&, pesto_nothing.type).&
           builder.finish(builder.push(pesto_nothing))
         },
         "equal" -> {
           var outer_builder = builder
-          var builder = fun_builder.body_builder(pesto_nothing.type).&
+          var builder = body_builder(dag.&, pesto_nothing.type).&
           var value = builder.push(PestoOp.load(outer_builder.param)
             $ captured.*.to_pesto())
           builder.push(PestoOp.call(PestoCall {
@@ -313,16 +313,16 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
       condition = ordering,
       cases = map(
         "less" -> { | Never runs in practice; refcount is always >= 0.
-          var builder = fun_builder.body_builder(pesto_nothing.type).&
+          var builder = body_builder(dag.&, pesto_nothing.type).&
           builder.finish(builder.push(pesto_nothing))
         },
         "greater" -> {
-          var builder = fun_builder.body_builder(pesto_nothing.type).&
+          var builder = body_builder(dag.&, pesto_nothing.type).&
           builder.finish(builder.push(pesto_nothing))
         },
         "equal" -> {
           var outer_builder = builder
-          var builder = fun_builder.body_builder(pesto_nothing.type).&
+          var builder = body_builder(dag.&, pesto_nothing.type).&
           var free_fun_ptr = builder.push(PestoOp.member(PestoMember {
             of = outer_builder.param, name = "free"
           }) $ PestoType.ptr)
@@ -337,7 +337,7 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   case recursive unreachable()
 
   var body = builder.finish(builder.push(pesto_nothing))
-  var fun_ = fun_builder.finish(body)
+  var fun_ = PestoFun { dag, body }
 
   pesto.funs.&.put(signature, fun_)
   signature
@@ -349,8 +349,8 @@ fun compile_closure_free_fun(captured: YogurtType, pesto: &Pesto): String {
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
 
-  var fun_builder = pesto_fun_builder().&
-  var builder = fun_builder.body_builder(PestoType.ptr).&
+  var dag = dag[PestoExpr]()
+  var builder = body_builder(dag.&, PestoType.ptr).&
 
   var captured_values = builder.push(
     PestoOp.load(builder.param) $ captured.to_pesto()
@@ -362,7 +362,7 @@ fun compile_closure_free_fun(captured: YogurtType, pesto: &Pesto): String {
   }) $ pesto_nothing.type)
 
   var body = builder.finish(builder.push(pesto_nothing))
-  var fun_ = fun_builder.finish(body)
+  var fun_ = PestoFun { dag, body }
 
   pesto.funs.&.put(signature, fun_)
   signature
@@ -370,8 +370,8 @@ fun compile_closure_free_fun(captured: YogurtType, pesto: &Pesto): String {
 
 fun to_pesto(
   expr: PuddingExpr, fun_: PuddingFun,
-  builder: &PestoBodyBuilder, mapping: &Map[Id, PestoId], pesto: &Pesto
-): PestoId {
+  builder: &PestoBodyBuilder, mapping: &Map[Id, Id], pesto: &Pesto
+): Id {
   var type = expr.type.to_pesto()
   var op =
     switch expr.op
@@ -385,7 +385,7 @@ fun to_pesto(
     }
     case type(type) todo("compile type")
     case struct_(struct_) {
-      var fields = map[String, PestoId]()
+      var fields = map[String, Id]()
       for field in struct_ do
         fields.&.put(field.key, mapping.get(field.value))
       PestoOp.struct_(fields)
@@ -406,7 +406,7 @@ fun to_pesto(
       var cases = map[String, PestoBody]()
       for case_ in switch_.cases do {
         var payload_type = builder.get(condition).type.enum_.unwrap().get(case_.key)
-        var builder = builder.parent.body_builder(payload_type).&
+        var builder = body_builder(builder.dag, payload_type).&
         if case_.value.params.get_maybe(0) is some(plum_payload) then {
           var payload =
             if payload_type is ptr then
@@ -461,7 +461,7 @@ fun to_pesto(
       }) $ PestoType.ptr)
 
       var args = {
-        var arg_values = map[String, PestoId]()
+        var arg_values = map[String, Id]()
         var arg_types = map[String, PestoType]()
         for arg in call.args.iter().enumerate() do {
           var key = "{arg.index}"
@@ -477,7 +477,7 @@ fun to_pesto(
     }
     case call(call) {
       var args = {
-        var arg_values = map[String, PestoId]()
+        var arg_values = map[String, Id]()
         var arg_types = map[String, PestoType]()
         for arg in call.args.iter().enumerate() do {
           var key = "{arg.index}"
@@ -490,7 +490,7 @@ fun to_pesto(
       PestoOp.call(PestoCall { function = call.function, args })
     }
     case instruction(instruction) {
-      var args = list[PestoId]()
+      var args = list[Id]()
       for arg in instruction.args do args.&.push(mapping.get(arg))
 
       PestoOp.call_instruction(PestoCallInstruction {
@@ -508,8 +508,8 @@ fun to_pesto(
 | already been added.
 fun to_pesto(
   body: PuddingBody, fun_: PuddingFun,
-  builder: &PestoBodyBuilder, mapping: &Map[Id, PestoId], pesto: &Pesto
-): PestoId {
+  builder: &PestoBodyBuilder, mapping: &Map[Id, Id], pesto: &Pesto
+): Id {
   for id in body.exprs do
     mapping.put(id, fun_.dag.get(id).to_pesto(fun_, builder, mapping, pesto))
   mapping.get(body.returns)
@@ -527,9 +527,9 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
     PestoType.struct_(param_types)
   }
 
-  var fun_builder = pesto_fun_builder().&
-  var builder = fun_builder.body_builder(param_type).&
-  var mapping = map[Id, PestoId]().&
+  var dag = dag[PestoExpr]()
+  var builder = body_builder(dag.&, param_type).&
+  var mapping = map[Id, Id]().&
 
   | Extract the individual arguments from the struct.
   for param in fun_.body.params.iter().enumerate() do {
@@ -540,7 +540,7 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
   }
 
   var body = builder.finish(fun_.body.to_pesto(fun_, builder, mapping, pesto))
-  fun_builder.finish(body)
+  PestoFun { dag, body }
 }
 
 fun to_pesto(pudding: Pudding): Pesto {

@@ -225,7 +225,7 @@ fun memory_layout_enum(type: PestoType): EnumLayout {
 
 fun to_waffle(
   expr: PestoExpr, fun_: PestoFun,
-  builder: &WaffleBodyBuilder, mapping: &Map[PestoId, WaffleExpr], pesto: Pesto,
+  builder: &WaffleBodyBuilder, mapping: &Map[Id, WaffleExpr], pesto: Pesto,
 ): WaffleExpr {
   switch expr.op
   case param unreachable()
@@ -247,7 +247,7 @@ fun to_waffle(
     waffle_aggregate(parts.to_slice())
   }
   case member(member) {
-    var struct_layout = fun_.get(member.of).type.memory_layout_struct()
+    var struct_layout = fun_.dag.get(member.of).type.memory_layout_struct()
     var field_layout = expr.type.memory_layout()
     mapping.get(member.of).waffle_member(
       struct_layout.field_to_offset.get(member.name),
@@ -269,11 +269,11 @@ fun to_waffle(
   }
   case switch_(switch_) {
     var condition = mapping.get(switch_.condition)
-    var layout = fun_.get(switch_.condition).type.memory_layout_enum()
+    var layout = fun_.dag.get(switch_.condition).type.memory_layout_enum()
 
     for variant_layout in layout.variants do {
       var payload = switch_.cases.get(variant_layout.key).param
-      var layout = fun_.get(payload).type.memory_layout()
+      var layout = fun_.dag.get(payload).type.memory_layout()
       mapping.put(
         payload, condition.waffle_member(0, layout.size, layout.alignment)
       )
@@ -359,12 +359,12 @@ fun to_waffle(
 | Assumes parameters to be in the mapping.
 fun to_waffle(
   body: PestoBody, fun_: PestoFun,
-  dag: &Dag[WaffleExpr], mapping: &Map[PestoId, WaffleExpr],
+  dag: &Dag[WaffleExpr], mapping: &Map[Id, WaffleExpr],
   pesto: Pesto, | TODO: is this used?
 ): WaffleBody {
   var builder = body_builder(dag)
   for id in body.exprs do {
-    var expr = builder.&.local(fun_.get(id).to_waffle(
+    var expr = builder.&.local(fun_.dag.get(id).to_waffle(
       fun_, builder.&, mapping, pesto
     ))
     mapping.put(id, expr)
@@ -375,9 +375,9 @@ fun to_waffle(
 fun to_waffle(fun_: PestoFun, pesto: Pesto): WaffleFun {
   var dag = dag[WaffleExpr]()
   var builder = body_builder(dag.&)
-  var mapping = map[PestoId, WaffleExpr]()
+  var mapping = map[Id, WaffleExpr]()
 
-  var param_layout = fun_.get(fun_.body.param).type.memory_layout()
+  var param_layout = fun_.dag.get(fun_.body.param).type.memory_layout()
   var param = builder.&.local(WaffleExpr {
     size = param_layout.size, alignment = param_layout.alignment,
     kind = WaffleExprKind.param,
@@ -385,7 +385,7 @@ fun to_waffle(fun_: PestoFun, pesto: Pesto): WaffleFun {
   mapping.&.put(fun_.body.param, param)
 
   for id in fun_.body.exprs do {
-    var expr = builder.&.local(fun_.get(id).to_waffle(
+    var expr = builder.&.local(fun_.dag.get(id).to_waffle(
       fun_, builder.&, mapping.&, pesto
     ))
     mapping.&.put(id, expr)
