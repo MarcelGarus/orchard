@@ -1,0 +1,182 @@
+| Converting Pesto to Waffle  
+
+import ../plum.mar
+import memory_layout.mar
+
+fun to_waffle(
+  expr: PestoExpr, fun_: PestoFun,
+  builder: &WaffleBodyBuilder, mapping: &Map[Id, WaffleExpr], pesto: Pesto,
+): WaffleExpr {
+  switch expr.op
+  case param unreachable()
+  case int(int) waffle_int(int)
+  case string(string)
+    waffle_aggregate(list(
+      waffle_int(string.data.to_int()),
+      waffle_int(string.len),
+    ).to_slice())
+  case struct_(struct_) {
+    var layout = expr.type.memory_layout_struct()
+    var parts = list[WaffleExpr]()
+    for part in layout.parts do
+      parts.&.push(
+        switch part
+        case field(name) mapping.get(struct_.get(name))
+        case padding(amount) waffle_padding(amount)
+      )
+    waffle_aggregate(parts.to_slice())
+  }
+  case member(member) {
+    var struct_layout = fun_.dag.type_of(member.of).memory_layout_struct()
+    var field_layout = expr.type.memory_layout()
+    mapping.get(member.of).waffle_member(
+      struct_layout.field_to_offset.get(member.name),
+      field_layout.size,
+      field_layout.alignment,
+    )
+  }
+  case enum_(enum_) {
+    var layout = expr.type.memory_layout_enum().variants.get(enum_.name)
+    var parts = list[WaffleExpr]()
+    for part in layout.parts do
+      parts.&.push(
+        switch part
+        case value mapping.get(enum_.value)
+        case padding(amount) waffle_padding(amount)
+        case tag(byte) waffle_byte(byte)
+      )
+    waffle_aggregate(parts.to_slice())
+  }
+  case switch_(switch_) {
+    var condition = mapping.get(switch_.condition)
+    var layout = fun_.dag.type_of(switch_.condition).memory_layout_enum()
+
+    for variant_layout in layout.variants do {
+      var payload = switch_.cases.get(variant_layout.key).param
+      var layout = fun_.dag.type_of(payload).memory_layout()
+      mapping.put(
+        payload, condition.waffle_member(0, layout.size, layout.alignment)
+      )
+    }
+
+    var cases = uninitialized_slice[WaffleBody](layout.tag_to_variant.size)
+    for entry in layout.tag_to_variant do
+      cases.&.set(
+        entry.key.to_int(),
+        switch_.cases.get(entry.value)
+          .to_waffle(fun_, builder.dag, mapping, pesto)
+      )
+
+    waffle_switch(condition.waffle_member(layout.tag_offset, 1, 1), cases)
+  }
+  case function_ptr(signature) waffle_function_ptr(signature)
+  case call(call) {
+    var return_layout = pesto.funs.get(call.function).return_type().memory_layout()
+    waffle_call(
+      call.function, mapping.get(call.args),
+      return_layout.size, return_layout.alignment,
+    )
+  }
+  case call_indirect(call) {
+    var return_layout = expr.type.memory_layout()
+    waffle_call_indirect(
+      mapping.get(call.function), mapping.get(call.args),
+      return_layout.size, return_layout.alignment,
+    )
+  }
+  case call_instruction(call) {
+    var args = call.args
+
+    switch call.instruction
+    case add_ints       waffle_add(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case sub_ints       waffle_sub(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case mul_ints       waffle_mul(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case div_ints       waffle_div(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case mod_ints       waffle_mod(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case and_ints       waffle_and(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case or_ints        waffle_or(     mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case xor_ints       waffle_xor(    mapping.get(args.get(0)), mapping.get(args.get(1)))
+    case compare_ints   waffle_compare_zero(
+                          waffle_sub(mapping.get(args.get(0)), mapping.get(args.get(1)))
+                        ) | tag for enum: | equal greater less
+    case concat_strings todo("handle concat_strings")
+    case crash          waffle_crash(     mapping.get(args.get(0)), mapping.get(args.get(1)))
+  }
+  case new(value) {
+    var value = mapping.get(value)
+    var ptr = builder.&.local(waffle_malloc(waffle_int(8 + value.size)))
+    builder.local(waffle_store(ptr,
+      waffle_aggregate(list(waffle_int(1), value).to_slice())
+    ))
+    ptr
+  }
+  case load(ptr) {
+    var layout = expr.type.memory_layout()
+    waffle_load(
+      waffle_add(mapping.get(ptr), waffle_int(8)),
+      layout.size, layout.alignment
+    )
+  }
+  case dup(ptr) {
+    var ptr = mapping.get(ptr)
+    var new_refcount = builder.&.local(waffle_add(waffle_load(ptr, 8, 8), waffle_int(1)))
+    builder.&.local(waffle_store(ptr, new_refcount))
+    new_refcount
+  }
+  case drop(ptr) {
+    var ptr = mapping.get(ptr)
+    var new_refcount = builder.&.local(waffle_sub(waffle_load(ptr, 8, 8), waffle_int(1)))
+    builder.&.local(waffle_store(ptr, new_refcount))
+    new_refcount
+  }
+  case free(free)
+    waffle_free(
+      mapping.get(free.ptr),
+      waffle_int(8 + free.type.memory_layout().size),
+    )
+}
+
+| Assumes parameters to be in the mapping.
+fun to_waffle(
+  body: PestoBody, fun_: PestoFun,
+  dag: &Dag[WaffleExpr], mapping: &Map[Id, WaffleExpr],
+  pesto: Pesto, | TODO: is this used?
+): WaffleBody {
+  var builder = body_builder(dag)
+  for id in body.exprs do {
+    var expr = builder.&.local(fun_.dag.get(id).to_waffle(
+      fun_, builder.&, mapping, pesto
+    ))
+    mapping.put(id, expr)
+  }
+  builder.finish(mapping.get(body.returns))
+}
+
+fun to_waffle(fun_: PestoFun, pesto: Pesto): WaffleFun {
+  var dag = dag[WaffleExpr]()
+  var builder = body_builder(dag.&)
+  var mapping = map[Id, WaffleExpr]()
+
+  var param_layout = fun_.dag.type_of(fun_.body.param).memory_layout()
+  var param = builder.&.local(WaffleExpr {
+    size = param_layout.size, alignment = param_layout.alignment,
+    kind = WaffleExprKind.param,
+  })
+  mapping.&.put(fun_.body.param, param)
+
+  for id in fun_.body.exprs do {
+    var expr = builder.&.local(fun_.dag.get(id).to_waffle(
+      fun_, builder.&, mapping.&, pesto
+    ))
+    mapping.&.put(id, expr)
+  }
+  var body = builder.finish(mapping.get(fun_.body.returns))
+
+  WaffleFun { dag, body }
+}
+
+fun to_waffle(pesto: Pesto): Waffle {
+  var funs = map[String, WaffleFun]()
+  for fun_ in pesto.funs do funs.&.put(fun_.key, fun_.value.to_waffle(pesto))
+  Waffle { funs }
+}
