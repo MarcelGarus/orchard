@@ -118,6 +118,9 @@ fun push(body: &YogurtBodyBuilder, expr: YogurtExpr): Id {
   id
 }
 fun get(body: YogurtBodyBuilder, id: Id): YogurtExpr { body.dag.get(id) }
+fun type_of(body: YogurtBodyBuilder, id: Id): YogurtType {
+  body.dag.type_of(id)
+}
 fun finish(body: YogurtBodyBuilder, id: Id): YogurtBody {
   YogurtBody {
     params = body.params.to_slice(),
@@ -165,7 +168,7 @@ fun compile(
   var body = body_builder(dag).&
   for egg_id in egg_body.params do {
     var yogurt_id = body.push_param(
-      egg_dag.get(egg_id).type.specialize(substitutions).compile()
+      egg_dag.type_of(egg_id).specialize(substitutions).compile()
     )
     mapping.put(egg_id, yogurt_id)
   }
@@ -233,7 +236,7 @@ fun compile(
       for entry in captured.iter().enumerate() do {
         var mapped = mapping.get(entry.item)
         fields.&.put("{entry.index}", mapped)
-        field_types.&.put("{entry.index}", body.get(mapped).type)
+        field_types.&.put("{entry.index}", body.type_of(mapped))
       }
       var struct_type = YogurtType.struct_(field_types)
       var struct_ = body.push(YogurtOp.struct_(fields) $ struct_type)
@@ -246,7 +249,7 @@ fun compile(
       var lambda_body = body_builder(lambda_dag).&
 
       for egg_id in lambda.params do {
-        var type = egg_dag.get(egg_id).type.specialize(substitutions).compile()
+        var type = egg_dag.type_of(egg_id).specialize(substitutions).compile()
         var yogurt_id = lambda_body.push_param(type)
         lambda_mapping.put(egg_id, yogurt_id)
       }
@@ -255,7 +258,7 @@ fun compile(
         YogurtOp.get_closure(inner_closure) $ struct_type
       )
       for entry in captured.iter().enumerate() do {
-        var type = body.get(mapping.get(entry.item)).type
+        var type = body.type_of(mapping.get(entry.item))
         var inner_id = lambda_body.push(YogurtOp.member(YogurtMember {
           of = inner_captured, name = "{entry.index}"
         }) $ type)
@@ -318,7 +321,7 @@ fun compile(
           case crash YogurtBuiltin.crash
           case type_of {
             todo("type of")
-            | body.push(YogurtOp.type(body.get(call.args.get(0)).type))
+            | body.push(YogurtOp.type(body.type_of(call.args.get(0))))
           }
           case type_info todo("type info")
 
@@ -330,7 +333,7 @@ fun compile(
     case cast(id)
       body.push_cast(
         mapping.get(id),
-        egg_dag.get(id).type.specialize(substitutions),
+        egg_dag.type_of(id).specialize(substitutions),
         expr.type.specialize(substitutions),
         context
       )

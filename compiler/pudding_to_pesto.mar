@@ -145,7 +145,7 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
     var cases = map[String, PestoBody]()
     for variant in type.assert_no_closure().extend_one_level().enum_.unwrap()
     do {
-      var payload_type = builder.get(builder.param).type
+      var payload_type = builder.type_of(builder.param)
         .enum_.unwrap().get(variant.key)
       var builder = body_builder(dag.&, payload_type).&
       if payload_type is ptr then
@@ -204,8 +204,8 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
     var cases = map[String, PestoBody]()
     for variant in type.assert_no_closure().extend_one_level().enum_.unwrap()
     do {
-      var payload_type = builder.get(builder.param).type
-        .enum_.unwrap().get(variant.key)
+      var payload_type = dag.type_of(builder.param).enum_.unwrap()
+        .get(variant.key)
       var builder = body_builder(dag.&, payload_type).&
       if payload_type is ptr then {
         var new_refcount = builder.push(PestoOp.drop(builder.param) $ PestoType.int)
@@ -240,7 +240,7 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
                 args = value,
               }) $ pesto_nothing.type)
               builder.push(PestoOp.free(PestoFree {
-                ptr = outer_builder.param, type = builder.get(value).type
+                ptr = outer_builder.param, type = dag.type_of(value)
               }) $ pesto_nothing.type)
               builder.finish(builder.push(pesto_nothing))
             },
@@ -288,7 +288,7 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
             args = value,
           }) $ pesto_nothing.type)
           builder.push(PestoOp.free(PestoFree {
-            ptr = outer_builder.param, type = builder.get(value).type
+            ptr = outer_builder.param, type = dag.type_of(value)
           }) $ pesto_nothing.type)
           builder.finish(builder.push(pesto_nothing))
         },
@@ -405,14 +405,15 @@ fun to_pesto(
       var condition = mapping.get(switch_.condition)
       var cases = map[String, PestoBody]()
       for case_ in switch_.cases do {
-        var payload_type = builder.get(condition).type.enum_.unwrap().get(case_.key)
+        var payload_type = builder.type_of(condition).enum_.unwrap()
+          .get(case_.key)
         var builder = body_builder(builder.dag, payload_type).&
         if case_.value.params.get_maybe(0) is some(plum_payload) then {
           var payload =
             if payload_type is ptr then
               builder.push(
                 PestoOp.load(builder.param)
-                  $ fun_.dag.get(plum_payload).type.to_pesto()
+                  $ fun_.dag.type_of(plum_payload).to_pesto()
               )
             else
               builder.param
@@ -438,7 +439,7 @@ fun to_pesto(
       var free_fun_ptr = builder.push(
         PestoOp.function_ptr(
           compile_closure_free_fun(
-            fun_.dag.get(lambda.closure).type.closure.unwrap().*, pesto
+            fun_.dag.type_of(lambda.closure).closure.unwrap().*, pesto
           )
         ) $ PestoType.ptr
       )
@@ -466,7 +467,7 @@ fun to_pesto(
         for arg in call.args.iter().enumerate() do {
           var key = "{arg.index}"
           arg_values.&.put(key, mapping.get(arg.item))
-          arg_types.&.put(key, fun_.dag.get(arg.item).type.to_pesto())
+          arg_types.&.put(key, fun_.dag.type_of(arg.item).to_pesto())
         }
         arg_values.&.put("closure", closure_ptr)
         arg_types.&.put("closure", PestoType.ptr)
@@ -482,7 +483,7 @@ fun to_pesto(
         for arg in call.args.iter().enumerate() do {
           var key = "{arg.index}"
           arg_values.&.put(key, mapping.get(arg.item))
-          arg_types.&.put(key, fun_.dag.get(arg.item).type.to_pesto())
+          arg_types.&.put(key, fun_.dag.type_of(arg.item).to_pesto())
         }
         builder.push(PestoOp.struct_(arg_values) $ PestoType.struct_(arg_types))
       }
@@ -498,9 +499,13 @@ fun to_pesto(
       })
     }
     case dup(value)
-      return builder.push_dup(mapping.get(value), fun_.dag.get(value).type, pesto)
+      return builder.push_dup(
+        mapping.get(value), fun_.dag.type_of(value), pesto
+      )
     case drop(value)
-      return builder.push_drop(mapping.get(value), fun_.dag.get(value).type, pesto)
+      return builder.push_drop(
+        mapping.get(value), fun_.dag.type_of(value), pesto
+      )
   builder.push(op $ type)
 }
 
@@ -522,7 +527,7 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
     var param_types = map[String, PestoType]()
     for param in fun_.body.params.iter().enumerate() do
       param_types.&.put(
-        "{param.index}", fun_.dag.get(param.item).type.to_pesto()
+        "{param.index}", fun_.dag.type_of(param.item).to_pesto()
       )
     PestoType.struct_(param_types)
   }
@@ -535,7 +540,7 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
   for param in fun_.body.params.iter().enumerate() do {
     var id = builder.push(PestoOp.member(PestoMember {
       of = builder.param, name = "{param.index}"
-    }) $ fun_.dag.get(param.item).type.to_pesto())
+    }) $ fun_.dag.type_of(param.item).to_pesto())
     mapping.put(param.item, id)
   }
 
