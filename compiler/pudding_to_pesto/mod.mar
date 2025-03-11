@@ -1,0 +1,210 @@
+| Converting Pudding to Pesto  
+
+import ../plum.mar
+import dup_drop_free.mar
+import types.mar
+
+fun push_dup(
+  builder: &PestoBodyBuilder, id: Id, type: YogurtType, pesto: &Pesto
+): Id {
+  if not(type.to_pesto().contains_ptr()) then return id
+  builder.push(PestoOp.call(PestoCall {
+    function = type.compile_dup_fun(pesto), args = id
+  }) $ pesto_nothing.type)
+}
+
+fun push_drop(
+  builder: &PestoBodyBuilder, id: Id, type: YogurtType, pesto: &Pesto
+): Id {
+  if not(type.to_pesto().contains_ptr()) then return id
+  builder.push(PestoOp.call(PestoCall {
+    function = type.compile_drop_fun(pesto), args = id
+  }) $ pesto_nothing.type)
+}
+
+fun to_pesto(
+  expr: PuddingExpr, fun_: PuddingFun,
+  builder: &PestoBodyBuilder, mapping: &Map[Id, Id], pesto: &Pesto
+): Id {
+  var type = expr.type.to_pesto()
+  var op =
+    switch expr.op
+    case param unreachable()
+    case uninitialized unreachable()
+    case int(int) PestoOp.int(int)
+    case string(string) {
+      var ptr = builder.push(PestoOp.int(string.data.to_int()) $ PestoType.ptr)
+      var len = builder.push(PestoOp.int(string.len) $ PestoType.int)
+      PestoOp.struct_(map("ptr" -> ptr, "len" -> len))
+    }
+    case type(type) todo("compile type")
+    case struct_(struct_) {
+      var fields = map[String, Id]()
+      for field in struct_ do
+        fields.&.put(field.key, mapping.get(field.value))
+      PestoOp.struct_(fields)
+    }
+    case member(member)
+      PestoOp.member(PestoMember {
+        of = mapping.get(member.of), name = member.name
+      })
+    case enum_(enum_) {
+      var value_type = type.enum_.unwrap().get(enum_.name)
+      var value = mapping.get(enum_.value)
+      if value_type is ptr then
+        value = builder.push(PestoOp.new(value) $ PestoType.ptr)
+      PestoOp.enum_(PestoEnum { name = enum_.name, value })
+    }
+    case switch_(switch_) {
+      var condition = mapping.get(switch_.condition)
+      var cases = map[String, PestoBody]()
+      for case_ in switch_.cases do {
+        var payload_type = builder.type_of(condition).enum_.unwrap()
+          .get(case_.key)
+        var builder = body_builder(builder.dag, payload_type).&
+        if case_.value.params.get_maybe(0) is some(plum_payload) then {
+          var payload =
+            if payload_type is ptr then
+              builder.push(
+                PestoOp.load(builder.param)
+                  $ fun_.dag.type_of(plum_payload).to_pesto()
+              )
+            else
+              builder.param
+          mapping.put(plum_payload, payload)
+        }
+        var returns = case_.value.to_pesto(fun_, builder, mapping, pesto)
+        var body = builder.finish(returns)
+        cases.&.put(case_.key, body)
+      }
+      PestoOp.switch_(PestoSwitch { condition, cases })
+    }
+    case closure(value) PestoOp.new(mapping.get(value))
+    case get_closure(closure) PestoOp.load(mapping.get(closure))
+    case lambda(lambda) {
+      var closure_ptr = mapping.get(lambda.closure)
+
+      | Create a function pointer to the lambda body.
+      var lambda_body_fun_ptr = builder.push(
+        PestoOp.function_ptr(lambda.function) $ PestoType.ptr
+      )
+
+      | Create a function pointer to a function for freeing the closure.
+      var free_fun_ptr = builder.push(
+        PestoOp.function_ptr(
+          compile_closure_free_fun(
+            fun_.dag.type_of(lambda.closure).closure.unwrap().*, pesto
+          )
+        ) $ PestoType.ptr
+      )
+
+      | Create the lambda, consisting of a pointer to the closure, the function
+      | for the body, and a function for freeing the closure.
+      PestoOp.struct_(map(
+        "closure" -> closure_ptr,
+        "body" -> lambda_body_fun_ptr,
+        "free" -> free_fun_ptr,
+      ))
+    }
+    case lambda_call(call) {
+      var lambda = mapping.get(call.lambda)
+      var closure_ptr = builder.push(PestoOp.member(PestoMember {
+        of = lambda, name = "closure"
+      }) $ PestoType.ptr)
+      var body_ptr = builder.push(PestoOp.member(PestoMember {
+        of = lambda, name = "body"
+      }) $ PestoType.ptr)
+
+      var args = {
+        var arg_values = map[String, Id]()
+        var arg_types = map[String, PestoType]()
+        for arg in call.args.iter().enumerate() do {
+          var key = "{arg.index}"
+          arg_values.&.put(key, mapping.get(arg.item))
+          arg_types.&.put(key, fun_.dag.type_of(arg.item).to_pesto())
+        }
+        arg_values.&.put("closure", closure_ptr)
+        arg_types.&.put("closure", PestoType.ptr)
+        builder.push(PestoOp.struct_(arg_values) $ PestoType.struct_(arg_types))
+      }
+
+      PestoOp.call_indirect(PestoCallIndirect { function = body_ptr, args })
+    }
+    case call(call) {
+      var args = {
+        var arg_values = map[String, Id]()
+        var arg_types = map[String, PestoType]()
+        for arg in call.args.iter().enumerate() do {
+          var key = "{arg.index}"
+          arg_values.&.put(key, mapping.get(arg.item))
+          arg_types.&.put(key, fun_.dag.type_of(arg.item).to_pesto())
+        }
+        builder.push(PestoOp.struct_(arg_values) $ PestoType.struct_(arg_types))
+      }
+
+      PestoOp.call(PestoCall { function = call.function, args })
+    }
+    case instruction(instruction) {
+      var args = list[Id]()
+      for arg in instruction.args do args.&.push(mapping.get(arg))
+
+      PestoOp.call_instruction(PestoCallInstruction {
+        instruction = instruction.instruction, args = args.to_slice()
+      })
+    }
+    case dup(value)
+      return builder.push_dup(
+        mapping.get(value), fun_.dag.type_of(value), pesto
+      )
+    case drop(value)
+      return builder.push_drop(
+        mapping.get(value), fun_.dag.type_of(value), pesto
+      )
+  builder.push(op $ type)
+}
+
+| Converts a body to pesto. Assumes that mappings for the parameters have
+| already been added.
+fun to_pesto(
+  body: PuddingBody, fun_: PuddingFun,
+  builder: &PestoBodyBuilder, mapping: &Map[Id, Id], pesto: &Pesto
+): Id {
+  for id in body.exprs do
+    mapping.put(id, fun_.dag.get(id).to_pesto(fun_, builder, mapping, pesto))
+  mapping.get(body.returns)
+}
+
+fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
+  | In the Pesto, functions accept a struct containing all arguments. So here,
+  | we build a type for that.
+  var param_type = {
+    var param_types = map[String, PestoType]()
+    for param in fun_.body.params.iter().enumerate() do
+      param_types.&.put(
+        "{param.index}", fun_.dag.type_of(param.item).to_pesto()
+      )
+    PestoType.struct_(param_types)
+  }
+
+  var dag = dag[PestoExpr]()
+  var builder = body_builder(dag.&, param_type).&
+  var mapping = map[Id, Id]().&
+
+  | Extract the individual arguments from the struct.
+  for param in fun_.body.params.iter().enumerate() do {
+    var id = builder.push(PestoOp.member(PestoMember {
+      of = builder.param, name = "{param.index}"
+    }) $ fun_.dag.type_of(param.item).to_pesto())
+    mapping.put(param.item, id)
+  }
+
+  var body = builder.finish(fun_.body.to_pesto(fun_, builder, mapping, pesto))
+  PestoFun { dag, body }
+}
+
+fun to_pesto(pudding: Pudding): Pesto {
+  var pesto = pesto()
+  for fun_ in pudding.funs do
+    pesto.funs.&.put(fun_.key, fun_.value.to_pesto(pesto.&))
+  pesto
+}

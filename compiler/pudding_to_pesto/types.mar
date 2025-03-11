@@ -1,0 +1,100 @@
+import mod.mar
+
+fun to_pesto(type: YogurtType): PestoType {
+  switch type
+  case primitive(name) {
+    if name == "Int" then PestoType.int
+    else panic("primitive type {name}")
+  }
+  case never PestoType.struct_(map[String, PestoType]())
+  case struct_(struct_) {
+    var fields = map[String, PestoType]()
+    for field in struct_ do
+      fields.&.put(field.key, field.value.to_pesto())
+    PestoType.struct_(fields)
+  }
+  case enum_(enum_) {
+    var variants = map[String, PestoType]()
+    for variant in enum_ do {
+      var payload = variant.value
+      variants.&.put(
+        variant.key,
+        if payload.is_recursive(1) then PestoType.ptr else payload.to_pesto(),
+      )
+    }
+    PestoType.enum_(variants)
+  }
+  case closure PestoType.ptr
+  case lambda(lambda) {
+    PestoType.struct_(map(
+      "closure" -> PestoType.ptr,
+      "body" -> PestoType.ptr,
+      "free" -> PestoType.ptr,
+    ))
+  }
+  case recursive unreachable()
+}
+
+fun is_recursive(type: YogurtType, depth: Int): Bool {
+  switch type
+  case primitive false
+  case never false
+  case struct_(struct_) {
+    for field in struct_ do
+      if field.value.is_recursive(depth + 1) then return true
+    false
+  }
+  case enum_(enum_) {
+    for variant in enum_ do
+      if variant.value.is_recursive(depth + 1) then return true
+    false
+  }
+  case closure unreachable()
+  case lambda(lambda) false
+  case recursive(level) level >= depth
+}
+
+fun contains_ptr(type: PestoType): Bool {
+  switch type
+  case int false
+  case ptr true
+  case struct_(fields) {
+    for field in fields do if field.value.contains_ptr() then return true
+    false
+  }
+  case enum_(variants) {
+    for variant in variants do if variant.value.contains_ptr() then return true
+    false
+  }
+}
+
+fun assert_no_closure(type: YogurtType): PlumType {
+  switch type
+  case primitive(name) PlumType.primitive(name)
+  case never PlumType.never
+  case struct_(struct_) {
+    var fields = map[String, PlumType]()
+    for field in struct_ do
+      fields.&.put(field.key, field.value.assert_no_closure())
+    PlumType.struct_(fields)
+  }
+  case enum_(enum_) {
+    var variants = map[String, PlumType]()
+    for variant in enum_ do
+      variants.&.put(variant.key, variant.value.assert_no_closure())
+    PlumType.enum_(variants)
+  }
+  case closure unreachable()
+  case lambda(lambda) {
+    var args = list[PlumType]()
+    for arg in lambda.args do args.&.push(arg.assert_no_closure())
+    var args = args.to_slice()
+
+    var return_type = lambda.return_type.assert_no_closure()
+
+    PlumType.lambda(LambdaType {
+      args, return_type = return_type.put_on_heap()
+    })
+  }
+  case recursive(level) PlumType.recursive(level)
+}
