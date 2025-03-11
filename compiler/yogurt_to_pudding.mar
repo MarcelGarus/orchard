@@ -16,10 +16,10 @@ fun put(dag: &Dag[PuddingExpr], id: Id, expr: PuddingExpr): Id {
   id
 }
 fun put_dup(dag: &Dag[PuddingExpr], id: Id): Id {
-  dag.put(PuddingOp.dup(id) $ PlumType.never)
+  dag.put(PuddingOp.dup(id) $ YogurtType.never)
 }
 fun put_drop(dag: &Dag[PuddingExpr], id: Id): Id {
-  dag.put(PuddingOp.drop(id) $ PlumType.never)
+  dag.put(PuddingOp.drop(id) $ YogurtType.never)
 }
 
 fun require(
@@ -128,14 +128,23 @@ fun to_pudding(
     ))
     rev_body.require(switch_.condition, dag, needed_later_on)
   }
+  case closure(value) {
+    rev_body.push(dag.put(id, PuddingOp.closure(value) $ type))
+    rev_body.require(value, dag, needed_later_on)
+  }
+  case get_closure(closure) {
+    rev_body.push(dag.put_drop(closure))
+    rev_body.push(dag.put_dup(id))
+    rev_body.push(dag.put(id, PuddingOp.get_closure(closure) $ type))
+    rev_body.require(closure, dag, needed_later_on)
+  }
   case lambda(lambda) {
     rev_body.push(dag.put(
       id, PuddingOp.lambda(PuddingLambda {
-        function = lambda.function, captures = lambda.captures
+        function = lambda.function, closure = lambda.closure
       }) $ type
     ))
-    for capture in lambda.captures do
-      rev_body.require(capture, dag, needed_later_on)
+    rev_body.require(lambda.closure, dag, needed_later_on)
   }
   case call(call) {
     switch call.callee
@@ -216,15 +225,11 @@ fun to_pudding(fun_: YogurtFun, yogurt: Yogurt, pudding: &Pudding): PuddingFun {
   | all Yogurt expressions so that the additional dup/drop expressions get
   | bigger IDs.
   for i in 0..{fun_.dag.nodes.len} do
-    dag.&.put(PuddingOp.uninitialized $ PlumType.never)
-
-  if fun_.captures is some(captures) then
-    for id in captures do
-      dag.&.put(id, PuddingOp.param $ fun_.dag.get(id).type)
+    dag.&.put(PuddingOp.uninitialized $ YogurtType.never)
 
   var body = fun_.body.to_pudding(fun_, dag.&, set[Id]().&, yogurt)
 
-  PuddingFun { dag, captures = fun_.captures, body }
+  PuddingFun { dag, body }
 }
 
 fun to_pudding(yogurt: Yogurt): Pudding {

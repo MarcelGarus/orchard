@@ -4,22 +4,22 @@ import plum.mar
 
 struct Pudding { funs: Map[String, PuddingFun] }
 
-struct PuddingFun {
-  dag: Dag[PuddingExpr], captures: Maybe[Slice[Id]], body: PuddingBody
-}
+struct PuddingFun { dag: Dag[PuddingExpr], body: PuddingBody }
 struct PuddingBody { params: Slice[Id], exprs: Slice[Id], returns: Id }
-struct PuddingExpr { op: PuddingOp, type: PlumType }
+struct PuddingExpr { op: PuddingOp, type: YogurtType }
 
 enum PuddingOp {
   param,
   uninitialized,
   int: Int,
   string: String,
-  type: PlumType,
+  type: YogurtType,
   struct_: Map[String, Id],
   member: PuddingMember,
   enum_: PuddingEnum,
   switch_: PuddingSwitch,
+  closure: Id,
+  get_closure: Id,
   lambda: PuddingLambda,
   lambda_call: PuddingLambdaCall,
   call: PuddingCall,
@@ -30,7 +30,7 @@ enum PuddingOp {
 struct PuddingMember { of: Id, name: String }
 struct PuddingSwitch { condition: Id, cases: Map[String, PuddingBody] }
 struct PuddingEnum { name: String, value: Id }
-struct PuddingLambda { function: String, captures: Slice[Id] }
+struct PuddingLambda { function: String, closure: Id }
 struct PuddingLambdaCall { lambda: Id, args: Slice[Id] }
 struct PuddingCall { function: String, args: Slice[Id] }
 struct PuddingInstruction { instruction: Instruction, args: Slice[Id] }
@@ -39,9 +39,9 @@ struct PuddingInstruction { instruction: Instruction, args: Slice[Id] }
 
 fun pudding(): Pudding { Pudding { funs = map[String, PuddingFun]() } }
 
-fun $(op: PuddingOp, type: PlumType): _ { PuddingExpr { op, type } }
+fun $(op: PuddingOp, type: YogurtType): _ { PuddingExpr { op, type } }
 
-fun return_type(fun_: PuddingFun): PlumType { fun_.get(fun_.body.returns).type }
+fun return_type(fun_: PuddingFun): YogurtType { fun_.get(fun_.body.returns).type }
 
 | Writing Pudding  
 
@@ -50,11 +50,6 @@ fun write[W](writer: W, pudding: Pudding) {
   for fun_ in pudding.funs do {
     if first then first = false else writer."\n"
     writer."{fun_.key}:"
-    if fun_.value.captures is some(captures) then {
-      writer." (captures "
-      for capture in captures do writer." {capture}"
-      writer.")"
-    }
     writer.write(fun_.value.body, fun_.value, 1)
   }
 }
@@ -93,10 +88,10 @@ fun write[W](writer: W, op: PuddingOp, fun_: PuddingFun, indentation: Int) {
       writer.write(case_.value, fun_, indentation + 2)
     }
   }
+  case closure(captured) writer."closure of {captured}"
+  case get_closure(closure) writer."get_closure {closure}"
   case lambda(lambda) {
-    writer."lambda [capturing"
-    for capture in lambda.captures do writer." {capture}"
-    writer."] {lambda.function}"
+    writer."lambda [closure {lambda.closure}] {lambda.function}"
   }
   case lambda_call(call) {
     writer."call {call.lambda}"

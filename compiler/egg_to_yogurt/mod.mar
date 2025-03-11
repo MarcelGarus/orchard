@@ -92,7 +92,7 @@ fun compile(
   var dag = dag[YogurtExpr]()
   var body = fun_.body
     .compile(mapping.&, dag.&, fun_.dag, substitutions, context)?
-  var fun_ = YogurtFun { captures = none[Slice[Id]](), dag, body }
+  var fun_ = YogurtFun { dag, body }
 
   context.define(signature, fun_)
   context.done_compiling()
@@ -107,7 +107,7 @@ struct YogurtBodyBuilder {
 fun body_builder(dag: &Dag[YogurtExpr]): _ {
   YogurtBodyBuilder { dag, params = list[Id](), children = list[Id]() }
 }
-fun push_param(body: &YogurtBodyBuilder, type: PlumType): Id {
+fun push_param(body: &YogurtBodyBuilder, type: YogurtType): Id {
   var id = body.dag.&.put(YogurtOp.param $ type)
   body.params.&.push(id)
   id
@@ -126,6 +126,36 @@ fun finish(body: YogurtBodyBuilder, id: Id): YogurtBody {
   }
 }
 
+fun compile(type: PlumType): YogurtType {
+  switch type
+  case primitive(name) YogurtType.primitive(name)
+  case never YogurtType.never
+  case struct_(struct_) {
+    var fields = map[String, YogurtType]()
+    for field in struct_ do fields.&.put(field.key, field.value.compile())
+
+    YogurtType.struct_(fields)
+  }
+  case enum_(enum_) {
+    var variants = map[String, YogurtType]()
+    for variant in enum_ do variants.&.put(variant.key, variant.value.compile())
+    
+    YogurtType.enum_(variants)
+  }
+  case lambda(lambda) {
+    var args = list[YogurtType]()
+    for arg in lambda.args do args.&.push(arg.compile())
+    var args = args.to_slice()
+
+    var return_type = lambda.return_type.compile()
+
+    YogurtType.lambda(YogurtLambdaType {
+      args, return_type = return_type.put_on_heap()
+    })
+  }
+  case recursive(level) YogurtType.recursive(level)
+}
+
 | Assumes that mappings for the parameters exist.
 fun compile(
   egg_body: EggBody,
@@ -135,7 +165,7 @@ fun compile(
   var body = body_builder(dag).&
   for egg_id in egg_body.params do {
     var yogurt_id = body.push_param(
-      egg_dag.get(egg_id).type.specialize(substitutions)
+      egg_dag.get(egg_id).type.specialize(substitutions).compile()
     )
     mapping.put(egg_id, yogurt_id)
   }
@@ -152,7 +182,7 @@ fun compile(
   mapping: &Map[Id, Id], body: &YogurtBodyBuilder,
   egg_dag: Dag[EggExpr], substitutions: Substitutions, context: &YogurtContext,
 ): Result[Id, Error] {
-  var type = expr.type.specialize(substitutions)
+  var type = expr.type.specialize(substitutions).compile()
   ok[Id, Error](
     switch expr.op
     case param unreachable()
@@ -190,47 +220,65 @@ fun compile(
       )
     }
     case lambda(lambda) {
-      | Lambdas get compiled into stand-alone functions that explicitly capture
-      | IDs that the caller needs to provide.
+      | Lambdas get compiled into stand-alone functions that explicitly receive
+      | a "closure" parameter, which is a pointer to a struct containing all
+      | captured expressions from the outer scope. That struct is guaranteed to
+      | live on the heap.
 
+      var captured = expr.captured_variables(egg_dag)
+
+      | Create the closure in the current scope.
+      var fields = map[String, Id]()
+      var field_types = map[String, YogurtType]()
+      for entry in captured.iter().enumerate() do {
+        var mapped = mapping.get(entry.item)
+        fields.&.put("{entry.index}", mapped)
+        field_types.&.put("{entry.index}", body.get(mapped).type)
+      }
+      var struct_type = YogurtType.struct_(field_types)
+      var struct_ = body.push(YogurtOp.struct_(fields) $ struct_type)
+      var closure_type = YogurtType.closure(struct_type.put_on_heap())
+      var closure = body.push(YogurtOp.closure(struct_) $ closure_type)
+
+      | Compile the lambda into a function.
       var lambda_mapping = map[Id, Id]().&
       var lambda_dag = dag[YogurtExpr]().&
       var lambda_body = body_builder(lambda_dag).&
 
-      var outer_captures = list[Id]() | from the POV of the outer scope
-      var inner_captures = list[Id]() | from the POV of the lambda
-      for captured in expr.captured_variables(egg_dag) do {
-        var outer = mapping.get(captured)
-        var inner = lambda_body.push_param(body.get(outer).type)
-        outer_captures.&.push(outer)
-        inner_captures.&.push(inner)
-        lambda_mapping.&.put(captured, inner)
-      }
-      var outer_captures = outer_captures.to_slice()
-      var inner_captures = inner_captures.to_slice()
-
       for egg_id in lambda.params do {
-        var type = egg_dag.get(egg_id).type.specialize(substitutions)
+        var type = egg_dag.get(egg_id).type.specialize(substitutions).compile()
         var yogurt_id = lambda_body.push_param(type)
         lambda_mapping.put(egg_id, yogurt_id)
       }
-      var exprs = list[Id]()
+      var inner_closure = lambda_body.push_param(closure_type)
+      var inner_captured = lambda_body.push(
+        YogurtOp.get_closure(inner_closure) $ struct_type
+      )
+      for entry in captured.iter().enumerate() do {
+        var type = body.get(mapping.get(entry.item)).type
+        var inner_id = lambda_body.push(YogurtOp.member(YogurtMember {
+          of = inner_captured, name = "{entry.index}"
+        }) $ type)
+        lambda_mapping.&.put(entry.item, inner_id)
+      }
+
       for egg_id in lambda.children do {
         var yogurt_id = egg_dag.get(egg_id)
           .compile(lambda_mapping, lambda_body, egg_dag, substitutions, context)?
         lambda_mapping.put(egg_id, yogurt_id)
       }
       var lambda_body = lambda_body.finish(lambda_mapping.get(lambda.returns))
-      var signature = "lambda at {expr.src} with {substitutions}"
+
+      var signature = "lambda at {expr.src}"
+      if substitutions.substitutions.size > 0 then
+        signature = "{signature} with {substitutions}"
+
       context.define(signature, YogurtFun {
-        captures = some(inner_captures), dag = lambda_dag.*, body = lambda_body
+        dag = lambda_dag.*, body = lambda_body
       })
-      signature
 
       body.push(
-        YogurtOp.lambda(YogurtLambda {
-          captures = outer_captures, function = signature
-        }) $ type
+        YogurtOp.lambda(YogurtLambda { closure, function = signature }) $ type
       )
     }
     case call(call) {
@@ -279,7 +327,13 @@ fun compile(
         }) $ type)
       }
     }
-    case cast(id) body.push_cast(mapping.get(id), type, context)
+    case cast(id)
+      body.push_cast(
+        mapping.get(id),
+        egg_dag.get(id).type.specialize(substitutions),
+        expr.type.specialize(substitutions),
+        context
+      )
     case type(type) todo("type")
   )
 }

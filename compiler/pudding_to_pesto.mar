@@ -2,7 +2,7 @@
 
 import plum.mar
 
-fun to_pesto(type: PlumType): PestoType {
+fun to_pesto(type: YogurtType): PestoType {
   switch type
   case primitive(name) {
     if name == "Int" then PestoType.int
@@ -26,6 +26,7 @@ fun to_pesto(type: PlumType): PestoType {
     }
     PestoType.enum_(variants)
   }
+  case closure PestoType.ptr
   case lambda(lambda) {
     PestoType.struct_(map(
       "closure" -> PestoType.ptr,
@@ -36,7 +37,7 @@ fun to_pesto(type: PlumType): PestoType {
   case recursive unreachable()
 }
 
-fun is_recursive(type: PlumType, depth: Int): Bool {
+fun is_recursive(type: YogurtType, depth: Int): Bool {
   switch type
   case primitive false
   case never false
@@ -50,6 +51,7 @@ fun is_recursive(type: PlumType, depth: Int): Bool {
       if variant.value.is_recursive(depth + 1) then return true
     false
   }
+  case closure unreachable()
   case lambda(lambda) false
   case recursive(level) level >= depth
 }
@@ -68,8 +70,39 @@ fun contains_ptr(type: PestoType): Bool {
   }
 }
 
+fun assert_no_closure(type: YogurtType): PlumType {
+  switch type
+  case primitive(name) PlumType.primitive(name)
+  case never PlumType.never
+  case struct_(struct_) {
+    var fields = map[String, PlumType]()
+    for field in struct_ do
+      fields.&.put(field.key, field.value.assert_no_closure())
+    PlumType.struct_(fields)
+  }
+  case enum_(enum_) {
+    var variants = map[String, PlumType]()
+    for variant in enum_ do
+      variants.&.put(variant.key, variant.value.assert_no_closure())
+    PlumType.enum_(variants)
+  }
+  case closure unreachable()
+  case lambda(lambda) {
+    var args = list[PlumType]()
+    for arg in lambda.args do args.&.push(arg.assert_no_closure())
+    var args = args.to_slice()
+
+    var return_type = lambda.return_type.assert_no_closure()
+
+    PlumType.lambda(LambdaType {
+      args, return_type = return_type.put_on_heap()
+    })
+  }
+  case recursive(level) PlumType.recursive(level)
+}
+
 fun push_dup(
-  builder: &PestoBodyBuilder, id: PestoId, type: PlumType, pesto: &Pesto
+  builder: &PestoBodyBuilder, id: PestoId, type: YogurtType, pesto: &Pesto
 ): PestoId {
   if not(type.to_pesto().contains_ptr()) then return id
   builder.push(PestoOp.call(PestoCall {
@@ -78,7 +111,7 @@ fun push_dup(
 }
 
 fun push_drop(
-  builder: &PestoBodyBuilder, id: PestoId, type: PlumType, pesto: &Pesto
+  builder: &PestoBodyBuilder, id: PestoId, type: YogurtType, pesto: &Pesto
 ): PestoId {
   if not(type.to_pesto().contains_ptr()) then return id
   builder.push(PestoOp.call(PestoCall {
@@ -89,7 +122,7 @@ fun push_drop(
 | Creates a function that accepts a value of the given type, traverses that
 | value, and calls dup on all inner members. If it reaches a pointer, it instead
 | just increments that pointer's reference count.
-fun compile_dup_fun(type: PlumType, pesto: &Pesto): String {
+fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
   var signature = "dup {type}"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
@@ -97,34 +130,37 @@ fun compile_dup_fun(type: PlumType, pesto: &Pesto): String {
   var fun_builder = pesto_fun_builder().&
   var builder = fun_builder.body_builder(type.to_pesto()).&
 
-  switch type.extend_one_level()
+  switch type
   case primitive {}
   case never {}
-  case struct_(fields)
-    for field in fields do {
+  case struct_
+    for field in type.assert_no_closure().extend_one_level().struct_.unwrap()
+    do {
       var value = builder.push(PestoOp.member(PestoMember {
         of = builder.param, name = field.key
-      }) $ field.value.to_pesto())
-      builder.push_dup(value, field.value, pesto)
+      }) $ field.value.compile().to_pesto())
+      builder.push_dup(value, field.value.compile(), pesto)
     }
-  case enum_(variants) {
-    var type = type.to_pesto()
+  case enum_ {
     var cases = map[String, PestoBody]()
-    for variant in variants do {
+    for variant in type.assert_no_closure().extend_one_level().enum_.unwrap()
+    do {
       var payload_type = builder.get(builder.param).type
         .enum_.unwrap().get(variant.key)
       var builder = builder.parent.body_builder(payload_type).&
       if payload_type is ptr then
         builder.push(PestoOp.dup(builder.param) $ PestoType.int)
       else
-        builder.push_dup(builder.param, variant.value, pesto)
+        builder.push_dup(builder.param, variant.value.compile(), pesto)
       cases.&.put(variant.key, builder.finish(builder.push(pesto_nothing)))
     }
     builder.push(PestoOp.switch_(PestoSwitch {
       condition = builder.param, cases
     }) $ pesto_nothing.type).ignore()
   }
-  case lambda(lambda) {
+  case closure
+    builder.push(PestoOp.dup(builder.param) $ PestoType.int).ignore()
+  case lambda {
     var closure_ptr = builder.push(PestoOp.member(PestoMember {
       of = builder.param, name = "closure"
     }) $ PestoType.ptr)
@@ -145,7 +181,7 @@ fun compile_dup_fun(type: PlumType, pesto: &Pesto): String {
 | zero, it drops the pointed-to value and frees the allocation. For lambdas
 | where the closure reaches a reference count of zero, it uses the free function
 | pointer to free the closure.
-fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
+fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   var signature = "drop {type}"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
@@ -153,20 +189,21 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
   var fun_builder = pesto_fun_builder().&
   var builder = fun_builder.body_builder(type.to_pesto()).&
 
-  switch type.extend_one_level()
+  switch type
   case primitive {}
   case never {}
-  case struct_(fields)
-    for field in fields do {
+  case struct_
+    for field in type.assert_no_closure().extend_one_level().struct_.unwrap()
+    do {
       var value = builder.push(PestoOp.member(PestoMember {
         of = builder.param, name = field.key
-      }) $ field.value.to_pesto())
-      builder.push_drop(value, field.value, pesto)
+      }) $ field.value.compile().to_pesto())
+      builder.push_drop(value, field.value.compile(), pesto)
     }
-  case enum_(variants) {
-    var type = type.to_pesto()
+  case enum_ {
     var cases = map[String, PestoBody]()
-    for variant in variants do {
+    for variant in type.assert_no_closure().extend_one_level().enum_.unwrap()
+    do {
       var payload_type = builder.get(builder.param).type
         .enum_.unwrap().get(variant.key)
       var builder = builder.parent.body_builder(payload_type).&
@@ -197,9 +234,10 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
               var outer_builder = builder
               var builder = fun_builder.body_builder(pesto_nothing.type).&
               var value = builder.push(PestoOp.load(outer_builder.param)
-                $ variant.value.to_pesto())
+                $ variant.value.compile().to_pesto())
               builder.push(PestoOp.call(PestoCall {
-                function = variant.value.compile_drop_fun(pesto), args = value
+                function = variant.value.compile().compile_drop_fun(pesto),
+                args = value,
               }) $ pesto_nothing.type)
               builder.push(PestoOp.free(PestoFree {
                 ptr = outer_builder.param, type = builder.get(value).type
@@ -209,7 +247,7 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
           ),
         }) $ pesto_nothing.type)
       } else
-        builder.push_drop(builder.param, variant.value, pesto)
+        builder.push_drop(builder.param, variant.value.compile(), pesto)
 
       cases.&.put(variant.key, builder.finish(builder.push(pesto_nothing)))
     }
@@ -217,7 +255,47 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
       condition = builder.param, cases
     }) $ pesto_nothing.type).ignore()
   }
-  case lambda(lambda) {
+  case closure(captured) {
+    var new_refcount = builder.push(PestoOp.drop(builder.param) $ PestoType.int)
+    var zero = builder.push(PestoOp.int(0) $ PestoType.int)
+    var ordering =
+      builder.push(PestoOp.call_instruction(PestoCallInstruction {
+        instruction = Instruction.compare_ints,
+        args = list(new_refcount, zero).to_slice(),
+      }) $ PestoType.enum_(map(
+        "less" -> pesto_nothing.type,
+        "greater" -> pesto_nothing.type,
+        "equal" -> pesto_nothing.type,
+      )))
+    builder.push(PestoOp.switch_(PestoSwitch {
+      condition = ordering,
+      cases = map(
+        "less" -> { | Never runs in practice; refcount is always >= 0.
+          var builder = fun_builder.body_builder(pesto_nothing.type).&
+          builder.finish(builder.push(pesto_nothing))
+        },
+        "greater" -> {
+          var builder = fun_builder.body_builder(pesto_nothing.type).&
+          builder.finish(builder.push(pesto_nothing))
+        },
+        "equal" -> {
+          var outer_builder = builder
+          var builder = fun_builder.body_builder(pesto_nothing.type).&
+          var value = builder.push(PestoOp.load(outer_builder.param)
+            $ captured.*.to_pesto())
+          builder.push(PestoOp.call(PestoCall {
+            function = captured.*.compile_drop_fun(pesto),
+            args = value,
+          }) $ pesto_nothing.type)
+          builder.push(PestoOp.free(PestoFree {
+            ptr = outer_builder.param, type = builder.get(value).type
+          }) $ pesto_nothing.type)
+          builder.finish(builder.push(pesto_nothing))
+        },
+      ),
+    }) $ pesto_nothing.type).ignore()
+  }
+  case lambda {
     var closure_ptr = builder.push(PestoOp.member(PestoMember {
       of = builder.param, name = "closure"
     }) $ PestoType.ptr)
@@ -266,32 +344,21 @@ fun compile_drop_fun(type: PlumType, pesto: &Pesto): String {
 }
 
 | Accepts a pointer to a closure that captures the given types. Frees it.
-fun compile_closure_free_fun(
-  captured_types: Slice[PlumType], pesto: &Pesto
-): String {
-  var signature = "free closure {captured_types}"
+fun compile_closure_free_fun(captured: YogurtType, pesto: &Pesto): String {
+  var signature = "free closure of {captured}"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
 
   var fun_builder = pesto_fun_builder().&
   var builder = fun_builder.body_builder(PestoType.ptr).&
 
-  var closure_type = {
-    var types = map[String, PestoType]()
-    for capture in captured_types.iter().enumerate() do
-      types.&.put("{capture.index}", capture.item.to_pesto())
-    PestoType.struct_(types)
-  }
+  var captured_values = builder.push(
+    PestoOp.load(builder.param) $ captured.to_pesto()
+  )
+  builder.push_drop(captured_values, captured, pesto)
 
-  var closure = builder.push(PestoOp.load(builder.param) $ closure_type)
-  for capture in captured_types.iter().enumerate() do {
-    var value = builder.push(PestoOp.member(PestoMember {
-      of = closure, name = "{capture.index}"
-    }) $ capture.item.to_pesto())
-    builder.push_drop(value, capture.item, pesto)
-  }
   builder.push(PestoOp.free(PestoFree {
-    ptr = builder.param, type = closure_type
+    ptr = builder.param, type = captured.to_pesto()
   }) $ pesto_nothing.type)
 
   var body = builder.finish(builder.push(pesto_nothing))
@@ -357,22 +424,10 @@ fun to_pesto(
       }
       PestoOp.switch_(PestoSwitch { condition, cases })
     }
+    case closure(value) PestoOp.new(mapping.get(value))
+    case get_closure(closure) PestoOp.load(mapping.get(closure))
     case lambda(lambda) {
-      | Build the closure, a struct containing all captured variables.
-      var closure_expr = {
-        var values = map[String, PestoId]()
-        var types = map[String, PestoType]()
-        for id in lambda.captures.iter().enumerate() do {
-          var key = "{id.index}"
-          values.&.put(key, mapping.get(id.item))
-          types.&.put(key, fun_.dag.get(id.item).type.to_pesto())
-        }
-        PestoOp.struct_(values) $ PestoType.struct_(types)
-      }
-      var closure = builder.push(closure_expr)
-
-      | Put the closure on the heap.
-      var closure_ptr = builder.push(PestoOp.new(closure) $ PestoType.ptr)
+      var closure_ptr = mapping.get(lambda.closure)
 
       | Create a function pointer to the lambda body.
       var lambda_body_fun_ptr = builder.push(
@@ -380,14 +435,11 @@ fun to_pesto(
       )
 
       | Create a function pointer to a function for freeing the closure.
-      var captured_plum_types = {
-        var types = list[PlumType]()
-        for id in lambda.captures do types.&.push(fun_.dag.get(id).type)
-        types.to_slice()
-      }
       var free_fun_ptr = builder.push(
         PestoOp.function_ptr(
-          compile_closure_free_fun(captured_plum_types, pesto)
+          compile_closure_free_fun(
+            fun_.dag.get(lambda.closure).type.closure.unwrap().*, pesto
+          )
         ) $ PestoType.ptr
       )
 
@@ -472,8 +524,6 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
       param_types.&.put(
         "{param.index}", fun_.dag.get(param.item).type.to_pesto()
       )
-    if fun_.captures is some then
-      param_types.&.put("closure", PestoType.ptr)
     PestoType.struct_(param_types)
   }
 
@@ -481,34 +531,12 @@ fun to_pesto(fun_: PuddingFun, pesto: &Pesto): PestoFun {
   var builder = fun_builder.body_builder(param_type).&
   var mapping = map[Id, PestoId]().&
 
-  | Extract the individual arguments and captured values from the struct.
+  | Extract the individual arguments from the struct.
   for param in fun_.body.params.iter().enumerate() do {
     var id = builder.push(PestoOp.member(PestoMember {
       of = builder.param, name = "{param.index}"
     }) $ fun_.dag.get(param.item).type.to_pesto())
     mapping.put(param.item, id)
-  }
-  if fun_.captures is some(captures) then {
-    var closure_ptr = builder.push(PestoOp.member(PestoMember {
-      of = builder.param, name = "closure"
-    }) $ PestoType.ptr)
-
-    var closure_type = {
-      var fields = map[String, PestoType]()
-      for capture in captures.iter().enumerate() do
-        fields.&.put(
-          "{capture.index}", fun_.dag.get(capture.item).type.to_pesto()
-        )
-      PestoType.struct_(fields)
-    }
-    var closure = builder.push(PestoOp.load(closure_ptr) $ closure_type)
-
-    for capture in captures.iter().enumerate() do {
-      var id = builder.push(PestoOp.member(PestoMember {
-        of = closure, name = "{capture.index}"
-      }) $ fun_.dag.get(capture.item).type.to_pesto())
-      mapping.put(capture.item, id)
-    }
   }
 
   var body = builder.finish(fun_.body.to_pesto(fun_, builder, mapping, pesto))
