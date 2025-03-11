@@ -1,0 +1,123 @@
+import mod.mar
+
+fun parse_enum_type(parser: &LineParser): Result[Maybe[ToastType], Error] {
+  parser.consume("|") or return no_match[ToastType]()
+
+  var variants = list[ToastTypeVariant]()
+  loop {
+    var name = parser.&.parse_name() or break {}
+
+    var has_explicit_type = parser.&.consume(":") is some
+
+    var type = if has_explicit_type then {
+      parser.&.parse_type_atom()? or
+        return bad_input[ToastType](error(
+          "Expected type of variant.", parser.src_of_rest()))
+    } else ToastType.struct_(empty_slice[ToastTypeField]())
+
+    variants.&.push(ToastTypeVariant { name, type })
+  }
+  parsed(ToastType.enum_(variants.to_slice()))
+}
+
+fun parse_enum_type(bacon: Bacon): Result[Maybe[ToastType], Error] {
+  bacon.line == "|" or return no_match[ToastType]()
+
+  var variants = list[ToastTypeVariant]()
+  for child in bacon.children do {
+    var parser = parser(child.line, child.src)
+
+    var name = parser.&.parse_name() or
+      return bad_input[ToastType](error(
+        "Expected variant name.", parser.src_of_rest()))
+
+    var has_explicit_type = parser.&.consume(":") is some
+
+    var type = if has_explicit_type then {
+      if child.children.is_empty() then {
+        var type = parser.&.parse_type_expr()? or
+          return bad_input[ToastType](error(
+            "Expected type of variant.", parser.src_of_rest()))
+        parser.&.ensure_is_at_end()?
+        type
+      } else {
+        parser.&.ensure_is_at_end()?
+        var children = child.children.parse_types()?
+        children.len == 1 or
+          return bad_input[ToastType](error(
+            "Variant can only have one type.", parser.src_of_rest()))
+        children.get(0)
+      }
+    } else ToastType.struct_(empty_slice[ToastTypeField]())
+
+    variants.&.push(ToastTypeVariant { name, type })
+  }
+
+  parsed(ToastType.enum_(variants.to_slice()))
+}
+
+fun parse_enum(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
+  var pipe = parser.consume("|") or return no_match[ToastExpr]()
+  var name = parser.&.parse_name() or
+    return bad_input[ToastExpr](error(
+      "Expected name of variant.", parser.src_of_rest()))
+  var value =
+    if parser.&.consume(":") is some then {
+      parser.&.parse_expr(false, true)? or
+        return bad_input[ToastExpr](error(
+          "Expected value of variant.", parser.src_of_rest()))
+    } else {
+      ToastExpr.struct_(ToastStruct {
+        ampersand = "&" @ pipe.src,
+        fields = empty_slice[ToastField](),
+      })
+    }
+
+  parsed(ToastExpr.enum_(ToastEnum {
+    pipe, name, value = value.put_on_heap()
+  }))
+}
+
+fun parse_enum(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
+  bacon.line == "|" or return no_match[ToastExpr]()
+  var pipe = "|" @ bacon.src
+
+  bacon.children.len == 1 or
+    return bad_input[ToastExpr](error(
+      "Enum literals can only have one variant.", bacon.src))
+  var child = bacon.children.get(0)
+
+  var parser = parser(child.line, child.src)
+  var name = parser.&.parse_name() or
+    return bad_input[ToastExpr](error(
+      "Expected name of variant.", parser.src_of_rest()))
+  var value =
+    if parser.&.consume(":") is some then {
+      if child.children.is_empty() then {
+        parser.&.parse_expr(true, true)? or
+          return bad_input[ToastExpr](error(
+            "Expected value of variant.", parser.src_of_rest()))
+      } else {
+        child.children.len == 1 or
+          return bad_input[ToastExpr](error(
+            "Expected variant can only have one value.", parser.src_of_rest()))
+        var grandchild = child.children.get(0)
+        grandchild.parse_expr()? or
+          return bad_input[ToastExpr](error(
+            "Expected value of variant.", parser.src_of_rest()))
+      }
+    } else {
+      child.children.is_empty() or
+          return bad_input[ToastExpr](error(
+            "Expected variant to not have a value.", parser.src_of_rest()))
+      ToastExpr.struct_(ToastStruct {
+        ampersand = "&" @ bacon.src,
+        fields = empty_slice[ToastField](),
+      })
+    }
+  
+
+  parsed(ToastExpr.enum_(ToastEnum {
+    pipe, name, value = value.put_on_heap()
+  }))
+}

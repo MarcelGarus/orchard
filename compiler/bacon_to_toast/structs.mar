@@ -1,0 +1,119 @@
+import mod.mar
+
+fun parse_struct_type(parser: &LineParser): Result[Maybe[ToastType], Error] {
+  parser.consume("&") or return no_match[ToastType]()
+
+  var fields = list[ToastTypeField]()
+  loop {
+    var name = parser.&.parse_name() or break {}
+
+    parser.&.consume(":") or
+      return bad_input[ToastType](error(
+        "Expected colon after field name.", parser.src_of_rest()))
+
+    var type = parser.&.parse_type_atom()? or
+      return bad_input[ToastType](error(
+        "Expected type of field.", parser.src_of_rest()))
+
+    fields.&.push(ToastTypeField { name, type })
+  }
+  parsed(ToastType.struct_(fields.to_slice()))
+}
+
+fun parse_struct_type(bacon: Bacon): Result[Maybe[ToastType], Error] {
+  bacon.line == "&" or return no_match[ToastType]()
+
+  var fields = list[ToastTypeField]()
+  for child in bacon.children do {
+    var parser = parser(child.line, child.src)
+
+    var name = parser.&.parse_name() or
+      return bad_input[ToastType](error(
+        "Expected field name.", parser.src_of_rest()))
+
+    parser.&.consume(":") or
+      return bad_input[ToastType](error(
+        "Expected colon after field name.", parser.src_of_rest()))
+
+    var type =
+      if child.children.is_empty() then {
+        var type = parser.&.parse_type_expr()? or
+          return bad_input[ToastType](error(
+            "Expected type of field.", parser.src_of_rest()))
+        parser.&.ensure_is_at_end()?
+        type
+      } else {
+        parser.&.ensure_is_at_end()?
+        var children = child.children.parse_types()?
+        children.len == 1 or
+          return bad_input[ToastType](error(
+            "Fields can only have one type.", parser.src_of_rest()))
+        children.get(0)
+      }
+
+    fields.&.push(ToastTypeField { name, type })
+  }
+  parsed(ToastType.struct_(fields.to_slice()))
+}
+
+fun parse_struct(parser: &LineParser): Result[Maybe[ToastExpr], Error] {
+  var ampersand = parser.consume("&") or return no_match[ToastExpr]()
+  var fields = list[ToastField]()
+  loop {
+    var name = parser.&.parse_name() or break {}
+
+    parser.&.consume(":") or
+      return bad_input[ToastExpr](error(
+        "Expected colon after field name.", parser.src_of_rest()))
+
+    var value = parser.&.parse_expr(false, true)? or
+      return bad_input[ToastExpr](error(
+        "Expected value of field.", parser.src_of_rest()))
+
+    fields.&.push(ToastField { name, value })
+  }
+
+  parsed(ToastExpr.struct_(ToastStruct {
+    ampersand, fields = fields.to_slice()
+  }))
+}
+
+fun parse_struct(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
+  bacon.line == "&" or return no_match[ToastExpr]()
+  var ampersand = "&" @ bacon.src
+
+  var fields = list[ToastField]()
+  for child in bacon.children do {
+    var parser = parser(child.line, child.src)
+
+    var name = parser.&.parse_name() or
+      return bad_input[ToastExpr](error(
+        "Expected field name.", parser.src_of_rest()))
+
+    parser.&.consume(":") or
+      return bad_input[ToastExpr](error(
+        "Expected colon after field name.", parser.src_of_rest()))
+
+    var value =
+      if child.children.is_empty() then {
+        var value = parser.&.parse_expr(true, true)? or
+          return bad_input[ToastExpr](error(
+            "Expected value of field.", parser.src_of_rest()))
+        parser.&.ensure_is_at_end()?
+        value
+      } else {
+        parser.&.ensure_is_at_end()?
+        var children = child.children.parse_exprs()?
+        children.len == 1 or
+          return bad_input[ToastExpr](error(
+            "Fields can only have one value.", parser.src_of_rest()))
+        children.get(0)
+      }
+
+    fields.&.push(ToastField { name, value })
+  }
+
+  parsed(ToastExpr.struct_(ToastStruct {
+    ampersand, fields = fields.to_slice()
+  }))
+}

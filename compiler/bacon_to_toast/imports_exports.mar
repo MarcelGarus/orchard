@@ -1,0 +1,126 @@
+import mod.mar
+
+fun parse_signature(parser: &LineParser): Result[Maybe[ToastSignature], Error] {
+  var name = parser.parse_identifier() or return no_match[ToastSignature]()
+
+  var args = list[ToastType]()
+  loop args.&.push(parser.parse_type_atom()? or break)
+  var args = args.to_slice()
+
+  parsed(ToastSignature { name, args })
+}
+fun parse_signatures(
+  parser: &LineParser
+): Result[Slice[ToastSignature], Error] {
+  var signatures = list[ToastSignature]()
+  loop {
+    signatures.&.push(parser.parse_signature()? or break)
+    parser.consume(",") or break
+  }
+  ok[Slice[ToastSignature], Error](signatures.to_slice())
+}
+fun parse_signatures(
+  bacon: Bacon
+): Result[Slice[ToastSignature], Error] {
+  var parser = parser(bacon.line, bacon.src)
+  var signatures = parser.&.parse_signatures()?
+  parser.&.ensure_is_at_end()?
+  ok[Slice[ToastSignature], Error](signatures)
+}
+fun parse_signatures(
+  bacons: Slice[Bacon]
+): Result[Slice[ToastSignature], Error] {
+  var signatures = list[ToastSignature]()
+  for bacon in bacons do signatures.&.push_all(bacon.parse_signatures()?)
+  ok[Slice[ToastSignature], Error](signatures.to_slice())
+}
+
+fun parse_import(bacon: Bacon): Result[Maybe[ToastImport], Error] {
+  if bacon.line == "import" then {
+    | Multiline import.
+
+    var parts = list[ToastImportPart]()
+    for child in bacon.children do
+      parts.&.push(child.parse_import_part()? or
+        return bad_input[ToastImport](error("Expected import part.", child.src)))
+    var parts = parts.to_slice()
+
+    return parsed(ToastImport { keyword = bacon.line @ bacon.src, parts })
+  }
+
+  | Single-line import.
+  var parser = parser(bacon.line, bacon.src)
+
+  var keyword = parser.&.consume("import") or return no_match[ToastImport]()
+  parser.current().is_whitespace() or return no_match[ToastImport]()
+
+  bacon.children.is_empty() or
+    return bad_input[ToastImport](error(
+      "Multi-line import should just have a line that says import.",
+      bacon.children.first().src ... bacon.children.last().src,
+    ))
+
+  var module = parser.&.parse_string()? or
+    return bad_input[ToastImport](error(
+      "Expected module for single-line import", parser.src_of_rest()))
+
+  var signatures = parser.&.parse_signatures()?
+  parser.&.ensure_is_at_end()?
+  if signatures.is_empty() then
+    return bad_input[ToastImport](error(
+      "Expected imported signatures.", parser.src_of_rest()))
+
+  parsed(ToastImport {
+    keyword,
+    parts = list(ToastImportPart {
+      module = module.string, signatures
+    }).to_slice(),
+  })
+}
+fun parse_import_part(bacon: Bacon): Result[Maybe[ToastImportPart], Error] {
+  var parser = parser(bacon.line, bacon.src)
+
+  var module = parser.&.parse_string()? or
+    return bad_input[ToastImportPart](error(
+      "Expected module in import part", parser.src_of_rest()))
+
+  parser.&.consume_whitespace()
+  var signatures =
+    if parser.is_at_end() then
+      | Our children contain the signatures.
+      bacon.children.parse_signatures()?
+    else {
+      bacon.children.is_empty() or
+        return bad_input[ToastImportPart](error(
+          "For multiline imports, the imported signatures should be on separate 
+          'lines from the modules.",
+          parser.src_of_rest()
+        ))
+      var signatures = parser.&.parse_signatures()?
+      parser.&.ensure_is_at_end()?
+      signatures
+    }
+
+  parsed(ToastImportPart { module = module.string, signatures })
+}
+
+fun parse_export(bacon: Bacon): Result[Maybe[ToastExport], Error] {
+  if bacon.line == "export" then {
+    | Multiline export.
+    var signatures = bacon.children.parse_signatures()?
+    return parsed(ToastExport { keyword = bacon.line @ bacon.src, signatures })
+  }
+
+  var parser = parser(bacon.line, bacon.src)
+
+  var keyword = parser.&.consume("export") or return no_match[ToastExport]()
+  parser.current().is_whitespace() or return no_match[ToastExport]()
+
+  var signatures = parser.&.parse_signatures()?
+  parser.&.ensure_is_at_end()?
+  if signatures.is_empty() then
+    return bad_input[ToastExport](error(
+      "Expected exported signatures.", parser.src_of_rest()))
+
+  parsed(ToastExport { keyword, signatures })
+}

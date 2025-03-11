@@ -1,0 +1,58 @@
+| Parsing  
+|
+| Plum is strictly indentation-based and language constructs that span multiple
+| lines are guaranteed to not have closing punctuation. For example, multiline
+| parentheses are not allowed and struct, enum, function, and lambda definitions
+| as well as structs are all terminated based on the indentation.
+|
+| Parsing in Plum works on two different granularities:
+|
+| - Blocks: Indentation-based units. See the Bacon for more info.
+| - Lines: Things within a single line.
+|
+| Some syntax constructs can only work on the block granularity (such as
+| switch). Some can only work on the line granularity (such as parentheses).
+| Some work on both granularities (such as calls or struct creations).
+
+import ../plum.mar
+import defs.mar
+import enums.mar
+import exprs.mar
+import imports_exports.mar
+import ints.mar
+import lambdas.mar
+import names.mar
+import parenthesized.mar
+import parser.mar
+import strings.mar
+import structs.mar
+import switches.mar
+
+fun to_toast(bacon: Bacon): Result[Toast, Error] {
+  bacon.line.is_empty() or panic("to_toast was given non-root Bacon")
+
+  var defs = list[ToastDef]()
+  for bacon in bacon.children do {
+    if bacon.parse_import()? is some(import_) then {
+      defs.&.push(ToastDef.import_(import_))
+      continue
+    }
+    if bacon.parse_export()? is some(export) then {
+      defs.&.push(ToastDef.export(export))
+      continue
+    }
+    if bacon.parse_type_def()? is some(def) then {
+      defs.&.push(ToastDef.type(def))
+      continue
+    }
+    if bacon.parse_fun_def()? is some(def) then {
+      defs.&.push(ToastDef.fun_(def))
+      continue
+    }
+    if bacon.line.starts_with("#") then continue
+
+    return error[Toast, Error](error("Couldn't parse line.", bacon.src))
+  }
+
+  ok[Toast, Error](Toast { defs = defs.to_slice() })
+}

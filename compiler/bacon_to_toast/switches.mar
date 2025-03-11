@@ -1,0 +1,53 @@
+import mod.mar
+
+fun parse_switch(
+  bacon: Bacon, condition: ToastExpr
+): Result[Maybe[ToastExpr], Error] {
+  bacon.line == "%" or return no_match[ToastExpr]()
+  var percent = "%" @ bacon.src
+
+  var cases = list[ToastCase]()
+  for case_ in bacon.children do {
+    var parser = parser(case_.line, case_.src)
+
+    var symbol = parser.&.parse_name() or
+      return bad_input[ToastExpr](error(
+        "Expected the name of an enum variant.", parser.src_of_rest()))
+
+    var payload =
+      if parser.&.consume(":") is some then {
+        var name = parser.&.parse_name() or
+          return bad_input[ToastExpr](error(
+            "Expected a name for the enum payload.", parser.src_of_rest()))
+        some(name)
+      } else
+        none[StringAndSrc]()
+
+    var arrow = parser.&.consume("->") or
+      return bad_input[ToastExpr](error(
+        "Expected an arrow.", parser.src_of_rest()))
+
+    var body =
+      if parser.cursor == parser.input.len then {
+        var children = case_.children.parse_exprs()?
+        if children.is_empty() then
+          return bad_input[ToastExpr](error(
+            "Expected the body of the case.", arrow.src))
+        ToastExpr.body(children)
+      } else {
+        var expr = parser.&.parse_expr(true, true)? or
+          return bad_input[ToastExpr](error(
+            "Expected a case expression.", parser.src_of_rest()))
+        parser.&.ensure_is_at_end()?
+        case_.children.is_empty() or
+          return bad_input[ToastExpr](error(
+            "A case is neither single- nor multi-line.", parser.src_of_rest()))
+        expr
+      }
+    cases.&.push(ToastCase { symbol, payload, body })
+  }
+
+  parsed(ToastExpr.switch_(ToastSwitch {
+    condition = condition.put_on_heap(), percent, cases = cases.to_slice()
+  }))
+}

@@ -1,0 +1,43 @@
+import mod.mar
+
+var identifier_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_+-*/<>!="
+fun parse_identifier(parser: &LineParser): Maybe[StringAndSrc] {
+  parser.consume_whitespace()
+  var start = parser.cursor
+  loop {
+    identifier_chars.iter().&.contains(parser.current()) or break
+    parser.advance()
+  }
+  var end = parser.cursor
+  if start == end then return none[StringAndSrc]()
+  var identifier = parser.input.substr(start..end)
+  if identifier == "->" or identifier == "=" then {
+    parser.cursor = start
+    return none[StringAndSrc]()
+  }
+  some(identifier @ parser.src_of(start..end))
+}
+
+| Parses a non-uppercase identifier (also allows punctuation).
+| Examples: foo, bar, +, -
+fun parse_name(parser: &LineParser): Maybe[StringAndSrc] {
+  parser.consume_whitespace()
+  not(parser.current().is_upper()) or return none[StringAndSrc]()
+  parser.parse_identifier()
+}
+
+| Parses an uppercase identifier.
+| Examples: Foo, Bar
+fun parse_type_name(parser: &LineParser): Maybe[StringAndSrc] {
+  parser.consume_whitespace()
+  parser.current().is_upper() or return none[StringAndSrc]()
+  parser.parse_identifier()
+}
+
+| Parses a lowercase identifier (does not allow punctuation).
+| Examples: foo, bar, t
+fun parse_type_variable(parser: &LineParser): Maybe[StringAndSrc] {
+  parser.consume_whitespace()
+  parser.current().is_lower() or return none[StringAndSrc]()
+  parser.parse_identifier()
+}

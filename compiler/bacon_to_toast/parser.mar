@@ -1,0 +1,76 @@
+import mod.mar
+
+| The line parser walks through a string from start to end.
+struct LineParser { input: String, input_src: Src, cursor: Int }
+fun parser(input: String, src: Src): _ {
+  LineParser { input, input_src = src, cursor = 0 }
+}
+fun src_of(parser: LineParser, cursor_range: Range[Int]): Src {
+  var start_offset = parser.input_src.range.start
+  parser.input_src.with_range(
+    {start_offset + cursor_range.start}..{start_offset + cursor_range.end}
+  )
+}
+fun src_of_rest(parser: LineParser): Src {
+  parser.input_src.with_range(
+    {parser.input_src.range.start + parser.cursor}..parser.input_src.range.end
+  )
+}
+fun current(parser: LineParser): Char {
+  parser.input.chars().get_maybe(parser.cursor) or 0.lower_byte().to_char()
+}
+fun advance(parser: &LineParser) { parser.cursor = parser.cursor + 1 }
+fun is_at_end(parser: LineParser): Bool { parser.cursor == parser.input.len }
+fun consume_whitespace(parser: &LineParser) {
+  loop {
+    parser.current().is_whitespace() or break
+    parser.advance()
+  }
+}
+fun is_done(parser: &LineParser): Bool {
+  parser.consume_whitespace()
+  parser.is_at_end()
+}
+fun ensure_is_at_end(parser: &LineParser): Result[Nothing, Error] {
+  parser.is_done() or return error[Nothing, Error](error(
+    "Additional garbage on line.", parser.src_of_rest()))
+  ok[Nothing, Error]({})
+}
+fun consume(parser: &LineParser, prefix: String): Maybe[StringAndSrc] {
+  parser.consume_whitespace()
+  var start = parser.cursor
+  for char in prefix.chars() do {
+    parser.current() == char or {
+      parser.cursor = start
+      return none[StringAndSrc]()
+    }
+    parser.advance()
+  }
+  var end = parser.cursor
+  some(prefix @ parser.src_of(start..end))
+}
+
+| Most parsing functions return a Result[Maybe[T], Error], where the different
+| possibilities have the following meaning:
+|
+| - ok(some(t)): A value was successfully parsed.
+| - ok(none): The parser didn't match.
+| - error(e): The parser matched, but the input contains an error that should be
+|   shown in the editor. You should not rely on the cursor anymore.
+|
+| Here's an example for the parse_parenthesized function:
+|
+| input         | "(4) foo"   | "foo bar" | "()"
+| cursor before |  ^          |  ^        |  ^
+| cursor after  |     ^       |  ^        | ?
+| output        | ok(some(4)) | ok(none)  | error("expected expression")
+
+fun no_match[T](): Result[Maybe[T], Error] {
+  ok[Maybe[T], Error](none[T]())
+}
+fun bad_input[T](error: Error): Result[Maybe[T], Error] {
+  error[Maybe[T], Error](error)
+}
+fun parsed[T](value: T): Result[Maybe[T], Error] {
+  ok[Maybe[T], Error](some(value))
+}

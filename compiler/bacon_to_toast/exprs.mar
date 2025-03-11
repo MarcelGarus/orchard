@@ -1,0 +1,206 @@
+import exprs.mar
+
+| Type Expressions  
+|
+| Plum has structural typing. Even though you usually don't think about it that
+| way, when you use "generic" types (aka types with type variables) your usage
+| really behaves like a function call. For example, `List Int` "calls" the
+| definition of List with the argument Int. So, don't be confused if you see
+| "type variables" and "type calls" here.
+
+| TODO: merge these similar to value expressions (with allow_whitespace, etc.)
+
+| Parses a type that doesn't contain whitespace (except in parentheses).
+fun parse_type_atom(parser: &LineParser): Result[Maybe[ToastType], Error] {
+  if parser.parse_parenthesized_type()? is some(expr) then return parsed(expr)
+
+  if parser.parse_type_name() is some(name) then
+    return parsed(ToastType.call(ToastTypeCall {
+      name, args = empty_slice[ToastType]()
+    }))
+
+  if parser.parse_name() is some(name) then
+    return parsed(ToastType.variable(name))
+
+  no_match[ToastType]()
+}
+
+fun parse_type_atoms(parser: &LineParser): Result[Slice[ToastType], Error] {
+  var atoms = list[ToastType]()
+  loop atoms.&.push(parser.parse_type_atom()? or break)
+  ok[Slice[ToastType], Error](atoms.to_slice())
+}
+
+| Parses a type that may contain whitespace.
+fun parse_type_expr(parser: &LineParser): Result[Maybe[ToastType], Error] {
+  if parser.parse_lambda_type()? is some(type) then return parsed(type)
+  if parser.parse_struct_type()? is some(type) then return parsed(type)
+  if parser.parse_enum_type()? is some(type) then return parsed(type)
+  if parser.parse_type_name() is some(name) then {
+    var args = list[ToastType]()
+    loop args.&.push(parser.parse_type_atom()? or break)
+    return parsed(ToastType.call(ToastTypeCall { name, args = args.to_slice() }))
+  }
+  if parser.parse_type_atom()? is some(type) then return parsed(type)
+  no_match[ToastType]()
+}
+
+fun parse_type(bacon: Bacon): Result[ToastType, Error] {
+  if bacon.parse_struct_type()? is some(s) then return ok[ToastType, Error](s)
+  if bacon.parse_enum_type()?   is some(e) then return ok[ToastType, Error](e)
+
+  var parser = parser(bacon.line, bacon.src)
+
+  if bacon.children.is_empty() then {
+    var type = parser.&.parse_type_expr()? or
+      return error[ToastType, Error](error(
+        "Expected a type expression.", parser.src_of_rest()))
+    parser.&.ensure_is_at_end()?
+    ok[ToastType, Error](type)
+  } else {
+    var name = parser.&.parse_type_name() or
+      return error[ToastType, Error](error(
+        "Expected type name.", parser.src_of_rest()))
+    parser.&.ensure_is_at_end()?
+    var args = bacon.children.parse_types()?
+    ok[ToastType, Error](ToastType.call(ToastTypeCall { name, args }))
+  }
+}
+
+fun parse_types(bacons: Slice[Bacon]): Result[Slice[ToastType], Error] {
+  var types = list[ToastType]()
+  for bacon in bacons do types.&.push(bacon.parse_type()?)
+  ok[Slice[ToastType], Error](types.to_slice())
+}
+
+| Value Expressions  
+|
+| With types handled above, this part parses expressions on the value level.
+
+fun parse_expr(
+  parser: &LineParser, allow_whitespace: Bool, allow_dots: Bool
+): Result[Maybe[ToastExpr], Error] {
+  var expr =
+    if parser.parse_parenthesized()? is some(expr) then expr
+    else if parser.parse_int()     is some(int)    then ToastExpr.int(int)
+    else if parser.parse_string()? is some(string) then ToastExpr.string(string)
+    else if parser.parse_name()    is some(name)   then ToastExpr.name(name)
+    else if allow_whitespace then {
+      parser.parse_struct()? or
+      parser.parse_enum()? or return no_match[ToastExpr]()
+    } else return no_match[ToastExpr]()
+
+  if allow_whitespace then {
+    var args = list[ToastExpr]()
+    loop args.&.push(parser.parse_expr(false, false)? or break)
+    if args.is_not_empty() then
+      expr = ToastExpr.call(ToastCall {
+        function = expr.put_on_heap(), args = args.to_slice()
+      })
+  }
+
+  if allow_dots then {
+    loop {
+      parser.consume(".") or break
+      var right = parser.parse_expr(allow_whitespace, false)? or
+        return bad_input[ToastExpr](error(
+          "Expected expression", parser.src_of_rest()))
+      expr = dot(expr, right)
+    }
+  }
+
+  if allow_whitespace and allow_dots then {
+    var cursor_before = parser.cursor
+    if parser.consume("=") is some(equal_sign) then {
+      if parser.parse_expr(true, true)? is some(right) then
+        expr = ToastExpr.var_(ToastVar {
+          left = expr.put_on_heap(), equal_sign, right = right.put_on_heap()
+        })
+      else
+        parser.cursor = cursor_before
+    }
+  }
+
+  parsed(expr)
+}
+
+fun parse_expr(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
+  if bacon.parse_struct()? is some(struct_) then return parsed(struct_)
+  if bacon.parse_enum()? is some(enum_) then return parsed(enum_)
+  if bacon.parse_lambda()? is some(lambda)  then return parsed(lambda)
+
+  var parser = parser(bacon.line, bacon.src)
+
+  if parser.&.consume("#") is some then return no_match[ToastExpr]()
+  var expr = parser.&.parse_expr(true, true)? or
+    return bad_input[ToastExpr](error(
+      "Expected expression", parser.src_of_rest()))
+  var children = bacon.children.parse_exprs()?
+  if parser.&.consume("=") is some(equal_sign) then {
+    if children.is_empty() then
+      return bad_input[ToastExpr](error(
+        "Expected a body.", equal_sign.src))
+    expr = ToastExpr.var_(ToastVar {
+      left = expr.put_on_heap(),
+      equal_sign,
+      right = ToastExpr.body(children).put_on_heap(),
+    })
+  } else if children.is_not_empty() then
+    expr = ToastExpr.call(ToastCall {
+      function = expr.put_on_heap(), args = children
+    })
+  parser.&.ensure_is_at_end()?
+  parsed(expr)
+}
+
+fun parse_dot(
+  bacon: Bacon, previous: ToastExpr
+): Result[Maybe[ToastExpr], Error] {
+  var parser = parser(bacon.line, bacon.src)
+  var dot = parser.&.consume(".") or return no_match[ToastExpr]()
+
+  var right = Bacon {
+    line = bacon.line.substr(1..bacon.line.len),
+    children = bacon.children,
+    src = bacon.src,
+  }.parse_expr()? or
+      return bad_input[ToastExpr](error(
+        "Dot with nothing on the right.", dot.src
+      ))
+
+  parsed(dot(previous, right))
+}
+
+fun dot(left: ToastExpr, right: ToastExpr): ToastExpr {
+  if right is call(call) then {
+    var args = list(left)
+    for arg in call.args do args.&.push(arg)
+    ToastExpr.call(ToastCall {
+      function = call.function, args = args.to_slice()
+    })
+  } else
+    ToastExpr.call(ToastCall {
+      function = right.put_on_heap(), args = list(left).to_slice()
+    })
+}
+
+fun parse_exprs(bacons: Slice[Bacon]): Result[Slice[ToastExpr], Error] {
+  var exprs = list[ToastExpr]()
+  var i = 0
+  loop {
+    var bacon = bacons.get_maybe(i) or break
+    var expr = bacon.parse_expr()? or { i = i + 1  continue }
+
+    loop {
+      var next = bacons.get_maybe(i + 1) or break
+      if      next.parse_switch(expr)? is some(new) then { expr = new }
+      else if next.parse_dot(expr)?    is some(new) then { expr = new }
+      else break
+      i = i + 1
+    }
+
+    exprs.&.push(expr)
+    i = i + 1
+  }
+  ok[Slice[ToastExpr], Error](exprs.to_slice())
+}
