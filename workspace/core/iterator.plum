@@ -1,0 +1,113 @@
+import
+  "..bool" Bool
+  "..call" call (\ -> t)
+  "..int" Int, + Int Int, - Int Int, == Int Int, >= Int Int
+  "..maybe" Maybe t
+  "..never" crash String
+  "..string" String
+  "..test" assert Bool
+export
+  Iterator t, next (Iterator t)
+
+Iterator t = \ -> (| empty more: (& item: t rest: (Iterator t)))
+
+next iterator: (Iterator t) -> (| empty more: (& item: t rest: (Iterator t))) =
+  call iterator
+
+map iterator: (Iterator a) mapper: (\ a -> b) -> (Iterator b) =
+  \ ->
+    iterator.next
+    % empty -> | empty
+      more: more ->
+        | more:
+            & item: more.item.mapper
+              rest: (more.rest .map mapper)
+
+filter iterator: (Iterator a) predicate: (\ a -> Bool) -> (Iterator a) =
+  \ ->
+    iterator.next
+    % empty -> | empty
+      more: more ->
+        predicate (more.item)
+        % true ->
+            | more:
+                & item: more.item
+                  rest: (more.rest .filter predicate)
+          false -> more.rest .filter predicate .next
+
+skip iterator: (Iterator a) amount: Int -> (Iterator a) =
+  assert (amount .>= 0)
+  \ ->
+    iterator.next
+    % empty -> | empty
+      more: more ->
+        amount .== 0
+        % true -> | more: more
+          false -> more.rest .skip (amount .- 1) .next
+
+take iterator: (Iterator a) amount: Int -> (Iterator a) =
+  assert (amount .>= 0)
+  \ ->
+    iterator.next
+    % empty -> | empty
+      more: more ->
+        amount .== 0
+        % true -> | empty
+          false ->
+            | more: (& item: more.item rest: (more.rest .take (amount .- 1)))
+
+zip a: (Iterator aa) b: (Iterator bb) -> (Iterator (& a: aa b: bb)) =
+  \ ->
+    a.next
+    % empty ->
+        b.next
+        % empty -> | empty
+          more -> crash "Zipped iterators should have the same length."
+      more: more_a ->
+        b.next
+        % empty -> crash "Zipped iterators should have the same length."
+          more: more_b ->
+            | more:
+                & item: (& a: more_a.item b: more_b.item)
+                  rest: (zip (more_a.rest) (more_b.rest))
+
+enumerate iterator: (Iterator a) -> (Iterator (& index: Int item: a)) =
+  iterator .enumerate 0
+enumerate iterator: (Iterator a) start_index: Int -> (Iterator (& index: Int item: a)) =
+  \ ->
+    iterator.next
+    % empty -> | empty
+      more: more ->
+        | more:
+            & index: start_index
+              rest: (more.rest .enumerate (start_index .+ 1))
+
+first iterator: (Iterator a) -> (Maybe a) =
+  iterator.next
+  % empty -> | none
+    more: more -> | some: more.item
+
+last iterator: (Iterator a) -> (Maybe a) =
+  iterator.next
+  % empty -> | none
+    more: more -> | some: (more.rest .last (more.item))
+last iterator: (Iterator a) previous: a -> a =
+  \ ->
+    iterator.next
+    % empty -> previous
+      more: more -> more.rest .last (more.item)
+
+nth iterator: (Iterator a) n: Int -> (Maybe a) = iterator .skip n .first
+
+fold iterator: (Iterator a) initial_state: s folder: (\ s a -> s) -> s =
+  iterator.next
+  % empty -> initial_state
+    more: more -> more.rest .fold (folder initial_state (more.item)) folder
+
+reduce iterator: (Iterator a) reducer: (\ a a -> a) -> (Maybe a) =
+  iterator.next
+  % empty -> | none
+    more: more -> | some: (more.rest .fold (more.item) reducer)
+
+sum iterator: (Iterator Int) -> Int =
+  iterator .fold 0 (\ a: Int b: Int -> a .+ b)
