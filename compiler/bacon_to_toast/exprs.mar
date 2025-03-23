@@ -8,10 +8,20 @@ import exprs.mar
 | definition of List with the argument Int. So, don't be confused if you see
 | "type variables" and "type calls" here.
 
-| TODO: merge these similar to value expressions (with allow_whitespace, etc.)
+fun parse_type(
+  parser: &LineParser, allow_whitespace: Bool
+): Result[Maybe[ToastType], Error] {
+  if allow_whitespace then {
+    if parser.parse_lambda_type()? is some(type) then return parsed(type)
+    if parser.parse_struct_type()? is some(type) then return parsed(type)
+    if parser.parse_enum_type()? is some(type) then return parsed(type)
+    if parser.parse_type_name() is some(name) then {
+      var args = list[ToastType]()
+      loop args.&.push(parser.parse_type(false)? or break)
+      return parsed(ToastType.call(ToastTypeCall { name, args = args.to_slice() }))
+    }
+  }
 
-| Parses a type that doesn't contain whitespace (except in parentheses).
-fun parse_type_atom(parser: &LineParser): Result[Maybe[ToastType], Error] {
   if parser.parse_parenthesized_type()? is some(expr) then return parsed(expr)
 
   if parser.parse_type_name() is some(name) then
@@ -25,26 +35,6 @@ fun parse_type_atom(parser: &LineParser): Result[Maybe[ToastType], Error] {
   no_match[ToastType]()
 }
 
-fun parse_type_atoms(parser: &LineParser): Result[Slice[ToastType], Error] {
-  var atoms = list[ToastType]()
-  loop atoms.&.push(parser.parse_type_atom()? or break)
-  ok[Slice[ToastType], Error](atoms.to_slice())
-}
-
-| Parses a type that may contain whitespace.
-fun parse_type_expr(parser: &LineParser): Result[Maybe[ToastType], Error] {
-  if parser.parse_lambda_type()? is some(type) then return parsed(type)
-  if parser.parse_struct_type()? is some(type) then return parsed(type)
-  if parser.parse_enum_type()? is some(type) then return parsed(type)
-  if parser.parse_type_name() is some(name) then {
-    var args = list[ToastType]()
-    loop args.&.push(parser.parse_type_atom()? or break)
-    return parsed(ToastType.call(ToastTypeCall { name, args = args.to_slice() }))
-  }
-  if parser.parse_type_atom()? is some(type) then return parsed(type)
-  no_match[ToastType]()
-}
-
 fun parse_type(bacon: Bacon): Result[ToastType, Error] {
   if bacon.parse_struct_type()? is some(s) then return ok[ToastType, Error](s)
   if bacon.parse_enum_type()?   is some(e) then return ok[ToastType, Error](e)
@@ -52,7 +42,7 @@ fun parse_type(bacon: Bacon): Result[ToastType, Error] {
   var parser = parser(bacon.line, bacon.src)
 
   if bacon.children.is_empty() then {
-    var type = parser.&.parse_type_expr()? or
+    var type = parser.&.parse_type(true)? or
       return error[ToastType, Error](error(
         "Expected a type expression.", parser.src_of_rest()))
     parser.&.ensure_is_at_end()?
@@ -77,22 +67,30 @@ fun parse_types(bacons: Slice[Bacon]): Result[Slice[ToastType], Error] {
 |
 | With types handled above, this part parses expressions on the value level.
 
+| Parses an expression that is not a call or member access.
+fun parse_expr_atom(
+  parser: &LineParser, allow_whitespace: Bool, allow_dots: Bool
+): Result[Maybe[ToastExpr], Error] {
+  if parser.parse_parenthesized()? is some(expr) then return parsed(expr)
+  if parser.parse_int()     is some(int)    then return parsed(ToastExpr.int(int))
+  if parser.parse_string()? is some(string) then return parsed(ToastExpr.string(string))
+  if parser.parse_name()    is some(name)   then return parsed(ToastExpr.name(name))
+  if allow_whitespace then {
+    if parser.parse_struct()? is some(struct_) then return parsed(struct_)
+    if parser.parse_enum()?   is some(enum_)   then return parsed(enum_)
+    if allow_dots then
+      if parser.parse_lambda()? is some(lambda) then return parsed(lambda)
+  }
+  if parser.parse_type(allow_whitespace)? is some(type) then
+    return parsed(ToastExpr.type(type))
+  no_match[ToastExpr]()
+}
+
 fun parse_expr(
   parser: &LineParser, allow_whitespace: Bool, allow_dots: Bool
 ): Result[Maybe[ToastExpr], Error] {
-  var expr =
-    if parser.parse_parenthesized()? is some(expr) then expr
-    else if parser.parse_int()     is some(int)    then ToastExpr.int(int)
-    else if parser.parse_string()? is some(string) then ToastExpr.string(string)
-    else if parser.parse_name()    is some(name)   then ToastExpr.name(name)
-    else if allow_whitespace then {
-      if parser.parse_struct()?    is some(struct_) then struct_
-      else if parser.parse_enum()? is some(enum_)   then enum_
-      else if allow_dots then {
-        if parser.parse_lambda()? is some(lambda) then lambda
-        else return no_match[ToastExpr]()
-      } else return no_match[ToastExpr]()
-    } else return no_match[ToastExpr]()
+  var expr = parser.parse_expr_atom(allow_whitespace, allow_dots)? or
+    return no_match[ToastExpr]()
 
   if allow_whitespace then {
     var args = list[ToastExpr]()
@@ -113,18 +111,6 @@ fun parse_expr(
     }
   }
 
-  if allow_whitespace and allow_dots then {
-    var cursor_before = parser.cursor
-    if parser.consume("=") is some(equal_sign) then {
-      if parser.parse_expr(true, true)? is some(right) then
-        expr = ToastExpr.var_(ToastVar {
-          left = expr.put_on_heap(), equal_sign, right = right.put_on_heap()
-        })
-      else
-        parser.cursor = cursor_before
-    }
-  }
-
   parsed(expr)
 }
 
@@ -141,13 +127,17 @@ fun parse_expr(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
       "Expected expression", parser.src_of_rest()))
   var children = bacon.children.parse_exprs()?
   if parser.&.consume("=") is some(equal_sign) then {
-    if children.is_empty() then
-      return bad_input[ToastExpr](error(
-        "Expected a body.", equal_sign.src))
+    var right =
+      if children.is_empty() then {
+        var right = parser.&.parse_expr(true, true)? or
+          return bad_input[ToastExpr](error(
+            "Expected value of variable {expr.debug()}.", parser.src_of_rest()))
+        parser.&.ensure_is_at_end()?
+        right
+      } else
+        ToastExpr.body(children)
     expr = ToastExpr.var_(ToastVar {
-      left = expr.put_on_heap(),
-      equal_sign,
-      right = ToastExpr.body(children).put_on_heap(),
+      left = expr.put_on_heap(), equal_sign, right = right.put_on_heap()
     })
   } else if children.is_not_empty() then
     expr = ToastExpr.call(ToastCall {
