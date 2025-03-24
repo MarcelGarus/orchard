@@ -24,7 +24,7 @@ import plum.mar
 
 | TODO: rename to EggType
 enum PlumType {
-  primitive: String,
+  primitive: String, | TODO: split into primitive and type variable
   never,
   struct_: Map[String, PlumType],
   enum_: Map[String, PlumType],
@@ -114,6 +114,39 @@ fun write[W](writer: W, type: PlumType) {
     writer." -> {lambda.return_type})"
   }
   case recursive(level) writer."^{level}"
+}
+
+| Collecting Type Variables  
+
+fun collect_type_variables(type: PlumType): Set[String] {
+  var vars = set[String]()
+  type.collect_type_variables(vars.&)
+  vars
+}
+fun collect_type_variables(types: Slice[PlumType]): Set[String] {
+  var vars = set[String]()
+  types.collect_type_variables(vars.&)
+  vars
+}
+fun collect_type_variables(type: PlumType, out: &Set[String]) {
+  switch type
+  case primitive(name)
+    | TODO: make this less hacky
+    if name.chars().get(0).is_upper().not() then
+      out.put(name)
+  case never {}
+  case struct_(fields)
+    for field in fields do field.value.collect_type_variables(out)
+  case enum_(variants)
+    for variant in variants do variant.value.collect_type_variables(out)
+  case lambda(lambda) {
+    lambda.args.collect_type_variables(out)
+    lambda.return_type.collect_type_variables(out)
+  }
+  case recursive {}
+}
+fun collect_type_variables(types: Slice[PlumType], out: &Set[String]) {
+  for type in types do type.collect_type_variables(out)
 }
 
 

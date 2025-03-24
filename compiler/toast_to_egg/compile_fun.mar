@@ -17,6 +17,14 @@ fun compile(
   }
   var param_types = param_types.to_slice()
 
+  | Push the type variables into the body.
+  for var_ in param_types.collect_type_variables() do {
+    var id = body.push(
+      EggOp.type(PlumType.primitive(var_)).expr(type_type, invalid_src)
+    )
+    visible.&.define(var_, id)
+  }
+
   var returned = fun_.body.compile(body, module, visible.&, EggContext {
     visible_by_module, funs, types
   })?
@@ -264,7 +272,7 @@ fun compile(
           )
         }
         var arg_values = arg_values.to_slice()
-      
+
         | Look for a matching function.
         var signature_and_substitutions = {
           var visible_funs = context.visible_by_module.get(module)
@@ -289,7 +297,7 @@ fun compile(
               name.src,
             ))
 
-          var full_matches = list[Tuple2[String, Substitutions]]()
+          var full_matches = list[Tuple3[String, Substitutions, UncompiledFun]]()
           for item in name_matches do {
             var signature = item.a
             var fun_ = item.b
@@ -297,7 +305,7 @@ fun compile(
             var constraints = constraints()
             arg_values.match_against(fun_.params, constraints.&) or continue
             var substitutions = constraints.check_coherency() or continue
-            full_matches.&.push(tuple(signature, substitutions))
+            full_matches.&.push(tuple(signature, substitutions, fun_))
           }
 
           if full_matches.is_empty() then
@@ -332,10 +340,39 @@ fun compile(
               var b = string_builder().&
               b."Multiple functions match {name.string} {arg_types}:"
               for match in full_matches do
-                b."\n  {match.a}  (with {match.b.debug()})"
+                b."\n  {match.a} with {match.b.debug()}"
               error(b.to_string(), name.src)
             })
-          full_matches.get(0)
+
+          var matching_fun = full_matches.get(0)
+          var signature = matching_fun.a
+          var substitutions = matching_fun.b
+          var fun_ = matching_fun.c
+
+          | Make sure that all type variables are constrained.
+          var type_vars = set[String]()
+          for param in fun_.params do param.type.collect_type_variables(type_vars.&)
+          var all_constrained = true
+          for var_ in type_vars do
+            if not(substitutions.substitutions.contains(var_)) then
+              all_constrained = false
+          all_constrained or
+            return error[Id, Error]({
+              var b = string_builder().&
+              b."Function {name.string}"
+              for param in fun_.params do b." {param.name}: {param.type}"
+              b." matches, but not all type 
+                'variables are constrained:"
+              for var_ in type_vars do {
+                b."\n  {var_} "
+                switch substitutions.substitutions.get_maybe(var_)
+                case some(type) b."= {type}"
+                case none b."is unconstrained"
+              }
+              error(b.to_string(), name.src)
+            })
+
+          tuple(signature, substitutions)
         }
 
         var signature     = signature_and_substitutions.a
