@@ -4,13 +4,14 @@ import ../plum.mar
 import cast.mar
 
 fun to_yogurt(egg: Egg): Result[Yogurt, Error] {
-  var main = egg.funs.get_maybe(
-    "{egg.entry_module}.main Int"
-  ) or return error[Yogurt, Error](error(
-    "No main function in {egg.entry_module}.", invalid_src
-  ))
+  var signature = "{egg.entry_module}.main Int"
+  var main = egg.funs.get_maybe(signature) or
+    return error[Yogurt, Error](error(
+      "No main function in {egg.entry_module}.", invalid_src
+    ))
   var yogurt = yogurt()
   main.compile(
+    signature,
     Substitutions { substitutions = map[String, PlumType]() },
     YogurtContext { stack = list[YogurtStackEntry]().&, egg, yogurt = yogurt.& }.&,
   )?
@@ -78,10 +79,23 @@ fun get(context: YogurtContext, signature: String): YogurtFun {
 | compiled into some code that will run later (at runtime).
 
 fun compile(
-  fun_: EggFun, substitutions: Substitutions, context: &YogurtContext
+  fun_: EggFun, signature: String,
+  substitutions: Substitutions, context: &YogurtContext,
 ): Result[String, Error] {
-  var param_types = fun_.param_types().specialize(substitutions)
-  var signature = signature(fun_.module, fun_.name.string, param_types)
+  var signature = {
+    var b = string_builder().&
+    b."{signature}"
+    if substitutions.substitutions.size > 0 then {
+      b." (with"
+      var first = true
+      for substitution in substitutions.substitutions do {
+        if first then first = false else b.","
+        b." {substitution.key} = {substitution.value}"
+      }
+      b.")"
+    }
+    b.to_string()
+  }
 
   if context.is_defined(signature) or context.is_currently_compiling(signature)
   then
@@ -297,10 +311,11 @@ fun compile(
           }) $ type
         )
       case fun_(matching_fun) {
+        var signature = matching_fun.signature
         var merged_substitutions =
           matching_fun.substitutions.specialize(substitutions)
-        var signature = context.egg.funs.get(matching_fun.signature)
-          .compile(merged_substitutions, context)?
+        var fun_ = context.egg.funs.get(signature)
+        var signature = compile(fun_, signature, merged_substitutions, context)?
         body.push(YogurtOp.call(YogurtCall {
           callee = YogurtCallee.fun_(signature), args
         }) $ type)

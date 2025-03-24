@@ -16,9 +16,15 @@ enum ToastDef {
 }
 
 struct ToastImport { keyword: StringAndSrc, parts: Slice[ToastImportPart] }
-struct ToastImportPart { module: String, signatures: Slice[ToastSignature] }
-struct ToastExport { keyword: StringAndSrc, signatures: Slice[ToastSignature] }
-struct ToastSignature { name: StringAndSrc, args: Slice[ToastType] }
+struct ToastImportPart {
+  module: String, items: Slice[ToastImportExportItem]
+}
+struct ToastExport {
+  keyword: StringAndSrc, items: Slice[ToastImportExportItem]
+}
+enum ToastImportExportItem { type: ToastTypeSignature, fun_: ToastFunSignature }
+struct ToastTypeSignature { name: StringAndSrc, args: Slice[StringAndSrc] }
+struct ToastFunSignature { name: StringAndSrc, args: Slice[ToastParam] }
 
 struct ToastTypeDef {
   name: StringAndSrc, params: Slice[StringAndSrc], type: ToastType
@@ -114,20 +120,12 @@ fun write[W](writer: W, def: ToastDef, indentation: Indentation) {
     writer."import"
     for part in import_.parts do {
       writer."\n  {part.module.debug()}"
-      var first = true
-      for signature in part.signatures do {
-        if first then first = false else writer.","
-        writer." {signature}"
-      }
+      for item in part.item do writer."\n    {signature}"
     }
   }
   case export(export) {
     writer."export"
-    var first = true
-    for signature in export.signatures do {
-      if first then first = false else writer.","
-      writer." {signature}"
-    }
+    for item in export.items do writer."\n  {item}"
   }
   case type(type) {
     writer."{type.name.string}"
@@ -142,9 +140,18 @@ fun write[W](writer: W, def: ToastDef, indentation: Indentation) {
     writer.write(fun_.body, indentation + 1)
   }
 }
-fun write[W](writer: W, signature: ToastSignature) {
+fun write[W](writer: W, item: ToastImportExportItem) {
+  switch item
+  case type(signature) writer."{signature}"
+  case fun_(signature) writer."{signature}"
+}
+fun write[W](writer: W, signature: ToastTypeSignature) {
   writer."{signature.name.string}"
-  for arg in signature.args do writer." {arg}"
+  for arg in signature.args do writer." {arg.string}"
+}
+fun write[W](writer: W, signature: ToastFunSignature) {
+  writer."{signature.name.string}"
+  for arg in signature.args do writer." {arg.name.string}: {arg.type}"
 }
 fun write[W](writer: W, type: ToastType) {
   switch type

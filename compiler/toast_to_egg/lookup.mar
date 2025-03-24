@@ -2,16 +2,21 @@
 
 import mod.mar
 
-fun signature(module: Module, name: String, params: Slice[PlumType]): String {
+fun signature(module: Module, name: String, params: Slice[FunParam]): String {
   var b = string_builder().&
   b."{module}.{name}"
-  for param in params do b." {param}"
+  for param in params do
+    if param.type == type_type then
+      b." {param.name}: {param.type}"
+    else
+      b." {param.type}"
   b.to_string()
 }
 
 struct UncompiledFun {
-  name: StringAndSrc, params: Slice[PlumType], impl: UncompiledFunImpl
+  name: StringAndSrc, params: Slice[FunParam], impl: UncompiledFunImpl
 }
+struct FunParam { name: String, type: PlumType }
 enum UncompiledFunImpl {
   local: LocalUncompiledFun, imported: String, builtin: Builtin
 }
@@ -39,9 +44,12 @@ fun collect_all_funs(
       | TODO: handle multiple functions with same signature
       switch def
       case fun_(fun_) {
-        var params = list[PlumType]()
+        var params = list[FunParam]()
         for param in fun_.params do
-          params.&.push(param.type.compile(module, types)?)
+          params.&.push(FunParam {
+            name = param.name.string,
+            type = param.type.compile(module, types)?,
+          })
         var params = params.to_slice()
 
         var signature = signature(module, fun_.name.string, params)
@@ -62,12 +70,14 @@ fun collect_all_funs(
             ](error(
               error, import_.keyword.src
             ))
-          | TODO: filter out functions more elegantly!
-          for signature in part.signatures do
-            if not(signature.name.string.chars().get(0).is_upper()) then {
-              var params = list[PlumType]()
+          for item in part.items do
+            if item is fun_(signature) then {
+              var params = list[FunParam]()
               for param in signature.args do
-                params.&.push(param.compile(module, types)?)
+                params.&.push(FunParam {
+                  name = param.name.string,
+                  type = param.type.compile(module, types)?,
+                })
               var params = params.to_slice()
 
               var our_signature =
@@ -108,19 +118,25 @@ fun collect_all_funs(
 
 
 
-fun matches(
-  candidate: ToastSignature, name: String, args: Slice[PlumType],
-  types: Map[String, PlumType],
+| Arguments that have the type Type also have a compile-time-known value.
+struct FunArg { value: Maybe[PlumType], type: PlumType }
+
+fun match_against(
+  args: Slice[FunArg], params: Slice[FunParam],
+  constraints: &TypeVariableConstraints,
 ): Bool {
-  if candidate.name != name then return false
-
-  var params = list[PlumType]()
-  for arg in candidates.args do params.&.push(arg.compile(types))
-  var params = params.to_slice()
-
-  var constraints = constraints()
-  var substitutions = args.match_against(params, constraints) or return false
-  constraints.check_coherency() or return false
-
+  args.len == params.len or return false
+  for both in zip(args.iter(), params.iter()) do {
+    var arg = both.a
+    var param = both.b
+    arg.type.match_against(param.type, constraints) or return false
+    if arg.type == type_type then {
+      eprintln("got a function with a type arg {param.name}: {arg.value.unwrap()}")
+      var result = arg.value.unwrap().match_against(
+        PlumType.primitive(param.name), constraints
+      )
+      if not(result) then unreachable()
+    }
+  }
   true
 }

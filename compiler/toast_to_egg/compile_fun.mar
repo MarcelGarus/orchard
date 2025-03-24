@@ -247,6 +247,24 @@ fun compile(
 
       switch function_name
       case some(name) { | top-level function
+        | Resolve arguments of the type Type.
+        var arg_values = list[FunArg]()
+        for i in 0..args.len do {
+          var type = arg_types.get(i)
+          arg_values.&.push(
+            if type == type_type then {
+              var type_value = body.get(args.get(i)).op.type or
+                return error[Id, Error](error(
+                  "Arguments of the type Type have to be known at compile-time.",
+                  name.src
+                ))
+              FunArg { value = some(type_value), type }
+            } else
+              FunArg { value = none[PlumType](), type }
+          )
+        }
+        var arg_values = arg_values.to_slice()
+      
         | Look for a matching function.
         var signature_and_substitutions = {
           var visible_funs = context.visible_by_module.get(module)
@@ -275,8 +293,9 @@ fun compile(
           for item in name_matches do {
             var signature = item.a
             var fun_ = item.b
+
             var constraints = constraints()
-            arg_types.match_against(fun_.params, constraints.&) or continue
+            arg_values.match_against(fun_.params, constraints.&) or continue
             var substitutions = constraints.check_coherency() or continue
             full_matches.&.push(tuple(signature, substitutions))
           }
@@ -292,7 +311,7 @@ fun compile(
                   b."\n- {signature}"
                   var fun_ = item.b
                   var constraints = constraints()
-                  arg_types.match_against(fun_.params, constraints.&) or {
+                  arg_values.match_against(fun_.params, constraints.&) or {
                     b."  (doesn't match types)"
                     continue
                   }
@@ -322,7 +341,6 @@ fun compile(
         var signature     = signature_and_substitutions.a
         var substitutions = signature_and_substitutions.b
         var fun_ = context.funs.get(signature)
-        var expected_arg_types = fun_.params.specialize(substitutions)
         var return_type =
           loop
             switch fun_.impl
@@ -360,16 +378,23 @@ fun compile(
               }
               fun_ = context.funs.get_maybe(new_signature) or
                 return error[Id, Error](error(
-                  "Function {new_signature} doesn't exist.", name.src
+                  {
+                    var b = string_builder().&
+                    b."Function {new_signature} doesn't exist.\nThese ones exist:"
+                    for fun_ in context.funs do
+                      b."\n- {fun_.key}"
+                    b.to_string()
+                  },
+                  name.src,
                 ))
             }
             case builtin(builtin) break(builtin.signature().return_type)
 
         | Cast arguments
         var cast_args = list[Id]()
-        for both in zip(args.iter(), expected_arg_types.iter()) do {
+        for both in zip(args.iter(), fun_.params.iter()) do {
           var arg = both.a
-          var expected_type = both.b
+          var expected_type = both.b.type.specialize(substitutions)
           cast_args.&.push(body.push_cast(arg, expected_type, name.src))
         }
         var args = cast_args.to_slice()
