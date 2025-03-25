@@ -1,46 +1,62 @@
-# Linked List  
+# Lists
+#
+# In Plum, Lists are array lists.
 
 import
+  "..array"
+    Array t
+    filled_array size: Int fill: t
+    get (Array t) Int
+    set (Array t) Int t
+    slice (Array t) (Range Int)
+    len (Array t)
+    copy (Array t) (Array t) (Range Int)
   "..bool" Bool
-  "..int" Int, + Int Int, - Int Int, == Int Int
+  "..int" Int, == Int Int, + Int Int, * Int Int, max Int Int
   "..iterator" Iterator t, next (Iterator t)
   "..maybe" Maybe t, unwrap (Maybe t) String
   "..string" String
-export
-  List t, get (List t) Int, get_maybe (List t) Int, is_empty (List t), list t,
-  list t t, list t t t, len (List t), map (List a) (\ a -> b), sum (List Int)
+  "..range" Range t, to t t, len (Range Int), contains (Range Int) Int
+  "..test" assert Bool
 
-List t =
-  | empty
-    more: (& item: t rest: (List t))
+List t = & array: (Array t) len: Int
 
-list a: t -> (List t) = | more: (& item: a rest: (| empty))
-list a: t b: t -> (List t) = | more: (& item: a rest: (list b))
-list a: t b: t c: t -> (List t) = | more: (& item: a rest: (list b c))
-
-len list: (List t) -> Int =
-  list
-  % empty -> 0
-    more: node -> node.rest.len .+ 1
+list a: t -> (List t) = & array: (filled_array 8 a) len: 1
+list a: t b: t -> (List t) = list a .push b
+list a: t b: t c: t -> (List t) = list a b .push c
 
 is_empty list: (List t) -> Bool = list.len .== 0
 
+push list: (List t) item: t -> (List t) =
+  sufficiently_sized_array =
+    list.array.len .== (list.len)
+    % true ->
+        new_size = max (list.array.len .* 2) 8
+        filled_array new_size item .copy (list.array) (0 .to (list.array.len))
+      false -> list.array
+  & array: sufficiently_sized_array .set (list.len) item
+    len: list.len .+ 1
+
 get_maybe list: (List t) index: Int -> (Maybe t) =
-  list
-  % empty -> | none
-    more: node ->
-      index .== 0
-      % true -> | some: node.item
-        false -> node.rest .get_maybe (index .- 1)
+  0 .to (list.len) .contains index
+  % true -> | some: (list.array .get index)
+    false -> | none
 
 get list: (List t) index: Int -> t =
   list .get_maybe index .unwrap "out of bounds"
 
+slice list: (List t) range: (Range Int) -> (List t) =
+  & array: (list.array .slice range)
+    len: range.len
+
+shrink list: (List t) -> (List t) = list .slice (0 .to (list.len))
+
 iterate list: (List t) -> (Iterator t) =
   \ ->
-    list
-    % empty -> | empty
-      more: more -> | more: (& item: more.item rest: (more.rest.iterate))
+    list.get_maybe 0
+    % none -> | empty
+      some: first ->
+        | more: (& item: first rest: (list .slice (1 .to (list.len)) .iterate))
 
 to_list iterator: (Iterator t) -> (List t) =
   iterator.next
