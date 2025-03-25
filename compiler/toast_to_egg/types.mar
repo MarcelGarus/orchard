@@ -8,9 +8,6 @@ import mod.mar
 
 struct TypeSignature { module: Module, name: String }
 
-var builtin_types =
-  list(type_int, type_string, type_type, type_never).to_slice()
-
 fun prefix_calls_with_module(type: ToastType, module: Module): ToastType {
   switch type
   case variable type
@@ -70,12 +67,13 @@ fun compile(
 ): Result[PlumType, Error] {
   switch type
   case variable(variable) {
-    for builtin in builtin_types do
-      if variable.string == "${builtin}" then
-        return ok[PlumType, Error](builtin)
+    if variable.string == "$Int" then return ok[PlumType, Error](type_int)
+    if variable.string == "$String" then return ok[PlumType, Error](type_string)
+    if variable.string == "$Type" then return ok[PlumType, Error](type_type)
+    if variable.string == "$Never" then return ok[PlumType, Error](type_never)
     var type = env.get_maybe(variable.string) or
       return error[PlumType, Error](error(
-        "Tried to use {variable.string}, but that type doesn't exist.",
+        "Tried to use {variable.string}, but that type doesn't exist. (var)",
         variable.src
       ))
     ok[PlumType, Error](type)
@@ -95,10 +93,13 @@ fun compile(
       if call.name == name.string and call.args == args then
         return ok[PlumType, Error](PlumType.recursive(depth - call.depth))
 
+    if call.name.string == "$Array" then
+      return ok[PlumType, Error](type_array(args.get(0)))
+
     | Look for a type with the name.
     var called_def = defs.get_maybe(name.string) or
       return error[PlumType, Error](error(
-        "Tried to use {name.string}, but that type doesn't exist.",
+        "Tried to use {name.string}, but that type doesn't exist. (call)",
         name.src
       ))
 
@@ -168,12 +169,32 @@ fun compile_all_types(
   toasts: Map[Module, Toast]
 ): Result[Map[String, PlumTypeDef], Error] {
   var defs = map[String, ToastTypeDef]()
-  for type in builtin_types do
-    defs.&.put("{builtin_module}.{type}", ToastTypeDef {
-      name = "{type}" @ invalid_src,
-      params = empty_slice[StringAndSrc](),
-      type = ToastType.variable("${type}" @ invalid_src)
-    })
+  | TODO: instead of prefixing builtin types with $ and then checking in the
+  | lookup if the name is "$Int", just directly check if the name is
+  | "builtins.Int"
+  defs.&.put("{builtin_module}.Int", ToastTypeDef {
+    name = "Int" @ invalid_src,
+    params = empty_slice[StringAndSrc](),
+    type = ToastType.variable("$Int" @ invalid_src)
+  })
+  defs.&.put("{builtin_module}.String", ToastTypeDef {
+    name = "String" @ invalid_src,
+    params = empty_slice[StringAndSrc](),
+    type = ToastType.variable("$String" @ invalid_src)
+  })
+  defs.&.put("{builtin_module}.Type", ToastTypeDef {
+    name = "Type" @ invalid_src,
+    params = empty_slice[StringAndSrc](),
+    type = ToastType.variable("$Type" @ invalid_src)
+  })
+  defs.&.put("{builtin_module}.Array", ToastTypeDef {
+    name = "Array" @ invalid_src,
+    params = list("t" @ invalid_src).to_slice(),
+    type = ToastType.call(ToastTypeCall {
+      name = "$Array" @ invalid_src,
+      args = list(ToastType.variable("t" @ invalid_src)).to_slice(),
+    }),
+  })
   for entry in toasts do {
     var module = entry.key
     var toast = entry.value
@@ -225,7 +246,7 @@ fun compile_all_types(
     var env = map[String, PlumType]()
     var args = list[PlumType]()
     for param in def.value.params do {
-      var type = PlumType.primitive(param.string)
+      var type = PlumType.var_(param.string)
       params.&.push(param.string)
       env.&.put(param.string, type)
       args.&.push(type)
@@ -246,15 +267,18 @@ fun compile_all_types(
   ok[Map[String, PlumTypeDef], Error](compiled_defs)
 }
 
+| TODO: This looks very much like the function from above with a lot of
+| duplication. Simplify this!
 fun compile(
   type: ToastType, defs: Map[String, PlumTypeDef]
 ): Result[PlumType, Error] {
   switch type
   case variable(variable) {
-    for builtin in builtin_types do
-      if variable.string == "${builtin}" then
-        return ok[PlumType, Error](builtin)
-    ok[PlumType, Error](PlumType.primitive(variable.string))
+    if variable.string == "$Int" then return ok[PlumType, Error](type_int)
+    if variable.string == "$String" then return ok[PlumType, Error](type_string)
+    if variable.string == "$Type" then return ok[PlumType, Error](type_type)
+    if variable.string == "$Never" then return ok[PlumType, Error](type_never)
+    ok[PlumType, Error](PlumType.var_(variable.string))
   }
   case call(call) {
     var name = call.name
@@ -263,6 +287,9 @@ fun compile(
     var args = list[PlumType]()
     for arg in call.args do args.&.push(arg.compile(defs)?)
     var args = args.to_slice()
+
+    if name.string == "$Array" then
+      return ok[PlumType, Error](type_array(args.get(0)))
 
     | Look for a type with the name.
     var called_def = defs.get_maybe(name.string) or

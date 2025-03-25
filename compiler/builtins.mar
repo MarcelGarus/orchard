@@ -6,10 +6,12 @@ enum Builtin {
   | int operations
   add_ints, sub_ints, mul_ints, div_ints, mod_ints, and_ints, or_ints, xor_ints,
   compare_ints,
-  | lambda operations
-  call,
   | string operations
   concat_strings,
+  | array operations
+  filled_array, array_get, array_set, array_slice, array_len,
+  | lambda operations
+  call,
   | error stuff
   crash,
   | type operations
@@ -21,8 +23,10 @@ var builtins =
     Builtin.add_ints, Builtin.sub_ints, Builtin.mul_ints, Builtin.div_ints,
     Builtin.mod_ints, Builtin.and_ints, Builtin.or_ints, Builtin.xor_ints,
     Builtin.compare_ints,
-    Builtin.call,
     Builtin.concat_strings,
+    Builtin.filled_array, Builtin.array_get, Builtin.array_set,
+    Builtin.array_slice, Builtin.array_len,
+    Builtin.call,
     Builtin.crash,
     Builtin.type_of, Builtin.type_info,
   ).to_slice()
@@ -42,17 +46,29 @@ fun signature(builtin: Builtin): BuiltinSignature {
     case or_ints tuple(list(type_int, type_int), type_int)
     case xor_ints tuple(list(type_int, type_int), type_int)
     case compare_ints tuple(list(type_int, type_int), type_ordering)
+    case concat_strings tuple(list(type_string, type_string), type_string)
+    case filled_array tuple(list(type_int, type_var_t), type_array(type_var_t))
+    case array_get tuple(list(type_array(type_var_t), type_int), type_var_t)
+    case array_set
+      tuple(
+        list(type_array(type_var_t), type_int, type_var_t),
+        type_array(type_var_t),
+      )
+    case array_slice
+      tuple(
+        list(type_array(type_var_t), type_range(type_int)),
+        type_array(type_var_t),
+      )
+    case array_len tuple(list(type_array(type_var_t)), type_int)
     case call
       tuple(
         list(PlumType.lambda(LambdaType {
-          args = empty_slice[PlumType](),
-          return_type = PlumType.primitive("t").put_on_heap(),
+          args = empty_slice[PlumType](), return_type = type_var_t.put_on_heap()
         })),
-        PlumType.primitive("t")
+        type_var_t
       )
-    case concat_strings tuple(list(type_string, type_string), type_string)
     case crash tuple(list(type_string), type_never)
-    case type_of tuple(list(PlumType.primitive("t")), type_type)
+    case type_of tuple(list(type_var_t), type_type)
     case type_info tuple(list(type_type), type_type_info)
   BuiltinSignature {
     params = params_and_return_type.a.to_slice(),
@@ -64,6 +80,7 @@ fun signature(builtin: Builtin): BuiltinSignature {
 enum Instruction {
   add_ints, sub_ints, mul_ints, div_ints, mod_ints, and_ints, or_ints, xor_ints,
   compare_ints,
+  filled_array, array_get, array_set, array_slice, array_len,
   concat_strings,
   crash,
 }

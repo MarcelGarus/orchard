@@ -103,23 +103,14 @@ fun collect_all_funs(
   ))
 }
 
-| struct MatchingFun { fun_: ToastFun, substitutions: Substitutions }
-
-| fun name(match: MatchingFun): String { match.fun_.name.string }
-| fun param_types(match: MatchingFun): Slice[PlumType] {
-|   var types = list[PlumType]()
-|   for param in match.fun_.params do
-|     types.&.push(param.type.specialize(match.substitutions))
-|   types.to_slice()
-| }
-| fun return_type(match: MatchingFun): PlumType {
-|   match.fun_.return_type.specialize(match.substitutions)
-| }
-
-
-
-| Arguments that have the type Type also have a compile-time-known value.
+| Invariant: Arguments that have the type Type also have a compile-time-known
+| value.
 struct FunArg { value: Maybe[PlumType], type: PlumType }
+
+fun write[W](writer: W, arg: FunArg) {
+  if arg.value is some(type) then writer."{type}:"
+  writer."{arg.type}"
+}
 
 fun match_against(
   args: Slice[FunArg], params: Slice[FunParam],
@@ -131,12 +122,105 @@ fun match_against(
     var param = both.b
     arg.type.match_against(param.type, constraints) or return false
     if arg.type == type_type then {
-      eprintln("got a function with a type arg {param.name}: {arg.value.unwrap()}")
       var result = arg.value.unwrap().match_against(
-        PlumType.primitive(param.name), constraints
+        PlumType.var_(param.name), constraints
       )
       if not(result) then unreachable()
     }
   }
   true
+}
+
+fun lookup(
+  funs: Map[String, UncompiledFun], visible_funs: Set[String],
+  name: String, args: Slice[FunArg], src: Src
+): Result[Tuple2[String, Substitutions], Error] {
+  var name_matches = list[Tuple2[String, UncompiledFun]]()
+  for signature in visible_funs do {
+    var fun_ = funs.get(signature)
+    fun_.name.string == name or continue
+    name_matches.&.push(tuple(signature, fun_))
+  }
+
+  if name_matches.is_empty() then
+    return error[Tuple2[String, Substitutions], Error]({
+      var b = string_builder().&
+      b."There is no function named {name} in scope. Visible functions:"
+      for signature in visible_funs do b."\n- {signature}"
+      error(b.to_string(), src)
+    })
+
+  var full_matches = list[Tuple3[String, Substitutions, UncompiledFun]]()
+  for item in name_matches do {
+    var signature = item.a
+    var fun_ = item.b
+
+    var constraints = constraints()
+    args.match_against(fun_.params, constraints.&) or continue
+    var substitutions = constraints.check_coherency() or continue
+    full_matches.&.push(tuple(signature, substitutions, fun_))
+  }
+
+  if full_matches.is_empty() then
+    return error[Tuple2[String, Substitutions], Error]({
+      var b = string_builder().&
+      b."There is no matching function named {name} for the arg {args}. These 
+        'functions have mismatched types:"
+      for item in name_matches do {
+        var signature = item.a
+        b."\n- {signature}"
+        var fun_ = item.b
+        var constraints = constraints()
+        args.match_against(fun_.params, constraints.&) or {
+          b."  (doesn't match types)"
+          continue
+        }
+        var substitutions = constraints.check_coherency() or {
+          b."  (impossible constraints:"
+          for constraint in constraints.constraints do
+            b." {constraint}"
+          b.")"
+          continue
+        }
+      }
+      error(b.to_string(), src)
+    })
+
+  if full_matches.len > 1 then
+    return error[Tuple2[String, Substitutions], Error]({
+      var b = string_builder().&
+      b."Multiple functions match {name} {args}:"
+      for match in full_matches do b."\n  {match.a} with {match.b.debug()}"
+      error(b.to_string(), src)
+    })
+
+  var matching_fun = full_matches.get(0)
+  var signature = matching_fun.a
+  var substitutions = matching_fun.b
+  var fun_ = matching_fun.c
+
+  | Make sure that all type variables are constrained.
+  var type_vars = set[String]()
+  for param in fun_.params do param.type.collect_type_variables(type_vars.&)
+  var all_constrained = true
+  for var_ in type_vars do
+    if not(substitutions.substitutions.contains(var_)) then
+      all_constrained = false
+  all_constrained or
+    return error[Tuple2[String, Substitutions], Error]({
+      var b = string_builder().&
+      b."Function {name}"
+      for param in fun_.params do b." {param.name}: {param.type}"
+      b." matches, but not all type 
+        'variables are constrained:"
+      for var_ in type_vars do {
+        b."\n  {var_} "
+        switch substitutions.substitutions.get_maybe(var_)
+        case some(type) b."= {type}"
+        case none b."is unconstrained"
+      }
+      error(b.to_string(), src)
+    })
+
+  ok[Tuple2[String, Substitutions], Error](tuple(signature, substitutions))
 }

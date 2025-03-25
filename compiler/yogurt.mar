@@ -13,7 +13,10 @@ struct YogurtBody { params: Slice[Id], children: Slice[Id], returns: Id }
 struct YogurtExpr { op: YogurtOp, type: YogurtType }
 
 enum YogurtType {
-  primitive: String,
+  int,
+  string,
+  type,
+  array: &YogurtType,
   never,
   struct_: Map[String, YogurtType],
   enum_: Map[String, YogurtType],
@@ -53,6 +56,8 @@ enum YogurtBuiltin {
   compare_ints,
   | string operations
   concat_strings,
+  | array operations
+  filled_array, array_get, array_set, array_slice, array_len,
   | error stuff
   crash,
 }
@@ -74,11 +79,14 @@ fun return_type(fun_: YogurtFun): YogurtType {
 
 fun ==(a: YogurtType, b: YogurtType): Bool {
   switch a
-  case primitive(a) if b is primitive(b) then a == b else false
+  case int          if b is int          then true else false
+  case string       if b is string       then true else false
+  case type         if b is type         then true else false
+  case array(a)     if b is array(b)     then a.* == b.* else false
   case never(a)     if b is never(b)     then a == b else false
   case struct_(a)   if b is struct_(b)   then a == b else false
   case enum_(a)     if b is enum_(b)     then a == b else false
-  case closure(a)   if b is closure(b) then a.* == b.* else false
+  case closure(a)   if b is closure(b)   then a.* == b.* else false
   case lambda(a)    if b is lambda(b)    then a == b else false
   case recursive(a) if b is recursive(b) then a == b else false
 }
@@ -88,13 +96,16 @@ fun ==(a: YogurtLambdaType, b: YogurtLambdaType): Bool {
 
 fun hash(hasher: &Hasher, type: YogurtType) {
   switch type
-  case primitive { hasher.hash(0) }
-  case never     { hasher.hash(1) }
-  case struct_   { hasher.hash(2) }
-  case enum_     { hasher.hash(3) }
-  case closure   { hasher.hash(4) }
-  case lambda    { hasher.hash(5) }
-  case recursive { hasher.hash(6) }
+  case int       { hasher.hash(0) }
+  case string    { hasher.hash(1) }
+  case type      { hasher.hash(2) }
+  case array     { hasher.hash(3) }
+  case never     { hasher.hash(4) }
+  case struct_   { hasher.hash(5) }
+  case enum_     { hasher.hash(6) }
+  case closure   { hasher.hash(7) }
+  case lambda    { hasher.hash(8) }
+  case recursive { hasher.hash(9) }
 }
 
 fun write[W](writer: W, yogurt: Yogurt) {
@@ -107,7 +118,10 @@ fun write[W](writer: W, yogurt: Yogurt) {
 }
 fun write[W](writer: W, type: YogurtType) {
   switch type
-  case primitive(name) writer."{name}"
+  case int writer."int"
+  case string writer."string"
+  case type writer."Type"
+  case array(item) writer."(Array {item})"
   case never writer."Never"
   case struct_(fields) {
     writer."(&"

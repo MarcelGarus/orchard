@@ -24,19 +24,32 @@ import plum.mar
 
 | TODO: rename to EggType
 enum PlumType {
-  primitive: String, | TODO: split into primitive and type variable
+  var_: String,
+  primitive: PrimitiveType,
   never,
   struct_: Map[String, PlumType],
   enum_: Map[String, PlumType],
   lambda: LambdaType,
   recursive: Int, | how many levels above this should we continue?
 }
+struct PrimitiveType { name: String, args: Slice[PlumType] }
 struct LambdaType { args: Slice[PlumType], return_type: &PlumType }
 
 var type_nothing = PlumType.struct_(map[String, PlumType]())
-var type_int = PlumType.primitive("Int")
-var type_string = PlumType.primitive("String")
-var type_type = PlumType.primitive("Type")
+var type_int = PlumType.primitive(PrimitiveType {
+  name = "Int", args = empty_slice[PlumType]()
+})
+var type_string = PlumType.primitive(PrimitiveType {
+  name = "String", args = empty_slice[PlumType]()
+})
+var type_type = PlumType.primitive(PrimitiveType {
+  name = "Type", args = empty_slice[PlumType]()
+})
+fun type_array(type: PlumType): PlumType {
+  PlumType.primitive(PrimitiveType {
+    name = "Array", args = list(type).to_slice()
+  })
+}
 var type_never = PlumType.never
 var type_ordering = PlumType.enum_(map(
   "less"    -> type_nothing,
@@ -46,8 +59,8 @@ var type_ordering = PlumType.enum_(map(
 var type_type_info = PlumType.enum_(map(
   "int"    -> type_nothing,
   "string" -> type_nothing,
-  "struct" -> type_list(type_field),
-  "enum"   -> type_list(type_variant),
+  "struct" -> type_linked_list(type_field),
+  "enum"   -> type_linked_list(type_variant),
   "type"   -> type_nothing,
 ))
 var type_field = PlumType.struct_(map(
@@ -56,9 +69,10 @@ var type_field = PlumType.struct_(map(
 ))
 var type_variant = PlumType.struct_(map(
   "name" -> type_string,
-  "args" -> type_list(type_type),
+  | TODO: update
+  "args" -> type_linked_list(type_type),
 ))
-fun type_list(item: PlumType): PlumType {
+fun type_linked_list(item: PlumType): PlumType {
   PlumType.enum_(map(
     "empty" -> type_nothing,
     "more"  -> PlumType.struct_(map(
@@ -67,9 +81,14 @@ fun type_list(item: PlumType): PlumType {
     )),
   ))
 }
+fun type_range(item: PlumType): PlumType {
+  PlumType.struct_(map("start" -> item, "end" -> item))
+}
+var type_var_t = PlumType.var_("t")
 
 fun ==(a: PlumType, b: PlumType): Bool {
   switch a
+  case var_(a)      if b is var_(b)      then a == b else false
   case primitive(a) if b is primitive(b) then a == b else false
   case never(a)     if b is never(b)     then a == b else false
   case struct_(a)   if b is struct_(b)   then a == b else false
@@ -77,22 +96,32 @@ fun ==(a: PlumType, b: PlumType): Bool {
   case lambda(a)    if b is lambda(b)    then a == b else false
   case recursive(a) if b is recursive(b) then a == b else false
 }
+fun ==(a: PrimitiveType, b: PrimitiveType): Bool {
+  a.name == b.name and a.args == b.args
+}
 fun ==(a: LambdaType, b: LambdaType): Bool {
   a.args == b.args and a.return_type.* == b.return_type.*
 }
 fun hash(hasher: &Hasher, type: PlumType) {
   switch type
-  case primitive { hasher.hash(0) }
-  case never     { hasher.hash(1) }
-  case struct_   { hasher.hash(2) }
-  case enum_     { hasher.hash(3) }
-  case lambda    { hasher.hash(4) }
-  case recursive { hasher.hash(5) }
+  case var_      { hasher.hash(0) }
+  case primitive { hasher.hash(1) }
+  case never     { hasher.hash(2) }
+  case struct_   { hasher.hash(3) }
+  case enum_     { hasher.hash(4) }
+  case lambda    { hasher.hash(5) }
+  case recursive { hasher.hash(6) }
 }
 
 fun write[W](writer: W, type: PlumType) {
   switch type
-  case primitive(name) writer."{name}"
+  case var_(name) writer."{name}"
+  case primitive(primitive) {
+    if primitive.args.is_not_empty() then writer."("
+    writer."{primitive.name}"
+    for arg in primitive.args do writer." {arg}"
+    if primitive.args.is_not_empty() then writer.")"
+  }
   case never writer."Never"
   case struct_(fields) {
     writer."(&"
@@ -130,10 +159,8 @@ fun collect_type_variables(types: Slice[PlumType]): Set[String] {
 }
 fun collect_type_variables(type: PlumType, out: &Set[String]) {
   switch type
-  case primitive(name)
-    | TODO: make this less hacky
-    if name.chars().get(0).is_upper().not() then
-      out.put(name)
+  case var_(name) out.put(name)
+  case primitive(primitive) primitive.args.collect_type_variables(out)
   case never {}
   case struct_(fields)
     for field in fields do field.value.collect_type_variables(out)
@@ -237,16 +264,16 @@ fun match_against_logic(
   if concrete is never then return true
 
   switch generic
-  case primitive(generic_name) {
-    | TODO: model variables in the type
-    var is_type_variable = generic_name.chars().get(0).is_upper().not()
-    if is_type_variable then {
-      constraints.add(generic_name, concrete)
-      true
-    } else {
-      var concrete_name = concrete.primitive or return false
-      concrete_name == generic_name
-    }
+  case var_(name) {
+    constraints.add(name, concrete)
+    true
+  }
+  case primitive(generic_primitive) {
+    var concrete_primitive = concrete.primitive or return false
+    concrete_primitive.name == generic_primitive.name or return false
+    concrete_primitive.args.match_against(
+      generic_primitive.args, constraints, currently_matching
+    )
   }
   case never concrete is never
   case struct_(generic_fields) {
@@ -310,8 +337,13 @@ fun specialize(
   type: PlumType, substitutions: Substitutions
 ): PlumType {
   switch type
-  case primitive(name)
-    substitutions.substitutions.get_maybe(name) or PlumType.primitive(name)
+  case var_(name)
+    substitutions.substitutions.get_maybe(name) or
+      panic("substitution for {name} missing: {substitutions.substitutions}")
+  case primitive(primitive)
+    PlumType.primitive(PrimitiveType {
+      name = primitive.name, args = primitive.args.specialize(substitutions)
+    })
   case never PlumType.never
   case struct_(fields) PlumType.struct_(fields.specialize(substitutions))
   case enum_(variants) PlumType.enum_(variants.specialize(substitutions))
@@ -385,7 +417,31 @@ fun specialize(a: Substitutions, b: Substitutions): Substitutions {
 | that we are currently at.
 fun extend_one_level(type: PlumType): PlumType {
   switch type
-  case primitive(name) PlumType.primitive(name)
+  case var_(name) PlumType.var_(name)
+  case primitive(primitive) {
+    var new_args = list[PlumType]()
+    for arg in primitive.args.iter().enumerate() do
+      new_args.&.push({
+        | Type that is the original struct except the arg that we navigate
+        | into. This arg has been replaced with a recursive type.
+        var extension = {
+          var ext_args = list[PlumType]()
+          for ext_arg in primitive.args.iter().enumerate() do
+            ext_args.&.push(
+              if ext_arg.index == arg.index
+              then PlumType.recursive(-1)
+              else ext_arg.item
+            )
+          PlumType.primitive(PrimitiveType {
+            name = primitive.name, args = ext_args.to_slice()
+          })
+        }
+        arg.item.extend_recursive_types(1, extension)
+      })
+    PlumType.primitive(PrimitiveType {
+      name = primitive.name, args = new_args.to_slice()
+    })
+  }
   case never PlumType.never
   case struct_(fields) PlumType.struct_({
     var new_fields = map[String, PlumType]()
@@ -446,7 +502,15 @@ fun extend_recursive_types(
   type: PlumType, level: Int, extension: PlumType
 ): PlumType {
   switch type
-  case primitive(name) PlumType.primitive(name)
+  case var_(name) PlumType.var_(name)
+  case primitive(primitive) {
+    var new_args = list[PlumType]()
+    for arg in primitive.args do
+      new_args.&.push(arg.extend_recursive_types(level + 1, extension))
+    PlumType.primitive(PrimitiveType {
+      name = primitive.name, args = new_args.to_slice()
+    })
+  }
   case never PlumType.never
   case struct_(fields) {
     var new_fields = map[String, PlumType]()
@@ -482,7 +546,15 @@ fun extend_recursive_types(
 }
 fun replace_recursive_level(type: PlumType, from: Int, to: Int): PlumType {
   switch type
-  case primitive(name) PlumType.primitive(name)
+  case var_(name) PlumType.var_(name)
+  case primitive(primitive) {
+    var args = list[PlumType]()
+    for arg in primitive.args do
+      args.&.push(arg.replace_recursive_level(from, to))
+    PlumType.primitive(PrimitiveType {
+      name = primitive.name, args = args.to_slice()
+    })
+  }
   case never PlumType.never
   case struct_(fields) {
     var new_fields = map[String, PlumType]()
@@ -550,7 +622,15 @@ fun is_equivalent_logic(
   currently_comparing: &List[Tuple2[PlumType, PlumType]],
 ): Bool {
   switch a
-  case primitive(name) {b.primitive or return false} == name
+  case var_(name) {b.var_ or return false} == name
+  case primitive(a_primitive) {
+    var b_primitive = b.primitive or return false
+    a_primitive.name == b_primitive.name or return false
+    a_primitive.args.len == b_primitive.args.len or return false
+    for both in zip(a_primitive.args.iter(), b_primitive.args.iter()) do
+      is_equivalent(both.a, both.b, currently_comparing) or return false
+    true
+  }
   case never  b is never
   case struct_(a_fields) {
     var b_fields = b.struct_ or return false
@@ -650,10 +730,17 @@ fun union_logic(
   if b is never then return some(a)
 
   switch a
-  case primitive(a_name) {
-    var b_name = b.primitive or return none[PlumType]()
+  case var_(a_name) {
+    var b_name = b.var_ or return none[PlumType]()
     a_name == b_name or return none[PlumType]()
-    some(PlumType.primitive(a_name))
+    some(PlumType.var_(a_name))
+  }
+  case primitive(a_primitive) {
+    var b_primitive = b.primitive or return none[PlumType]()
+    a_primitive.name == b_primitive.name or return none[PlumType]()
+    | TODO: loosen constraints (this requires implementing casting arrays)
+    a_primitive.args == b_primitive.args or return none[PlumType]()
+    some(PlumType.primitive(a_primitive))
   }
   case never unreachable()
   case struct_(a_fields) {

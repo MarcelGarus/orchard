@@ -144,7 +144,16 @@ fun finish(body: YogurtBodyBuilder, id: Id): YogurtBody {
 
 fun compile(type: PlumType): YogurtType {
   switch type
-  case primitive(name) YogurtType.primitive(name)
+  case var_(name) panic("compiling type that still contains variable {name}")
+  case primitive(primitive) {
+    var name = primitive.name
+    if name == "Int" then return YogurtType.int
+    if name == "String" then return YogurtType.string
+    if name == "Type" then return YogurtType.type
+    if name == "Array" then
+      return YogurtType.array(primitive.args.get(0).compile().put_on_heap())
+    panic("Unknown primitive type {name}")
+  }
   case never YogurtType.never
   case struct_(struct_) {
     var fields = map[String, YogurtType]()
@@ -333,12 +342,17 @@ fun compile(
           case or_ints YogurtBuiltin.or_ints
           case xor_ints YogurtBuiltin.xor_ints
           case compare_ints YogurtBuiltin.compare_ints
+          case concat_strings YogurtBuiltin.concat_strings
+          case filled_array YogurtBuiltin.filled_array
+          case array_get YogurtBuiltin.array_get
+          case array_set YogurtBuiltin.array_set
+          case array_slice YogurtBuiltin.array_slice
+          case array_len YogurtBuiltin.array_len
           case call
             return ok[Id, Error](body.push(YogurtOp.call(YogurtCall {
               callee = YogurtCallee.lambda(args.get(0)),
               args = empty_slice[Id](),
             }) $ type))
-          case concat_strings YogurtBuiltin.concat_strings
           case crash YogurtBuiltin.crash
           case type_of {
             todo("type of")

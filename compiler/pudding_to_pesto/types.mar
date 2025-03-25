@@ -2,11 +2,15 @@ import mod.mar
 
 fun to_pesto(type: YogurtType): PestoType {
   switch type
-  case primitive(name) {
-    if name == "Int" then PestoType.int
-    else if name == "Type" then PestoType.struct_(map[String, PestoType]())
-    else panic("primitive type {name}")
-  }
+  case int PestoType.int
+  case string panic("primitive type String")
+  case type PestoType.struct_(map[String, PestoType]())
+  case array
+    PestoType.struct_(map[String, PestoType](
+      "buffer" -> PestoType.ptr,
+      "start" -> PestoType.int,
+      "end" -> PestoType.int,
+    ))
   case never PestoType.struct_(map[String, PestoType]())
   case struct_(struct_) {
     var fields = map[String, PestoType]()
@@ -38,7 +42,10 @@ fun to_pesto(type: YogurtType): PestoType {
 
 fun is_recursive(type: YogurtType, depth: Int): Bool {
   switch type
-  case primitive false
+  case int false
+  case string false
+  case type false
+  case array(item) item.is_recursive(depth + 1)
   case never false
   case struct_(struct_) {
     for field in struct_ do
@@ -71,7 +78,13 @@ fun contains_ptr(type: PestoType): Bool {
 
 fun assert_no_closure(type: YogurtType): PlumType {
   switch type
-  case primitive(name) PlumType.primitive(name)
+  case int type_int
+  case string type_string
+  case type type_type
+  case array(item)
+    PlumType.primitive(PrimitiveType {
+      name = "Array", args = list(item.assert_no_closure()).to_slice()
+    })
   case never PlumType.never
   case struct_(struct_) {
     var fields = map[String, PlumType]()

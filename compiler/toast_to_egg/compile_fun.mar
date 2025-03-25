@@ -20,7 +20,7 @@ fun compile(
   | Push the type variables into the body.
   for var_ in param_types.collect_type_variables() do {
     var id = body.push(
-      EggOp.type(PlumType.primitive(var_)).expr(type_type, invalid_src)
+      EggOp.type(PlumType.var_(var_)).expr(type_type, invalid_src)
     )
     visible.&.define(var_, id)
   }
@@ -274,109 +274,13 @@ fun compile(
         var arg_values = arg_values.to_slice()
 
         | Look for a matching function.
-        var signature_and_substitutions = {
-          var visible_funs = context.visible_by_module.get(module)
-
-          var name_matches = list[Tuple2[String, UncompiledFun]]()
-          for signature in visible_funs do {
-            var fun_ = context.funs.get(signature)
-            fun_.name.string == name.string or continue
-            name_matches.&.push(tuple(signature, fun_))
-          }
-
-          if name_matches.is_empty() then
-            return error[Id, Error](error(
-              {
-                var b = string_builder().&
-                b."There is no function named {name.string} in scope. Visible 
-                  'functions:"
-                for signature in visible_funs do
-                  b."\n- {signature}"
-                b.to_string()
-              },
-              name.src,
-            ))
-
-          var full_matches = list[Tuple3[String, Substitutions, UncompiledFun]]()
-          for item in name_matches do {
-            var signature = item.a
-            var fun_ = item.b
-
-            var constraints = constraints()
-            arg_values.match_against(fun_.params, constraints.&) or continue
-            var substitutions = constraints.check_coherency() or continue
-            full_matches.&.push(tuple(signature, substitutions, fun_))
-          }
-
-          if full_matches.is_empty() then
-            return error[Id, Error](error(
-              {
-                var b = string_builder().&
-                b."There is no matching function named {name.string} for the 
-                  'args {arg_types}. These functions have mismatched types:"
-                for item in name_matches do {
-                  var signature = item.a
-                  b."\n- {signature}"
-                  var fun_ = item.b
-                  var constraints = constraints()
-                  arg_values.match_against(fun_.params, constraints.&) or {
-                    b."  (doesn't match types)"
-                    continue
-                  }
-                  var substitutions = constraints.check_coherency() or {
-                    b."  (impossible constraints:"
-                    for constraint in constraints.constraints do
-                      b." {constraint}"
-                    b.")"
-                    continue
-                  }
-                }
-                b.to_string()
-              },
-              name.src,
-            ))
-          if full_matches.len > 1 then
-            return error[Id, Error]({
-              var b = string_builder().&
-              b."Multiple functions match {name.string} {arg_types}:"
-              for match in full_matches do
-                b."\n  {match.a} with {match.b.debug()}"
-              error(b.to_string(), name.src)
-            })
-
-          var matching_fun = full_matches.get(0)
-          var signature = matching_fun.a
-          var substitutions = matching_fun.b
-          var fun_ = matching_fun.c
-
-          | Make sure that all type variables are constrained.
-          var type_vars = set[String]()
-          for param in fun_.params do param.type.collect_type_variables(type_vars.&)
-          var all_constrained = true
-          for var_ in type_vars do
-            if not(substitutions.substitutions.contains(var_)) then
-              all_constrained = false
-          all_constrained or
-            return error[Id, Error]({
-              var b = string_builder().&
-              b."Function {name.string}"
-              for param in fun_.params do b." {param.name}: {param.type}"
-              b." matches, but not all type 
-                'variables are constrained:"
-              for var_ in type_vars do {
-                b."\n  {var_} "
-                switch substitutions.substitutions.get_maybe(var_)
-                case some(type) b."= {type}"
-                case none b."is unconstrained"
-              }
-              error(b.to_string(), name.src)
-            })
-
-          tuple(signature, substitutions)
-        }
-
+        var signature_and_substitutions = lookup(
+          context.funs, context.visible_by_module.get(module),
+          name.string, arg_values, name.src,
+        )?
         var signature     = signature_and_substitutions.a
         var substitutions = signature_and_substitutions.b
+
         var fun_ = context.funs.get(signature)
         var return_type =
           loop
@@ -393,18 +297,10 @@ fun compile(
               | TODO: update substitutions
               signature = new_signature
 
-              for builtin in builtins do {
-                var builtin_types = builtin.signature()
-                var param_types = builtin_types.params
-                var return_type = builtin_types.return_type
-                  .specialize(substitutions)
-                var builtin_signature = {
-                  var b = string_builder().&
-                  b."{builtin_module}.{builtin}"
-                  for param in param_types do b." {param}"
-                  b.to_string()
-                }
-                if builtin_signature == signature then
+              for builtin in builtins do
+                if signature.starts_with("{builtin_module}.{builtin}") then {
+                  var return_type =
+                    builtin.signature().return_type.specialize(substitutions)
                   return ok[Id, Error](body.push(
                     EggOp.call(EggCall {
                       callee = EggCallee.builtin(MatchingBuiltin {
@@ -412,18 +308,15 @@ fun compile(
                       }), args
                     }).expr(return_type, name.src)
                   ))
-              }
+                }
+
               fun_ = context.funs.get_maybe(new_signature) or
-                return error[Id, Error](error(
-                  {
-                    var b = string_builder().&
-                    b."Function {new_signature} doesn't exist.\nThese ones exist:"
-                    for fun_ in context.funs do
-                      b."\n- {fun_.key}"
-                    b.to_string()
-                  },
-                  name.src,
-                ))
+                return error[Id, Error]({
+                  var b = string_builder().&
+                  b."Function {new_signature} doesn't exist.\nThese ones exist:"
+                  for fun_ in context.funs do b."\n- {fun_.key}"
+                  error(b.to_string(), name.src)
+                })
             }
             case builtin(builtin) break(builtin.signature().return_type)
 
