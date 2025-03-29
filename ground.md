@@ -70,6 +70,10 @@ The encoded uses little endian encoding for 64-bit integers; VMs are free to cho
   Pops two 64-bit integers, bitwise-ors them, and pushes the result as a 64-bit integer.
 - `b2`: **xor_8**:
   Pops two 64-bit integers, bitwise-xors them, and pushes the result as a 64-bit integer.
+- `b3`: **lower_byte**:
+  Pops a 64-bit integer, pushes its lower byte.
+- `b4`: **byte_to_int**:
+  Pops a byte, pushes a 64-bit integer with the upper 7 bytes zero.
 - `c0 xx`: **push_padding**:
   Push x bytes of padding to the stack.
 - `c1 xx`: **push_1**:
