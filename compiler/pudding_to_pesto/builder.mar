@@ -1,0 +1,251 @@
+import mod.mar
+
+fun pesto(): _ { Pesto { funs = map[String, PestoFun]() } }
+
+fun $(op: PestoOp, type: PestoType): _ { PestoExpr { op, type } }
+
+var pesto_nothing =
+  PestoOp.struct_(map[String, Id]()) 
+    $ PestoType.struct_(map[String, PestoType]())
+
+fun return_type(fun_: PestoFun): PestoType {
+  fun_.dag.type_of(fun_.body.returns)
+}
+
+struct PestoBodyBuilder { param: Id, exprs: List[Id], dag: &Dag[PestoExpr] }
+
+fun body_builder(dag: &Dag[PestoExpr], param: PestoType): PestoBodyBuilder {
+  var param = dag.put(PestoOp.param $ param)
+  PestoBodyBuilder { param, exprs = list[Id](), dag }
+}
+fun push(builder: &PestoBodyBuilder, expr: PestoExpr): Id {
+  var id = builder.dag.put(expr)
+  builder.exprs.&.push(id)
+  id
+}
+fun get(builder: PestoBodyBuilder, id: Id): PestoExpr { builder.dag.get(id) }
+fun type_of(builder: PestoBodyBuilder, id: Id): PestoType {
+  builder.get(id).type
+}
+fun finish(builder: PestoBodyBuilder, returns: Id): PestoBody {
+  PestoBody { param = builder.param, exprs = builder.exprs.to_slice(), returns }
+}
+fun finish_with_nothing(builder: PestoBodyBuilder): PestoBody {
+  builder.finish(builder.&.push(pesto_nothing))
+}
+
+| Operations
+
+fun int(builder: &PestoBodyBuilder, int: Int): Id {
+  builder.push(PestoOp.int(int) $ PestoType.int)
+}
+
+fun string(builder: &PestoBodyBuilder, string: String): Id {
+  | TODO: support strings
+  builder.struct_(map(
+    "bytes" -> builder.struct_(map(
+      "buffer" -> builder.push(PestoOp.int(0) $ PestoType.ptr),
+      "start" -> builder.int(0),
+      "end" -> builder.int(0),
+    ))
+  ))
+}
+
+fun struct_(builder: &PestoBodyBuilder, fields: Map[String, Id]): Id {
+  var field_types = map[String, PestoType]()
+  for field in fields do
+    field_types.&.put(field.key, builder.type_of(field.value))
+  var type = PestoType.struct_(field_types)
+  builder.push(PestoOp.struct_(fields) $ type)
+}
+
+fun member(builder: &PestoBodyBuilder, of: Id, name: String): Id {
+  var type = builder.type_of(of).struct_.unwrap().get(name)
+  builder.push(PestoOp.member(PestoMember { of, name }) $ type)
+}
+
+fun enum_(
+  builder: &PestoBodyBuilder, name: String, value: Id, type: PestoType
+): Id {
+  builder.push(PestoOp.enum_(PestoEnum { name, value }) $ type)
+}
+
+fun switch_(
+  builder: &PestoBodyBuilder, condition: Id, cases: Map[String, PestoBody]
+): Id {
+  var type = none[PestoType]()
+  for case_ in cases do {
+    var t = builder.dag.get(case_.value.returns).type
+    switch type
+    case none type = some(t)
+    case some(type) if type != t then panic("{type} and {t} are incompatible")
+  }
+  builder.push(
+    PestoOp.switch_(PestoSwitch { condition, cases }) $ type.unwrap()
+  )
+}
+
+fun function_ptr(builder: &PestoBodyBuilder, function: String): Id {
+  builder.push(PestoOp.function_ptr(function) $ PestoType.ptr)
+}
+
+fun call(
+  builder: &PestoBodyBuilder, function: String, args: Id, return_type: PestoType
+): Id {
+  builder.push(PestoOp.call(PestoCall { function, args }) $ return_type)
+}
+
+fun call_indirect(
+  builder: &PestoBodyBuilder, function: Id, args: Id, return_type: PestoType
+): Id {
+  builder.push(
+    PestoOp.call_indirect(PestoCallIndirect { function, args }) $ return_type
+  )
+}
+
+fun call_builtin(
+  builder: &PestoBodyBuilder, builtin: PestoBuiltin, args: Slice[Id],
+  return_type: PestoType,
+): Id {
+  builder.push(
+    PestoOp.call_builtin(PestoCallBuiltin { builtin, args }) $ return_type
+  )
+}
+
+fun add_ints(builder: &PestoBodyBuilder, a: Id, b: Id): Id {
+  builder.dag.get(a).type == PestoType.int or panic("add_ints on non-int")
+  builder.dag.get(b).type == PestoType.int or panic("add_ints on non-int")
+  builder.call_builtin(
+    PestoBuiltin.add_ints, list(a, b).to_slice(), PestoType.int
+  )
+}
+
+fun sub_ints(builder: &PestoBodyBuilder, a: Id, b: Id): Id {
+  builder.dag.get(a).type == PestoType.int or panic("sub_ints on non-int")
+  builder.dag.get(b).type == PestoType.int or panic("sub_ints on non-int")
+  builder.call_builtin(
+    PestoBuiltin.sub_ints, list(a, b).to_slice(), PestoType.int
+  )
+}
+
+fun compare_ints(builder: &PestoBodyBuilder, a: Id, b: Id): Id {
+  builder.dag.get(a).type == PestoType.int or panic("compare_ints on non-int")
+  builder.dag.get(b).type == PestoType.int or panic("compare_ints on non-int")
+  builder.call_builtin(
+    PestoBuiltin.compare_ints,
+    list(a, b).to_slice(),
+    PestoType.enum_(map(
+      "less" -> pesto_nothing.type,
+      "greater" -> pesto_nothing.type,
+      "equal" -> pesto_nothing.type,
+    ))
+  )
+}
+
+fun crash(builder: &PestoBodyBuilder, message: Id): Id {
+  builder.call_builtin(
+    PestoBuiltin.crash,
+    list(message).to_slice(),
+    PestoType.struct_(map[String, PestoType]()),
+  )
+}
+
+fun new(builder: &PestoBodyBuilder, value: Id): Id {
+  builder.push(PestoOp.new(value) $ PestoType.ptr)
+}
+
+fun load(builder: &PestoBodyBuilder, ptr: Id, type: PestoType): Id {
+  builder.dag.get(ptr).type == PestoType.ptr or panic("load of non-ptr")
+  builder.push(PestoOp.load(ptr) $ type)
+}
+
+fun free(builder: &PestoBodyBuilder, ptr: Id, type: PestoType): Id {
+  builder.dag.get(ptr).type == PestoType.ptr or panic("free of non-ptr")
+  builder.push(PestoOp.free(PestoFree { ptr, type }) $ pesto_nothing.type)
+}
+
+fun new_buffer(builder: &PestoBodyBuilder, item_type: PestoType, len: Id): Id {
+  builder.dag.get(len).type == PestoType.int
+    or panic("new_buffer with non-int len")
+  builder.push(
+    PestoOp.new_buffer(PestoNewBuffer { item_type, len }) $ PestoType.ptr
+  )
+}
+
+fun get_buffer_len(builder: &PestoBodyBuilder, buffer: Id): Id {
+  builder.dag.get(buffer).type == PestoType.ptr
+    or panic("get_buffer_len of non-ptr")
+  builder.push(PestoOp.get_buffer_len(buffer) $ PestoType.int)
+}
+
+fun load_buffer_item(
+  builder: &PestoBodyBuilder, buffer: Id, item_type: PestoType, index: Id
+): Id {
+  builder.dag.get(buffer).type == PestoType.ptr
+    or panic("load buffer item of non-ptr")
+  builder.push(
+    PestoOp.load_buffer_item(PestoLoadBufferItem {
+      buffer, item_type, index
+    }) $ item_type
+  )
+}
+
+fun store_buffer_item(
+  builder: &PestoBodyBuilder, buffer: Id, index: Id, item: Id
+): Id {
+  var item_type = builder.dag.get(item).type
+  builder.push(
+    PestoOp.store_buffer_item(PestoStoreBufferItem {
+      buffer, item_type, index, item
+    }) $ pesto_nothing.type
+  )
+}
+
+fun free_buffer(
+  builder: &PestoBodyBuilder, buffer: Id, item_type: PestoType
+): Id {
+  builder.dag.get(buffer).type == PestoType.ptr or panic("free_buffer of non-ptr")
+  builder.push(
+    PestoOp.free_buffer(PestoFreeBuffer {
+      buffer, item_type
+    }) $ pesto_nothing.type
+  )
+}
+
+fun get_reference_count(builder: &PestoBodyBuilder, ptr: Id): Id {
+  builder.dag.get(ptr).type == PestoType.ptr or panic("get refcount of non-ptr")
+  builder.push(PestoOp.get_reference_count(ptr) $ PestoType.int)
+}
+
+fun increment_reference_count(builder: &PestoBodyBuilder, ptr: Id): Id {
+  builder.dag.get(ptr).type == PestoType.ptr or panic("inc refcount of non-ptr")
+  builder.push(PestoOp.increment_reference_count(ptr) $ PestoType.int)
+}
+
+fun decrement_reference_count(builder: &PestoBodyBuilder, ptr: Id): Id {
+  builder.dag.get(ptr).type == PestoType.ptr or panic("dec refcount of non-ptr")
+  builder.push(PestoOp.decrement_reference_count(ptr) $ PestoType.int)
+}
+
+| Macro-instructions
+
+fun dup(
+  builder: &PestoBodyBuilder, id: Id, type: YogurtType, pesto: &Pesto
+): Id {
+  if not(type.to_pesto().contains_ptr()) then return id
+  builder.call(type.compile_dup_fun(pesto), id, pesto_nothing.type)
+}
+
+fun drop(
+  builder: &PestoBodyBuilder, id: Id, type: YogurtType, pesto: &Pesto
+): Id {
+  if not(type.to_pesto().contains_ptr()) then return id
+  builder.call(type.compile_drop_fun(pesto), id, pesto_nothing.type)
+}
+
+fun drop_buffer(
+  builder: &PestoBodyBuilder, ptr: Id, type: YogurtType, pesto: &Pesto
+): Id {
+  builder.dag.get(ptr).type == PestoType.ptr or panic("drop buffer of non-ptr")
+  builder.call(type.compile_drop_buffer_fun(pesto), ptr, pesto_nothing.type)
+}

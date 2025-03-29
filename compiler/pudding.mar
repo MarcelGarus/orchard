@@ -21,9 +21,7 @@ enum PuddingOp {
   closure: Id,
   get_closure: Id,
   lambda: PuddingLambda,
-  lambda_call: PuddingLambdaCall,
   call: PuddingCall,
-  instruction: PuddingInstruction,
   dup: Id,
   drop: Id,
 }
@@ -31,9 +29,15 @@ struct PuddingMember { of: Id, name: String }
 struct PuddingSwitch { condition: Id, cases: Map[String, PuddingBody] }
 struct PuddingEnum { name: String, value: Id }
 struct PuddingLambda { function: String, closure: Id }
-struct PuddingLambdaCall { lambda: Id, args: Slice[Id] }
-struct PuddingCall { function: String, args: Slice[Id] }
-struct PuddingInstruction { instruction: Instruction, args: Slice[Id] }
+struct PuddingCall { callee: PuddingCallee, args: Slice[Id] }
+enum PuddingCallee { lambda: Id, fun_: String, builtin: PuddingBuiltin }
+enum PuddingBuiltin {
+  add_ints, sub_ints, mul_ints, div_ints, mod_ints, and_ints, or_ints, xor_ints,
+  compare_ints,
+  generate_array, array_get, array_set, array_slice, array_len,
+  concat_strings,
+  crash,
+}
 
 | Constructing Pudding  
 
@@ -95,18 +99,16 @@ fun write[W](writer: W, op: PuddingOp, fun_: PuddingFun, indentation: Int) {
   case lambda(lambda) {
     writer."lambda [closure {lambda.closure}] {lambda.function}"
   }
-  case lambda_call(call) {
-    writer."call {call.lambda}"
-    for arg in call.args do writer." {arg}"
-  }
   case call(call) {
-    writer."call \"{call.function}\""
+    writer."call \"{call.callee}\""
     for arg in call.args do writer." {arg}"
-  }
-  case instruction(instruction) {
-    writer."instruction {instruction.instruction}"
-    for arg in instruction.args do writer." {arg}"
   }
   case dup(id) writer."dup {id}"
   case drop(id) writer."drop {id}"
+}
+fun write[W](writer: W, callee: PuddingCallee) {
+  switch callee
+  case lambda(lambda) writer."{lambda}"
+  case fun_(fun_) writer."{fun_}"
+  case builtin(builtin) writer."{builtin.debug()}"
 }

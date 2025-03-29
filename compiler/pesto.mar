@@ -23,21 +23,38 @@ enum PestoOp {
   function_ptr: String,
   call: PestoCall,
   call_indirect: PestoCallIndirect,
-  call_instruction: PestoCallInstruction,
+  call_builtin: PestoCallBuiltin,
   | Memory
   new: Id,         | allocates the value on the heap, refcount 1
   load: Id,        | loads the pointer's memory (amount determined by the type)
   free: PestoFree, | frees the pointer's memory, refcount should be 0
-  dup: Id,         | increments the pointer's refcount by 1
-  drop: Id,        | decrements the pointer's refcount by 1
+  new_buffer: PestoNewBuffer,
+  get_buffer_len: Id,
+  load_buffer_item: PestoLoadBufferItem,
+  store_buffer_item: PestoStoreBufferItem,
+  free_buffer: PestoFreeBuffer, | free's the buffer's memory, refcount should be 0
+  get_reference_count: Id,
+  increment_reference_count: Id, | returns the new count
+  decrement_reference_count: Id, | returns the new count
 }
 struct PestoMember { of: Id, name: String }
 struct PestoEnum { name: String, value: Id }
 struct PestoSwitch { condition: Id, cases: Map[String, PestoBody] }
 struct PestoCall { function: String, args: Id }
 struct PestoCallIndirect { function: Id, args: Id }
-struct PestoCallInstruction { instruction: Instruction, args: Slice[Id] }
+struct PestoCallBuiltin { builtin: PestoBuiltin, args: Slice[Id] }
+enum PestoBuiltin {
+  add_ints, sub_ints, mul_ints, div_ints, mod_ints, and_ints, or_ints, xor_ints,
+  compare_ints,
+  crash,
+}
 struct PestoFree { ptr: Id, type: PestoType }
+struct PestoNewBuffer { item_type: PestoType, len: Id }
+struct PestoLoadBufferItem { buffer: Id, item_type: PestoType, index: Id }
+struct PestoStoreBufferItem {
+  buffer: Id, item_type: PestoType, index: Id, item: Id
+}
+struct PestoFreeBuffer { buffer: Id, item_type: PestoType }
 
 enum PestoType {
   int,
@@ -53,42 +70,6 @@ fun ==(a: PestoType, b: PestoType): Bool {
   case struct_(aa) if b is struct_(bb) then aa == bb else false
   case enum_(aa)   if b is enum_(bb)   then aa == bb else false
 }
-
-| Constructing Pesto  
-
-fun pesto(): _ { Pesto { funs = map[String, PestoFun]() } }
-
-fun $(op: PestoOp, type: PestoType): _ { PestoExpr { op, type } }
-
-var pesto_nothing =
-  PestoOp.struct_(map[String, Id]()) 
-    $ PestoType.struct_(map[String, PestoType]())
-
-fun return_type(fun_: PestoFun): PestoType {
-  fun_.dag.type_of(fun_.body.returns)
-}
-
-
-struct PestoBodyBuilder { param: Id, exprs: List[Id], dag: &Dag[PestoExpr] }
-
-fun body_builder(dag: &Dag[PestoExpr], param: PestoType): PestoBodyBuilder {
-  var param = dag.put(PestoOp.param $ param)
-  PestoBodyBuilder { param, exprs = list[Id](), dag }
-}
-fun push(builder: &PestoBodyBuilder, expr: PestoExpr): Id {
-  var id = builder.dag.put(expr)
-  builder.exprs.&.push(id)
-  id
-}
-fun get(builder: PestoBodyBuilder, id: Id): PestoExpr { builder.dag.get(id) }
-fun type_of(builder: PestoBodyBuilder, id: Id): PestoType {
-  builder.get(id).type
-}
-fun finish(builder: PestoBodyBuilder, returns: Id): PestoBody {
-  PestoBody { param = builder.param, exprs = builder.exprs.to_slice(), returns }
-}
-
-| Writing Pesto  
 
 fun write[W](writer: W, pesto: Pesto) {
   var first = true
@@ -155,13 +136,24 @@ fun write[W](writer: W, op: PestoOp, dag: Dag[PestoExpr], indentation: Int) {
   case function_ptr(signature) writer."&({signature})"
   case call(call) writer."call \"{call.function}\" {call.args}"
   case call_indirect(call) writer."call *{call.function} {call.args}"
-  case call_instruction(call) {
-    writer."call instruction {call.instruction}"
+  case call_builtin(call) {
+    writer."call builtin {call.builtin.debug()}"
     for arg in call.args do writer." {arg}"
   }
   case new(value) writer."new {value}"
   case load(value) writer."load {value}"
   case free(free) writer."free {free.ptr}: {free.type}"
-  case dup(value) writer."dup {value}"
-  case drop(value) writer."drop {value}"
+  case new_buffer(new) writer."new buffer({new.item_type}) of len {new.len}"
+  case get_buffer_len(buffer) writer."get len of buffer {buffer}"
+  case load_buffer_item(load)
+    writer."load item from buffer({load.item_type}) {load.buffer} 
+      'at index {load.index}"
+  case store_buffer_item(store)
+    writer."store {store.item} to buffer({store.item_type}) {store.buffer} 
+      'at index {store.index}"
+  case free_buffer(free)
+    writer."free buffer({free.item_type}) {free.buffer}"
+  case get_reference_count(ptr) writer."get reference count of {ptr}"
+  case increment_reference_count(ptr) writer."increment reference count of {ptr}"
+  case decrement_reference_count(ptr) writer."decrement reference count of {ptr}"
 }

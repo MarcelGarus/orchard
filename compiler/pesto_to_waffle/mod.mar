@@ -92,12 +92,12 @@ fun to_waffle(
       return_layout.size, return_layout.alignment,
     )
   }
-  case call_instruction(call) {
+  case call_builtin(call) {
     var args = list[WaffleExpr]()
     for arg in call.args do args.&.push(mapping.get(arg))
     var args = args.to_slice()
 
-    switch call.instruction
+    switch call.builtin
     case add_ints waffle_add(args.get(0), args.get(1))
     case sub_ints waffle_sub(args.get(0), args.get(1))
     case mul_ints waffle_mul(args.get(0), args.get(1))
@@ -109,100 +109,7 @@ fun to_waffle(
     | Note: The return byte of the compare_ints waffle expression matches the
     | tag for the Ordering enum (| equal greater less).
     case compare_ints waffle_compare_zero(waffle_sub(args.get(0), args.get(1)))
-    case filled_array {
-      var len = args.get(0)
-      var item = args.get(1)
-      | On the heap, we allocate space for the data with the following layout:
-      | [reference count][length][item][item][item]...
-      var ptr = builder.local(waffle_malloc(
-        waffle_add(waffle_int(8 + 8), waffle_mul(len, waffle_int(item.size)))
-      ))
-      builder.local(waffle_store(ptr, waffle_int(1))) | reference count
-      builder.local(waffle_store(waffle_add(ptr, waffle_int(8)), len))
-      builder.local(waffle_store_multiple(
-        waffle_add(ptr, waffle_int(16)), len, item
-      ))
-      | An array is a triple of (ptr to buffer, start offset, len)
-      waffle_aggregate(list(ptr, waffle_int(0), len).to_slice())
-    }
-    case array_get {
-      var array = args.get(0)
-      var index = args.get(1)
-      var ptr = array.waffle_member(0, 8, 8)
-      var start = array.waffle_member(8, 8, 8)
-      var len = array.waffle_member(16, 8, 8)
-      | Ensure that the index is >= 0.
-      waffle_switch(
-        waffle_compare_zero(index),
-        list(
-          waffle_body_nothing, waffle_body_nothing, waffle_body_crash
-        ).to_slice(),
-      )
-      | Ensure that the index is < len.
-      waffle_switch(
-        waffle_compare_zero(waffle_sub(index, len)),
-        list(
-          waffle_body_crash, waffle_body_crash, waffle_body_nothing
-        ).to_slice(),
-      )
-      | Actually get the data.
-      var layout = expr.type.memory_layout()
-      waffle_load(
-        ptr.waffle_add(waffle_int(16)).waffle_add(start).waffle_add(index),
-        layout.size, layout.alignment
-      )
-      | TODO: drop?
-    }
-    case array_set todo("handle array_set")
-    case array_slice {
-      var array = args.get(0)
-      var range = args.get(1)
-      var array_ptr   = array.waffle_member(0, 8, 8)
-      var array_start = array.waffle_member(8, 8, 8)
-      var array_len   = array.waffle_member(16, 8, 8)
-      var range_start = range.waffle_member(8, 8, 8)
-      var range_end   = range.waffle_member(0, 8, 8)
-      var range_len   = builder.local(waffle_sub(range_end, range_start))
-      | range_start >= 0
-      waffle_switch(
-        waffle_compare_zero(range_start),
-        list(
-          waffle_body_nothing, waffle_body_nothing, waffle_body_crash
-        ).to_slice(),
-      )
-      | range_start <= range_end
-      waffle_switch(
-        waffle_compare_zero(waffle_sub(range_end, range_start)),
-        list(
-          waffle_body_nothing, waffle_body_nothing, waffle_body_crash
-        ).to_slice(),
-      )
-      | range_start + range_len <= array_len
-      waffle_switch(
-        waffle_compare_zero(
-          waffle_sub(array_len, waffle_add(range_start, range_end))
-        ),
-        list(
-          waffle_body_nothing, waffle_body_nothing, waffle_body_crash
-        ).to_slice(),
-      )
-      | Actually get the subslice.
-      waffle_aggregate(list(
-        array_ptr, waffle_add(array_start, range_start), range_len
-      ).to_slice())
-    }
-    case array_len {
-      var array = args.get(0)
-      | var ptr = array.waffle_member(0, 8, 8)
-      | var new_refcount = builder.&.local(
-      |   waffle_sub(waffle_load(ptr, 8, 8), waffle_int(1))
-      | )
-      | builder.&.local(waffle_store(ptr, new_refcount))
-      | new_refcount
-      array.waffle_member(16, 8, 8)
-    }
-    case concat_strings todo("handle concat_strings")
-    case crash          waffle_crash(args.get(0), args.get(1))
+    case crash waffle_crash(args.get(0))
   }
   case new(value) {
     var value = mapping.get(value)
@@ -214,12 +121,71 @@ fun to_waffle(
   }
   case load(ptr) {
     var layout = expr.type.memory_layout()
-    waffle_load(
+    builder.local(waffle_load(
       waffle_add(mapping.get(ptr), waffle_int(8)),
       layout.size, layout.alignment
-    )
+    ))
   }
-  case dup(ptr) {
+  case free(free)
+    builder.local(waffle_free(
+      mapping.get(free.ptr), waffle_int(8 + free.type.memory_layout().size)
+    ))
+  case new_buffer(new) {
+    | On the heap, we allocate space for the data with the following layout:
+    | [reference count][length][item][item][item]...
+    var item_layout = new.item_type.memory_layout()
+    var len = mapping.get(new.len)
+    var ptr = builder.local(waffle_malloc(
+      waffle_add(
+        waffle_int(8 + 8),
+        waffle_mul(len, waffle_int(item_layout.stride_size())),
+      )
+    ))
+    builder.local(waffle_store(ptr, waffle_int(1))) | reference count
+    builder.local(waffle_store(waffle_add(ptr, waffle_int(8)), len))
+    ptr
+  }
+  case get_buffer_len(ptr)
+    builder.local(
+      waffle_load(waffle_add(mapping.get(ptr), waffle_int(8)), 8, 8)
+    )
+  case load_buffer_item(load) {
+    var item_layout = load.item_type.memory_layout()
+    builder.local(waffle_load(
+      waffle_add(
+        waffle_add(mapping.get(load.buffer), waffle_int(16)),
+        waffle_mul(
+          mapping.get(load.index), waffle_int(item_layout.stride_size())
+        )
+      ),
+      item_layout.size, item_layout.alignment
+    ))
+  }
+  case store_buffer_item(store) {
+    var item_layout = store.item_type.memory_layout()
+    builder.local(waffle_store(
+      waffle_add(
+        waffle_add(mapping.get(store.buffer), waffle_int(16)),
+        waffle_mul(
+          mapping.get(store.index), waffle_int(item_layout.stride_size())
+        )
+      ),
+      mapping.get(store.item),
+    ))
+  }
+  case free_buffer(free) {
+    var item_layout = free.item_type.memory_layout()
+    var ptr = mapping.get(free.buffer)
+    var len = builder.local(waffle_load(waffle_add(ptr, waffle_int(8)), 8, 8))
+    var size = waffle_add(
+      waffle_int(8 + 8),
+      waffle_mul(len, waffle_int(item_layout.stride_size())),
+    )
+    builder.local(waffle_free(ptr, size))
+  }
+  case get_reference_count(ptr)
+    builder.&.local(waffle_load(mapping.get(ptr), 8, 8))
+  case increment_reference_count(ptr) {
     var ptr = mapping.get(ptr)
     var new_refcount = builder.&.local(
       waffle_add(waffle_load(ptr, 8, 8), waffle_int(1))
@@ -227,7 +193,7 @@ fun to_waffle(
     builder.&.local(waffle_store(ptr, new_refcount))
     new_refcount
   }
-  case drop(ptr) {
+  case decrement_reference_count(ptr) {
     var ptr = mapping.get(ptr)
     var new_refcount = builder.&.local(
       waffle_sub(waffle_load(ptr, 8, 8), waffle_int(1))
@@ -235,11 +201,6 @@ fun to_waffle(
     builder.&.local(waffle_store(ptr, new_refcount))
     new_refcount
   }
-  case free(free)
-    waffle_free(
-      mapping.get(free.ptr),
-      waffle_int(8 + free.type.memory_layout().size),
-    )
 }
 
 | Assumes parameters to be in the mapping.

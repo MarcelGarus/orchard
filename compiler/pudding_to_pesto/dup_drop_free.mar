@@ -10,6 +10,7 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
 
   var dag = dag[PestoExpr]()
   var builder = body_builder(dag.&, type.to_pesto()).&
+  var value = builder.param
 
   switch type
   case int {}
@@ -19,40 +20,30 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
   case never {}
   case struct_
     for field in type.assert_no_closure().extend_one_level().struct_.unwrap()
-    do {
-      var value = builder.push(PestoOp.member(PestoMember {
-        of = builder.param, name = field.key
-      }) $ field.value.compile().to_pesto())
-      builder.push_dup(value, field.value.compile(), pesto)
-    }
+    do
+      builder.dup(
+        builder.member(value, field.key), field.value.compile(), pesto
+      )
   case enum_ {
     var cases = map[String, PestoBody]()
     for variant in type.assert_no_closure().extend_one_level().enum_.unwrap()
     do {
-      var payload_type = builder.type_of(builder.param)
-        .enum_.unwrap().get(variant.key)
+      var payload_type = builder.type_of(value).enum_.unwrap().get(variant.key)
       var builder = body_builder(dag.&, payload_type).&
       if payload_type is ptr then
-        builder.push(PestoOp.dup(builder.param) $ PestoType.int)
+        builder.increment_reference_count(builder.param)
       else
-        builder.push_dup(builder.param, variant.value.compile(), pesto)
-      cases.&.put(variant.key, builder.finish(builder.push(pesto_nothing)))
+        builder.dup(builder.param, variant.value.compile(), pesto)
+      cases.&.put(variant.key, builder.finish_with_nothing())
     }
-    builder.push(PestoOp.switch_(PestoSwitch {
-      condition = builder.param, cases
-    }) $ pesto_nothing.type).ignore()
+    builder.switch_(value, cases).ignore()
   }
-  case closure
-    builder.push(PestoOp.dup(builder.param) $ PestoType.int).ignore()
-  case lambda {
-    var closure_ptr = builder.push(PestoOp.member(PestoMember {
-      of = builder.param, name = "closure"
-    }) $ PestoType.ptr)
-    builder.push(PestoOp.dup(closure_ptr) $ PestoType.int).ignore()
-  }
+  case closure builder.increment_reference_count(value).ignore()
+  case lambda
+    builder.increment_reference_count(builder.member(value, "closure")).ignore()
   case recursive unreachable()
 
-  var body = builder.finish(builder.push(pesto_nothing))
+  var body = builder.finish_with_nothing()
   var fun_ = PestoFun { dag, body }
 
   pesto.funs.&.put(signature, fun_)
@@ -72,6 +63,7 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
 
   var dag = dag[PestoExpr]()
   var builder = body_builder(dag.&, type.to_pesto()).&
+  var value = builder.param
 
   switch type
   case int {}
@@ -81,149 +73,157 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   case never {}
   case struct_
     for field in type.assert_no_closure().extend_one_level().struct_.unwrap()
-    do {
-      var value = builder.push(PestoOp.member(PestoMember {
-        of = builder.param, name = field.key
-      }) $ field.value.compile().to_pesto())
-      builder.push_drop(value, field.value.compile(), pesto)
-    }
+    do
+      builder.drop(
+        builder.member(value, field.key), field.value.compile(), pesto
+      )
   case enum_ {
     var cases = map[String, PestoBody]()
     for variant in type.assert_no_closure().extend_one_level().enum_.unwrap()
     do {
-      var payload_type = dag.type_of(builder.param).enum_.unwrap()
-        .get(variant.key)
+      var payload_type = dag.type_of(value).enum_.unwrap().get(variant.key)
       var builder = body_builder(dag.&, payload_type).&
       if payload_type is ptr then {
-        var new_refcount = builder.push(PestoOp.drop(builder.param) $ PestoType.int)
-        var zero = builder.push(PestoOp.int(0) $ PestoType.int)
-        var ordering =
-          builder.push(PestoOp.call_instruction(PestoCallInstruction {
-            instruction = Instruction.compare_ints,
-            args = list(new_refcount, zero).to_slice(),
-          }) $ PestoType.enum_(map(
-            "less" -> pesto_nothing.type,
-            "greater" -> pesto_nothing.type,
-            "equal" -> pesto_nothing.type,
-          )))
-        builder.push(PestoOp.switch_(PestoSwitch {
-          condition = ordering,
-          cases = map(
-            "less" -> { | Never runs in practice; refcount is always >= 0.
-              var builder = body_builder(dag.&, pesto_nothing.type).&
-              builder.finish(builder.push(pesto_nothing))
-            },
-            "greater" -> {
-              var builder = body_builder(dag.&, pesto_nothing.type).&
-              builder.finish(builder.push(pesto_nothing))
-            },
-            "equal" -> {
-              var outer_builder = builder
-              var builder = body_builder(dag.&, pesto_nothing.type).&
-              var value = builder.push(PestoOp.load(outer_builder.param)
-                $ variant.value.compile().to_pesto())
-              builder.push(PestoOp.call(PestoCall {
-                function = variant.value.compile().compile_drop_fun(pesto),
-                args = value,
-              }) $ pesto_nothing.type)
-              builder.push(PestoOp.free(PestoFree {
-                ptr = outer_builder.param, type = dag.type_of(value)
-              }) $ pesto_nothing.type)
-              builder.finish(builder.push(pesto_nothing))
-            },
-          ),
-        }) $ pesto_nothing.type)
+        var new_refcount = builder.decrement_reference_count(builder.param)
+        builder.switch_(builder.compare_ints(new_refcount, builder.int(0)), map(
+          "less" -> | Never runs in practice; refcount is always >= 0.
+            body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+          "greater" ->
+            body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+          "equal" -> {
+            var builder = body_builder(dag.&, pesto_nothing.type).&
+            builder.call(
+              variant.value.compile().compile_drop_fun(pesto),
+              builder.load(value, variant.value.compile().to_pesto()),
+              pesto_nothing.type,
+            )
+            builder.free(value, dag.type_of(value))
+            builder.finish_with_nothing()
+          },
+        ))
       } else
-        builder.push_drop(builder.param, variant.value.compile(), pesto)
+        builder.drop(value, variant.value.compile(), pesto)
 
-      cases.&.put(variant.key, builder.finish(builder.push(pesto_nothing)))
+      cases.&.put(variant.key, builder.finish_with_nothing())
     }
-    builder.push(PestoOp.switch_(PestoSwitch {
-      condition = builder.param, cases
-    }) $ pesto_nothing.type).ignore()
+    builder.switch_(value, cases).ignore()
   }
   case closure(captured) {
-    var new_refcount = builder.push(PestoOp.drop(builder.param) $ PestoType.int)
-    var zero = builder.push(PestoOp.int(0) $ PestoType.int)
-    var ordering =
-      builder.push(PestoOp.call_instruction(PestoCallInstruction {
-        instruction = Instruction.compare_ints,
-        args = list(new_refcount, zero).to_slice(),
-      }) $ PestoType.enum_(map(
-        "less" -> pesto_nothing.type,
-        "greater" -> pesto_nothing.type,
-        "equal" -> pesto_nothing.type,
-      )))
-    builder.push(PestoOp.switch_(PestoSwitch {
-      condition = ordering,
-      cases = map(
-        "less" -> { | Never runs in practice; refcount is always >= 0.
-          var builder = body_builder(dag.&, pesto_nothing.type).&
-          builder.finish(builder.push(pesto_nothing))
-        },
-        "greater" -> {
-          var builder = body_builder(dag.&, pesto_nothing.type).&
-          builder.finish(builder.push(pesto_nothing))
-        },
-        "equal" -> {
-          var outer_builder = builder
-          var builder = body_builder(dag.&, pesto_nothing.type).&
-          var value = builder.push(PestoOp.load(outer_builder.param)
-            $ captured.*.to_pesto())
-          builder.push(PestoOp.call(PestoCall {
-            function = captured.*.compile_drop_fun(pesto),
-            args = value,
-          }) $ pesto_nothing.type)
-          builder.push(PestoOp.free(PestoFree {
-            ptr = outer_builder.param, type = dag.type_of(value)
-          }) $ pesto_nothing.type)
-          builder.finish(builder.push(pesto_nothing))
-        },
-      ),
-    }) $ pesto_nothing.type).ignore()
+    var new_refcount = builder.decrement_reference_count(value)
+    builder.switch_(builder.compare_ints(new_refcount, builder.int(0)), map(
+      "less" -> | Never runs in practice; refcount is always >= 0.
+        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+      "greater" ->
+        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+      "equal" -> {
+        var builder = body_builder(dag.&, pesto_nothing.type).&
+        var closure = builder.load(value, captured.*.to_pesto())
+        builder.call(
+          captured.*.compile_drop_fun(pesto), closure, pesto_nothing.type
+        )
+        builder.free(value, dag.type_of(value))
+        builder.finish_with_nothing()
+      },
+    )).ignore()
   }
   case lambda {
-    var closure_ptr = builder.push(PestoOp.member(PestoMember {
-      of = builder.param, name = "closure"
-    }) $ PestoType.ptr)
-    var new_refcount = builder.push(PestoOp.drop(closure_ptr) $ PestoType.int)
-    var zero = builder.push(PestoOp.int(0) $ PestoType.int)
-    var ordering = builder.push(PestoOp.call_instruction(PestoCallInstruction {
-      instruction = Instruction.compare_ints,
-      args = list(new_refcount, zero).to_slice(),
-    }) $ PestoType.enum_(map(
-      "less" -> pesto_nothing.type,
-      "greater" -> pesto_nothing.type,
-      "equal" -> pesto_nothing.type,
-    )))
-    builder.push(PestoOp.switch_(PestoSwitch {
-      condition = ordering,
-      cases = map(
-        "less" -> { | Never runs in practice; refcount is always >= 0.
-          var builder = body_builder(dag.&, pesto_nothing.type).&
-          builder.finish(builder.push(pesto_nothing))
-        },
-        "greater" -> {
-          var builder = body_builder(dag.&, pesto_nothing.type).&
-          builder.finish(builder.push(pesto_nothing))
-        },
-        "equal" -> {
-          var outer_builder = builder
-          var builder = body_builder(dag.&, pesto_nothing.type).&
-          var free_fun_ptr = builder.push(PestoOp.member(PestoMember {
-            of = outer_builder.param, name = "free"
-          }) $ PestoType.ptr)
-          builder.push(PestoOp.call_indirect(PestoCallIndirect {
-            function = free_fun_ptr, args = closure_ptr
-          }) $ pesto_nothing.type)
-          builder.finish(builder.push(pesto_nothing))
-        },
-      ),
-    }) $ pesto_nothing.type).ignore()
+    var closure_ptr = builder.member(value, "closure")
+    var new_refcount = builder.decrement_reference_count(closure_ptr)
+    builder.switch_(builder.compare_ints(new_refcount, builder.int(0)), map(
+      "less" -> | Never runs in practice; refcount is always >= 0.
+        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+      "greater" ->
+        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+      "equal" -> {
+        var builder = body_builder(dag.&, pesto_nothing.type).&
+        var free_fun_ptr = builder.member(value, "free")
+        builder.call_indirect(free_fun_ptr, closure_ptr, pesto_nothing.type)
+        builder.finish_with_nothing()
+      },
+    )).ignore()
   }
   case recursive unreachable()
 
-  var body = builder.finish(builder.push(pesto_nothing))
+  var body = builder.finish_with_nothing()
+  var fun_ = PestoFun { dag, body }
+
+  pesto.funs.&.put(signature, fun_)
+  signature
+}
+
+fun compile_drop_buffer_fun(type: YogurtType, pesto: &Pesto): String {
+  var signature = "drop buffer of {type}"
+  if pesto.funs.contains(signature) then return signature
+  pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
+
+  var dag = dag[PestoExpr]()
+  var builder = body_builder(dag.&, PestoType.ptr).&
+  var buffer = builder.param
+
+  var new_refcount = builder.decrement_reference_count(buffer)
+  builder.switch_(builder.compare_ints(new_refcount, builder.int(0)), map(
+    "less" -> | Never runs in practice; refcount is always >= 0.
+        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+    "greater" ->
+      body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+    "equal" -> {
+      var builder = body_builder(dag.&, pesto_nothing.type).&
+      builder.call(
+        type.compile_drop_buffer_items_fun(pesto),
+        builder.struct_(map("buffer" -> buffer, "cursor" -> builder.int(0))),
+        pesto_nothing.type,
+      )
+      builder.free_buffer(buffer, type.to_pesto())
+      builder.finish_with_nothing()
+    },
+  )).ignore()
+
+  var body = builder.finish_with_nothing()
+  var fun_ = PestoFun { dag, body }
+
+  pesto.funs.&.put(signature, fun_)
+  signature
+}
+
+| Accepts aggregate with ptr and cursor. Calls itself recursively.
+fun compile_drop_buffer_items_fun(type: YogurtType, pesto: &Pesto): String {
+  var signature = "drop buffer({type}) items"
+  if pesto.funs.contains(signature) then return signature
+  pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
+
+  var dag = dag[PestoExpr]()
+  var builder = body_builder(dag.&, PestoType.struct_(map(
+    "buffer" -> PestoType.ptr, "cursor" -> PestoType.int
+  ))).&
+  var buffer = builder.member(builder.param, "buffer")
+  var cursor = builder.member(builder.param, "cursor")
+  var len = builder.get_buffer_len(buffer)
+  var ordering = 
+  builder.switch_(builder.compare_ints(cursor, len), map(
+    "less" -> {
+      var builder = body_builder(dag.&, pesto_nothing.type).&
+      builder.call(
+        type.compile_drop_fun(pesto),
+        builder.load_buffer_item(buffer, type.to_pesto(), cursor),
+        pesto_nothing.type,
+      )
+      builder.call(
+        type.compile_drop_buffer_items_fun(pesto),
+        builder.struct_(map(
+          "buffer" -> buffer,
+          "cursor" -> builder.add_ints(cursor, builder.int(1)),
+        )),
+        pesto_nothing.type,
+      )
+      builder.finish(builder.push(pesto_nothing))
+    },
+    "greater" -> | Never runs in practice; cursor is always <= len.
+      body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+    "equal" ->
+      body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+  )).ignore()
+
+  var body = builder.finish_with_nothing()
   var fun_ = PestoFun { dag, body }
 
   pesto.funs.&.put(signature, fun_)
@@ -239,16 +239,11 @@ fun compile_closure_free_fun(captured: YogurtType, pesto: &Pesto): String {
   var dag = dag[PestoExpr]()
   var builder = body_builder(dag.&, PestoType.ptr).&
 
-  var captured_values = builder.push(
-    PestoOp.load(builder.param) $ captured.to_pesto()
-  )
-  builder.push_drop(captured_values, captured, pesto)
+  var captured_values = builder.load(builder.param, captured.to_pesto())
+  builder.drop(captured_values, captured, pesto)
+  builder.free(builder.param, captured.to_pesto())
 
-  builder.push(PestoOp.free(PestoFree {
-    ptr = builder.param, type = captured.to_pesto()
-  }) $ pesto_nothing.type)
-
-  var body = builder.finish(builder.push(pesto_nothing))
+  var body = builder.finish_with_nothing()
   var fun_ = PestoFun { dag, body }
 
   pesto.funs.&.put(signature, fun_)
