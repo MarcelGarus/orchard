@@ -15,9 +15,11 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
   switch type
   case byte {}
   case int {}
-  case string todo("dup strings")
   case type {}
-  case array todo("dup array")
+  case array {
+    var buffer = builder.member(value, "buffer")
+    builder.dup_buffer(buffer, pesto).ignore()
+  }
   case never {}
   case struct_
     for field in type.assert_no_closure().extend_one_level().struct_.unwrap()
@@ -69,9 +71,14 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   switch type
   case byte {}
   case int {}
-  case string todo("drop string")
   case type {}
-  case array todo("drop array")
+  case array {
+    var buffer = builder.member(value, "buffer")
+    var item_type =
+      type.assert_no_closure().extend_one_level()
+        .primitive.unwrap().args.get(0).compile()
+    builder.drop_buffer(buffer, item_type, pesto).ignore()
+  }
   case never {}
   case struct_
     for field in type.assert_no_closure().extend_one_level().struct_.unwrap()
@@ -153,8 +160,8 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   signature
 }
 
-fun compile_drop_buffer_fun(type: YogurtType, pesto: &Pesto): String {
-  var signature = "drop buffer of {type}"
+fun compile_drop_buffer_fun(item_type: YogurtType, pesto: &Pesto): String {
+  var signature = "drop buffer({item_type})"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
 
@@ -171,11 +178,11 @@ fun compile_drop_buffer_fun(type: YogurtType, pesto: &Pesto): String {
     "equal" -> {
       var builder = body_builder(dag.&, pesto_nothing.type).&
       builder.call(
-        type.compile_drop_buffer_items_fun(pesto),
+        item_type.compile_drop_buffer_items_fun(pesto),
         builder.struct_(map("buffer" -> buffer, "cursor" -> builder.int(0))),
         pesto_nothing.type,
       )
-      builder.free_buffer(buffer, type.to_pesto())
+      builder.free_buffer(buffer, item_type.to_pesto())
       builder.finish_with_nothing()
     },
   )).ignore()
@@ -188,8 +195,8 @@ fun compile_drop_buffer_fun(type: YogurtType, pesto: &Pesto): String {
 }
 
 | Accepts aggregate with ptr and cursor. Calls itself recursively.
-fun compile_drop_buffer_items_fun(type: YogurtType, pesto: &Pesto): String {
-  var signature = "drop buffer({type}) items"
+fun compile_drop_buffer_items_fun(item_type: YogurtType, pesto: &Pesto): String {
+  var signature = "drop buffer({item_type}) items"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
 
@@ -204,13 +211,10 @@ fun compile_drop_buffer_items_fun(type: YogurtType, pesto: &Pesto): String {
   builder.switch_(builder.compare_ints(cursor, len), map(
     "less" -> {
       var builder = body_builder(dag.&, pesto_nothing.type).&
+      var item = builder.load_buffer_item(buffer, item_type.to_pesto(), cursor)
+      builder.drop(item, item_type, pesto)
       builder.call(
-        type.compile_drop_fun(pesto),
-        builder.load_buffer_item(buffer, type.to_pesto(), cursor),
-        pesto_nothing.type,
-      )
-      builder.call(
-        type.compile_drop_buffer_items_fun(pesto),
+        signature,
         builder.struct_(map(
           "buffer" -> buffer,
           "cursor" -> builder.add_ints(cursor, builder.int(1)),

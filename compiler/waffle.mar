@@ -115,15 +115,20 @@ fun waffle_switch(byte: WaffleExpr, cases: Slice[WaffleBody]): WaffleExpr {
   byte.size == 1 or panic("switch byte has invalid size")
   byte.alignment == 1 or panic("switch byte has invalid alignment")
   cases.is_not_empty() or panic("switch with no cases")
-  var size = cases.get(0).returns.size
+  | TODO: Here, we treat a size of 0 to be compatible with all other sizes
+  | because Never has size 0. Think of a more elegant way to handle this.
+  var size = 0
   var alignment = 1
   for case_ in cases do {
-    size == case_.returns.size or panic({
-      var b = string_builder().&
-      b."switch cases have different sizes:"
-      for case_ in cases do b."\n{case_.debug()}"
-      b.to_string()
-    })
+    if case_.returns.size > 0 and size > 0 then
+      if size != case_.returns.size then panic({
+        var b = string_builder().&
+        b."switch cases have different sizes:"
+        for case_ in cases do b."\n{case_.debug()}"
+        b.to_string()
+      })
+    if case_.returns.size > 0 then
+      size = case_.returns.size
     alignment = max(alignment, case_.returns.alignment)
   }
   WaffleExpr {
@@ -276,9 +281,9 @@ fun waffle_store_bytes(ptr: WaffleExpr, bytes: Slice[Byte]): WaffleExpr {
   }
 }
 fun waffle_crash(message: WaffleExpr): WaffleExpr {
-  message.size == 24 or panic("crash, but message is not a string")
+  message.size == 16 or panic("crash, but message is not a buffer ptr + len")
   WaffleExpr {
-    size = 8, alignment = 8,
+    size = 0, alignment = 1,
     kind = WaffleExprKind.crash(message.put_on_heap()),
   }
 }
@@ -397,6 +402,14 @@ fun write[W](
   }
   case xor(ops) {
     writer."xor\n"
+    writer.write(ops.*, dag, indentation + 1)
+  }
+  case lower_byte(ops) {
+    writer."lower_byte\n"
+    writer.write(ops.*, dag, indentation + 1)
+  }
+  case byte_to_int(ops) {
+    writer."byte_to_int\n"
     writer.write(ops.*, dag, indentation + 1)
   }
   case malloc(size) {

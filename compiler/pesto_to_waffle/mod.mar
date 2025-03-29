@@ -111,7 +111,19 @@ fun to_waffle(
     | Note: The return byte of the compare_ints waffle expression matches the
     | tag for the Ordering enum (| equal greater less).
     case compare_ints waffle_compare_zero(waffle_sub(args.get(0), args.get(1)))
-    case crash waffle_crash(args.get(0))
+    case crash {
+      | Convert the Plum String to bytes ptr + len.
+      |
+      | String layout: [buffer][len][start]
+      |                 |
+      |                 v
+      |                [refcount][len][bytes]
+      var message = args.get(0)
+      var ptr_to_buffer = waffle_member(message, 0, 8, 8)
+      var ptr_to_bytes = waffle_add(ptr_to_buffer, waffle_int(16))
+      var len = waffle_member(message, 8, 8, 8)
+      waffle_crash(waffle_aggregate(list(ptr_to_bytes, len).to_slice()))
+    }
   }
   case new(value) {
     var value = mapping.get(value)
@@ -173,6 +185,11 @@ fun to_waffle(
         )
       ),
       mapping.get(store.item),
+    ))
+  }
+  case store_buffer_bytes(store) {
+    builder.local(waffle_store_bytes(
+      waffle_add(mapping.get(store.buffer), waffle_int(16)), store.bytes
     ))
   }
   case free_buffer(free) {

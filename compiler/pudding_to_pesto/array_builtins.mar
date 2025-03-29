@@ -134,28 +134,22 @@ fun compile_array_get(item_type: YogurtType, pesto: &Pesto): String {
 
   | Check that the index is within bounds.
   builder.switch_(builder.compare_ints(index, builder.int(0)), map(
-    "less" -> {
-      var builder = body_builder(dag.&, pesto_nothing.type).&
-      var message = builder.string("Index out of bounds.")
-      builder.finish(builder.crash(message))
-    },
-    "equal" -> body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
-    "greater" -> body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+    "less" ->
+      body_builder(dag.&, pesto_nothing.type)
+        .finish_with_crash("Index out of bounds."),
+    "equal" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
+    "greater" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
   ))
   builder.switch_(
     builder.compare_ints(index, builder.member(array, "len")),
     map(
-      "less" -> body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
-      "equal" -> {
-        var builder = body_builder(dag.&, pesto_nothing.type).&
-        var message = builder.string("Index out of bounds.")
-        builder.finish(builder.crash(message))
-      },
-      "greater" -> {
-        var builder = body_builder(dag.&, pesto_nothing.type).&
-        var message = builder.string("Index out of bounds.")
-        builder.finish(builder.crash(message))
-      },
+      "less" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
+      "equal" ->
+        body_builder(dag.&, pesto_nothing.type)
+          .finish_with_crash("Index out of bounds."),
+      "greater" ->
+        body_builder(dag.&, pesto_nothing.type)
+          .finish_with_crash("Index out of bounds."),
     ),
   )
 
@@ -164,7 +158,7 @@ fun compile_array_get(item_type: YogurtType, pesto: &Pesto): String {
   var offset = builder.add_ints(builder.member(array, "start"), index)
   var item = builder.load_buffer_item(buffer, item_type.to_pesto(), offset)
   builder.dup(item, item_type, pesto)
-  builder.drop_buffer(buffer, YogurtType.array(item_type.put_on_heap()), pesto)
+  builder.drop_buffer(buffer, item_type, pesto)
 
   var body = builder.finish(item)
   var fun_ = PestoFun { dag, body }
@@ -190,31 +184,25 @@ fun compile_array_set(item_type: YogurtType, pesto: &Pesto): String {
   var item = builder.member(args, "item")
   var buffer = builder.member(array, "buffer")
   var start = builder.member(array, "start")
-  var end = builder.member(array, "end")
+  var len = builder.member(array, "len")
 
   | Check that the index is within bounds.
   builder.switch_(builder.compare_ints(index, builder.int(0)), map(
-    "less" -> {
-      var builder = body_builder(dag.&, pesto_nothing.type).&
-      var message = builder.string("Index out of bounds.")
-      builder.finish(builder.crash(message))
-    },
-    "equal" -> body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+    "less" ->
+      body_builder(dag.&, pesto_nothing.type)
+        .finish_with_crash("Index out of bounds."),
+    "equal" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
     "greater" ->
-      body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+      body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
   ))
   builder.switch_(builder.compare_ints(index, len), map(
-    "less" -> body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
-    "equal" -> {
-      var builder = body_builder(dag.&, pesto_nothing.type).&
-      var message = builder.string("Index out of bounds.")
-      builder.finish(builder.crash(message))
-    },
-    "greater" -> {
-      var builder = body_builder(dag.&, pesto_nothing.type).&
-      var message = builder.string("Index out of bounds.")
-      builder.finish(builder.crash(message))
-    }
+    "less" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
+    "equal" ->
+      body_builder(dag.&, pesto_nothing.type)
+        .finish_with_crash("Index out of bounds."),
+    "greater" ->
+      body_builder(dag.&, pesto_nothing.type)
+        .finish_with_crash("Index out of bounds."),
   ))
 
   | If the buffer's reference count is 1, we have exclusive ownership and can
@@ -226,12 +214,12 @@ fun compile_array_set(item_type: YogurtType, pesto: &Pesto): String {
       | TODO: change this to crash/diverge so that the switch branches are
       | compatible
       "less" -> | can't happen
-        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+        body_builder(dag.&, pesto_nothing.type).finish_with_crash(""),
       "equal" ->
         body_builder(dag.&, pesto_nothing.type).finish(array),
       "greater" -> {
         var builder = body_builder(dag.&, pesto_nothing.type).&
-        var copy_buffer = builder.new_buffer(item_type.to_pesto(), len)
+        var buffer_copy = builder.new_buffer(item_type.to_pesto(), len)
         builder.call(
           compile_copy_buffer_fun(item_type, pesto),
           builder.struct_(map(
@@ -243,12 +231,13 @@ fun compile_array_set(item_type: YogurtType, pesto: &Pesto): String {
           )),
           pesto_nothing.type,
         )
+        builder.drop_buffer(buffer, item_type, pesto)
         var array = builder.struct_(map(
-          "buffer" -> copy_buffer,
+          "buffer" -> buffer_copy,
           "start" -> builder.int(0),
           "len" -> len,
         ))
-        builder.finish(new_array)
+        builder.finish(array)
       },
     ))
 
@@ -256,7 +245,7 @@ fun compile_array_set(item_type: YogurtType, pesto: &Pesto): String {
   var start = builder.member(array_with_refcount_1, "start")
   var offset = builder.add_ints(start, index)
   var previous = builder.load_buffer_item(buffer, item_type.to_pesto(), offset)
-  builder.drop(previous)
+  builder.drop(previous, item_type, pesto)
   builder.store_buffer_item(buffer, offset, item)
 
   var body = builder.finish(array_with_refcount_1)
@@ -340,29 +329,23 @@ fun compile_array_slice(item_type: YogurtType, pesto: &Pesto): String {
 
   | Check that the index is within bounds.
   builder.switch_(builder.compare_ints(range_start, builder.int(0)), map(
-    "less" -> {
-      var builder = body_builder(dag.&, pesto_nothing.type).&
-      var message = builder.string("Range start out of bounds.")
-      builder.finish(builder.crash(message))
-    },
-    "equal" -> body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+    "less" ->
+      body_builder(dag.&, pesto_nothing.type)
+        .finish_with_crash("Range start out of bounds."),
+    "equal" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
     "greater" ->
-      body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+      body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
   ))
   builder.switch_(
     builder.compare_ints(range_end, builder.member(array, "len")),
     map(
-      "less" -> body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
-      "equal" -> {
-        var builder = body_builder(dag.&, pesto_nothing.type).&
-        var message = builder.string("Range end out of bounds.")
-        builder.finish(builder.crash(message))
-      },
-      "greater" -> {
-        var builder = body_builder(dag.&, pesto_nothing.type).&
-        var message = builder.string("Range end out of bounds.")
-        builder.finish(builder.crash(message))
-      },
+      "less" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
+      "equal" ->
+        body_builder(dag.&, pesto_nothing.type)
+          .finish_with_crash("Range end out of bounds."),
+      "greater" ->
+        body_builder(dag.&, pesto_nothing.type)
+          .finish_with_crash("Range end out of bounds."),
     ),
   )
 
@@ -378,5 +361,3 @@ fun compile_array_slice(item_type: YogurtType, pesto: &Pesto): String {
   pesto.funs.&.put(signature, fun_)
   signature
 }
-
-

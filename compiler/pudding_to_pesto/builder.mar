@@ -33,6 +33,9 @@ fun finish(builder: PestoBodyBuilder, returns: Id): PestoBody {
 fun finish_with_nothing(builder: PestoBodyBuilder): PestoBody {
   builder.finish(builder.&.push(pesto_nothing))
 }
+fun finish_with_crash(builder: PestoBodyBuilder, message: String): PestoBody {
+  builder.finish(builder.&.crash(message))
+}
 
 | Operations
 
@@ -41,9 +44,8 @@ fun int(builder: &PestoBodyBuilder, int: Int): Id {
 }
 
 fun string(builder: &PestoBodyBuilder, string: String): Id {
-  | TODO: support strings
   builder.struct_(map(
-    "bytes" -> builder.struct_(map(
+    "utf8_bytes" -> builder.struct_(map(
       "buffer" -> builder.push(PestoOp.int(0) $ PestoType.ptr),
       "start" -> builder.int(0),
       "end" -> builder.int(0),
@@ -76,13 +78,14 @@ fun switch_(
   var type = none[PestoType]()
   for case_ in cases do {
     var t = builder.dag.get(case_.value.returns).type
+    if t is never then continue
+
     switch type
     case none type = some(t)
     case some(type) if type != t then panic("{type} and {t} are incompatible")
   }
-  builder.push(
-    PestoOp.switch_(PestoSwitch { condition, cases }) $ type.unwrap()
-  )
+  var type = type or PestoType.never
+  builder.push(PestoOp.switch_(PestoSwitch { condition, cases }) $ type)
 }
 
 fun function_ptr(builder: &PestoBodyBuilder, function: String): Id {
@@ -144,10 +147,11 @@ fun compare_ints(builder: &PestoBodyBuilder, a: Id, b: Id): Id {
 
 fun crash(builder: &PestoBodyBuilder, message: Id): Id {
   builder.call_builtin(
-    PestoBuiltin.crash,
-    list(message).to_slice(),
-    PestoType.struct_(map[String, PestoType]()),
+    PestoBuiltin.crash, list(message).to_slice(), PestoType.never
   )
+}
+fun crash(builder: &PestoBodyBuilder, message: String): Id {
+  builder.crash(builder.string(message))
 }
 
 fun new(builder: &PestoBodyBuilder, value: Id): Id {
@@ -252,9 +256,14 @@ fun drop(
   builder.call(type.compile_drop_fun(pesto), id, pesto_nothing.type)
 }
 
+fun dup_buffer(builder: &PestoBodyBuilder, buffer: Id, pesto: &Pesto): Id {
+  builder.dag.get(buffer).type == PestoType.ptr or panic("drop buffer of non-ptr")
+  builder.increment_reference_count(buffer)
+}
+
 fun drop_buffer(
-  builder: &PestoBodyBuilder, ptr: Id, type: YogurtType, pesto: &Pesto
+  builder: &PestoBodyBuilder, buffer: Id, type: YogurtType, pesto: &Pesto
 ): Id {
-  builder.dag.get(ptr).type == PestoType.ptr or panic("drop buffer of non-ptr")
-  builder.call(type.compile_drop_buffer_fun(pesto), ptr, pesto_nothing.type)
+  builder.dag.get(buffer).type == PestoType.ptr or panic("drop buffer of non-ptr")
+  builder.call(type.compile_drop_buffer_fun(pesto), buffer, pesto_nothing.type)
 }

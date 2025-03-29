@@ -6,17 +6,21 @@ fun to_ground(waffle: Waffle): Ground {
   var signature_to_offset = map[String, Int]()
   var patches = list[Patch]()
   var builder = GroundBuilder {
-    instructions = instructions.&, patches = patches.&, waffle
+    instructions = instructions.&, patches = patches.&
   }
 
   var entry_point = "workspace/test/playground.main Int"
-  signature_to_offset.&.put(entry_point, 0)
-  waffle.funs.get(entry_point).compile(builder.&)
+  { | Compile the entry point.
+    signature_to_offset.&.put(entry_point, 0)
+    var fun_ = waffle.funs.get(entry_point)
+    fun_.compile(builder.&, GroundContext { waffle, fun_ })
+  }
 
+  | Compile all other functions.
   for fun_ in waffle.funs do {
     if fun_.key == entry_point then continue
     signature_to_offset.&.put(fun_.key, instructions.len)
-    fun_.value.compile(builder.&)
+    fun_.value.compile(builder.&, GroundContext { waffle, fun_ = fun_.value })
   }
 
   for patch in patches do {
@@ -30,12 +34,11 @@ fun to_ground(waffle: Waffle): Ground {
 
   Ground { instructions = instructions.to_slice() }
 }
-fun compile(fun_: WaffleFun, builder: &GroundBuilder) {
+fun compile(fun_: WaffleFun, ground: &GroundBuilder, context: GroundContext) {
   var params = id(0)
-  var builder = FunGroundBuilder {
-    instructions = builder.instructions, patches = builder.patches,
-    stack_mapping = map[Id, Int](), stack_size = 0,
-    fun_, waffle = builder.waffle,
+  var builder = FlowGroundBuilder {
+    ground, context,
+    stack_mapping = map[Id, Int](), stack_size = 0, has_crashed = false,
   }.&
 
   | Now, the stack contains the params.
@@ -43,11 +46,11 @@ fun compile(fun_: WaffleFun, builder: &GroundBuilder) {
   | Now, the stack contains the return value.
   builder.return_()
 }
-fun compile(body: WaffleBody, builder: &FunGroundBuilder) {
+fun compile(body: WaffleBody, builder: &FlowGroundBuilder) {
   var stack_size_at_body_start = builder.stack_size
 
   for local in body.locals do {
-    var expr = builder.fun_.dag.get(local)
+    var expr = builder.context.fun_.dag.get(local)
     builder.align_to(expr.alignment)
     builder.add_mapping(local, builder.stack_size)
     expr.compile(builder)
@@ -61,12 +64,13 @@ fun compile(body: WaffleBody, builder: &FunGroundBuilder) {
 
   var return_value_size = body.returns.size
 
-  builder.pop_below_top(return_value_size, locals_size)
+  if not(builder.has_crashed) then
+    builder.pop_below_top(return_value_size, locals_size)
 }
 
 | Compiles an expression. Assumes that the stack is already aligned for the
 | expression.
-fun compile(expr: WaffleExpr, builder: &FunGroundBuilder) {
+fun compile(expr: WaffleExpr, builder: &FlowGroundBuilder) {
   switch expr.kind
   case param builder.stack_size = builder.stack_size + expr.size
   case padding(amount) builder.push_padding(amount)
@@ -105,15 +109,19 @@ fun compile(expr: WaffleExpr, builder: &FunGroundBuilder) {
 
     var table = list[Int]()
     var end_jumps = list[Int]()
+    var case_builders = list[FlowGroundBuilder]()
     for case_ in switch_.cases do {
-      table.&.push(builder.instructions.len)
-      builder.stack_size = stack_size_at_start_of_case
-      case_.compile(builder)
-      end_jumps.&.push(builder.jump_placeholder())
+      table.&.push(builder.ground.instructions.len)
+      var builder = builder.split()
+      case_.compile(builder.&)
+      if not(builder.has_crashed) then
+        end_jumps.&.push(builder.&.jump_placeholder())
+      case_builders.&.push(builder)
     }
-    var end = builder.instructions.len
+    var end = builder.ground.instructions.len
     for jump in end_jumps do builder.patch_jump(jump, end)
     builder.patch_jump_table(jump_table_index, table.to_slice())
+    builder.join(case_builders.to_slice())
   }
   case call(call) {
     var padding = builder.align_to(call.args.alignment)
@@ -225,8 +233,8 @@ fun compile(expr: WaffleExpr, builder: &FunGroundBuilder) {
     builder.store_bytes(store.bytes)
     builder.pop(padding_before_ptr)
   }
-  case crash(args) {
-    todo("crash args")
+  case crash(message) {
+    message.compile(builder)
     builder.crash()
   }
 }
