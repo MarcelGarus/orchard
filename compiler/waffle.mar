@@ -65,7 +65,7 @@ enum WaffleExprKind {
   free: &WaffleExpr,
   load: &WaffleExpr,
   store: WaffleStore,
-  store_multiple: WaffleStoreMultiple,
+  store_bytes: WaffleStoreBytes,
   | Error
   crash: &WaffleExpr,
 }
@@ -74,9 +74,7 @@ struct WaffleSwitch { byte: &WaffleExpr, cases: Slice[WaffleBody] }
 struct WaffleCall { function: String, args: &WaffleExpr }
 struct WaffleCallIndirect { function_ptr: &WaffleExpr, args: &WaffleExpr }
 struct WaffleStore { ptr: &WaffleExpr, value: &WaffleExpr }
-struct WaffleStoreMultiple {
-  ptr: &WaffleExpr, times: &WaffleExpr, value: &WaffleExpr
-}
+struct WaffleStoreBytes { ptr: &WaffleExpr, bytes: Slice[Byte] }
 
 fun waffle_padding(amount: Int): WaffleExpr {
   WaffleExpr {
@@ -268,17 +266,12 @@ fun waffle_store(ptr: WaffleExpr, value: WaffleExpr): WaffleExpr {
     })
   }
 }
-fun waffle_store_multiple(
-  ptr: WaffleExpr, times: WaffleExpr, value: WaffleExpr
-): WaffleExpr {
+fun waffle_store_bytes(ptr: WaffleExpr, bytes: Slice[Byte]): WaffleExpr {
   ptr.is_ptr() or panic("expected pointer")
-  times.is_int() or panic("store multiple, but times is not an int")
   WaffleExpr {
     size = 0, alignment = 1,
-    kind = WaffleExprKind.store_multiple(WaffleStoreMultiple {
-      ptr = ptr.put_on_heap(),
-      times = times.put_on_heap(),
-      value = value.put_on_heap(),
+    kind = WaffleExprKind.store_bytes(WaffleStoreBytes {
+      ptr = ptr.put_on_heap(), bytes
     })
   }
 }
@@ -424,13 +417,10 @@ fun write[W](
     writer."\n"
     writer.write(store.value.*, dag, indentation + 1)
   }
-  case store_multiple(store) {
-    writer."store_multiple\n"
+  case store_bytes(store) {
+    writer."store_bytes\n"
     writer.write(store.ptr.*, dag, indentation + 1)
-    writer."\n"
-    writer.write(store.times.*, dag, indentation + 1)
-    writer."\n"
-    writer.write(store.value.*, dag, indentation + 1)
+    writer."\n{indentation}{store.bytes}"
   }
   case crash(ops) {
     writer."crash\n"

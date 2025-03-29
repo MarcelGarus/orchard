@@ -46,6 +46,7 @@ enum GroundInstruction {
   store_8,
   load_1,
   load_8,
+  store_bytes: Slice[Byte],
   | error stuff
   crash,
   | control flow stuff
@@ -91,6 +92,10 @@ fun write[W](writer: W, instruction: GroundInstruction) {
   case store_8 writer."store_8"
   case load_1 writer."load_1"
   case load_8 writer."load_8"
+  case store_bytes(bytes) {
+    writer."store_bytes"
+    for byte in bytes do writer." {byte.radix(16)}"
+  }
   case crash writer."crash"
   case jump(target) writer."jump {target}"
   case jump_table(table) {
@@ -170,6 +175,11 @@ fun to_bytes(ground: Ground): Slice[Byte] {
     case store_8 bytes.push(16#d3.lower_byte())
     case load_1 bytes.push(16#d4.lower_byte())
     case load_8 bytes.push(16#d5.lower_byte())
+    case store_bytes(literal) {
+      bytes.push(16#d6.lower_byte())
+      bytes.push_little_endian_bytes(literal.len)
+      bytes.push_all(literal)
+    }
     case crash bytes.push(16#e0.lower_byte())
     case jump(target) {
       bytes.push(16#f0.lower_byte())

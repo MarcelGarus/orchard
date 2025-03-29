@@ -43,11 +43,7 @@ fun count_references(
     store.ptr.count_references(dag, out)
     store.value.count_references(dag, out)
   }
-  case store_multiple(store) {
-    store.ptr.count_references(dag, out)
-    store.times.count_references(dag, out)
-    store.value.count_references(dag, out)
-  }
+  case store_bytes(store) store.ptr.count_references(dag, out)
   case crash(args) args.count_references(dag, out)
 }
 fun count_references(
@@ -166,15 +162,11 @@ fun try_nest_local(
         ptr = ptr.put_on_heap(), value = value.put_on_heap()
       })
     }
-    case store_multiple(store) {
+    case store_bytes(store) {
       var ptr = store.ptr.try_nest_local(dag, local, used)?
-      var times = store.times.try_nest_local(dag, local, used)?
-      var value = store.value.try_nest_local(dag, local, used)?
       used.must_have_been_used()?
-      WaffleExprKind.store_multiple(WaffleStoreMultiple {
-        ptr = ptr.put_on_heap(),
-        times = times.put_on_heap(),
-        value = value.put_on_heap(),
+      WaffleExprKind.store_bytes(WaffleStoreBytes {
+        ptr = ptr.put_on_heap(), bytes = store.bytes
       })
     }
     case crash(args) {
@@ -352,11 +344,11 @@ fun try_nest_param(
         ptr = ptr.put_on_heap(), value = store.value
       })
     }
-    case store_multiple(store) {
+    case store_bytes(store) {
       var ptr = store.ptr.try_nest_param(dag, used)?
       used.must_have_been_used()?
-      WaffleExprKind.store_multiple(WaffleStoreMultiple {
-        ptr = ptr.put_on_heap(), times = store.times, value = store.value
+      WaffleExprKind.store_bytes(WaffleStoreBytes {
+        ptr = ptr.put_on_heap(), bytes = store.bytes
       })
     }
     case crash(args) {

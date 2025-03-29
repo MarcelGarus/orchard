@@ -219,92 +219,11 @@ fun compile(expr: WaffleExpr, builder: &FunGroundBuilder) {
       builder.pop(padding_before_ptr + 8 + store.value.size + padding_before_work)
     }
   }
-  case store_multiple(store) {
-    | Compute the pointer.
+  case store_bytes(store) {
     var padding_before_ptr = builder.align_to(8)
-    var ptr_start = builder.stack_size
     store.ptr.compile(builder)
-    | Stack: [pad][ptr]
-
-    | Compute the number of times that the data should be stored.
-    var times_start = builder.stack_size
-    store.times.compile(builder)
-    | Stack: [pad][ptr][times]
-
-    | Compute the data to be boxed.
-    var data_start = builder.stack_size
-    store.value.compile(builder)
-    | Stack: [pad][ptr][times][data]
-
-    | Copy the data to the heap.
-    | The counter goes from 0 to times.
-    var padding_before_work = builder.align_to(8)
-    var counter_start = builder.stack_size
-    builder.push_8(0)
-    eprintln("counter ptr is at {counter_start}")
-    | Stack: [pad][ptr][times][data][pad][counter]
-
-    var loop_start = builder.instructions.len
-    var stack_size_at_start_of_loop = builder.stack_size
-    builder.push_8_from_stack(counter_start)
-    builder.push_8_from_stack(times_start)
-    builder.sub_8()
-    builder.compare_zero_8()
-    var jump_table_index = builder.jump_table_placeholder()
-    | Later on, we'll patch the jump table so it only jumps here if
-    | counter < times.
-    | Stack: [pad][ptr][times][data][pad][counter]
-    var less_case = builder.instructions.len
-    var cursor = 0 | A cursor through the bytes of a single item.
-    var value_ptr = builder.stack_size
-    eprintln("value ptr is at {value_ptr}")
-    builder.push_8_from_stack(ptr_start)
-    builder.push_8_from_stack(counter_start)
-    builder.push_8(store.value.size)
-    builder.mul_8()
-    builder.add_8()
-    eprintln("stack size is now {builder.stack_size}")
-    | Stack: [pad][ptr][times][data][pad][counter][value_ptr]
-    | We've now computed where the item should be stored.
-    if store.value.size == 1 then {
-      builder.push_1_from_stack(data_start)
-      builder.store_1()
-    } else if store.value.size == 8 then {
-      builder.push_8_from_stack(data_start)
-      builder.store_8()
-    } else {
-      | TODO: take care of alignment
-      | Copy the item piece by piece.
-      loop if cursor + 8 > store.value.size then break else {
-        builder.push_8_from_stack(value_ptr)
-        builder.add_8(cursor)
-        builder.push_8_from_stack(data_start + cursor)
-        builder.store_8()
-        cursor = cursor + 8
-      }
-      loop if cursor == store.value.size then break else {
-        builder.push_8_from_stack(value_ptr)
-        builder.add_8(cursor)
-        builder.push_1_from_stack(data_start + cursor)
-        builder.store_1()
-        cursor = cursor + 1
-      }
-      builder.pop(8)
-    }
-    builder.add_8(1)
-    builder.jump(loop_start)
-
-    builder.stack_size == stack_size_at_start_of_loop or panic("stuff is wrong")
-    var end = builder.instructions.len
-    builder.patch_jump_table(jump_table_index, list(
-      end,       | counter == times -> done
-      end,       | counter > times  -> should never happen
-      less_case, | counter < times -> copy more stuff
-    ).to_slice())
-
-    builder.pop(
-      padding_before_ptr + 8 + store.value.size + padding_before_work + 8
-    )
+    builder.store_bytes(store.bytes)
+    builder.pop(padding_before_ptr)
   }
   case crash(args) {
     todo("crash args")

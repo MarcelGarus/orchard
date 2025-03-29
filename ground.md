@@ -105,6 +105,11 @@ The encoded uses little endian encoding for 64-bit integers; VMs are free to cho
   Pops an address (8 bytes), loads a byte from that address, and pushes that byte to the stack.
 - `d5`: **load_8**:
   Pops an address (8 bytes), loads 8 bytes from that address, and pushes them to the stack.
+- `d6 xx xx xx xx xx xx xx xx ...`: **store_bytes**:
+  This instruction directly contains bytes to be stored in memory.
+  The x indicates the number of the bytes.
+  After the first 9 bytes, there are another x bytes.
+  The _store_bytes_ instruction pops an address (8 bytes) and stores the literal bytes to that address.
 - `e0`: **crash**:
   First pops a length (8 bytes), then an address (8 bytes).
   Crashes the VM with the message at that address with that length.
