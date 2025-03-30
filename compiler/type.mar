@@ -698,39 +698,57 @@ fun is_equivalent_logic(
 | recursive A variant. As soon as either B or C occur, we know from which
 | original type this value stems, so we have a more precise type for the
 | contained payload.
-fun union(types: Slice[PlumType]): Maybe[PlumType] {
+fun union(types: Slice[PlumType]): Result[PlumType, String] {
   var common = types.get(0)
   for type in types.without_first() do
-    common = union(common, type) or return none[PlumType]()
-  some(common)
+    common = union(common, type)?
+  ok[PlumType, String](common)
 }
-fun union(a: PlumType, b: PlumType): Maybe[PlumType] {
-  union(a, b, list[Tuple2[PlumType, PlumType]]().&)
+fun union(a: PlumType, b: PlumType): Result[PlumType, String] {
+  var stack = list[Tuple3[JoinMode, PlumType, PlumType]]()
+  switch join(JoinMode.union, a, b, stack.&)
+  case some(type) ok[PlumType, String](type)
+  case none error[PlumType, String]({
+    var b = string_builder().&
+    b."Unioning types failed. This is the unioning stack:\n"
+    for entry in stack do b."{entry.a.debug()}\n  {entry.b}\n  {entry.c}"
+    b.to_string()
+  })
 }
-fun union(
-  a: PlumType, b: PlumType,
-  currently_unioning: &List[Tuple2[PlumType, PlumType]],
+enum JoinMode { union, intersection }
+fun flip(mode: JoinMode): JoinMode {
+  switch mode case union JoinMode.intersection case intersection JoinMode.union
+}
+fun ==(a: JoinMode, b: JoinMode): Bool {
+  switch a
+  case union b is union
+  case intersection b is intersection
+}
+fun join(
+  mode: JoinMode, a: PlumType, b: PlumType,
+  currently_joining: &List[Tuple3[JoinMode, PlumType, PlumType]],
 ): Maybe[PlumType] {
-  if currently_unioning.iter().&.find(tuple(a, b)) is some(index) then {
-    var level = currently_unioning.len - index
+  if currently_joining.iter().&.find(tuple(mode, a, b)) is some(index) then {
+    var level = currently_joining.len - index
     return some(PlumType.recursive(level))
   }
 
-  currently_unioning.push(tuple(a, b))
+  currently_joining.push(tuple(mode, a, b))
 
   a = a.extend_one_level()
   b = b.extend_one_level()
-  var result = union_logic(a, b, currently_unioning)
+  var result = join_logic(mode, a, b, currently_joining)
+    or return none[PlumType]()
 
-  currently_unioning.pop()
-  result
+  currently_joining.pop()
+  some(result)
 }
-fun union_logic(
-  a: PlumType, b: PlumType,
-  currently_unioning: &List[Tuple2[PlumType, PlumType]],
+fun join_logic(
+  mode: JoinMode, a: PlumType, b: PlumType,
+  currently_joining: &List[Tuple3[JoinMode, PlumType, PlumType]],
 ): Maybe[PlumType] {
-  if a is never then return some(b)
-  if b is never then return some(a)
+  if a is never then return some(switch mode case union b case intersection a)
+  if b is never then return some(switch mode case union a case intersection b)
 
   switch a
   case var_(a_name) {
@@ -739,10 +757,10 @@ fun union_logic(
     some(PlumType.var_(a_name))
   }
   case primitive(a_primitive) {
-    var b_primitive = b.primitive or return none[PlumType]()
-    a_primitive.name == b_primitive.name or return none[PlumType]()
+    var b_primitive = b.primitive or { eprintln("b is not a primitive") return none[PlumType]() }
+    a_primitive.name == b_primitive.name or { eprintln("names don't match") return none[PlumType]() }
     | TODO: loosen constraints (this requires implementing casting arrays)
-    a_primitive.args == b_primitive.args or return none[PlumType]()
+    a_primitive.args == b_primitive.args or { eprintln("args don't match") return none[PlumType]() }
     some(PlumType.primitive(a_primitive))
   }
   case never unreachable()
@@ -754,42 +772,69 @@ fun union_logic(
       var key = a_field.key
       var a_type = a_field.value
       var b_type = b_fields.get_maybe(key) or return none[PlumType]()
-      fields.&.put(key,
-        union(a_type, b_type, currently_unioning) or return none[PlumType]())
+      fields.&.put(
+        key,
+        join(mode, a_type, b_type, currently_joining)
+          or return none[PlumType](),
+      )
     }
     some(PlumType.struct_(fields))
   }
   case enum_(a_variants) {
-    var b_variants = b.enum_ or return none[PlumType]()
-    var variants = map[String, PlumType]()
-    for variant in a_variants do variants.&.put(variant.key, variant.value)
-    for variant in b_variants do {
-      var key = variant.key
-      var b_arg = variant.value
-      variants.&.put(key, {
-        if variants.get_maybe(key) is some(a_arg) then
-          union(a_arg, b_arg, currently_unioning) or return none[PlumType]()
-        else
-          b_arg
-      })
+    switch mode
+    case union {
+      var b_variants = b.enum_ or return none[PlumType]()
+      var variants = map[String, PlumType]()
+      for variant in a_variants do variants.&.put(variant.key, variant.value)
+      for variant in b_variants do {
+        var key = variant.key
+        var b_arg = variant.value
+        variants.&.put(key, {
+          if variants.get_maybe(key) is some(a_arg) then
+            join(mode, a_arg, b_arg, currently_joining)
+              or return none[PlumType]()
+          else
+            b_arg
+        })
+      }
+      some(PlumType.enum_(variants))
     }
-    some(PlumType.enum_(variants))
+    case intersection {
+      var b_variants = b.enum_ or return none[PlumType]()
+      var variants = map[String, PlumType]()
+      for variant in a_variants do {
+        var name = variant.key
+        var a_arg = variant.value
+        var b_arg = b_variants.get_maybe(name) or continue
+        var arg = join(mode, a_arg, b_arg, currently_joining)
+          or return none[PlumType]()
+        variants.&.put(variant.key, variant.value)
+      }
+      some(PlumType.enum_(variants))
+    }
   }
   case lambda(a_lambda) {
-    | TODO: make parameters contravariant, return type covariant:
-    | foo: (\ (| B C) -> (X Y Z)) =
-    |   condition
-    |   % True:  \ a: (| A B C) -> (| X Y) = ...
-    |     False: \ a: (| B C D) -> (| X Y Z) = ...
-    | a == b or return none[PlumType]()
     var b_lambda = b.lambda or return none[PlumType]()
-    a_lambda.args == b_lambda.args or return none[PlumType]()
-    var return_type =
-      union(a_lambda.return_type.*, b_lambda.return_type.*, currently_unioning)
-        or return none[PlumType]()
+
+    | Lambda parameters are contravariant, the return type is covariant:
+    | foo: (\ (| b c) -> (| x y z)) =
+    |   condition
+    |   % true ->  \ a: (| a b c) -> (| x z) = ...
+    |     false -> \ a: (| b c d) -> (| y z) = ...
+    var args = list[PlumType]()
+    for both in zip(a_lambda.args.iter(), b_lambda.args.iter()) do
+      args.&.push(
+        join(mode.flip(), both.a, both.b, currently_joining)
+          or return none[PlumType]()
+      )
+    var args = args.to_slice()
+
+    var return_type = join(
+      mode, a_lambda.return_type.*, b_lambda.return_type.*, currently_joining
+    ) or return none[PlumType]()
+
     some(PlumType.lambda(LambdaType {
-      args = a_lambda.args,
-      return_type = return_type.put_on_heap(),
+      args, return_type = return_type.put_on_heap()
     }))
   }
   case recursive unreachable()
