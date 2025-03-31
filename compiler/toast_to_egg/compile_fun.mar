@@ -162,9 +162,9 @@ fun compile(
         var snapshot = visible.snapshot()
         var case_body = body_builder(body.dag).&
         var payload_type = variant_types.get(symbol)
-        if case_.payload is some(binding) then {
-          var payload = case_body.push_param(payload_type, binding.src)
-          visible.define(binding.string, payload)
+        if case_.payload is some(pattern) then {
+          var payload = case_body.push_param(payload_type, pattern.src())
+          pattern.compile_pattern(payload, body, module, visible, context)?
         } else {
           case_body.push_param(payload_type, switch_.percent.src).ignore()
         }
@@ -376,12 +376,8 @@ fun compile(
       }
     }
     case var_(var_) {
-      var name = var_.left.name or return error[Id, Error](error(
-        "Variables have to be lowercase.", var_.equal_sign.src
-      ))
-
       var value = var_.right.compile(body, module, visible, context)?
-      visible.define(name.string, value)
+      var_.left.compile_pattern(value, body, module, visible, context)?
       value
     }
     case body(exprs) {
@@ -391,6 +387,109 @@ fun compile(
       last or unreachable()
     }
   )
+}
+
+fun compile_pattern(
+  pattern: ToastExpr, matched: Id,
+  body: &EggBodyBuilder, module: Module, visible: &Visible,
+  context: EggContext,
+): Result[Nothing, Error] {
+  switch pattern
+  case int
+    error[Nothing, Error](error(
+      "Int literals can't be in patterns.", pattern.src()
+    ))
+  case string
+    error[Nothing, Error](error(
+      "String literals can't be in patterns.", pattern.src()
+    ))
+  case type
+    error[Nothing, Error](error(
+      "Type literals can't be in patterns.", pattern.src()
+    ))
+  case struct_(pattern) {
+    var type = body.type_of(matched).extend_one_level()
+    var struct_fields = type.struct_ or
+      return error[Nothing, Error](error(
+        "Tried to use a struct pattern to match on {type}.",
+        pattern.ampersand.src,
+      ))
+
+    for field in pattern.fields do
+      struct_fields.contains(field.name.string) or
+        return error[Nothing, Error](error(
+          "Patterns refers to {field.name.string}, but that is not in the 
+          'struct {type}.",
+          field.name.src,
+        ))
+    var matched_fields = set[String]()
+    for field in pattern.fields do matched_fields.&.put(field.name.string)
+    for field in struct_fields do
+      matched_fields.contains(field.key) or
+        return error[Nothing, Error](error(
+          "Pattern does not bind field {field.key} of {type}.",
+          pattern.ampersand.src,
+        ))
+
+    for field in pattern.fields do {
+      var field_type = struct_fields.get(field.name.string)
+      var matched_value = body.push(
+        EggOp.member(EggMember {
+          of = matched, name = field.name.string
+        }).expr(field_type, field.name.src)
+      )
+      field.value.compile_pattern(
+        matched_value, body, module, visible, context
+      )?
+    }
+
+    ok[Nothing, Error]({})
+  }
+  case enum_(pattern) {
+    todo("enum patterns")
+    | var type = body.type_of(matched)
+    | var enum_variants = type.enum_ or
+    |   return error[Nothing, Error](error(
+    |     "Tried to use an enum pattern to match on {type}.",
+    |     pattern.pipe.src,
+    |   ))
+    | enum_variants.len == 1 or
+    |   return error[Nothing, Error](error(
+    |     "Tried to use an enum pattern to match on {type}. You can only match 
+    |     'on enums that contain a single variant.",
+    |     pattern.pipe.src,
+    |   ))
+    | pattern.len == 1 or
+    |   return error[Nothing, Error](error(
+    |     "Tried to use an enum pattern with multiple variants.",
+    |     pattern.pipe.src,
+    |   ))
+    | var matching_variant = pattern.iter().next().unwrap()
+    | var matched_variant = enum_variants.iter().next().unwrap()
+
+    | matching_variant.name.string == matched_variant.key
+
+    | var name = enum_.name.string
+    | var value = enum_.value.compile(body, module, visible, context)?
+    | var type = PlumType.enum_(map(name -> body.type_of(value)))
+    | body.push(EggOp.enum_(EggEnum { name, value }).expr(type, enum_.pipe.src))
+    ok[Nothing, Error]({})
+  }
+  case switch_ unreachable()
+  case name(name) {
+    visible.define(name.string, matched)
+    ok[Nothing, Error]({})
+  }
+  case lambda
+    error[Nothing, Error](error("Lambdas can't be in patterns.", pattern.src()))
+  case call
+    error[Nothing, Error](error("Calls can't be in patterns.", pattern.src()))
+  case var_
+    error[Nothing, Error](error(
+      "Variable declarations can't be in patterns.", pattern.src()
+    ))
+  case body
+    error[Nothing, Error](error("Bodies can't be in patterns.", pattern.src()))
 }
 
 fun push_cast(body: &EggBodyBuilder, from: Id, to_type: PlumType, src: Src): Id {

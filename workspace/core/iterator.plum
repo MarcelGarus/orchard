@@ -19,14 +19,13 @@ filter_map iterator: (Iterator a) mapper: (\ a -> (Maybe b)) -> (Iterator b) =
   \ ->
     iterator.next
     % empty -> | empty
-      more: more ->
-        mapper (more.item)
-        % some: mapped ->
-            | more: & item: mapped rest: (more.rest .filter_map mapper)
-          none -> more.rest .filter_map mapper .next
+      more: (& item rest) ->
+        mapper item
+        % some: mapped -> | more: & item: mapped rest: (rest .filter_map mapper)
+          none -> rest .filter_map mapper .next
 
 map iterator: (Iterator a) mapper: (\ a -> b) -> (Iterator b) =
-  iterator .filter_map (\ item: a -> | some: (mapper item))
+  iterator .filter_map \ item: a -> | some: mapper item
 
 filter iterator: (Iterator a) predicate: (\ a -> Bool) -> (Iterator a) =
   iterator
@@ -51,36 +50,34 @@ take iterator: (Iterator a) amount: Int -> (Iterator a) =
   \ ->
     iterator.next
     % empty -> | empty
-      more: more ->
+      more: (& item rest) ->
         amount .== 0
         % true -> | empty
-          false ->
-            | more: (& item: more.item rest: (more.rest .take (amount .- 1)))
+          false -> | more: & item rest: (rest .take (amount .- 1))
 
 skip_while iterator: (Iterator a) predicate: (\ a -> Bool) -> (Iterator a) =
   \ ->
     iterator.next
     % empty -> | empty
-      more: more ->
-        predicate (more.item)
-        % false -> | more: more
-          true -> more.rest .skip_while predicate .next
+      more: (& item rest) ->
+        predicate item
+        % false -> | more: & item rest
+          true -> rest .skip_while predicate .next
 
 take_while iterator: (Iterator a) predicate: (\ a -> Bool) -> (Iterator a) =
   \ ->
     iterator.next
     % empty -> | empty
-      more: more ->
-        predicate (more.item)
+      more: (& item rest) ->
+        predicate item
         % false -> | empty
-          true ->
-            | more: (& item: more.item rest: (more.rest .take_while predicate))
+          true -> | more: & item rest: (rest .take_while predicate)
 
 map_while iterator: (Iterator a) predicate: (\ a -> (Maybe b)) -> (Iterator b) =
   iterator
   . map predicate
-  . take_while (\ item: (Maybe b) -> item.is_some)
-  . map (\ item: (Maybe b) -> item.unwrap)
+  . take_while \ item: (Maybe b) -> item.is_some
+  . map \ item: (Maybe b) -> item.unwrap
 
 zip a: (Iterator aa) b: (Iterator bb) -> (Iterator (& a: aa b: bb)) =
   \ ->
@@ -89,13 +86,13 @@ zip a: (Iterator aa) b: (Iterator bb) -> (Iterator (& a: aa b: bb)) =
         b.next
         % empty -> | empty
           more -> crash "Zipped iterators should have the same length."
-      more: more_a ->
+      more: (& item: item_a rest: rest_a) ->
         b.next
         % empty -> crash "Zipped iterators should have the same length."
-          more: more_b ->
+          more: (& item: item_b rest: rest_b) ->
             | more:
-                & item: (& a: more_a.item b: more_b.item)
-                  rest: (zip (more_a.rest) (more_b.rest))
+                & item: & a: item_a b: item_b
+                  rest: zip rest_a rest_b
 
 enumerate iterator: (Iterator a) -> (Iterator (& index: Int item: a)) =
   iterator .enumerate 0
@@ -103,24 +100,24 @@ enumerate iterator: (Iterator a) start_index: Int -> (Iterator (& index: Int ite
   \ ->
     iterator.next
     % empty -> | empty
-      more: more ->
+      more: (& item rest) ->
         | more:
-            & item: (& index: start_index item: more.item)
-              rest: (more.rest .enumerate (start_index .+ 1))
+            & item: & index: start_index item
+              rest: rest .enumerate (start_index .+ 1)
 
 first iterator: (Iterator a) -> (Maybe a) =
   iterator.next
   % empty -> | none
-    more: more -> | some: more.item
+    more: (& item rest) -> | some: item
 
 last iterator: (Iterator a) -> (Maybe a) =
   iterator.next
   % empty -> | none
-    more: more -> | some: (more.rest .last (more.item))
+    more: (& item rest) -> | some: rest .last item
 last iterator: (Iterator a) previous: a -> a =
   iterator.next
   % empty -> previous
-    more: more -> more.rest .last (more.item)
+    more: (& item rest) -> rest .last item
 
 nth iterator: (Iterator a) n: Int -> (Maybe a) = iterator .skip n .first
 
@@ -128,48 +125,43 @@ step_by iterator: (Iterator a) step: Int -> (Iterator a) =
   \ ->
     iterator.next
     % empty -> | empty
-      more: more ->
-        | more:
-            & item: more.item
-              rest: more.rest .step_by_skip_first step
+      more: (& item rest) ->
+        | more: & item rest: (rest .step_by_skip_first step)
 step_by_skip_first iterator: (Iterator a) step: Int -> (Iterator a) =
   \ ->
     iterator .skip step .next
     % empty -> | empty
-      more: more ->
-        | more: & item: more.item rest: (more.rest .step_by_skip_first step)
+      more: (& item rest) ->
+        | more: & item rest: (rest .step_by_skip_first step)
 
 chain a: (Iterator t) b: (Iterator t) -> (Iterator t) =
   \ ->
     a.next
     % empty -> b.next
-      more: more -> | more: (& item: more.item rest: (more.rest .chain b))
+      more: (& item rest) -> | more: & item rest: (rest .chain b)
 
 flat_map iterator: (Iterator a) mapper: (\ a -> (Iterator b)) -> (Iterator b) =
   \ ->
     iterator.next
     % empty -> | empty
-      more: more -> more.item.mapper .chain (more.rest .flat_map mapper) .next
+      more: (& item rest) -> chain (mapper item) (rest .flat_map mapper) .next
 
 intersperse iterator: (Iterator a) separator: a -> (Iterator a) =
   \ ->
     iterator.next
     % empty -> | empty
-      more: more ->
-        | more:
-            & item: more.item
-              rest: more.rest .intersperse_after_item separator
+      more: (& item rest) ->
+        | more: & item rest: (rest .intersperse_after_item separator)
 intersperse_after_item iterator: (Iterator a) separator: a -> (Iterator a) =
   \ ->
     iterator.next
     % empty -> | empty
-      more: more ->
+      more: (& item rest) ->
         | more:
             & item: separator
-              rest: more.rest .intersperse_after_separator separator (more.item)
+              rest: rest .intersperse_after_separator separator item
 intersperse_after_separator iterator: (Iterator a) separator: a next: a -> (Iterator a) =
-  \ ->
-    | more: (& item: next rest: (iterator .intersperse_after_item separator))
+  \ -> | more: & item: next rest: (iterator .intersperse_after_item separator)
 
 flatten iterator: (Iterator (Iterator a)) -> (Iterator a) =
   iterator .flat_map (\ it: (Iterator a) -> it)
@@ -177,24 +169,24 @@ flatten iterator: (Iterator (Iterator a)) -> (Iterator a) =
 fold iterator: (Iterator a) initial_state: s folder: (\ s a -> s) -> s =
   iterator.next
   % empty -> initial_state
-    more: more -> more.rest .fold (folder initial_state (more.item)) folder
+    more: (& item rest) -> rest .fold (folder initial_state item) folder
 
 reduce iterator: (Iterator a) reducer: (\ a a -> a) -> (Maybe a) =
   iterator.next
   % empty -> | none
-    more: more -> | some: (more.rest .fold (more.item) reducer)
+    more: (& item rest) -> | some: rest .fold item reducer
 
 count iterator: (Iterator t) -> Int =
-  iterator .fold 0 (\ count: Int item: t -> count .+ 1)
+  iterator .fold 0 \ count: Int item: t -> count .+ 1
 
 sum iterator: (Iterator Int) -> Int =
-  iterator .fold 0 (\ a: Int b: Int -> a .+ b)
+  iterator .fold 0 \ a: Int b: Int -> a .+ b
 
 min iterator: (Iterator Int) -> (Maybe Int) =
-  iterator.reduce (\ a: Int b: Int -> min a b)
+  iterator .reduce \ a: Int b: Int -> min a b
 
 max iterator: (Iterator Int) -> (Maybe Int) =
-  iterator.reduce (\ a: Int b: Int -> max a b)
+  iterator .reduce \ a: Int b: Int -> max a b
 
 cycle iterator: (Iterator a) -> (Iterator a) =
   iterator .chain (iterator.cycle)
@@ -207,9 +199,9 @@ find iterator: (Iterator a) predicate: (\ a -> Bool) -> (Maybe a) =
 all_true iterator: (Iterator Bool) -> Bool =
   iterator.next
   % empty -> | true
-    more: more ->
-      more.item
-      % true -> more.rest.all_true
+    more: (& item rest) ->
+      item
+      % true -> rest.all_true
         false -> | false
 
 all iterator: (Iterator a) predicate: (\ a -> Bool) -> Bool =
@@ -218,10 +210,10 @@ all iterator: (Iterator a) predicate: (\ a -> Bool) -> Bool =
 any_true iterator: (Iterator Bool) -> Bool =
   iterator.next
   % empty -> | false
-    more: more ->
-      more.item
+    more: (& item rest) ->
+      item
       % true -> | true
-        false -> more.rest.any_true
+        false -> rest.any_true
 
 any iterator: (Iterator a) predicate: (\ a -> Bool) -> Bool =
   iterator .map predicate .any_true

@@ -7,22 +7,27 @@ import exprs.mar
 | really behaves like a function call. For example, `List Int` "calls" the
 | definition of List with the argument Int. So, don't be confused if you see
 | "type variables" and "type calls" here.
+|
+| Also, expressions with introducing punctuation ignore the allow whitespace
+| setting. They just eagerly continue consuming stuff until they are stopped,
+| so you may have to wrap them in parentheses. This allows omitting parentheses
+| in some cases. For example, when passing a struct, enum, or lambda to a call,
+| you don't have to wrap it in parentheses if it's the last argument.
 
 fun parse_type(
   parser: &LineParser, allow_whitespace: Bool
 ): Result[Maybe[ToastType], Error] {
+  if parser.parse_lambda_type()? is some(type) then return parsed(type)
+  if parser.parse_struct_type()? is some(type) then return parsed(type)
+  if parser.parse_enum_type()? is some(type) then return parsed(type)
+  if parser.parse_parenthesized_type()? is some(expr) then return parsed(expr)
   if allow_whitespace then {
-    if parser.parse_lambda_type()? is some(type) then return parsed(type)
-    if parser.parse_struct_type()? is some(type) then return parsed(type)
-    if parser.parse_enum_type()? is some(type) then return parsed(type)
     if parser.parse_type_name() is some(name) then {
       var args = list[ToastType]()
       loop args.&.push(parser.parse_type(false)? or break)
       return parsed(ToastType.call(ToastTypeCall { name, args = args.to_slice() }))
     }
   }
-
-  if parser.parse_parenthesized_type()? is some(expr) then return parsed(expr)
 
   if parser.parse_type_name() is some(name) then
     return parsed(ToastType.call(ToastTypeCall {
@@ -75,12 +80,9 @@ fun parse_expr_atom(
   if parser.parse_int()     is some(int)    then return parsed(ToastExpr.int(int))
   if parser.parse_string()? is some(string) then return parsed(ToastExpr.string(string))
   if parser.parse_name()    is some(name)   then return parsed(ToastExpr.name(name))
-  if allow_whitespace then {
-    if parser.parse_struct()? is some(struct_) then return parsed(struct_)
-    if parser.parse_enum()?   is some(enum_)   then return parsed(enum_)
-    if allow_dots then
-      if parser.parse_lambda()? is some(lambda) then return parsed(lambda)
-  }
+  if parser.parse_struct()? is some(struct_) then return parsed(struct_)
+  if parser.parse_enum()?   is some(enum_)   then return parsed(enum_)
+  if parser.parse_lambda()? is some(lambda) then return parsed(lambda)
   if parser.parse_type(allow_whitespace)? is some(type) then
     return parsed(ToastExpr.type(type))
   no_match[ToastExpr]()

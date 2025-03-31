@@ -83,31 +83,69 @@ fun parse_struct(bacon: Bacon): Result[Maybe[ToastExpr], Error] {
   var ampersand = "&" @ bacon.src
 
   var fields = list[ToastField]()
-  for child in bacon.children do {
+  if bacon.children.len == 1 then {
+    | If we only have a single child, then we allow multiple fields on the same
+    | line.
+    var child = bacon.children.get(0)
+    var parser = parser(child.line, child.src)
+    var children = child.children.parse_exprs()?
+
+    loop {
+      var name = parser.&.parse_name() or break {}
+      var value =
+        if parser.&.consume(":") is some then {
+          switch parser.&.parse_expr(false, true)?
+          case some(expr) {
+            if not(children.is_empty()) then
+              return bad_input[ToastExpr](error(
+                "Field values on same line and on new line.",
+                parser.src_of_rest(),
+              ))
+            expr
+          }
+          case none {
+            parser.&.ensure_is_at_end()?
+            children.len == 1 or
+              return bad_input[ToastExpr](error(
+                "Fields can only have one value.", parser.src_of_rest()))
+            children.get(0)
+          }
+        } else {
+          children.is_empty() or
+            return bad_input[ToastExpr](error(
+              "Field value after field with no colon.", parser.src_of_rest()))
+          ToastExpr.name(name)
+        }
+
+      fields.&.push(ToastField { name, value })
+    }
+    parser.&.ensure_is_at_end()?
+  } else for child in bacon.children do {
     var parser = parser(child.line, child.src)
 
     var name = parser.&.parse_name() or
       return bad_input[ToastExpr](error(
         "Expected field name.", parser.src_of_rest()))
 
-    parser.&.consume(":") or
-      return bad_input[ToastExpr](error(
-        "Expected colon after field name.", parser.src_of_rest()))
-
     var value =
-      if child.children.is_empty() then {
-        var value = parser.&.parse_expr(true, true)? or
-          return bad_input[ToastExpr](error(
-            "Expected value of field.", parser.src_of_rest()))
-        parser.&.ensure_is_at_end()?
-        value
+      if parser.&.consume(":") is some then {
+        if child.children.is_empty() then {
+          var value = parser.&.parse_expr(true, true)? or
+            return bad_input[ToastExpr](error(
+              "Expected value of field.", parser.src_of_rest()))
+          parser.&.ensure_is_at_end()?
+          value
+        } else {
+          parser.&.ensure_is_at_end()?
+          var children = child.children.parse_exprs()?
+          children.len == 1 or
+            return bad_input[ToastExpr](error(
+              "Fields can only have one value.", parser.src_of_rest()))
+          children.get(0)
+        }
       } else {
         parser.&.ensure_is_at_end()?
-        var children = child.children.parse_exprs()?
-        children.len == 1 or
-          return bad_input[ToastExpr](error(
-            "Fields can only have one value.", parser.src_of_rest()))
-        children.get(0)
+        ToastExpr.name(name)
       }
 
     fields.&.push(ToastField { name, value })
