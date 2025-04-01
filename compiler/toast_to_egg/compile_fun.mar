@@ -2,13 +2,13 @@
 fun compile(
   fun_: ToastFun, module: Module,
   visible_by_module: Map[Module, Set[String]],
-  funs: Map[String, UncompiledFun], types: Map[String, PlumTypeDef],
+  funs: Map[String, UncompiledFun], types: Map[String, EggTypeDef],
 ): Result[EggFun, Error] {
   var visible = visible()
   var dag = dag[EggExpr]()
   var body = body_builder(dag.&).&
 
-  var param_types = list[PlumType]()
+  var param_types = list[EggType]()
   for param in fun_.params do {
     var type = param.type.compile(module, types)?
     var id = body.push_param(type, param.name.src)
@@ -20,7 +20,7 @@ fun compile(
   | Push the type variables into the body.
   for var_ in param_types.collect_type_variables() do {
     var id = body.push(
-      EggOp.type(PlumType.var_(var_)).expr(type_type, invalid_src)
+      EggOp.type(EggType.var_(var_)).expr(type_type, invalid_src)
     )
     visible.&.define(var_, id)
   }
@@ -28,7 +28,7 @@ fun compile(
     var type = param.type.compile(module, types)?
     if type == type_type then {
       var id = body.push(
-        EggOp.type(PlumType.var_(param.name.string))
+        EggOp.type(EggType.var_(param.name.string))
           .expr(type_type, invalid_src)
       )
       visible.&.define(param.name.string, id)
@@ -69,7 +69,7 @@ fun finish(body: EggBodyBuilder, id: Id): EggBody {
     returns = id,
   }
 }
-fun push_param(body: &EggBodyBuilder, type: PlumType, src: Src): Id {
+fun push_param(body: &EggBodyBuilder, type: EggType, src: Src): Id {
   var id = body.dag.&.put(EggOp.param.expr(type, src))
   body.params.&.push(id)
   id
@@ -80,7 +80,7 @@ fun push(body: &EggBodyBuilder, expr: EggExpr): Id {
   id
 }
 fun get(body: EggBodyBuilder, id: Id): EggExpr { body.dag.get(id) }
-fun type_of(body: EggBodyBuilder, id: Id): PlumType { body.dag.type_of(id) }
+fun type_of(body: EggBodyBuilder, id: Id): EggType { body.dag.type_of(id) }
 fun src_of(body: EggBodyBuilder, id: Id): Src { body.get(id).src }
 
 | Compiling Functions  
@@ -89,7 +89,7 @@ struct EggContext {
   | stack: &EggStack,
   visible_by_module: Map[Module, Set[String]],
   funs: Map[String, UncompiledFun],
-  types: Map[String, PlumTypeDef],
+  types: Map[String, EggTypeDef],
 }
 
 fun compile(
@@ -108,7 +108,7 @@ fun compile(
       )
     case struct_(struct_) {
       var fields = map[String, Id]()
-      var types = map[String, PlumType]()
+      var types = map[String, EggType]()
       for field in struct_.fields do {
         var name = field.name.string
         var value = field.value.compile(body, module, visible, context)?
@@ -124,13 +124,13 @@ fun compile(
 
       body.push(
         EggOp.struct_(fields)
-          .expr(PlumType.struct_(types), struct_.ampersand.src)
+          .expr(EggType.struct_(types), struct_.ampersand.src)
       )
     }
     case enum_(enum_) {
       var name = enum_.name.string
       var value = enum_.value.compile(body, module, visible, context)?
-      var type = PlumType.enum_(map(name -> body.type_of(value)))
+      var type = EggType.enum_(map(name -> body.type_of(value)))
       body.push(EggOp.enum_(EggEnum { name, value }).expr(type, enum_.pipe.src))
     }
     case switch_(switch_) {
@@ -166,7 +166,7 @@ fun compile(
 
       | Compile the individual cases.
       var case_compilers = map[String, Tuple2[EggBodyBuilder, Id]]()
-      var case_types = list[PlumType]()
+      var case_types = list[EggType]()
       for case_ in switch_.cases do {
         var symbol = case_.symbol.string
         var snapshot = visible.snapshot()
@@ -211,7 +211,7 @@ fun compile(
     case lambda(lambda) {
       var snapshot = visible.snapshot()
       var lambda_body = body_builder(body.dag).&
-      var param_types = list[PlumType]()
+      var param_types = list[EggType]()
       for param in lambda.params do {
         var name = param.name.string
         var type = param.type.compile(module, context.types)?
@@ -226,7 +226,7 @@ fun compile(
 
       body.push(
         EggOp.lambda(lambda_body).expr(
-          PlumType.lambda(LambdaType {
+          EggType.lambda(LambdaType {
             args = param_types.to_slice(),
             return_type = return_type.put_on_heap(),
           }),
@@ -240,7 +240,7 @@ fun compile(
         args.&.push(arg.compile(body, module, visible, context)?)
       var args = args.to_slice()
 
-      var arg_types = list[PlumType]()
+      var arg_types = list[EggType]()
       for arg in args do arg_types.&.push(body.type_of(arg))
       var arg_types = arg_types.to_slice()
 
@@ -285,7 +285,7 @@ fun compile(
                 ))
               FunArg { value = some(type_value), type }
             } else
-              FunArg { value = none[PlumType](), type }
+              FunArg { value = none[EggType](), type }
           )
         }
         var arg_values = arg_values.to_slice()
@@ -481,7 +481,7 @@ fun compile_pattern(
 
     | var name = enum_.name.string
     | var value = enum_.value.compile(body, module, visible, context)?
-    | var type = PlumType.enum_(map(name -> body.type_of(value)))
+    | var type = EggType.enum_(map(name -> body.type_of(value)))
     | body.push(EggOp.enum_(EggEnum { name, value }).expr(type, enum_.pipe.src))
     ok[Nothing, Error]({})
   }
@@ -502,7 +502,7 @@ fun compile_pattern(
     error[Nothing, Error](error("Bodies can't be in patterns.", pattern.src()))
 }
 
-fun push_cast(body: &EggBodyBuilder, from: Id, to_type: PlumType, src: Src): Id {
+fun push_cast(body: &EggBodyBuilder, from: Id, to_type: EggType, src: Src): Id {
   var from_type = body.type_of(from)
   if from_type == to_type
   then from

@@ -1,0 +1,79 @@
+| Comparing types  
+| Multiple types may describe the same set of values. For example, these two
+| types are semantically equivalent:
+|
+| First =
+|   | A
+|     B ^1
+| Second =
+|   | A
+|     B
+|       | A
+|         B ^2
+
+fun =~=(a: EggType, b: EggType): Bool {
+  is_equivalent(a, b, list[Tuple2[EggType, EggType]]().&)
+}
+fun is_equivalent(
+  a: EggType, b: EggType,
+  currently_comparing: &List[Tuple2[EggType, EggType]],
+): Bool {
+  if currently_comparing.iter().&.contains(tuple(a, b)) then return true
+
+  currently_comparing.push(tuple(a, b))
+
+  a = a.extend_one_level()
+  b = b.extend_one_level()
+  var result = is_equivalent_logic(a, b, currently_comparing)
+
+  currently_comparing.pop()
+  result
+}
+fun is_equivalent_logic(
+  a: EggType, b: EggType,
+  currently_comparing: &List[Tuple2[EggType, EggType]],
+): Bool {
+  switch a
+  case var_(name) {b.var_ or return false} == name
+  case primitive(a_primitive) {
+    var b_primitive = b.primitive or return false
+    a_primitive.name == b_primitive.name or return false
+    a_primitive.args.len == b_primitive.args.len or return false
+    for both in zip(a_primitive.args.iter(), b_primitive.args.iter()) do
+      is_equivalent(both.a, both.b, currently_comparing) or return false
+    true
+  }
+  case never  b is never
+  case struct_(a_fields) {
+    var b_fields = b.struct_ or return false
+    a_fields.size == b_fields.size or return false
+
+    for a_field in a_fields do {
+      var a_type = a_field.value
+      var b_type = b_fields.get_maybe(a_field.key) or return false
+      is_equivalent(a_type, b_type, currently_comparing) or return false
+    }
+    true
+  }
+  case enum_(a_variants) {
+    var b_variants = b.enum_ or return false
+    a_variants.size == b_variants.size or return false
+
+    for a_variant in a_variants do {
+      var a_arg = a_variant.value
+      var b_arg = b_variants.get_maybe(a_variant.key) or return false
+      is_equivalent(a_arg, b_arg, currently_comparing) or return false
+    }
+    true
+  }
+  case lambda(a_lambda) {
+    var b_lambda = b.lambda or return false
+    a_lambda.args.len == b_lambda.args.len or return false
+    for both in zip(a_lambda.args.iter(), b_lambda.args.iter()) do
+      is_equivalent(both.a, both.b, currently_comparing) or return false
+    is_equivalent(
+      a_lambda.return_type.*, b_lambda.return_type.*, currently_comparing
+    )
+  }
+  case recursive unreachable()
+}
