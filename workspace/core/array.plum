@@ -8,21 +8,34 @@ import
     array_len (Array t)
   "..bool" Bool
   "..int" Int, == Int Int, + Int Int, - Int Int, < Int Int
+  "..iterator" Iterator t
   "..maybe" Maybe t
+  "..never" crash String
   "..range"
-    Range t, to t t, len (Range Int), is_empty (Range Int),
+    Range t
     contains (Range Int) Int
+    is_empty (Range Int)
+    length (Range Int)
+    to t t
+  "..string" String
   "..test" assert Bool
+  "..type" Type, as t t: Type
 export
   Array t
   get (Array t) Int
   set (Array t) Int t
   slice (Array t) (Range Int)
 
+empty_array t: Type -> (Array t) =
+  generate_array 0 \ index: Int -> crash "never called" .as t
+
+filled_array length: Int item: t -> (Array t) =
+  generate_array length \ index: Int -> item
+
 get array: (Array t) index: Int -> t = array .array_get index
 
 get_maybe array: (Array t) index: Int -> (Maybe t) =
-  (0 .to (array.len)) .contains index
+  (0 .to (array.length)) .contains index
   % true -> | some: (array .get index)
     false -> | none
 
@@ -32,23 +45,34 @@ set array: (Array t) index: Int item: t -> (Array t) =
 slice array: (Array t) range: (Range Int) -> (Array t) =
   array .array_slice range
 
-len array: (Array t) -> Int = array.array_len
+length array: (Array t) -> Int = array.array_len
+
+is_empty array: (Array t) -> Bool = array.length .== 0
 
 copy destination: (Array t) source: (Array t) range: (Range Int) -> (Array t) =
   # Copies to source items into the destination array at the range.
-  assert (source.len .== (range.len))
+  assert (source.length .== (range.length))
   range.is_empty
   % true -> destination
     false ->
       copy
         destination .set (range.start) (source .get 0)
-        source .slice (1 .to (source.len))
+        source .slice (1 .to (source.length))
         range.start .+ 1 .to (range.end)
 
 concat a: (Array t) b: (Array t) -> (Array t) =
   generate_array
-    a.len .+ (b.len)
+    a.length .+ (b.length)
     \ index: Int ->
-      index .< (a.len)
+      index .< (a.length)
       % true -> a .get index
-        false -> b .get (index .- (a.len))
+        false -> b .get (index .- (a.length))
+
+iterate array: (Array t) -> (Iterator t) =
+  \ ->
+    array.is_empty
+    % true -> | empty
+      false ->
+        | more:
+            & item: (array .get 0)
+              rest: (array .slice (1 .to (array.length)) .iterate)

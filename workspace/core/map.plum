@@ -1,0 +1,89 @@
+
+import
+  "..array"
+    Array t
+    empty_array t: Type
+    generate_array Int (\ Int -> t)
+    get (Array t) Int
+    get_maybe (Array t) Int
+    set (Array t) Int t
+    slice (Array t) (Range Int)
+    length (Array t)
+    copy (Array t) (Array t) (Range Int)
+  "..bool" Bool
+  "..hash" Hash
+  "..int"
+    Int, == Int Int, + Int Int, * Int Int, / Int Int, max Int Int, < Int Int,
+    round_up_to_power_of Int Int, mod Int Int
+  "..iterator" Iterator t, next (Iterator t)
+  "..maybe" Maybe t, unwrap (Maybe t) String, else (Maybe t) t
+  "..never" crash String
+  "..string" String
+  "..range" Range t, to t t, length (Range Int), contains (Range Int) Int
+  "..test" assert Bool
+  "..type" Type, as t t: Type
+
+Map k v =
+  & buckets: (Array (Bucket k v))
+    size: Int
+    hash: \ k -> Hash
+    equals: \ k k -> Bool
+
+Bucket k v =
+  | filled: (Entry k v)
+    empty
+
+Entry k v = & key: k value: v
+
+=> key: k value: v -> (Entry k v) = & key value
+
+empty_map k: Type v: Type capacity: Int hash: (\ k -> Hash) equals: (\ k k -> Bool) -> (Map k v) =
+  & buckets:
+      generate_array capacity \ index: Int -> (| empty) .as (Bucket k v)
+    size: 0
+    hash
+    equals
+
+empty_map k: Type v: Type hash: (\ k -> Hash) equals: (\ k k -> Bool) -> (Map k v) =
+  empty_map k v 0 hash equals
+
+required_buckets size: Int -> Int =
+  max_fill_percentage = 60
+  size .* 100 ./ max_fill_percentage
+
+# Makes sure that the map can reach the target_size without allocating.
+reserve map: (Map k v) target_size: Int -> (Map k v) =
+  map.buckets.length .< (required_buckets target_size)
+  % false -> map
+    true ->
+      (& buckets size hash equals) = map
+      capacity = (required_buckets target_size) .round_up_to_power_of 2
+      empty_map k v capacity hash equals
+      # TODO: copy items to the new map
+
+put map: (Map k v) entry: (Entry k v) -> (Map k v) =
+  (& key value) = entry
+  map .put key value
+
+put map: (Map k v) key: k value: v -> (Map k v) =
+  (& buckets size hash: hash_fun equals) = map .reserve (map.size .+ 1)
+  hash = hash_fun key
+  new_buckets = raw_put buckets hash key value
+  & buckets: new_buckets size: (size .+ 1) hash: hash_fun equals
+
+raw_put buckets: (Array (Bucket k v)) hash: Int key: k value: v -> (Array (Bucket k v)) =
+  index = hash .mod (buckets.length)
+  buckets .get index
+  % empty -> buckets .set index (| filled: (& key value))
+    filled -> raw_put buckets (hash .+ 1) key value
+
+# iterate
+
+# Specialized constructors for common map key types.
+
+empty_int_map v: Type -> (Map Int v) =
+  empty_map Int v (\ key: Int -> key) (\ a: Int b: Int -> a .== b)
+
+#map entries: (List (Entry Int v)) -> (Map Int v) =
+#  empty_int_map .put_all (entries.iterate)
+#  # TODO: add entries

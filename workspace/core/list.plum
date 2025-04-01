@@ -5,56 +5,61 @@
 import
   "..array"
     Array t
+    copy (Array t) (Array t) (Range Int)
     generate_array Int (\ Int -> t)
     get (Array t) Int
     get_maybe (Array t) Int
+    length (Array t)
     set (Array t) Int t
     slice (Array t) (Range Int)
-    len (Array t)
-    copy (Array t) (Array t) (Range Int)
   "..bool" Bool
   "..int"
-    Int, == Int Int, + Int Int, * Int Int, max Int Int, < Int Int,
+    Int
+    == Int Int
+    < Int Int
+    + Int Int
+    * Int Int
+    max Int Int
     round_up_to_power_of Int Int
   "..iterator" Iterator t, next (Iterator t)
-  "..maybe" Maybe t, unwrap (Maybe t) String, else (Maybe t) t
+  "..maybe" Maybe t, else (Maybe t) t, unwrap (Maybe t) String
   "..never" crash String
   "..string" String
-  "..range" Range t, to t t, len (Range Int), contains (Range Int) Int
+  "..range" Range t, contains (Range Int) Int, length (Range Int), to t t
   "..test" assert Bool
-  "..type" Type
+  "..type" Type, as t t: Type
 
-List t = & array: (Array t) len: Int
+List t = & array: (Array t) length: Int
 
-#empty_list t: Type -> (List t) =
-#  & array: generate_array 0 \ index: Int -> crash "not called" .as t
-#    len: 0
-#list a: t -> (List t) = empty_list t .reserve 1 a .push a
-#list a: t b: t -> (List t) = empty_list t .reserve 2 a .push a .push b
-#list a: t b: t c: t -> (List t) =
-#  empty_list t .reserve 3 a .push a .push b .push c
+empty_list t: Type -> (List t) =
+  & array: generate_array 0 \ index: Int -> crash "not called" .as t
+    length: 0
+list a: t -> (List t) = empty_list t .reserve 1 a .push a
+list a: t b: t -> (List t) = empty_list t .reserve 2 a .push a .push b
+list a: t b: t c: t -> (List t) =
+  empty_list t .reserve 3 a .push a .push b .push c
 
 # Makes sure that the list can reach the target_len without allocating.
 reserve list: (List t) target_len: Int default_item: t -> (List t) =
   & array:
-      list.array.len .< target_len
+      list.array.length .< target_len
       % true ->
           generate_array
             target_len .round_up_to_power_of 2
             \ index: Int -> list.array .get_maybe index .else default_item
         false -> list.array
-    len: list.len
+    length: list.length
 
-is_empty list: (List t) -> Bool = list.len .== 0
+is_empty list: (List t) -> Bool = list.length .== 0
 
 push list: (List t) item: t -> (List t) =
   # TODO: hack so that we don't use list after the array.set
-  len = list.len
-  new_len = len .+ 1
-  & array: (list .reserve new_len item .array .set len item) len: new_len
+  length = list.length
+  new_len = length .+ 1
+  & array: (list .reserve new_len item .array .set length item) length: new_len
 
 get_maybe list: (List t) index: Int -> (Maybe t) =
-  0 .to (list.len) .contains index
+  0 .to (list.length) .contains index
   % true -> | some: list.array .get index
     false -> | none
 
@@ -63,16 +68,11 @@ get list: (List t) index: Int -> t =
 
 slice list: (List t) range: (Range Int) -> (List t) =
   & array: list.array .slice range
-    len: range.len
+    length: range.length
 
-shrink list: (List t) -> (List t) = list .slice (0 .to (list.len))
+shrink list: (List t) -> (List t) = list .slice (0 .to (list.length))
 
-iterate list: (List t) -> (Iterator t) =
-  \ ->
-    list.get_maybe 0
-    % none -> | empty
-      some: first ->
-        | more: & item: first rest: (list .slice (1 .to (list.len)) .iterate)
+iterate list: (List t) -> (Iterator t) = list.shrink.iterate
 
 #to_list iterator: (Iterator t) -> (List t) =
 #  iterator.next
