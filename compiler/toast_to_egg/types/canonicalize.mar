@@ -1,0 +1,226 @@
+| Canonicalizing types  
+|
+| Multiple types may describe the same set of values. For example, these two
+| types are semantically equivalent:
+|
+| First =
+|   | A
+|     B ^1
+| Second =
+|   | A
+|     B
+|       | A
+|         B ^2
+|
+| This file contains code for canonicalizing types to their minimal
+| representation.
+
+fun canonicalize(type: EggType): EggType {
+  | eprintln("Canonicalizing: {type}")
+  loop {
+    var num_recursions = type.count_recursions()
+    var baseline = type
+    for i in 0..num_recursions do {
+      var counter = 0
+      var bubbled_up = type.bubble_up_recursion(i, counter.&)
+      | eprintln("Bubbled up the {i}th recursive type: {bubbled_up}")
+      if bubbled_up.is_self_contained() then {
+        if type =~= bubbled_up then {
+          | eprintln("Better type: {bubbled_up}")
+          type = bubbled_up
+          break
+        }
+      }
+    }
+    if type == baseline then break
+  }
+  type
+}
+
+fun count_recursions(type: EggType): Int {
+  var counter = 0
+  type.count_recursions(counter.&)
+  counter
+}
+fun count_recursions(type: EggType, counter: &Int) {
+  switch type
+  case var_ {}
+  case primitive(primitive) primitive.args.count_recursions(counter)
+  case never {}
+  case struct_(fields)
+    for field in fields do field.value.count_recursions(counter)
+  case enum_(variants)
+    for variant in variants do variant.value.count_recursions(counter)
+  case lambda(lambda) {
+    lambda.args.count_recursions(counter)
+    lambda.return_type.count_recursions(counter)
+  }
+  case recursive counter += 1
+}
+fun count_recursions(types: Slice[EggType], counter: &Int) {
+  for type in types do type.count_recursions(counter)
+}
+
+fun bubble_up_recursion(type: EggType, index: Int, counter: &Int): EggType {
+  switch type
+  case var_ type
+  case primitive(primitive) {
+    var c = counter.*
+    for arg in primitive.args do
+      if arg.is_recursion(index, c.&) is some(t) then return t
+    var mapped = list[EggType]()
+    for arg in primitive.args do
+      mapped.&.push(arg.bubble_up_recursion(index, counter))
+    type_primitive(primitive.name, mapped.to_slice())
+    | type_primitive(primitive.name, primitive.args)
+  }
+  case never type
+  case struct_(fields) {
+    var c = counter.*
+    for field in fields do
+      if field.value.is_recursion(index, c.&) is some(t) then return t
+    var mapped = map[String, EggType]()
+    for field in fields do
+      mapped.&.put(field.key, field.value.bubble_up_recursion(index, counter))
+    type_struct(mapped)
+    | type_struct(fields)
+  }
+  case enum_(variants) {
+    var c = counter.*
+    for variant in variants do
+      if variant.value.is_recursion(index, c.&) is some(t) then return t
+    var mapped = map[String, EggType]()
+    for variant in variants do
+      mapped.&.put(variant.key, variant.value.bubble_up_recursion(index, counter))
+    type_enum(mapped)
+    | type_enum(variants)
+  }
+  case lambda(lambda) {
+    var c = counter.*
+    if lambda.args.is_recursion(index, c.&) is some(t) then return t
+    if lambda.return_type.is_recursion(index, c.&) is some(t) then return t
+    var mapped_args = list[EggType]()
+    for arg in lambda.args do
+      mapped_args.&.push(arg.bubble_up_recursion(index, counter))
+    var mapped_return_type =
+      lambda.return_type.bubble_up_recursion(index, counter)
+    type_lambda(mapped_args.to_slice(), mapped_return_type)
+    | type_lambda(lambda.args, lambda.return_type.*)
+  }
+  case recursive {
+    counter += 1
+    type
+  }
+}
+
+fun is_recursion(
+  types: Slice[EggType], index: Int, counter: &Int
+): Maybe[EggType] {
+  for type in types do
+    if type.is_recursion(index, counter) is some(t) then return some(t)
+  none[EggType]()
+}
+fun is_recursion(type: EggType, index: Int, counter: &Int): Maybe[EggType] {
+  if type is recursive(level) then
+    if index == counter.* then
+      return some(type_recursive(level))
+    else
+      counter += 1
+  none[EggType]()
+}
+
+fun is_self_contained(type: EggType): Bool { type.is_self_contained(0) }
+fun is_self_contained(type: EggType, depth: Int): Bool {
+  switch type
+  case var_ true
+  case primitive(primitive) {
+    for arg in primitive.args do
+      if not(arg.is_self_contained(depth + 1)) then return false
+    true
+  }
+  case never true
+  case struct_(fields) {
+    for field in fields do
+      if not(field.value.is_self_contained(depth + 1)) then return false
+    true
+  }
+  case enum_(variants) {
+    for variant in variants do
+      if not(variant.value.is_self_contained(depth + 1)) then return false
+    true
+  }
+  case lambda(lambda) {
+    for arg in lambda.args do
+      if not(arg.is_self_contained(depth + 1)) then return false
+    if not(lambda.return_type.is_self_contained(depth + 1)) then return false
+    true
+  }
+  case recursive(level) level <= depth
+}
+
+fun =~=(a: EggType, b: EggType): Bool {
+  is_equivalent(a, b, list[Tuple2[EggType, EggType]]().&)
+}
+fun is_equivalent(
+  a: EggType, b: EggType,
+  currently_comparing: &List[Tuple2[EggType, EggType]],
+): Bool {
+  if currently_comparing.iter().&.contains(tuple(a, b)) then return true
+
+  currently_comparing.push(tuple(a, b))
+
+  a = a.extend_one_level()
+  b = b.extend_one_level()
+  var result = is_equivalent_logic(a, b, currently_comparing)
+
+  currently_comparing.pop()
+  result
+}
+fun is_equivalent_logic(
+  a: EggType, b: EggType,
+  currently_comparing: &List[Tuple2[EggType, EggType]],
+): Bool {
+  switch a
+  case var_(name) {b.var_ or return false} == name
+  case primitive(a_primitive) {
+    var b_primitive = b.primitive or return false
+    a_primitive.name == b_primitive.name or return false
+    a_primitive.args.len == b_primitive.args.len or return false
+    for both in zip(a_primitive.args.iter(), b_primitive.args.iter()) do
+      is_equivalent(both.a, both.b, currently_comparing) or return false
+    true
+  }
+  case never  b is never
+  case struct_(a_fields) {
+    var b_fields = b.struct_ or return false
+    a_fields.size == b_fields.size or return false
+
+    for a_field in a_fields do {
+      var a_type = a_field.value
+      var b_type = b_fields.get_maybe(a_field.key) or return false
+      is_equivalent(a_type, b_type, currently_comparing) or return false
+    }
+    true
+  }
+  case enum_(a_variants) {
+    var b_variants = b.enum_ or return false
+    a_variants.size == b_variants.size or return false
+
+    for a_variant in a_variants do {
+      var a_arg = a_variant.value
+      var b_arg = b_variants.get_maybe(a_variant.key) or return false
+      is_equivalent(a_arg, b_arg, currently_comparing) or return false
+    }
+    true
+  }
+  case lambda(a_lambda) {
+    var b_lambda = b.lambda or return false
+    a_lambda.args.len == b_lambda.args.len or return false
+    for both in zip(a_lambda.args.iter(), b_lambda.args.iter()) do
+      is_equivalent(both.a, both.b, currently_comparing) or return false
+    is_equivalent(
+      a_lambda.return_type.*, b_lambda.return_type.*, currently_comparing
+    )
+  }
+  case recursive unreachable()
+}

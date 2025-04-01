@@ -1,4 +1,3 @@
-
 fun compile(
   fun_: ToastFun, module: Module,
   visible_by_module: Map[Module, Set[String]],
@@ -10,7 +9,7 @@ fun compile(
 
   var param_types = list[EggType]()
   for param in fun_.params do {
-    var type = param.type.compile(module, types)?
+    var type = param.type.compile(module, types)?.canonicalize()
     var id = body.push_param(type, param.name.src)
     visible.&.define(param.name.string, id)
     param_types.&.push(type)
@@ -19,17 +18,14 @@ fun compile(
 
   | Push the type variables into the body.
   for var_ in param_types.collect_type_variables() do {
-    var id = body.push(
-      EggOp.type(EggType.var_(var_)).expr(type_type, invalid_src)
-    )
+    var id = body.push(EggOp.type(type_var(var_)).expr(type_type, invalid_src))
     visible.&.define(var_, id)
   }
   for param in fun_.params do {
-    var type = param.type.compile(module, types)?
+    var type = param.type.compile(module, types)?.canonicalize()
     if type == type_type then {
       var id = body.push(
-        EggOp.type(EggType.var_(param.name.string))
-          .expr(type_type, invalid_src)
+        EggOp.type(type_var(param.name.string)).expr(type_type, invalid_src)
       )
       visible.&.define(param.name.string, id)
     }
@@ -39,7 +35,7 @@ fun compile(
     visible_by_module, funs, types
   })?
 
-  var return_type = fun_.return_type.compile(module, types)?
+  var return_type = fun_.return_type.compile(module, types)?.canonicalize()
   dag.type_of(returned).is_assignable_to(return_type) or
     return error[EggFun, Error](error(
       "Function returns something different than its claimed return type:\n
@@ -103,8 +99,9 @@ fun compile(
       body.push(EggOp.string(string.string).expr(type_string, string.src))
     case type(type)
       body.push(
-        EggOp.type(type.compile(module, context.types)?)
-          .expr(type_type, invalid_src)
+        EggOp.type(type.compile(module, context.types)?.canonicalize()).expr(
+          type_type, invalid_src
+        )
       )
     case struct_(struct_) {
       var fields = map[String, Id]()
@@ -123,15 +120,20 @@ fun compile(
       }
 
       body.push(
-        EggOp.struct_(fields)
-          .expr(EggType.struct_(types), struct_.ampersand.src)
+        EggOp.struct_(fields).expr(
+          type_struct(types).canonicalize(), struct_.ampersand.src
+        )
       )
     }
     case enum_(enum_) {
       var name = enum_.name.string
       var value = enum_.value.compile(body, module, visible, context)?
-      var type = EggType.enum_(map(name -> body.type_of(value)))
-      body.push(EggOp.enum_(EggEnum { name, value }).expr(type, enum_.pipe.src))
+      body.push(
+        EggOp.enum_(EggEnum { name, value }).expr(
+          type_enum(map(name -> body.type_of(value))).canonicalize(),
+          enum_.pipe.src,
+        )
+      )
     }
     case switch_(switch_) {
       | Compile the condition.
@@ -187,6 +189,7 @@ fun compile(
         return error[Id, Error](error(
           "Couldn't union types {case_types}", switch_.percent.src
         ))
+      var common_type = common_type.canonicalize()
       var cases = map[String, EggBody]()
       for compiler in case_compilers do {
         var symbol = compiler.key
@@ -199,8 +202,9 @@ fun compile(
       }
 
       body.push(
-        EggOp.switch_(EggSwitch { condition, cases })
-          .expr(common_type, switch_.percent.src)
+        EggOp.switch_(EggSwitch { condition, cases }).expr(
+          common_type, switch_.percent.src
+        )
       )
     }
     case name(name)
@@ -226,11 +230,8 @@ fun compile(
 
       body.push(
         EggOp.lambda(lambda_body).expr(
-          EggType.lambda(LambdaType {
-            args = param_types.to_slice(),
-            return_type = return_type.put_on_heap(),
-          }),
-          lambda.backslash.src
+          type_lambda(param_types.to_slice(), return_type).canonicalize(),
+          lambda.backslash.src,
         )
       )
     }
@@ -306,6 +307,7 @@ fun compile(
               var return_type = local_fun.fun_.return_type
                 .compile(local_fun.module, context.types)?
                 .specialize(substitutions)
+                .canonicalize()
               break(return_type)
             }
             case imported(new_signature) {
@@ -317,7 +319,9 @@ fun compile(
               for builtin in egg_builtins do
                 if signature.starts_with("{builtin_module}.{builtin}") then {
                   var return_type =
-                    builtin.signature().return_type.specialize(substitutions)
+                    builtin.signature().return_type
+                      .specialize(substitutions)
+                      .canonicalize()
                   return ok[Id, Error](body.push(
                     EggOp.call(EggCall {
                       callee = EggCallee.builtin(MatchingBuiltin {
@@ -341,7 +345,8 @@ fun compile(
         var cast_args = list[Id]()
         for both in zip(args.iter(), fun_.params.iter()) do {
           var arg = both.a
-          var expected_type = both.b.type.specialize(substitutions)
+          var expected_type =
+            both.b.type.specialize(substitutions).canonicalize()
           cast_args.&.push(body.push_cast(arg, expected_type, name.src))
         }
         var args = cast_args.to_slice()
@@ -380,8 +385,9 @@ fun compile(
         var args = cast_args.to_slice()
 
         body.push(
-          EggOp.call(EggCall { callee = EggCallee.lambda(lambda), args })
-            .expr(lambda_type.return_type.*, call.function.src())
+          EggOp.call(EggCall { callee = EggCallee.lambda(lambda), args }).expr(
+            lambda_type.return_type.*, call.function.src()
+          )
         )
       }
     }
