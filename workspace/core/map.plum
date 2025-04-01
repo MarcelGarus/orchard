@@ -1,22 +1,38 @@
-
 import
   "..array"
     Array t
+    copy (Array t) (Array t) (Range Int)
     empty_array t: Type
     generate_array Int (\ Int -> t)
     get (Array t) Int
     get_maybe (Array t) Int
+    iterate (Array t)
+    length (Array t)
     set (Array t) Int t
     slice (Array t) (Range Int)
-    length (Array t)
-    copy (Array t) (Array t) (Range Int)
   "..bool" Bool
   "..hash" Hash
   "..int"
-    Int, == Int Int, + Int Int, * Int Int, / Int Int, max Int Int, < Int Int,
-    round_up_to_power_of Int Int, mod Int Int
-  "..iterator" Iterator t, next (Iterator t)
-  "..maybe" Maybe t, unwrap (Maybe t) String, else (Maybe t) t
+    Int
+    == Int Int
+    < Int Int
+    + Int Int
+    - Int Int
+    * Int Int
+    / Int Int
+    max Int Int
+    mod Int Int
+    round_up_to_power_of Int Int
+  "..iterator"
+    Iterator t
+    filter_map (Iterator a) (\ a -> (Maybe b))
+    map (Iterator a) (\ a -> b)
+    next (Iterator t)
+  "..maybe"
+    Maybe t
+    else (Maybe t) t
+    is_some (Maybe t)
+    unwrap (Maybe t) String
   "..never" crash String
   "..string" String
   "..range" Range t, to t t, length (Range Int), contains (Range Int) Int
@@ -32,6 +48,7 @@ Map k v =
 Bucket k v =
   | filled: (Entry k v)
     empty
+    tombstone
 
 Entry k v = & key: k value: v
 
@@ -48,8 +65,8 @@ empty_map k: Type v: Type hash: (\ k -> Hash) equals: (\ k k -> Bool) -> (Map k 
   empty_map k v 0 hash equals
 
 required_buckets size: Int -> Int =
-  max_fill_percentage = 60
-  size .* 100 ./ max_fill_percentage
+  max_fill_percentage = 80
+  max (size .* 100 ./ max_fill_percentage) 8
 
 # Makes sure that the map can reach the target_size without allocating.
 reserve map: (Map k v) target_size: Int -> (Map k v) =
@@ -74,10 +91,74 @@ put map: (Map k v) key: k value: v -> (Map k v) =
 raw_put buckets: (Array (Bucket k v)) hash: Int key: k value: v -> (Array (Bucket k v)) =
   index = hash .mod (buckets.length)
   buckets .get index
-  % empty -> buckets .set index (| filled: (& key value))
-    filled -> raw_put buckets (hash .+ 1) key value
+  % filled    -> | skip
+    empty     -> | use
+    tombstone -> | use
+  % use  -> buckets .set index (| filled: (& key value))
+    skip -> raw_put buckets (hash .+ 1) key value
 
-# iterate
+get map: (Map k v) key: k -> v =
+  map .get_maybe key .unwrap "Key is not in the map."
+
+get_maybe map: (Map k v) key: k -> (Maybe v) =
+  hash = (map.hash) key
+  map.buckets .raw_get_maybe hash key (map.equals)
+
+raw_get_maybe buckets: (Array (Bucket k v)) hash: Int key: k equals: (\ k k -> Bool) -> (Maybe v) =
+  index = hash .mod (buckets.length)
+  buckets .get index
+  % filled: entry ->
+      equals (entry.key) key
+      % true -> | found: entry.value
+        false -> | skip
+    empty -> | not_in_map
+    tombstone -> | skip
+  % found: value -> | some: value
+    skip -> buckets .raw_get_maybe (hash .+ 1) key equals
+    not_in_map -> | none
+
+remove map: (Map k v) key: k -> (Map k v) =
+  (& buckets size hash equals) = map
+  & buckets: buckets .raw_remove (hash key) key equals
+    size: size .- 1
+    hash
+    equals
+
+raw_remove buckets: (Array (Bucket k v)) hash: Int key: k equals: (\ k k -> Bool) -> (Array (Bucket k v)) =
+  index = hash .mod (buckets.length)
+  buckets .get index
+  % filled: entry ->
+      equals (entry.key) key
+      % true -> | remove
+        false -> | skip
+    empty -> | not_in_map
+    tombstone -> | skip
+  % not_in_map -> buckets
+    remove -> buckets .set index (| tombstone)
+    skip -> raw_remove buckets (hash .+ 1) key equals
+
+iterate map: (Map k v) -> (Iterator (Entry k v)) =
+  map.buckets
+  . iterate
+  . filter_map
+      \ bucket: (Bucket k v) ->
+        bucket
+        % filled: entry -> | some: entry
+          empty -> | none
+          tombstone -> | none
+
+keys the_map: (Map k v) -> (Iterator k) =
+  the_map.iterate .map \ entry: (Entry k v) -> entry.key
+
+values the_map: (Map k v) -> (Iterator v) =
+  the_map.iterate .map \ entry: (Entry k v) -> entry.value
+
+contains map: (Map k v) key: k -> Bool = map .get_maybe key .is_some
+
+# get_or_put
+# put_no_clobber
+# get_put
+# remove
 
 # Specialized constructors for common map key types.
 
