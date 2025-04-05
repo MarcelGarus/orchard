@@ -6,11 +6,8 @@ fun push_cast(
   context: &YogurtContext,
 ): Id {
   if from_type == to_type then return from
-
   var cast_fun = compile_cast_fun(from_type, to_type, context)
-  body.push(YogurtOp.call(YogurtCall {
-    callee = YogurtCallee.fun_(cast_fun), args = list(from).to_slice()
-  }) $ to_type.compile())
+  body.push_call_fun(cast_fun, list(from).to_slice(), to_type.compile())
 }
 
 fun compile_cast_fun(
@@ -19,8 +16,7 @@ fun compile_cast_fun(
   var signature = "cast {from} to {to}"
 
   if context.is_defined(signature) or context.is_currently_compiling(signature)
-  then
-    return signature
+  then return signature
   context.start_compiling(signature)
 
   var dag = dag[YogurtExpr]().&
@@ -39,16 +35,12 @@ fun compile_cast_fun_body(
   body: &YogurtBodyBuilder, from: Id, context: &YogurtContext
 ): Id {
   if from_type is never then {
-    var message = body.push(
-      YogurtOp.string("") $ type_string.compile()
+    var message = body.push_string("")
+    return body.push_call_builtin(
+      YogurtBuiltin.crash, list(message).to_slice(), to_type.compile()
     )
-    return body.push(YogurtOp.call(YogurtCall {
-      callee = YogurtCallee.builtin(YogurtBuiltin.crash),
-      args = list(message).to_slice(),
-    }) $ to_type.compile())
   }
-  if from_type == to_type then
-    return from | The cast fun is just the identity fun.
+  if from_type == to_type then return from | This cast the identity fun!
 
   switch to_type.extend_one_level()
   case struct_(to_field_types) {
@@ -58,14 +50,12 @@ fun compile_cast_fun_body(
       var from_type = entry.value
       var to_type = to_field_types.get(name).canonicalize()
 
-      var from = body.push(YogurtOp.member(YogurtMember {
-        of = from, name
-      }) $ from_type.compile())
+      var from = body.push_member(from, name, from_type.compile())
       var to = body.push_cast(from, from_type, to_type, context)
 
       to_fields.&.put(name, to)
     }
-    body.push(YogurtOp.struct_(to_fields) $ to_type.compile())
+    body.push_struct(to_fields, to_type.compile())
   }
   case enum_(to_variant_types) {
     var cases = map[String, YogurtBody]()
@@ -73,30 +63,22 @@ fun compile_cast_fun_body(
       var name = entry.key
       var from_value_type = entry.value
       var to_value_type = to_variant_types.get(name).canonicalize()
-
       var case_body = body_builder(body.dag).&
       var from_value = case_body.push_param(from_value_type.compile())
       var to_value = case_body.push_cast(
         from_value, from_value_type, to_value_type, context
       )
-
-      var to = case_body.&.push(YogurtOp.enum_(YogurtEnum {
-        name, value = to_value
-      }) $ to_type.compile())
-
+      var to = case_body.&.push_enum(name, to_value, to_type.compile())
       cases.&.put(name, case_body.finish(to))
     }
-    body.push(
-      YogurtOp.switch_(YogurtSwitch { condition = from, cases })
-        $ to_type.compile()
-    )
+    body.push_switch(from, cases, to_type.compile())
   }
   case lambda(to_lambda_type) {
     var from_lambda_type = from_type.lambda.unwrap()
 
     | Create a closure.
     var closure_type = YogurtType.closure(from_type.compile().put_on_heap())
-    var closure = body.push(YogurtOp.closure(from) $ closure_type)
+    var closure = body.push_closure(from, closure_type)
 
     | Compile the casting lambda into a function.
     var lambda_dag = dag[YogurtExpr]().&
@@ -107,8 +89,8 @@ fun compile_cast_fun_body(
     for param_type in to_lambda_type.args do
       params.&.push(lambda_body.push_param(param_type.compile()))
     var inner_closure = lambda_body.push_param(closure_type)
-    var from_lambda = lambda_body.push(
-      YogurtOp.get_closure(inner_closure) $ from_type.compile()
+    var from_lambda = lambda_body.push_get_closure(
+      inner_closure, from_type.compile()
     )
     var cast_params = list[Id]()
     for param in params.iter().enumerate() do
@@ -118,11 +100,11 @@ fun compile_cast_fun_body(
         from_lambda_type.args.get(param.index),
         context,
       ))
-    var from_return =
-      lambda_body.push(YogurtOp.call(YogurtCall {
-        callee = YogurtCallee.lambda(from_lambda),
-        args = cast_params.to_slice(),
-      }) $ from_lambda_type.return_type.compile())
+    var from_return = lambda_body.push_call_lambda(
+      from_lambda,
+      cast_params.to_slice(),
+      from_lambda_type.return_type.compile()
+    )
 
     var to_return = lambda_body.push_cast(
       from_return,
@@ -136,9 +118,7 @@ fun compile_cast_fun_body(
       dag = lambda_dag.*, body = lambda_body.finish(to_return)
     })
 
-    body.push(YogurtOp.lambda(YogurtLambda {
-      closure, function = signature
-    }) $ to_type.compile())
+    body.push_lambda(signature, closure, to_type.compile())
   }
   default panic("casting {from_type} to {to_type} is not supported")
 }

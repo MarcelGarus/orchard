@@ -1,0 +1,98 @@
+import mod.mar
+
+struct YogurtBodyBuilder {
+  dag: &Dag[YogurtExpr], params: List[Id], children: List[Id]
+}
+
+fun body_builder(dag: &Dag[YogurtExpr]): _ {
+  YogurtBodyBuilder { dag, params = list[Id](), children = list[Id]() }
+}
+fun push_param(body: &YogurtBodyBuilder, type: YogurtType): Id {
+  var id = body.dag.&.put(YogurtExpr { op = YogurtOp.param, type })
+  body.params.&.push(id)
+  id
+}
+fun push(body: &YogurtBodyBuilder, op: YogurtOp, type: YogurtType): Id {
+  var id = body.dag.&.put(YogurtExpr { op, type })
+  body.children.&.push(id)
+  id
+}
+fun get(body: YogurtBodyBuilder, id: Id): YogurtExpr { body.dag.get(id) }
+fun type_of(body: YogurtBodyBuilder, id: Id): YogurtType {
+  body.dag.type_of(id)
+}
+fun finish(body: YogurtBodyBuilder, id: Id): YogurtBody {
+  YogurtBody {
+    params = body.params.to_slice(),
+    children = body.children.to_slice(),
+    returns = id,
+  }
+}
+
+fun push_int(body: &YogurtBodyBuilder, value: Int): Id {
+  body.push(YogurtOp.int(value), YogurtType.int)
+}
+fun push_string(body: &YogurtBodyBuilder, value: String): Id {
+  body.push(YogurtOp.string(value), type_string.compile())
+}
+fun push_struct(
+  body: &YogurtBodyBuilder, fields: Map[String, Id], type: YogurtType
+): Id {
+  body.push(YogurtOp.struct_(fields), type)
+}
+fun push_member(
+  body: &YogurtBodyBuilder, of: Id, name: String, type: YogurtType
+): Id {
+  body.push(YogurtOp.member(YogurtMember { of, name }), type)
+}
+fun push_enum(
+  body: &YogurtBodyBuilder, name: String, value: Id, type: YogurtType
+): Id {
+  body.push(YogurtOp.enum_(YogurtEnum { name, value }), type)
+}
+fun push_switch(
+  body: &YogurtBodyBuilder, condition: Id, cases: Map[String, YogurtBody],
+  type: YogurtType,
+): Id {
+  body.push(YogurtOp.switch_(YogurtSwitch { condition, cases }), type)
+}
+fun push_closure(body: &YogurtBodyBuilder, value: Id, type: YogurtType): Id {
+  body.push(YogurtOp.closure(value), type)
+}
+fun push_get_closure(
+  body: &YogurtBodyBuilder, value: Id, type: YogurtType
+): Id {
+  body.push(YogurtOp.get_closure(value), type)
+}
+fun push_lambda(
+  body: &YogurtBodyBuilder, function: String, closure: Id, type: YogurtType
+): Id {
+  body.push(YogurtOp.lambda(YogurtLambda { function, closure }), type)
+}
+fun push_call_lambda(
+  body: &YogurtBodyBuilder, lambda: Id, args: Slice[Id], type: YogurtType
+): Id {
+  body.push(
+    YogurtOp.call(YogurtCall { callee = YogurtCallee.lambda(lambda), args }),
+    type,
+  )
+}
+fun push_call_fun(
+  body: &YogurtBodyBuilder, fun_: String, args: Slice[Id], type: YogurtType
+): Id {
+  body.push(
+    YogurtOp.call(YogurtCall { callee = YogurtCallee.fun_(fun_), args }), type
+  )
+}
+fun push_call_builtin(
+  body: &YogurtBodyBuilder, builtin: YogurtBuiltin, args: Slice[Id],
+  type: YogurtType,
+): Id {
+  body.push(
+    YogurtOp.call(YogurtCall { callee = YogurtCallee.builtin(builtin), args }),
+    type,
+  )
+}
+fun push_type(body: &YogurtBodyBuilder, type: YogurtType): Id {
+  body.push(YogurtOp.type(type), YogurtType.type)
+}

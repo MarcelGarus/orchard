@@ -1,0 +1,57 @@
+| Context  
+|
+| When compiling to Yogurt, we specialize generic functions for concrete types
+| (aka monomorphization). The context contains useful data structures for that.
+
+import mod.mar
+
+struct YogurtContext {
+  | The stack is the stack of the context itself, containing the signatures of
+  | functions being currently monomorphized.
+  stack: &List[YogurtStackEntry],
+  egg: Egg,
+  yogurt: &Yogurt,
+}
+enum YogurtStackEntry { compiling: String, running: String }
+
+fun ==(a: YogurtStackEntry, b: YogurtStackEntry): Bool {
+  switch a
+  case compiling(a) if b is compiling(b) then a == b else false
+  case running(a)   if b is running(b)   then a == b else false
+}
+
+fun start_running(context: &YogurtContext, signature: String) {
+  context.stack.&.push(YogurtStackEntry.running(signature))
+  | context.print_status()
+}
+fun done_running(context: &YogurtContext) {
+  context.stack.&.pop().running or panic("wasn't running something")
+  | context.print_status()
+  {}
+}
+fun is_currently_running(context: YogurtContext, signature: String): Bool {
+  context.stack.iter().&.contains(YogurtStackEntry.running(signature))
+}
+
+fun start_compiling(context: &YogurtContext, signature: String) {
+  context.stack.&.push(YogurtStackEntry.compiling(signature))
+  | context.print_status()
+}
+fun done_compiling(context: &YogurtContext) {
+  context.stack.&.pop().compiling or panic("wasn't running something")
+  | context.print_status()
+  {}
+}
+fun is_currently_compiling(context: YogurtContext, signature: String): Bool {
+  context.stack.iter().&.contains(YogurtStackEntry.compiling(signature))
+}
+
+fun define(context: &YogurtContext, signature: String, fun_: YogurtFun) {
+  context.yogurt.funs.&.put(signature, fun_)
+}
+fun is_defined(context: YogurtContext, signature: String): Bool {
+  context.yogurt.funs.contains(signature)
+}
+fun get(context: YogurtContext, signature: String): YogurtFun {
+  context.yogurt.funs.get(signature)
+}
