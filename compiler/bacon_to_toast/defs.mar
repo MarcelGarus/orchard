@@ -32,21 +32,94 @@ fun parse_type_def(bacon: Bacon): Result[Maybe[ToastTypeDef], Error] {
   parsed(ToastTypeDef { name, params = params.to_slice(), type })
 }
 
-fun parse_fun_def(bacon: Bacon): Result[Maybe[ToastFun], Error] {
-  var parser = parser(bacon.line, bacon.src)
+struct ToastSignature {
+  name: StringAndSrc, params: Slice[ToastParam], return_type: ToastType
+}
 
-  var name = parser.&.parse_name() or return no_match[ToastFun]()
+fun parse_fun_signature(
+  parser: &LineParser
+): Result[Maybe[ToastSignature], Error] {
+  var name = parser.&.parse_name() or return no_match[ToastSignature]()
 
   var params = list[ToastParam]()
   loop params.&.push(parser.&.parse_param()? or break)
 
   parser.&.consume("->") or
-    return bad_input[ToastFun](error(
+    return bad_input[ToastSignature](error(
       "Expected -> for function {name.string}", parser.src_of_rest()))
 
   var return_type = parser.&.parse_type(false)? or
-    return bad_input[ToastFun](error(
+    return bad_input[ToastSignature](error(
       "Expected return type", parser.src_of_rest()))
+
+  parsed(ToastSignature { name, params = params.to_slice(), return_type })
+}
+
+fun parse_fun_signature(bacon: Bacon): Result[Maybe[ToastSignature], Error] {
+  if bacon.children.is_empty() then {
+    var parser = parser(bacon.line, bacon.src)
+    var signature = parser.&.parse_fun_signature()? or
+      return no_match[ToastSignature]()
+    parser.&.ensure_is_at_end()
+    return parsed[ToastSignature](signature)
+  }
+
+  var parser = parser(bacon.line, bacon.src)
+  var name = parser.&.parse_name() or return no_match[ToastSignature]()
+  parser.&.ensure_is_at_end()
+
+  var params = list[ToastParam]()
+  var return_type = none[ToastType]()
+  for child in bacon.children do {
+    var parser = parser(child.line, child.src)
+    var had_params_in_this_line = false
+    loop {
+      var param = parser.&.parse_param()? or break
+      params.&.push(param)
+      had_params_in_this_line = true
+    }
+    var arrow = parser.&.consume("->") or {
+      parser.&.ensure_is_at_end()
+      if not(child.children.is_empty()) then
+        return bad_input[ToastSignature](error(
+          "Weirdly indented params.", parser.src_of_rest()
+        ))
+      continue
+    }
+    if parser.&.parse_type(false)? is some(type) then {
+      if return_type is some then
+        return bad_input[ToastSignature](error(
+          "Multiple return types.", arrow.src
+        ))
+      return_type = some(type)
+    } else {
+      if had_params_in_this_line then
+        return bad_input[ToastSignature](error(
+          "Expected return type.", arrow.src
+        ))
+      else {
+        child.children.len == 1 or
+          return bad_input[ToastSignature](error(
+            "Expected return type.", arrow.src
+          ))
+        var type = parse_type(child.children.get(0))?
+        return_type = some(type)
+      }
+    }
+  }
+
+  var return_type = return_type or
+    return bad_input[ToastSignature](error(
+      "No return type specified.", name.src
+    ))
+
+  parsed(ToastSignature { name, params = params.to_slice(), return_type })
+}
+
+fun parse_fun_def(bacon: Bacon): Result[Maybe[ToastFun], Error] {
+  var parser = parser(bacon.line, bacon.src)
+
+  var signature = parser.&.parse_fun_signature()? or return no_match[ToastFun]()
 
   var equal_sign = parser.&.consume("=") or
     return bad_input[ToastFun](error("Expected =", parser.src_of_rest()))
@@ -66,5 +139,10 @@ fun parse_fun_def(bacon: Bacon): Result[Maybe[ToastFun], Error] {
       ToastExpr.body(children)
     }
 
-  parsed(ToastFun { name, params = params.to_slice(), return_type, body })
+  parsed(ToastFun {
+    name = signature.name,
+    params = signature.params,
+    return_type = signature.return_type,
+    body,
+  })
 }

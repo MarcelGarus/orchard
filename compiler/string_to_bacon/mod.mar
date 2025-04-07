@@ -45,35 +45,37 @@ fun to_bacon(content: String, module: Module): Bacon {
     }
 
     | Insert the line, creating an extra block if it starts with a special char.
-    var first_char = line.chars().get(0)
-    var create_extra_block =
-      first_char == #& or first_char == #| or first_char == #%
     node.children.&.push(
-      if create_extra_block then
-        OngoingBacon {
-          indentation,
-          line = "{first_char}",
-          src = src_prototype.with_range(range.start..{range.start + 1}),
-          children =
-            if line.without_first(1).trim().is_empty() then
-              list[OngoingBacon]()
-            else
-              list(OngoingBacon {
-                indentation = indentation + 2,
-                line = line.without_first(1),
-                src = src_prototype.with_range({range.start + 1}..range.end),
-                children = list[OngoingBacon](),
-              })
-        }
-      else
-        OngoingBacon {
-          indentation,
-          line = line.trim(),
-          src = src_prototype.with_range(range),
-          children = list[OngoingBacon]()
-        }
+      line.turn_into_bacon(indentation, src_prototype.with_range(range))
     )
   }
 
   root.to_bacon()
+}
+
+fun turn_into_bacon(line: String, indentation: Int, src: Src): OngoingBacon {
+  var first_char = line.chars().get(0)
+  var create_extra_block =
+    "&|%=".contains(first_char) and
+      {line.chars().get_maybe(1) or space}.is_whitespace()
+
+  if create_extra_block then
+    OngoingBacon {
+      indentation,
+      line = "{first_char}",
+      src = src.with_range(src.range.start..{src.range.start + 1}),
+      children =
+        if line.without_first(2).trim().is_empty() then
+          list[OngoingBacon]()
+        else
+          list(turn_into_bacon(
+            line.without_first(2),
+            indentation + 2,
+            src.with_range({src.range.start + 2}..src.range.end),
+          ))
+    }
+  else
+    OngoingBacon {
+      indentation, line = line.trim(), src, children = list[OngoingBacon]()
+    }
 }

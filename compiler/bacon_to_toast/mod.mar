@@ -32,24 +32,50 @@ fun to_toast(bacon: Bacon): Result[Toast, Error] {
   bacon.line.is_empty() or panic("to_toast was given non-root Bacon")
 
   var defs = list[ToastDef]()
-  for bacon in bacon.children do {
-    if bacon.parse_import()? is some(import_) then {
+  var i = -1
+  loop {
+    i = i + 1
+    if i >= bacon.children.len then break
+    var this = bacon.children.get(i)
+
+    if bacon.children.get_maybe(i + 1) is some(next) then
+      if next.line == "=" then {
+        var signature = this.parse_fun_signature()? or
+          return error[Toast, Error](error(
+            "Expected function signature.", next.src
+          ))
+        var children = next.children.parse_exprs()?
+        if children.is_empty() then
+          return error[Toast, Error](error(
+            "Expected function body.", next.src
+          ))
+        defs.&.push(ToastDef.fun_(ToastFun {
+          name = signature.name,
+          params = signature.params,
+          return_type = signature.return_type,
+          body = ToastExpr.body(children),
+        }))
+        i = i + 1
+        continue
+      }
+
+    if this.parse_import()? is some(import_) then {
       defs.&.push(ToastDef.import_(import_))
       continue
     }
-    if bacon.parse_export()? is some(export) then {
+    if this.parse_export()? is some(export) then {
       defs.&.push(ToastDef.export(export))
       continue
     }
-    if bacon.parse_type_def()? is some(def) then {
+    if this.parse_type_def()? is some(def) then {
       defs.&.push(ToastDef.type(def))
       continue
     }
-    if bacon.parse_fun_def()? is some(def) then {
+    if this.parse_fun_def()? is some(def) then {
       defs.&.push(ToastDef.fun_(def))
       continue
     }
-    if bacon.line.starts_with("#") then continue
+    if this.line.starts_with("#") then continue
 
     return error[Toast, Error](error("Couldn't parse line.", bacon.src))
   }
