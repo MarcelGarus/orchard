@@ -43,6 +43,63 @@ fun compile_cast_fun_body(
   if from_type == to_type then return from | This cast the identity fun!
 
   switch to_type.extend_one_level()
+  case primitive(to_primitive) {
+    var from_primitive = from_type.primitive.unwrap()
+
+    if to_primitive.name == "Array" then {
+      var from_item_type = from_primitive.args.get(0)
+      var to_item_type   = to_primitive.args.get(0)
+      | eprintln("compiling (Array {from_item_type}) to (Array {to_item_type})")
+
+      var length = body.push_call_builtin(
+        YogurtBuiltin.array_len, list(from).to_slice(), type_int.compile()
+      )
+
+      | Create a closure.
+      var closure_type = YogurtType.closure(from_type.compile().put_on_heap())
+      var closure = body.push_closure(from, closure_type)
+
+      | Compile a lambda for getting a cast argument at a given index.
+      var lambda_dag = dag[YogurtExpr]().&
+      var lambda_body = body_builder(lambda_dag).&
+
+      | The "array" is captured.
+      var index = lambda_body.push_param(type_int.compile()) | index: Int
+      var inner_closure = lambda_body.push_param(closure_type)
+      var from_array = lambda_body.push_get_closure(
+        inner_closure, from_type.compile()
+      )
+      var from_item = lambda_body.push_call_builtin(
+        YogurtBuiltin.array_get,
+        list(from_array, index).to_slice(),
+        from_item_type.compile(),
+      )
+      var to_item = lambda_body.push_cast(
+        from_item,
+        from_item_type,
+        to_item_type.canonicalize(),
+        context,
+      )
+
+      var signature = "get cast item from {from_type} to {to_type}"
+      context.define(signature, YogurtFun {
+        dag = lambda_dag.*, body = lambda_body.finish(to_item)
+      })
+      var lambda = body.push_lambda(
+        signature,
+        closure,
+        type_lambda(list(type_int).to_slice(), to_item_type).compile(),
+      )
+
+      body.push_call_builtin(
+        YogurtBuiltin.generate_array,
+        list(length, lambda).to_slice(),
+        to_type.compile(),
+      )
+    } else {
+      panic("casting {from_type} to {to_type} is not supported")
+    }
+  }
   case struct_(to_field_types) {
     var to_fields = map[String, Id]()
     for entry in from_type.extend_one_level().struct_.unwrap() do {
