@@ -1,0 +1,68 @@
+import mod.mar
+
+fun is_pure(expr: YogurtExpr): Bool {
+  switch expr.op
+  case param false
+  case int true
+  case string true
+  case struct_ true
+  case member true
+  case enum_ true
+  case switch_(switch_) {
+    false | TODO
+  }
+  case closure true
+  case get_closure true
+  case lambda true
+  case call false
+  case type true
+}
+
+fun collect_referenced(expr: YogurtExpr, dag: Dag[YogurtExpr], out: &Set[Id]) {
+  switch expr.op
+  case param {}
+  case int {}
+  case string {}
+  case struct_(fields) for field in fields do out.put(field.value)
+  case member(member) out.put(member.of)
+  case enum_(enum_) out.put(enum_.value)
+  case switch_(switch_) {
+    out.put(switch_.condition)
+    for case_ in switch_.cases do case_.value.collect_referenced(dag, out)
+  }
+  case closure(inner) out.put(inner)
+  case get_closure(closure) out.put(closure)
+  case lambda(lambda) out.put(lambda.closure)
+  case call(call) {
+    if call.callee is lambda(id) then out.put(id)
+    for arg in call.args do out.put(arg)
+  }
+  case type {}
+}
+fun collect_referenced(body: YogurtBody, dag: Dag[YogurtExpr], out: &Set[Id]) {
+  for id in body.children do dag.get(id).collect_referenced(dag, out)
+}
+
+fun tree_shake(body: YogurtBody, dag: Dag[YogurtExpr]): YogurtBody {
+  | We go through the body from the bottom to the top, tracking which locals are
+  | referenced later in the body. This way, when we encounter an expression, we
+  | know immediately whether we can throw it away.
+  var referenced_later_on = set[Id]()
+  referenced_later_on.&.put(body.returns)
+
+  var rev_children = list[Id]()
+  for id in body.children.rev_iter() do {
+    var expr = dag.get(id)
+
+    if not(referenced_later_on.contains(id)) and expr.is_pure() then continue
+
+    expr.collect_referenced(dag, referenced_later_on.&)
+    rev_children.&.push(id)
+  }
+  var children = list[Id]()
+  for id in rev_children.to_slice().rev_iter() do children.&.push(id)
+
+  YogurtBody {
+    params = body.params, children = children.to_slice(), returns = body.returns
+  }
+}

@@ -1,0 +1,54 @@
+import mod.mar
+
+fun choose_optimization_order(yogurt: Yogurt): Slice[String] {
+  var order = list[String]()
+  var stack = list[String]()
+  yogurt.entry_point.choose_optimization_order(yogurt, order.&, stack.&)
+  order.to_slice()
+}
+
+fun choose_optimization_order(
+  signature: String, yogurt: Yogurt, out: &List[String], stack: &List[String]
+) {
+  if stack.iter().&.contains(signature) then return {}
+  stack.push(signature)
+  var fun_ = yogurt.funs.get(signature)
+  fun_.body.choose_optimization_order(fun_.dag, yogurt, out, stack)
+  out.push(signature)
+  stack.pop().ignore()
+}
+
+fun choose_optimization_order(
+  body: YogurtBody, dag: Dag[YogurtExpr], yogurt: Yogurt,
+  out: &List[String], stack: &List[String],
+) {
+  for id in body.children do
+    id.choose_optimization_order(dag, yogurt, out, stack)
+}
+
+fun choose_optimization_order(
+  id: Id, dag: Dag[YogurtExpr], yogurt: Yogurt,
+  out: &List[String], stack: &List[String],
+) {
+  switch dag.get(id).op
+  case param {}
+  case int {}
+  case string {}
+  case struct_ {}
+  case member {}
+  case enum_ {}
+  case switch_(switch_)
+    for case_ in switch_.cases do
+      case_.value.choose_optimization_order(dag, yogurt, out, stack)
+  case closure {}
+  case get_closure {}
+  case lambda(lambda)
+    lambda.function.choose_optimization_order(yogurt, out, stack)
+  case call(call) {
+    switch call.callee
+    case lambda {}
+    case fun_(called) called.choose_optimization_order(yogurt, out, stack)
+    case builtin {}
+  }
+  case type {}
+}
