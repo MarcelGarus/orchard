@@ -10,6 +10,14 @@ struct TypeSignature { module: Module, name: String }
 
 fun prefix_calls_with_module(type: ToastType, module: Module): ToastType {
   switch type
+  case primitive(primitive) {
+    var args = list[ToastType]()
+    for arg in primitive.args do
+      args.&.push(arg.prefix_calls_with_module(module))
+    var args = args.to_slice()
+
+    ToastType.primitive(ToastTypePrimitive { name = primitive.name, args })
+  }
   case variable type
   case call(call) {
     var name = call.name
@@ -57,44 +65,94 @@ fun prefix_calls_with_module(type: ToastType, module: Module): ToastType {
   }
 }
 
+fun specialize(
+  type: ToastType, env: Map[String, ToastType]
+): Result[ToastType, Error] {
+  var type =
+    switch type
+    case primitive(primitive) {
+      var args = list[ToastType]()
+      for arg in primitive.args do args.&.push(arg.specialize(env)?)
+      var args = args.to_slice()
+      ToastType.primitive(ToastTypePrimitive { name = primitive.name, args })
+    }
+    case variable(variable)
+      env.get_maybe(variable.string) or
+        return error[ToastType, Error](error(
+          "Tried to use {variable.string}, but that type doesn't exist. (speci.)",
+          variable.src
+        ))
+    case call(call) {
+      var args = list[ToastType]()
+      for arg in call.args do args.&.push(arg.specialize(env)?)
+      var args = args.to_slice()
+      ToastType.call(ToastTypeCall { name = call.name, args })
+    }
+    case struct_(struct_) {
+      var fields = list[ToastTypeField]()
+      for field in struct_ do
+        fields.&.push(ToastTypeField {
+          name = field.name, type = field.type.specialize(env)?
+        })
+      var fields = fields.to_slice()
+      ToastType.struct_(fields)
+    }
+    case enum_(enum_) {
+      var variants = list[ToastTypeVariant]()
+      for variant in enum_ do
+        variants.&.push(ToastTypeVariant {
+          name = variant.name, type = variant.type.specialize(env)?
+        })
+      var variants = variants.to_slice()
+      ToastType.enum_(variants)
+    }
+    case lambda(lambda) {
+      var args = list[ToastType]()
+      for arg in lambda.args do args.&.push(arg.specialize(env)?)
+      var args = args.to_slice()
+      var return_type = lambda.return_type.specialize(env)?
+      ToastType.lambda(ToastTypeLambda {
+        args, return_type = return_type.put_on_heap()
+      })
+    }
+  ok[ToastType, Error](type)
+}
+
 struct EggTypeDef { params: Slice[String], type: EggType }
 
-struct OngoingTypeCall { name: String, args: Slice[EggType], depth: Int }
+struct OngoingTypeCall { name: String, args: Slice[ToastType], depth: Int }
+
+fun write[W](writer: W, call: OngoingTypeCall) {
+  writer."{call.name}"
+  for arg in call.args do writer." {arg}"
+}
+
 fun compile(
-  type: ToastType, env: Map[String, EggType],
-  parent_calls: List[OngoingTypeCall], depth: Int,
-  defs: Map[String, ToastTypeDef],
+  type: ToastType,
+  stack: &List[OngoingTypeCall], depth: Int, defs: Map[String, ToastTypeDef],
 ): Result[EggType, Error] {
   switch type
-  case variable(variable) {
-    if variable.string == "$Byte" then return ok[EggType, Error](type_byte)
-    if variable.string == "$Int" then return ok[EggType, Error](type_int)
-    if variable.string == "$Type" then return ok[EggType, Error](type_type)
-    if variable.string == "$Never" then return ok[EggType, Error](type_never)
-    var type = env.get_maybe(variable.string) or
-      return error[EggType, Error](error(
-        "Tried to use {variable.string}, but that type doesn't exist. (var)",
-        variable.src
-      ))
-    ok[EggType, Error](type)
+  case primitive(primitive) {
+    if primitive.name == "Byte"  then return ok[EggType, Error](type_byte)
+    if primitive.name == "Int"   then return ok[EggType, Error](type_int)
+    if primitive.name == "Type"  then return ok[EggType, Error](type_type)
+    if primitive.name == "Never" then return ok[EggType, Error](type_never)
+    if primitive.name == "Array" then {
+      var item_type =
+        primitive.args.get(0).compile(stack, depth + 1, defs)?
+      return ok[EggType, Error](type_array(item_type))
+    }
+    unreachable()
   }
+  case variable(variable) ok[EggType, Error](EggType.var_(variable.string))
   case call(call) {
     var name = call.name
 
-    | Lower the arguments.
-    var args = list[EggType]()
-    for arg in call.args do
-      args.&.push(arg.compile(env, parent_calls, depth, defs)?)
-    var args = args.to_slice()
-
     | Are we recursively lowering a type? If so, we need to insert a recursive
     | type instead of endlessly digging down into the type.
-    for call in parent_calls do
-      if call.name == name.string and call.args == args then
-        return ok[EggType, Error](EggType.recursive(depth - call.depth))
-
-    if call.name.string == "$Array" then
-      return ok[EggType, Error](type_array(args.get(0)))
+    for parent in stack do
+      if parent.name == call.name.string and parent.args == call.args then
+        return ok[EggType, Error](EggType.recursive(depth - parent.depth))
 
     | Look for a type with the name.
     var called_def = defs.get_maybe(name.string) or
@@ -110,13 +168,18 @@ fun compile(
         name.src
       ))
 
-    var inner_env = map[String, EggType]()
-    for arg in zip(called_def.params.iter(), args.iter()) do
-      inner_env.&.put(arg.a.string, arg.b)
+    var args = list[ToastType]()
+    for arg in call.args do args.&.push(arg)
+    var args = args.to_slice()
 
-    parent_calls.&.push(OngoingTypeCall { name = name.string, args, depth })
-    var type = called_def.type.compile(inner_env, parent_calls, depth, defs)?
-    parent_calls.&.pop()
+    var env = map[String, ToastType]()
+    for arg in zip(called_def.params.iter(), args.iter()) do
+      env.&.put(arg.a.string, arg.b)
+    var called = called_def.type.specialize(env)?
+
+    stack.&.push(OngoingTypeCall { name = name.string, args, depth })
+    var type = called.compile(stack, depth, defs)?
+    stack.&.pop()
 
     ok[EggType, Error](type)
   }
@@ -129,8 +192,7 @@ fun compile(
           field.name.src,
         ))
       fields.&.put(
-        field.name.string,
-        field.type.compile(env, parent_calls, depth + 1, defs)?
+        field.name.string, field.type.compile(stack, depth + 1, defs)?
       )
     }
     ok[EggType, Error](EggType.struct_(fields))
@@ -145,7 +207,7 @@ fun compile(
         ))
       variants.&.put(
         variant.name.string,
-        variant.type.compile(env, parent_calls, depth + 1, defs)?
+        variant.type.compile(stack, depth + 1, defs)?
       )
     }
     ok[EggType, Error](EggType.enum_(variants))
@@ -153,11 +215,11 @@ fun compile(
   case lambda(lambda) {
     var args = list[EggType]()
     for arg in lambda.args do
-      args.&.push(arg.compile(env, parent_calls, depth + 1, defs)?)
+      args.&.push(arg.compile(stack, depth + 1, defs)?)
     var args = args.to_slice()
 
     var return_type =
-      lambda.return_type.compile(env, parent_calls, depth + 1, defs)?
+      lambda.return_type.compile(stack, depth + 1, defs)?
 
     ok[EggType, Error](EggType.lambda(LambdaType {
       args, return_type = return_type.put_on_heap()
@@ -165,36 +227,37 @@ fun compile(
   }
 }
 
+fun put_primitive(
+  map: &Map[String, ToastTypeDef], name: String, args: Slice[String]
+) {
+  map.put("{builtin_module}.{name}", ToastTypeDef {
+    name = name @ invalid_src,
+    params = {
+      var params = list[StringAndSrc]()
+      for arg in args do params.&.push(arg @ invalid_src)
+      params.to_slice()
+    },
+    type = ToastType.primitive(ToastTypePrimitive {
+      name,
+      args = {
+        var the_args = list[ToastType]()
+        for arg in args do
+          the_args.&.push(ToastType.variable(arg @ invalid_src))
+        the_args.to_slice()
+      },
+    })
+  })
+}
+
 fun compile_all_types(
   toasts: Map[Module, Toast]
 ): Result[Map[String, EggTypeDef], Error] {
   var defs = map[String, ToastTypeDef]()
-  | TODO: instead of prefixing builtin types with $ and then checking in the
-  | lookup if the name is "$Int", just directly check if the name is
-  | "builtins.Int"
-  defs.&.put("{builtin_module}.Byte", ToastTypeDef {
-    name = "Byte" @ invalid_src,
-    params = empty_slice[StringAndSrc](),
-    type = ToastType.variable("$Byte" @ invalid_src)
-  })
-  defs.&.put("{builtin_module}.Int", ToastTypeDef {
-    name = "Int" @ invalid_src,
-    params = empty_slice[StringAndSrc](),
-    type = ToastType.variable("$Int" @ invalid_src)
-  })
-  defs.&.put("{builtin_module}.Type", ToastTypeDef {
-    name = "Type" @ invalid_src,
-    params = empty_slice[StringAndSrc](),
-    type = ToastType.variable("$Type" @ invalid_src)
-  })
-  defs.&.put("{builtin_module}.Array", ToastTypeDef {
-    name = "Array" @ invalid_src,
-    params = list("t" @ invalid_src).to_slice(),
-    type = ToastType.call(ToastTypeCall {
-      name = "$Array" @ invalid_src,
-      args = list(ToastType.variable("t" @ invalid_src)).to_slice(),
-    }),
-  })
+  defs.&.put_primitive("Byte", empty_slice[String]())
+  defs.&.put_primitive("Int", empty_slice[String]())
+  defs.&.put_primitive("Type", empty_slice[String]())
+  defs.&.put_primitive("Array", list("t").to_slice())
+
   for entry in toasts do {
     var module = entry.key
     var toast = entry.value
@@ -243,10 +306,10 @@ fun compile_all_types(
   var compiled_defs = map[String, EggTypeDef]()
   for def in defs do {
     var params = list[String]()
-    var env = map[String, EggType]()
-    var args = list[EggType]()
+    var env = map[String, ToastType]()
+    var args = list[ToastType]()
     for param in def.value.params do {
-      var type = EggType.var_(param.string)
+      var type = ToastType.variable(param)
       params.&.push(param.string)
       env.&.put(param.string, type)
       args.&.push(type)
@@ -255,7 +318,7 @@ fun compile_all_types(
     var args = args.to_slice()
 
     var type = def.value.type.compile(
-      env, list(OngoingTypeCall { name = def.key, args, depth = 0 }), 0, defs,
+      list(OngoingTypeCall { name = def.key, args, depth = 0 }).&, 0, defs
     )?
 
     compiled_defs.&.put(def.key, EggTypeDef { params, type })
@@ -273,25 +336,27 @@ fun compile(
   type: ToastType, defs: Map[String, EggTypeDef]
 ): Result[EggType, Error] {
   switch type
+  case primitive(primitive) {
+    if primitive.name == "Byte" then return ok[EggType, Error](type_byte)
+    if primitive.name == "Int" then return ok[EggType, Error](type_int)
+    if primitive.name == "Type" then return ok[EggType, Error](type_type)
+    if primitive.name == "Never" then return ok[EggType, Error](type_never)
+    if primitive.name == "Array" then {
+      var item_type = primitive.args.get(0).compile(defs)?
+      return ok[EggType, Error](type_array(item_type))
+    }
+    unreachable()
+  }
   case variable(variable) {
-    if variable.string == "$Int" then return ok[EggType, Error](type_int)
-    if variable.string == "$String" then return ok[EggType, Error](type_string)
-    if variable.string == "$Type" then return ok[EggType, Error](type_type)
-    if variable.string == "$Never" then return ok[EggType, Error](type_never)
     ok[EggType, Error](EggType.var_(variable.string))
   }
   case call(call) {
     var name = call.name
 
-    | Lower the arguments.
     var args = list[EggType]()
     for arg in call.args do args.&.push(arg.compile(defs)?)
     var args = args.to_slice()
 
-    if name.string == "$Array" then
-      return ok[EggType, Error](type_array(args.get(0)))
-
-    | Look for a type with the name.
     var called_def = defs.get_maybe(name.string) or
       return error[EggType, Error](error(
         "Tried to use {name.string}, but that type doesn't exist.",

@@ -32,12 +32,14 @@ struct ToastTypeDef {
   name: StringAndSrc, params: Slice[StringAndSrc], type: ToastType
 }
 enum ToastType {
+  primitive: ToastTypePrimitive,
   variable: StringAndSrc,
   call: ToastTypeCall,
   struct_: Slice[ToastTypeField],
   enum_: Slice[ToastTypeVariant],
   lambda: ToastTypeLambda,
 }
+struct ToastTypePrimitive { name: String, args: Slice[ToastType] }
 struct ToastTypeCall { name: StringAndSrc, args: Slice[ToastType] }
 struct ToastTypeField { name: StringAndSrc, type: ToastType }
 struct ToastTypeVariant { name: StringAndSrc, type: ToastType }
@@ -89,11 +91,15 @@ fun @(string: String, src: Src): _ { StringAndSrc { string, src } }
 fun ==(a: &ToastType, b: &ToastType): Bool { a.* == b.* }
 fun ==(a: ToastType, b: ToastType): Bool {
   switch a
+  case primitive(a) if b is primitive(b) then a == b else false
   case variable(a) if b is variable(b) then a.string == b.string else false
   case call(a)     if b is call(b)     then a == b else false
   case struct_(a)  if b is struct_(b)  then a == b else false
   case enum_(a)    if b is enum_(b)    then a == b else false
   case lambda(a)   if b is lambda(b)   then a == b else false
+}
+fun ==(a: ToastTypePrimitive, b: ToastTypePrimitive): Bool {
+  a.name == b.name and a.args == b.args
 }
 fun ==(a: ToastTypeCall, b: ToastTypeCall): Bool {
   a.name.string == b.name.string and a.args == b.args
@@ -157,6 +163,10 @@ fun write[W](writer: W, signature: ToastFunSignature) {
 }
 fun write[W](writer: W, type: ToastType) {
   switch type
+  case primitive(primitive) {
+    writer."{primitive.name}"
+    for arg in primitive.args do writer." {arg}"
+  }
   case variable(variable) writer."{variable.string}"
   case call(call) {
     writer."{call.name.string}"
@@ -179,6 +189,7 @@ fun write[W](writer: W, type: ToastType) {
 }
 fun write[W](writer: W, type: FormatWithoutWhitespace[ToastType]) {
   switch type.value
+  case primitive writer."({type.value})"
   case variable writer."{type.value}"
   case call writer."({type.value})"
   case struct_ writer."({type.value})"
