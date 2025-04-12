@@ -30,6 +30,7 @@ enum YogurtOp {
   param,
   int: Int,
   string: String,
+  array: Slice[Id],
   struct_: Map[String, Id],
   member: YogurtMember,
   enum_: YogurtEnum,
@@ -110,7 +111,7 @@ fun write[W](writer: W, yogurt: Yogurt) {
   for fun_ in yogurt.funs do {
     if first then first = false else writer."\n"
     writer."{fun_.key}:"
-    writer.write(fun_.value.body, fun_.value, 1)
+    writer.write(fun_.value.body, fun_.value.dag, 1)
   }
 }
 fun write[W](writer: W, type: YogurtType) {
@@ -142,24 +143,28 @@ fun write[W](writer: W, type: YogurtType) {
   }
   case recursive(level) writer."^{level}"
 }
-fun write[W](writer: W, body: YogurtBody, fun_: YogurtFun, indentation: Int) {
+fun write[W](writer: W, body: YogurtBody, dag: Dag[YogurtExpr], indentation: Int) {
   for param in body.params do writer." {param}"
   writer."\n"
   for id in body.children do {
-    var expr = fun_.dag.get(id)
+    var expr = dag.get(id)
     for i in 0..indentation do writer."  "
     writer."{id}: {expr.type} = "
-    writer.write(expr.op, fun_, indentation)
+    writer.write(expr.op, dag, indentation)
     writer."\n"
   }
   for i in 0..indentation do writer."  "
   writer."{body.returns}"
 }
-fun write[W](writer: W, op: YogurtOp, fun_: YogurtFun, indentation: Int) {
+fun write[W](writer: W, op: YogurtOp, dag: Dag[YogurtExpr], indentation: Int) {
   switch op
   case param(param) writer."param {param}"
   case int(int) writer."int {int}"
   case string(string) writer."string {string.debug()}"
+  case array(items) {
+    writer."array"
+    for item in items do writer." {item}"
+  }
   case struct_(struct_) {
     writer."&"
     for field in struct_ do writer." {field.key}: {field.value}"
@@ -172,7 +177,7 @@ fun write[W](writer: W, op: YogurtOp, fun_: YogurtFun, indentation: Int) {
       writer."\n"
       for i in 0..indentation do writer."  "
       writer."  {case_.key}:"
-      writer.write(case_.value, fun_, indentation + 2)
+      writer.write(case_.value, dag, indentation + 2)
     }
   }
   case closure(inner) writer."closure {inner}"
@@ -188,6 +193,6 @@ fun write[W](writer: W, op: YogurtOp, fun_: YogurtFun, indentation: Int) {
 fun write[W](writer: W, callee: YogurtCallee) {
   switch callee
   case lambda(lambda) writer."{lambda}"
-  case fun_(fun_) writer."\"{fun_}\""
+  case fun_(signature) writer."{signature.debug()}"
   case builtin(builtin) writer."{builtin.debug()}"
 }

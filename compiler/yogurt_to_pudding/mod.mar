@@ -32,10 +32,8 @@ fun require(
 }
 
 fun to_pudding(
-  id: Id,
-  fun_: YogurtFun, | TODO: is the DAG enough?
+  id: Id, fun_: YogurtFun, | TODO: is the DAG enough?
   dag: &Dag[PuddingExpr], rev_body: &List[Id], needed_later_on: &Set[Id],
-  yogurt: Yogurt,
 ) {
   var expr = fun_.dag.get(id)
   var type = expr.type
@@ -50,6 +48,8 @@ fun to_pudding(
   case int(int) rev_body.push(dag.put(id, PuddingOp.int(int) $ type))
   case string(string)
     rev_body.push(dag.put(id, PuddingOp.string(string) $ type))
+  case array(items)
+    rev_body.push(dag.put(id, PuddingOp.array(items) $ type))
   case struct_(fields) {
     rev_body.push(dag.put(id, PuddingOp.struct_(fields) $ type))
     for field in fields do rev_body.require(field.value, dag, needed_later_on)
@@ -89,7 +89,7 @@ fun to_pudding(
       var needed_by_this_branch = set[Id]()
       for id in needed_later_on do needed_by_this_branch.&.put(id)
       cases.&.put(case_.key, case_.value.to_pudding(
-        fun_, dag, needed_by_this_branch.&, yogurt
+        fun_, dag, needed_by_this_branch.&
       ))
       needed_by_branches.&.put(case_.key, needed_by_this_branch)
     }
@@ -155,10 +155,10 @@ fun to_pudding(
       ))
       rev_body.require(lambda, dag, needed_later_on)
     }
-    case fun_(fun_)
+    case fun_(signature)
       rev_body.push(dag.put(
         id, PuddingOp.call(PuddingCall {
-          callee = PuddingCallee.fun_(fun_), args = call.args
+          callee = PuddingCallee.fun_(signature), args = call.args
         }) $ type
       ))
     case builtin(builtin) {
@@ -194,18 +194,15 @@ fun to_pudding(
 }
 
 fun to_pudding(
-  body: YogurtBody,
-  fun_: YogurtFun, | TODO: is the DAG enough?
-  dag: &Dag[PuddingExpr],
-  needed_later_on: &Set[Id], | which yogurt ids are needed later on
-  yogurt: Yogurt, | TODO: is this needed?
+  body: YogurtBody, fun_: YogurtFun, | TODO: is the DAG enough?
+  dag: &Dag[PuddingExpr], needed_later_on: &Set[Id],
 ): PuddingBody {
   var rev_body = list[Id]()
 
   rev_body.&.require(body.returns, dag, needed_later_on)
 
   for id in body.children.rev_iter() do
-    id.to_pudding(fun_, dag, rev_body.&, needed_later_on, yogurt)
+    id.to_pudding(fun_, dag, rev_body.&, needed_later_on)
 
   var params = list[Id]()
   for param in body.params do {
@@ -224,7 +221,7 @@ fun to_pudding(
   PuddingBody { params, exprs, returns = body.returns }
 }
 
-fun to_pudding(fun_: YogurtFun, yogurt: Yogurt, pudding: &Pudding): PuddingFun {
+fun to_pudding(fun_: YogurtFun, pudding: &Pudding): PuddingFun {
   var dag = dag[PuddingExpr]()
 
   | The IDs in the Yogurt and Pudding are the same. So, we first reserve IDs for
@@ -233,7 +230,7 @@ fun to_pudding(fun_: YogurtFun, yogurt: Yogurt, pudding: &Pudding): PuddingFun {
   for i in 0..{fun_.dag.nodes.len} do
     dag.&.put(PuddingOp.param $ YogurtType.never) | placeholders
 
-  var body = fun_.body.to_pudding(fun_, dag.&, set[Id]().&, yogurt)
+  var body = fun_.body.to_pudding(fun_, dag.&, set[Id]().&)
 
   PuddingFun { dag, body }
 }
@@ -242,7 +239,7 @@ fun to_pudding(yogurt: Yogurt): Pudding {
   var pudding = pudding(yogurt.entry_point)
   for fun_ in yogurt.funs do {
     | eprintln("Compiling {fun_.key}")
-    pudding.funs.&.put(fun_.key, fun_.value.to_pudding(yogurt, pudding.&))
+    pudding.funs.&.put(fun_.key, fun_.value.to_pudding(pudding.&))
   }
   pudding
 }
