@@ -3,30 +3,35 @@ import mod.mar
 fun optimize(fun_: YogurtFun, optimized: &Map[String, YogurtFun]): YogurtFun {
   var new_dag = dag[YogurtExpr]()
   var mapping = map[Id, Id]()
-  var body = fun_.body.optimize(fun_.dag, new_dag.&, mapping.&, optimized)
+  var body = fun_.body.optimize(fun_.dag, true, new_dag.&, mapping.&, optimized)
   YogurtFun { dag = new_dag, body }
 }
 
 fun optimize(
-  body: YogurtBody, dag: Dag[YogurtExpr],
+  body: YogurtBody, dag: Dag[YogurtExpr], inlining: Bool,
   new_dag: &Dag[YogurtExpr],
   mapping: &Map[Id, Id], optimized: &Map[String, YogurtFun],
 ): YogurtBody {
   var builder = body_builder(new_dag).&
   for id in body.params do mapping.put(id, builder.push_param(dag.type_of(id)))
   for id in body.children do
-    mapping.put(id, id.optimize(dag, builder, mapping, optimized))
+    mapping.put(id, id.optimize(dag, inlining, builder, mapping, optimized))
   var body = builder.finish(mapping.get(body.returns))
   var body = body.tree_shake(new_dag.*)
   body
 }
 
 fun optimize(
-  id: Id, dag: Dag[YogurtExpr],
+  id: Id, dag: Dag[YogurtExpr], inlining: Bool,
   builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
   optimized: &Map[String, YogurtFun],
 ): Id {
   var expr = dag.get(id)
+
+  | stderr."Optimizing:"
+  | stderr.write(expr.op, dag, 0)
+  | stderr."\n"
+
   switch expr.op
   case param unreachable()
   case int(int) builder.push_int(int)
@@ -57,14 +62,15 @@ fun optimize(
       var inner_mapping = map(case_.params.get(0) -> enum_.value)
       for id in case_.children do
         inner_mapping.&.put(
-          id, id.optimize(dag, builder, inner_mapping.&, optimized)
+          id, id.optimize(dag, inlining, builder, inner_mapping.&, optimized)
         )
       return inner_mapping.get(case_.returns)
     }
     var cases = map[String, YogurtBody]()
     for case_ in switch_.cases do
       cases.&.put(
-        case_.key, case_.value.optimize(dag, builder.dag, mapping, optimized)
+        case_.key,
+        case_.value.optimize(dag, inlining, builder.dag, mapping, optimized),
       )
     builder.push_switch(condition, cases, expr.type)
   }
@@ -83,17 +89,22 @@ fun optimize(
       switch call.callee
       case lambda(lambda) YogurtCallee.lambda(mapping.get(lambda))
       case fun_(signature) {
-        if optimized.get_maybe(signature) is some(called) then {
-          if called.complexity() < 10 then {
-            | Inline the called function!
-            var inner_mapping = map[Id, Id]()
-            for both in zip(called.body.params.iter(), call.args.iter()) do
-              inner_mapping.&.put(both.a, mapping.get(both.b))
-            for id in called.body.children do
-              inner_mapping.&.put(
-                id, id.optimize(called.dag, builder, inner_mapping.&, optimized)
-              )
-            return inner_mapping.get(called.body.returns)
+        if inlining then {
+          if optimized.get_maybe(signature) is some(called) then {
+            if called.complexity() < 10 then {
+              | Inline the called function!
+              var inner_mapping = map[Id, Id]()
+              for both in zip(called.body.params.iter(), call.args.iter()) do
+                inner_mapping.&.put(both.a, mapping.get(both.b))
+              for id in called.body.children do
+                inner_mapping.&.put(
+                  id,
+                  id.optimize(
+                    called.dag, false, builder, inner_mapping.&, optimized
+                  ),
+                )
+              return inner_mapping.get(called.body.returns)
+            }
           }
         }
         YogurtCallee.fun_(signature)
