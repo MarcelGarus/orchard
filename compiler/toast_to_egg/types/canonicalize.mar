@@ -4,13 +4,13 @@
 | types are semantically equivalent:
 |
 | First =
-|   | A
-|     B ^1
+|   | a
+|     b: ^1
 | Second =
-|   | A
-|     B
-|       | A
-|         B ^2
+|   | a
+|     b
+|       | a
+|         b: ^2
 |
 | This file contains code for canonicalizing types to their minimal
 | representation.
@@ -18,16 +18,19 @@
 import mod.mar
 
 fun canonicalize(type: EggType): EggType {
-  | eprintln("Canonicalizing: {type}")
+  | eprintln("Canonicalizing:\n{type.indented()}")
+  type.is_self_contained() or
+    panic("canonicalizing non-self-contained type:\n{type.indented()}")
   loop {
     var num_recursions = type.count_recursions()
+    | eprintln("Num recursions: {num_recursions}")
     var baseline = type
     for i in 0..num_recursions do {
       var counter = 0
       var bubbled_up = type.bubble_up_recursion(i, counter.&)
-      | eprintln("Bubbled up the {i}th recursive type: {bubbled_up}")
+      | eprintln("Bubbled up the {i}th recursive type ({counter}):\n{bubbled_up.indented()}")
       if bubbled_up.is_self_contained() then {
-        if type =~= bubbled_up then {
+        if type != bubbled_up and type =~= bubbled_up then {
           | eprintln("Better type: {bubbled_up}")
           type = bubbled_up
           break
@@ -64,12 +67,12 @@ fun count_recursions(types: Slice[EggType], counter: &Int) {
 }
 
 fun bubble_up_recursion(type: EggType, index: Int, counter: &Int): EggType {
+  | eprintln("counter = {counter.*}, index = {index}")
   switch type
   case var_ type
   case primitive(primitive) {
     var c = counter.*
-    for arg in primitive.args do
-      if arg.is_recursion(index, c.&) is some(t) then return t
+    if primitive.args.is_recursion(index, c.&) is some(t) then { counter.* = c return t }
     var mapped = list[EggType]()
     for arg in primitive.args do
       mapped.&.push(arg.bubble_up_recursion(index, counter))
@@ -80,7 +83,7 @@ fun bubble_up_recursion(type: EggType, index: Int, counter: &Int): EggType {
   case struct_(fields) {
     var c = counter.*
     for field in fields do
-      if field.value.is_recursion(index, c.&) is some(t) then return t
+      if field.value.is_recursion(index, c.&) is some(t) then { counter.* = c return t }
     var mapped = map[String, EggType]()
     for field in fields do
       mapped.&.put(field.key, field.value.bubble_up_recursion(index, counter))
@@ -90,7 +93,7 @@ fun bubble_up_recursion(type: EggType, index: Int, counter: &Int): EggType {
   case enum_(variants) {
     var c = counter.*
     for variant in variants do
-      if variant.value.is_recursion(index, c.&) is some(t) then return t
+      if variant.value.is_recursion(index, c.&) is some(t) then { counter.* = c return t }
     var mapped = map[String, EggType]()
     for variant in variants do
       mapped.&.put(variant.key, variant.value.bubble_up_recursion(index, counter))
@@ -99,8 +102,8 @@ fun bubble_up_recursion(type: EggType, index: Int, counter: &Int): EggType {
   }
   case lambda(lambda) {
     var c = counter.*
-    if lambda.args.is_recursion(index, c.&) is some(t) then return t
-    if lambda.return_type.is_recursion(index, c.&) is some(t) then return t
+    if lambda.args.is_recursion(index, c.&) is some(t) then { counter.* = c return t }
+    if lambda.return_type.is_recursion(index, c.&) is some(t) then { counter.* = c return t }
     var mapped_args = list[EggType]()
     for arg in lambda.args do
       mapped_args.&.push(arg.bubble_up_recursion(index, counter))
@@ -110,6 +113,7 @@ fun bubble_up_recursion(type: EggType, index: Int, counter: &Int): EggType {
     | type_lambda(lambda.args, lambda.return_type.*)
   }
   case recursive {
+    | eprintln("Directly a recursive type {index} {counter.*}")
     counter += 1
     type
   }
@@ -123,11 +127,19 @@ fun is_recursion(
   none[EggType]()
 }
 fun is_recursion(type: EggType, index: Int, counter: &Int): Maybe[EggType] {
-  if type is recursive(level) then
-    if index == counter.* then
-      return some(type_recursive(level))
-    else
-      counter += 1
+  if type is recursive(level) then {
+    var result =
+      if index == counter.* then {
+        | eprintln("found the recursive type ({level})")
+        some(type_recursive(level))
+      }
+      else {
+        | eprintln("not the recursive type {index} {counter.*}")
+        none[EggType]()
+      }
+    counter += 1
+    return result
+  }
   none[EggType]()
 }
 
