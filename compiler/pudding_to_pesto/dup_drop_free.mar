@@ -92,8 +92,9 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
     do {
       var payload_type = dag.type_of(value).enum_.unwrap().get(variant.key)
       var builder = body_builder(dag.&, payload_type).&
+      var payload = builder.param
       if payload_type is ptr then {
-        var new_refcount = builder.decrement_reference_count(builder.param)
+        var new_refcount = builder.decrement_reference_count(payload)
         builder.switch_(builder.compare_ints(new_refcount, builder.int(0)), map(
           "less" -> | Never runs in practice; refcount is always >= 0.
             body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
@@ -103,15 +104,15 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
             var builder = body_builder(dag.&, pesto_nothing.type).&
             builder.call(
               variant.value.compile().compile_drop_fun(pesto),
-              builder.load(value, variant.value.compile().to_pesto()),
+              builder.load(payload, variant.value.compile().to_pesto()),
               pesto_nothing.type,
             )
-            builder.free(value, dag.type_of(value))
+            builder.free(payload, dag.type_of(value))
             builder.finish_with_nothing()
           },
         ))
       } else
-        builder.drop(builder.param, variant.value.compile(), pesto)
+        builder.drop(payload, variant.value.compile(), pesto)
 
       cases.&.put(variant.key, builder.finish_with_nothing())
     }
