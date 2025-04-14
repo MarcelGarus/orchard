@@ -1,0 +1,173 @@
+import plum.mar
+
+enum YogurtValue {
+  byte: Byte,
+  int: Int,
+  array: Slice[YogurtValue],
+  struct_: Map[String, YogurtValue],
+  enum_: YogurtEnumValue,
+  closure: &YogurtValue,
+  lambda: YogurtLambdaValue,
+  type: YogurtType,
+}
+struct YogurtEnumValue { name: String, value: &YogurtValue }
+struct YogurtLambdaValue { function: String, closure: &YogurtValue }
+
+fun write[W](writer: W, value: YogurtValue) {
+  switch value
+  case byte(byte) writer."{byte}"
+  case int(int) writer."{int}"
+  case array(items) {
+    writer."["
+    var first = true
+    for item in items do {
+      if first then first = false else writer." "
+      writer."{item}"
+    }
+    writer."]"
+  }
+  case struct_(fields) {
+    writer."(&"
+    for field in fields do writer." {field.key}: {field.value}"
+    writer.")"
+  }
+  case enum_(enum_) writer."(| {enum_.name}: {enum_.value})"
+  case closure(closure) writer."(Closure {closure})"
+  case lambda(lambda) writer."(\\ ...)"
+  case type(type) writer."{type}"
+}
+
+fun as_string(value: YogurtValue): String {
+  var bytes = list[Byte]()
+  for byte in value.struct_.unwrap().get("utf8_bytes").array.unwrap() do
+    bytes.&.push(byte.byte.unwrap())
+  bytes.to_slice().to_string()
+}
+
+fun run(yogurt: Yogurt, args: Slice[YogurtValue]): YogurtValue {
+  yogurt.entry_point.run(args, yogurt)
+}
+
+fun run(
+  function: String, args: Slice[YogurtValue], yogurt: Yogurt
+): YogurtValue {
+  var visible = map[Id, YogurtValue]()
+  var fun_ = yogurt.funs.get(function)
+  fun_.body.run(args, fun_.dag, visible.&, yogurt)
+}
+
+fun run(
+  body: YogurtBody, args: Slice[YogurtValue], dag: Dag[YogurtExpr],
+  visible: &Map[Id, YogurtValue], yogurt: Yogurt,
+): YogurtValue {
+  for both in zip(body.params.iter(), args.iter()) do
+    visible.put(both.a, both.b)
+  for id in body.children do
+    visible.put(id, dag.get(id).run(dag, visible, yogurt))
+  visible.get(body.returns)
+}
+
+fun run(
+  expr: YogurtExpr, dag: Dag[YogurtExpr],
+  visible: &Map[Id, YogurtValue], yogurt: Yogurt,
+): YogurtValue {
+  switch expr.op
+  case param unreachable()
+  case int(int) YogurtValue.int(int)
+  case string(string) {
+    var bytes = list[YogurtValue]()
+    for byte in string.bytes() do bytes.&.push(YogurtValue.byte(byte))
+    YogurtValue.struct_(map(
+      "utf8_bytes" -> YogurtValue.array(bytes.to_slice())
+    ))
+  }
+  case array(array) {
+    var items = list[YogurtValue]()
+    for item in array do items.&.push(visible.get(item))
+    YogurtValue.array(items.to_slice())
+  }
+  case struct_(struct_) {
+    var fields = map[String, YogurtValue]()
+    for field in struct_ do fields.&.put(field.key, visible.get(field.value))
+    YogurtValue.struct_(fields)
+  }
+  case member(member) visible.get(member.of).struct_.unwrap().get(member.name)
+  case enum_(enum_)
+    YogurtValue.enum_(YogurtEnumValue {
+      name = enum_.name, value = visible.get(enum_.value).put_on_heap()
+    })
+  case switch_(switch_) {
+    var condition = visible.get(switch_.condition).enum_.unwrap()
+    var case_ = switch_.cases.get(condition.name)
+    case_.run(list(condition.value.*).to_slice(), dag, visible, yogurt)
+  }
+  case closure(inner) YogurtValue.closure(visible.get(inner).put_on_heap())
+  case get_closure(closure) visible.get(closure).closure.unwrap().*
+  case lambda(lambda)
+    YogurtValue.lambda(YogurtLambdaValue {
+      function = lambda.function,
+      closure = visible.get(lambda.closure).put_on_heap(),
+    })
+  case call(call) {
+    var args = list[YogurtValue]()
+    for arg in call.args do args.&.push(visible.get(arg))
+    var args = args.to_slice()
+
+    switch call.callee
+    case lambda(lambda) {
+      var lambda = visible.get(lambda).lambda.unwrap()
+      var all_args = list[YogurtValue]()
+      for arg in args do all_args.&.push(arg)
+      all_args.&.push(lambda.closure.*)
+      lambda.function.run(all_args.to_slice(), yogurt)
+    }
+    case fun_(signature) signature.run(args, yogurt)
+    case builtin(builtin) {
+      switch builtin
+      case lower_byte YogurtValue.byte(args.get(0).int.unwrap().lower_byte())
+      case byte_to_int YogurtValue.int(args.get(0).byte.unwrap().to_int())
+      case add_ints YogurtValue.int(args.get(0).int.unwrap() + args.get(1).int.unwrap())
+      case sub_ints YogurtValue.int(args.get(0).int.unwrap() - args.get(1).int.unwrap())
+      case mul_ints YogurtValue.int(args.get(0).int.unwrap() * args.get(1).int.unwrap())
+      case div_ints YogurtValue.int(args.get(0).int.unwrap() / args.get(1).int.unwrap())
+      case mod_ints YogurtValue.int(args.get(0).int.unwrap() % args.get(1).int.unwrap())
+      case and_ints YogurtValue.int(args.get(0).int.unwrap() & args.get(1).int.unwrap())
+      case or_ints YogurtValue.int(or(args.get(0).int.unwrap(), args.get(1).int.unwrap()))
+      case xor_ints YogurtValue.int(args.get(0).int.unwrap() ^ args.get(1).int.unwrap())
+      case compare_ints YogurtValue.enum_(YogurtEnumValue {
+        name =
+          switch args.get(0).int.unwrap() <=> args.get(1).int.unwrap()
+          case less "less"
+          case equal "equal"
+          case greater "greater",
+        value = YogurtValue.struct_(map[String, YogurtValue]()).put_on_heap(),
+      })
+      case generate_array {
+        var len = args.get(0).int.unwrap()
+        var lambda = args.get(1).lambda.unwrap()
+        var items = list[YogurtValue]()
+        for index in 0..len do
+          items.&.push(
+            lambda.function.run(list(YogurtValue.int(index), lambda.closure.*).to_slice(), yogurt)
+          )
+        YogurtValue.array(items.to_slice())
+      }
+      case array_get {
+        var array = args.get(0).array.unwrap()
+        var index = args.get(1).int.unwrap()
+        array.get(index)
+      }
+      case array_set todo("array_set")
+      case array_slice {
+        var array = args.get(0).array.unwrap()
+        var range = args.get(1).struct_.unwrap()
+        var start = range.get("start").int.unwrap()
+        var end   = range.get("end").int.unwrap()
+        YogurtValue.array(array.subslice(start..end))
+      }
+      case array_len YogurtValue.int(args.get(0).array.unwrap().len)
+      case crash panic("Plum code crashed: {args.get(0)}")
+    }
+  }
+  case type(type) YogurtValue.type(type)
+}
