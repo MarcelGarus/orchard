@@ -13,7 +13,11 @@ fun push_cast(
 fun compile_cast_fun(
   from: EggType, to: EggType, context: &YogurtContext
 ): String {
+  var from = from.canonicalize()
+  var to = to.canonicalize()
   var signature = "cast {from} to {to}"
+  from.is_self_contained() or panic("from is not self-contained:\n{from.indented()}")
+  to.is_self_contained() or panic("to is not self-contained:\n{to.indented()}")
 
   if context.is_defined(signature) or context.is_currently_compiling(signature)
   then return signature
@@ -44,11 +48,12 @@ fun compile_cast_fun_body(
 
   switch to_type.extend_one_level()
   case primitive(to_primitive) {
-    var from_primitive = from_type.primitive.unwrap()
+    var from_primitive =
+      from_type.extend_one_level().primitive.unwrap()
 
     if to_primitive.name == "Array" then {
-      var from_item_type = from_primitive.args.get(0)
-      var to_item_type   = to_primitive.args.get(0)
+      var from_item_type = from_primitive.args.get(0).canonicalize()
+      var to_item_type   = to_primitive.args.get(0).canonicalize()
       | eprintln("compiling (Array {from_item_type}) to (Array {to_item_type})")
 
       var length = body.push_call_builtin(
@@ -77,7 +82,7 @@ fun compile_cast_fun_body(
       var to_item = lambda_body.push_cast(
         from_item,
         from_item_type,
-        to_item_type.canonicalize(),
+        to_item_type,
         context,
       )
 
@@ -104,7 +109,7 @@ fun compile_cast_fun_body(
     var to_fields = map[String, Id]()
     for entry in from_type.extend_one_level().struct_.unwrap() do {
       var name = entry.key
-      var from_type = entry.value
+      var from_type = entry.value.canonicalize()
       var to_type = to_field_types.get(name).canonicalize()
 
       var from = body.push_member(from, name, from_type.compile())
@@ -118,7 +123,7 @@ fun compile_cast_fun_body(
     var cases = map[String, YogurtBody]()
     for entry in from_type.extend_one_level().enum_.unwrap() do {
       var name = entry.key
-      var from_value_type = entry.value
+      var from_value_type = entry.value.canonicalize()
       var to_value_type = to_variant_types.get(name).canonicalize()
       var case_body = body_builder(body.dag).&
       var from_value = case_body.push_param(from_value_type.compile())
@@ -131,7 +136,7 @@ fun compile_cast_fun_body(
     body.push_switch(from, cases, to_type.compile())
   }
   case lambda(to_lambda_type) {
-    var from_lambda_type = from_type.lambda.unwrap()
+    var from_lambda_type = from_type.extend_one_level().lambda.unwrap()
 
     | Create a closure.
     var closure_type = YogurtType.closure(from_type.compile().put_on_heap())
@@ -154,7 +159,7 @@ fun compile_cast_fun_body(
       cast_params.&.push(lambda_body.push_cast(
         param.item,
         to_lambda_type.args.get(param.index).canonicalize(),
-        from_lambda_type.args.get(param.index),
+        from_lambda_type.args.get(param.index).canonicalize(),
         context,
       ))
     var from_return = lambda_body.push_call_lambda(
@@ -165,7 +170,7 @@ fun compile_cast_fun_body(
 
     var to_return = lambda_body.push_cast(
       from_return,
-      from_lambda_type.return_type.*,
+      from_lambda_type.return_type.canonicalize(),
       to_lambda_type.return_type.canonicalize(),
       context,
     )
