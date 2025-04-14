@@ -1,0 +1,149 @@
+import plum.mar
+
+fun as_string(value: Slice[Byte]): String {
+  var address = value.subslice(0..8).to_int().to_address()
+  var len = value.subslice(8..16).to_int()
+  var start = value.subslice(16..24).to_int()
+
+  String { data = address + 16 + start, len }
+}
+
+fun run(waffle: Waffle, input: Slice[Byte]): Slice[Byte] {
+  waffle.entry_point.run(input, waffle)
+}
+
+fun run(function: String, args: Slice[Byte], waffle: Waffle): Slice[Byte] {
+  var visible = map(id(0) -> args)
+  var fun_ = waffle.funs.get(function)
+  fun_.body.run(fun_.dag, visible.&, waffle)
+}
+
+fun run(
+  body: WaffleBody, dag: Dag[WaffleExpr],
+  visible: &Map[Id, Slice[Byte]], waffle: Waffle,
+): Slice[Byte] {
+  for id in body.locals do
+    visible.put(id, dag.get(id).run(dag, visible, waffle))
+  body.returns.run(dag, visible, waffle)
+}
+
+fun run(
+  expr: WaffleExpr, dag: Dag[WaffleExpr],
+  visible: &Map[Id, Slice[Byte]], waffle: Waffle,
+): Slice[Byte] {
+  switch expr.kind
+  case param visible.get(id(0))
+  case padding(amount) filled_slice(amount, 16#aa.lower_byte())
+  case byte(byte) list(byte).to_slice()
+  case int(int) int.to_bytes()
+  case local(id) visible.get(id)
+  case aggregate(aggregate) {
+    var bytes = list[Byte]()
+    for part in aggregate do bytes.&.push_all(part.run(dag, visible, waffle))
+    bytes.to_slice()
+  }
+  case member(member) {
+    member.of.run(dag, visible, waffle).subslice(member.offset ..+ expr.size)
+  }
+  case switch_(switch_) {
+    switch_.cases.get(switch_.byte.run(dag, visible, waffle).get(0).to_int())
+      .run(dag, visible, waffle)
+  }
+  case call(call) call.function.run(call.args.run(dag, visible, waffle), waffle)
+  case call_indirect(call) {
+    var fun_index = call.function_ptr.run(dag, visible, waffle).to_int()
+    var signature = waffle.funs.iter().skip(fun_index).&.next().unwrap().key
+    signature.run(call.args.run(dag, visible, waffle), waffle)
+  }
+  case function_ptr(signature) {
+    var fun_index = 0
+    for fun_ in waffle.funs.iter().enumerate() do
+      if fun_.item.key == signature then fun_index = fun_.index
+    fun_index.to_bytes()
+  }
+  case lower_byte(int)
+    list(int.run(dag, visible, waffle).to_int().lower_byte()).to_slice()
+  case byte_to_int(byte)
+    byte.run(dag, visible, waffle).to_int().to_bytes()
+  case add(args) {
+    var ints = args.run(dag, visible, waffle).two_ints()
+    {ints.a + ints.b}.to_bytes()
+  }
+  case sub(args) {
+    var ints = args.run(dag, visible, waffle).two_ints()
+    {ints.a - ints.b}.to_bytes()
+  }
+  case mul(args) {
+    var ints = args.run(dag, visible, waffle).two_ints()
+    {ints.a * ints.b}.to_bytes()
+  }
+  case div(args) {
+    var ints = args.run(dag, visible, waffle).two_ints()
+    {ints.a / ints.b}.to_bytes()
+  }
+  case mod(args) {
+    var ints = args.run(dag, visible, waffle).two_ints()
+    {ints.a % ints.b}.to_bytes()
+  }
+  case compare_zero(arg) {
+    var int = arg.run(dag, visible, waffle).to_int()
+    switch int <=> 0
+    case equal   list(0.lower_byte()).to_slice()
+    case greater list(1.lower_byte()).to_slice()
+    case less    list(2.lower_byte()).to_slice()
+  }
+  case and_(args) {
+    var ints = args.run(dag, visible, waffle).two_ints()
+    {ints.a & ints.b}.to_bytes()
+  }
+  case or_(args) {
+    var ints = args.run(dag, visible, waffle).two_ints()
+    {ints.a.or(ints.b)}.to_bytes()
+  }
+  case xor(args) {
+    var ints = args.run(dag, visible, waffle).two_ints()
+    {ints.a ^ ints.b}.to_bytes()
+  }
+  case malloc(size) {
+    var size = size.run(dag, visible, waffle).to_int()
+    var memory = uninitialized_slice[Byte](size)
+    memory.data.to_int().to_bytes()
+  }
+  case free empty_slice[Byte]()
+  case load(ptr) {
+    var address = ptr.run(dag, visible, waffle).to_int().to_address()
+    Slice[Byte] { data = address, len = expr.size }
+  }
+  case store(store) {
+    var ptr = store.ptr.run(dag, visible, waffle).to_int().to_address()
+    var value = store.value.run(dag, visible, waffle)
+    for byte in value.iter().enumerate() do
+      {ptr + byte.index}.to_reference[Byte]().* = byte.item
+    empty_slice[Byte]()
+  }
+  case store_bytes(store) {
+    var ptr = store.ptr.run(dag, visible, waffle).to_int().to_address()
+    for byte in store.bytes.iter().enumerate() do
+      {ptr + byte.index}.to_reference[Byte]().* = byte.item
+    empty_slice[Byte]()
+  }
+  case crash(message) {
+    var message = message.run(dag, visible, waffle)
+    panic("Plum code panicked")
+  }
+}
+
+fun to_bytes(int: Int): Slice[Byte] {
+  | TODO: This is hacky. Do this with math instead.
+  var ref = int.&.cast[&Int, &Byte]()
+  var bytes = list[Byte]()
+  for i in 0..8 do bytes.&.push(ref.add_stride_offset(i).*)
+  bytes.to_slice()
+}
+fun to_int(bytes: Slice[Byte]): Int {
+  | TODO: Hacky. Do with math.
+  bytes.data.to_reference[Int]().*
+}
+fun two_ints(bytes: Slice[Byte]): Tuple2[Int, Int] {
+  tuple(bytes.subslice(0..8).to_int(), bytes.subslice(8..16).to_int())
+}
