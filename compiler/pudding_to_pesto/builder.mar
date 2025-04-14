@@ -45,16 +45,6 @@ fun int(builder: &PestoBodyBuilder, int: Int): Id {
   builder.push(PestoOp.int(int) $ PestoType.int)
 }
 
-fun string(builder: &PestoBodyBuilder, string: String): Id {
-  builder.struct_(map(
-    "utf8_bytes" -> builder.struct_(map(
-      "buffer" -> builder.push(PestoOp.int(0) $ PestoType.ptr),
-      "start" -> builder.int(0),
-      "end" -> builder.int(0),
-    ))
-  ))
-}
-
 fun struct_(builder: &PestoBodyBuilder, fields: Map[String, Id]): Id {
   var field_types = map[String, PestoType]()
   for field in fields do
@@ -244,6 +234,17 @@ fun decrement_reference_count(builder: &PestoBodyBuilder, ptr: Id): Id {
 }
 
 | Macro-instructions
+
+fun string(builder: &PestoBodyBuilder, string: String): Id {
+  var buffer = builder.new_buffer(PestoType.byte, builder.int(string.len))
+  builder.store_buffer_bytes(buffer, string.bytes())
+  var array = builder.struct_(map(
+    "buffer" -> buffer,
+    "start" -> builder.int(0),
+    "len" -> builder.int(string.len),
+  ))
+  builder.struct_(map("utf8_bytes" -> array))
+}
 
 fun dup(
   builder: &PestoBodyBuilder, id: Id, type: YogurtType, pesto: &Pesto
