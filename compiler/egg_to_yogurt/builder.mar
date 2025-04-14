@@ -99,3 +99,78 @@ fun push_call_builtin(
 fun push_type(body: &YogurtBodyBuilder, type: YogurtType): Id {
   body.push(YogurtOp.type(type), YogurtType.type)
 }
+
+fun push_nothing(body: &YogurtBodyBuilder): Id {
+  body.push_struct(map[String, Id](), type_nothing.compile())
+}
+fun push_type_info(body: &YogurtBodyBuilder, type: YogurtType): Id {
+  | todo("type info")
+  switch type
+  case byte
+    body.push_enum("byte", body.push_nothing(), type_type_info.compile())
+  case int body.push_enum("int", body.push_nothing(), type_type_info.compile())
+  case type
+    body.push_enum("type", body.push_nothing(), type_type_info.compile())
+  case array(item_type)
+    body.push_enum(
+      "array", body.push_type_info(item_type.*), type_type_info.compile()
+    )
+  case never
+    body.push_enum("never", body.push_nothing(), type_type_info.compile())
+  case struct_(struct_)
+    body.push_enum("struct", {
+      var type_field = type_struct(map(
+        "name" -> type_string, "type" -> type_type_info
+      ))
+      var fields = list[Id]()
+      for field in struct_ do
+        fields.&.push(body.push_struct(
+          map(
+            "name" -> body.push_string(field.key),
+            "type" -> body.push_type_info(field.value),
+          ),
+          type_field.compile(),
+        ))
+      body.push_array(fields.to_slice(), type_array(type_field).compile())
+    }, type_type_info.compile())
+  case enum_(enum_)
+    body.push_enum("enum", {
+      var type_variant = type_struct(map(
+        "name" -> type_string, "type" -> type_type_info
+      ))
+      var variants = list[Id]()
+      for variant in enum_ do
+        variants.&.push(body.push_struct(
+          map(
+            "name" -> body.push_string(variant.key),
+            "type" -> body.push_type_info(variant.value),
+          ),
+          type_variant.compile(),
+        ))
+      body.push_array(variants.to_slice(), type_array(type_variant).compile())
+    }, type_type_info.compile())
+  case closure unreachable()
+  case lambda(lambda)
+    body.push_enum(
+      "lambda",
+      body.push_struct(
+        map(
+          "arguments" -> {
+            var args = list[Id]()
+            for arg in lambda.args do body.&.push_type_info(arg)
+            body.push_array(
+              args.to_slice(), type_array(type_type_info).compile()
+            )
+          },
+          "return_type" -> body.push_type_info(lambda.return_type.*),
+        ),
+        type_struct(map(
+          "arguments" -> type_array(type_type_info),
+          "return_type" -> type_type_info,
+        )).compile(),
+      ),
+      type_type_info.compile(),
+    )
+  case recursive(level)
+    body.push_enum("recursive", body.push_int(level), type_type_info.compile())
+}

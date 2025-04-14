@@ -2,19 +2,62 @@
 
 import
   "builtins" Type, type_of t, type_info Type
+  "..array" Array t, iterate (Array t)
+  "..byte" Byte
+  "..int" Int, format Int
+  "..iterator"
+    Iterator t, map (Iterator a) (\ a -> b), join (Iterator String) String,
+    join (Iterator String)
   "..list" List t
-  "..string" String
+  "..string" String, + String String
 export
   Type, TypeInfo, Field, Variant, type_of t, type_info Type, as t t: Type
 
 as value: t t: Type -> t = value
 
 TypeInfo =
-  | int
-    string
-    struct: (List Field)
-    enum: (List Variant)
-    lambda
+  | byte
+    int
     type
-Field = & name: String type: Type
-Variant = & name: String type: Type
+    array: TypeInfo
+    never
+    struct: (Array (& name: String type: TypeInfo))
+    enum: (Array (& name: String type: TypeInfo))
+    lambda: (& arguments: (Array TypeInfo) return_type: TypeInfo)
+    recursive: Int
+
+format type: TypeInfo -> String =
+  type
+  % byte -> "Byte"
+    int -> "Int"
+    type -> "Type"
+    array: item -> "(Array " .+ (item.format) .+ ")"
+    never -> "Never"
+    struct: fields ->
+      "(&"
+      . +
+          fields.iterate
+          . map
+              \ field: (& name: String type: TypeInfo) ->
+                " " .+ (field.name) .+ ": " .+ (field.type.format)
+          . join
+      . + ")"
+    enum: variants ->
+      "(| "
+      . +
+          variants.iterate
+          . map
+            \ variant: (& name: String type: TypeInfo) ->
+              (variant.name) .+ ": " .+ (variant.type.format)
+          . join " "
+      . + ")"
+    lambda: lambda ->
+      "(\ "
+      . +
+          lambda.arguments.iterate
+          . map (\ argument: TypeInfo -> argument.format)
+          . join " "
+      . + " -> "
+      . + (lambda.return_type.format)
+      . + ")"
+    recursive: level -> "^" .+ (level.format)
