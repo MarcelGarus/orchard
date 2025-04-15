@@ -9,8 +9,10 @@ enum PestoValue {
   buffer: &PestoBufferValue,
   function_ptr: String,
 }
-struct PestoHeapValue { refcount: Int, value: PestoValue }
-struct PestoBufferValue { refcount: Int, items: Slice[PestoValue] }
+struct PestoHeapValue { refcount: Int, type: PestoType, value: PestoValue }
+struct PestoBufferValue {
+  refcount: Int, item_type: PestoType, items: Slice[PestoValue]
+}
 struct PestoEnumValue { name: String, value: &PestoValue }
 
 var placeholder_pesto_value = PestoValue.int(0)
@@ -47,22 +49,28 @@ fun as_string(value: PestoValue): String {
 fun run(pesto: Pesto, args: Slice[PestoValue]): PestoValue {
   var fields = map[String, PestoValue]()
   for arg in args.iter().enumerate() do fields.&.put("{arg.index}", arg.item)
-  pesto.entry_point.run(PestoValue.struct_(fields), pesto)
+  pesto.entry_point.run(PestoValue.struct_(fields), pesto, list[String]().&)
 }
 
-fun run(function: String, args: PestoValue, pesto: Pesto): PestoValue {
+fun run(
+  function: String, args: PestoValue, pesto: Pesto, stack: &List[String]
+): PestoValue {
   var visible = map[Id, PestoValue]()
+  stack.push(function)
   var fun_ = pesto.funs.get(function)
-  fun_.body.run(args, fun_.dag, visible.&, pesto)
+  var value = fun_.body.run(args, fun_.dag, visible.&, pesto, stack)
+  stack.pop()
+  value
 }
 
 fun run(
   body: PestoBody, args: PestoValue, dag: Dag[PestoExpr],
   visible: &Map[Id, PestoValue], pesto: Pesto,
+  stack: &List[String],
 ): PestoValue {
   visible.put(body.param, args)
   for id in body.exprs do {
-    var value = dag.get(id).run(dag, visible, pesto)
+    var value = dag.get(id).run(dag, visible, pesto, stack)
     eprintln("{id} = {value}")
     visible.put(id, value)
   }
@@ -72,6 +80,7 @@ fun run(
 fun run(
   expr: PestoExpr, dag: Dag[PestoExpr],
   visible: &Map[Id, PestoValue], pesto: Pesto,
+  stack: &List[String],
 ): PestoValue {
   stderr."Run "
   stderr.write(expr.op, dag, 1)
@@ -96,13 +105,13 @@ fun run(
   case switch_(switch_) {
     var condition = visible.get(switch_.condition).enum_.unwrap()
     var case_ = switch_.cases.get(condition.name)
-    case_.run(condition.value.*, dag, visible, pesto)
+    case_.run(condition.value.*, dag, visible, pesto, stack)
   }
   case function_ptr(signature) PestoValue.function_ptr(signature)
-  case call(call) call.function.run(visible.get(call.args), pesto)
+  case call(call) call.function.run(visible.get(call.args), pesto, stack)
   case call_indirect(call)
     visible.get(call.function).function_ptr.unwrap()
-      .run(visible.get(call.args), pesto)
+      .run(visible.get(call.args), pesto, stack)
   case call_builtin(call) {
     var args = list[PestoValue]()
     for arg in call.args do args.&.push(visible.get(arg))
@@ -128,22 +137,27 @@ fun run(
           case greater "greater",
         value = PestoValue.struct_(map[String, PestoValue]()).put_on_heap(),
       })
-    case crash panic("Plum code crashed: {args.get(0)}")
+    case crash panic(stack, "Plum code crashed: {args.get(0)}")
   }
   case new(value)
     PestoValue.ptr(PestoHeapValue {
-      refcount = 1, value = visible.get(value)
+      refcount = 1, type = dag.type_of(value), value = visible.get(value)
     }.put_on_heap())
   case load(ptr) visible.get(ptr).ptr.unwrap().*.value
   case free(free) {
-    var refcount = visible.get(free.ptr).ptr.unwrap().refcount
-    if refcount != 0 then panic("freeing ptr with refcount {refcount}")
+    var ptr = visible.get(free.ptr).ptr.unwrap()
+    if ptr.refcount != 0 then
+      panic(stack, "freeing ptr with refcount {ptr.refcount}")
+    if ptr.type != free.type then
+      panic(stack, "freeing ptr to {free.type}, but it points to {ptr.type}")
     placeholder_pesto_value
   }
   case new_buffer(new) {
     var len = visible.get(new.len).int.unwrap()
     PestoValue.buffer(PestoBufferValue {
-      refcount = 1, items = uninitialized_slice[PestoValue](len)
+      refcount = 1,
+      item_type = new.item_type,
+      items = uninitialized_slice[PestoValue](len),
     }.put_on_heap())
   }
   case get_buffer_len(buffer)
@@ -163,15 +177,22 @@ fun run(
     placeholder_pesto_value
   }
   case free_buffer(free) {
-    var refcount = visible.get(free.buffer).buffer.unwrap().refcount
-    if refcount != 0 then panic("freeing buffer with refcount {refcount}")
+    var buffer = visible.get(free.buffer).buffer.unwrap()
+    if buffer.refcount != 0 then
+      panic(stack, "freeing buffer with refcount {buffer.refcount}")
+    if buffer.item_type != free.item_type then
+      panic(
+        stack,
+        "freeing buffer to {free.item_type}, but it's a buffer of 
+        '{buffer.item_type}",
+      )
     placeholder_pesto_value
   }
   case get_reference_count(ptr) {
     switch visible.get(ptr)
     case ptr(ptr) PestoValue.int(ptr.refcount)
     case buffer(buffer) PestoValue.int(buffer.refcount)
-    default panic("getting refcount of non-ptr/buffer")
+    default panic(stack, "getting refcount of non-ptr/buffer")
   }
   case increment_reference_count(ptr) {
     switch visible.get(ptr)
@@ -183,7 +204,7 @@ fun run(
       buffer.refcount = buffer.refcount + 1
       PestoValue.int(buffer.refcount)
     }
-    default panic("incrementing refcount of non-ptr/buffer")
+    default panic(stack, "incrementing refcount of non-ptr/buffer")
   }
   case decrement_reference_count(ptr) {
     switch visible.get(ptr)
@@ -195,6 +216,12 @@ fun run(
       buffer.refcount = buffer.refcount - 1
       PestoValue.int(buffer.refcount)
     }
-    default panic("decrementing refcount of non-ptr/buffer")
+    default panic(stack, "decrementing refcount of non-ptr/buffer")
   }
+}
+
+fun panic(stack: &List[String], message: String): Never {
+  stderr."Panicked: {message}\n"
+  for entry in stack.to_slice().rev_iter() do stderr."- {entry}\n"
+  exit(1)
 }
