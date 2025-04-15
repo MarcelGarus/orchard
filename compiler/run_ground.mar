@@ -1,0 +1,96 @@
+import plum.mar
+
+fun pop_int(data: &List[Byte]): Int {
+  data.to_slice().subslice({data.len - 8}..data.len).to_int()
+}
+
+fun pop_two_ints(data: &List[Byte]): Tuple2[Int, Int] {
+  var b = data.pop_int()
+  var a = data.pop_int()
+  tuple(a, b)
+}
+
+fun pop_maybe[T](list: &List[T]): Maybe[T] {
+  if list.is_empty() then none[T]() else some(list.pop())
+}
+
+fun push(data: &List[Byte], int: Int) { data.push_all(int.to_bytes()) }
+
+fun run(ground: Ground, input: Slice[Byte]): Slice[Byte] {
+  var ip = 0                 | instruction pointer
+  var calls = list[Int]().&  | call stack
+  var data = list[Byte]().&  | data stack
+  data.&.push_all(input)
+  loop {
+    var instruction = ground.instructions.get(ip)
+    ip = ip + 1
+    switch instruction
+    case nop {}
+    case add_8 { var ints = data.pop_two_ints()  data.push(ints.a + ints.b) }
+    case sub_8 { var ints = data.pop_two_ints()  data.push(ints.a - ints.b) }
+    case mul_8 { var ints = data.pop_two_ints()  data.push(ints.a * ints.b) }
+    case div_8 { var ints = data.pop_two_ints()  data.push(ints.a / ints.b) }
+    case mod_8 { var ints = data.pop_two_ints()  data.push(ints.a % ints.b) }
+    case compare_zero_8 {
+      switch data.pop_int() <=> 0
+      case equal   data.push(0.lower_byte())
+      case greater data.push(1.lower_byte())
+      case less    data.push(2.lower_byte())
+    }
+    case and_8 { var ints = data.pop_two_ints()  data.push(ints.a & ints.b) }
+    case or_8  { var ints = data.pop_two_ints()  data.push(ints.a.or(ints.b)) }
+    case xor_8 { var ints = data.pop_two_ints()  data.push(ints.a ^ ints.b) }
+    case lower_byte { var int = data.pop_int()  data.push(int.lower_byte()) }
+    case byte_to_int { var byte = data.pop()  data.push(byte.to_int()) }
+    case push_padding(amount) {
+      for i in 0..amount.to_int() do data.push(0.lower_byte())
+    }
+    case push_1(byte) data.push(byte)
+    case push_8(int) data.push(int)
+    case push_1_from_stack(offset) data.push(data.get(data.len - offset - 1))
+    case push_8_from_stack(offset)
+      data.push_all(
+        data.to_slice().subslice({data.len - offset - 8}..{data.len - offset})
+      )
+    case pop(amount) { for i in 0..amount.to_int() do data.pop() }
+    case pop_below_top(both) {
+      var skipped = both.a
+      var amount = both.b.to_int()
+      memcopy(
+        data.data.data + {data.len - skipped},
+        data.data.data + {data.len - skipped - amount},
+        skipped,
+      )
+      data.len = data.len - amount
+    }
+    case malloc {
+      var alignment = data.pop().to_int()
+      var size = data.pop_int()
+      var address = malloc(size, alignment)
+      data.push(address.to_int())
+    }
+    case free data.pop_two_ints().ignore() | size and address
+    case store_1 {
+      var byte = data.pop()
+      data.pop_int().to_address().to_reference[Byte]().* = byte
+    }
+    case store_8 {
+      var int = data.pop_int()
+      data.pop_int().to_address().to_reference[Int]().* = int
+    }
+    case load_1 data.push(data.pop_int().to_address().to_reference[Byte]().*)
+    case load_8 data.push(data.pop_int().to_address().to_reference[Int]().*)
+    case store_bytes(bytes) {
+      var address = data.pop_int().to_address()
+      for byte in bytes.iter().enumerate() do
+        {address + byte.index}.to_reference[Byte]().* = byte.item
+    }
+    case crash panic("Plum crashed.")
+    case jump(index) ip = index
+    case jump_table(table) ip = table.get(data.pop().to_int())
+    case call(target) { calls.push(ip)  ip = target }
+    case push_indirect(target) data.push(target)
+    case call_indirect { calls.push(ip)  ip = data.pop_int() }
+    case return_ ip = calls.pop_maybe() or return data.to_slice()
+  }
+}
