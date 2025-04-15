@@ -90,10 +90,11 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
     var cases = map[String, PestoBody]()
     for variant in type.assert_no_closure().extend_one_level().enum_.unwrap()
     do {
-      var payload_type = dag.type_of(value).enum_.unwrap().get(variant.key)
-      var builder = body_builder(dag.&, payload_type).&
+      var payload_type = variant.value.compile()
+      var inline_type = dag.type_of(value).enum_.unwrap().get(variant.key)
+      var builder = body_builder(dag.&, inline_type).&
       var payload = builder.param
-      if payload_type is ptr then {
+      if inline_type is ptr then {
         var new_refcount = builder.decrement_reference_count(payload)
         builder.switch_(builder.compare_ints(new_refcount, builder.int(0)), map(
           "less" -> | Never runs in practice; refcount is always >= 0.
@@ -103,16 +104,16 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
           "equal" -> {
             var builder = body_builder(dag.&, pesto_nothing.type).&
             builder.call(
-              variant.value.compile().compile_drop_fun(pesto),
-              builder.load(payload, variant.value.compile().to_pesto()),
+              payload_type.compile_drop_fun(pesto),
+              builder.load(payload, payload_type.to_pesto()),
               pesto_nothing.type,
             )
-            builder.free(payload, dag.type_of(value))
+            builder.free(payload, payload_type.to_pesto())
             builder.finish_with_nothing()
           },
         ))
       } else
-        builder.drop(payload, variant.value.compile(), pesto)
+        builder.drop(payload, payload_type, pesto)
 
       cases.&.put(variant.key, builder.finish_with_nothing())
     }
