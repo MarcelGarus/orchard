@@ -3,19 +3,16 @@
 Plum is a small, functional, cozy programming language.
 
 **Small**:
-You can understand the entire language in an hour.
-Plum has a structural type system.
 There are few concepts to learn – everything boils down to data and functions.
+Plum has a structural type system and no interfaces / traits / type classes.
 
 **Functional**:
-Functions are pure, they can't have side effects.
-Data structures are immutable and acyclic, allowing garbage collection via reference counting.
+Functions are pure.
+Data structures are immutable and acyclic.
 Code is eagerly evaluated.
 
 **Cozy**:
-The syntax is concise.
 Plum compiles to Ground, a byte code that is designed to be easy to embed in other languages.
-Type reflection at compile time makes some code really concise.
 
 > [!IMPORTANT]
 > Plum is still in _very_ early development.
