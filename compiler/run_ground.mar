@@ -1,7 +1,9 @@
 import plum.mar
 
 fun pop_int(data: &List[Byte]): Int {
-  data.to_slice().subslice({data.len - 8}..data.len).to_int()
+  var int = data.to_slice().subslice({data.len - 8}..data.len).to_int()
+  data.len = data.len - 8
+  int
 }
 
 fun pop_two_ints(data: &List[Byte]): Tuple2[Int, Int] {
@@ -17,12 +19,18 @@ fun pop_maybe[T](list: &List[T]): Maybe[T] {
 fun push(data: &List[Byte], int: Int) { data.push_all(int.to_bytes()) }
 
 fun run(ground: Ground, input: Slice[Byte]): Slice[Byte] {
+  var num_instructions = 0
   var ip = 0                 | instruction pointer
   var calls = list[Int]().&  | call stack
   var data = list[Byte]().&  | data stack
   data.&.push_all(input)
   loop {
+    num_instructions = num_instructions + 1
     var instruction = ground.instructions.get(ip)
+
+    | eprint("Instruction {num_instructions}: ")
+    | eprint("{instruction.format().pad_right(20)}")
+
     ip = ip + 1
     switch instruction
     case nop {}
@@ -43,7 +51,7 @@ fun run(ground: Ground, input: Slice[Byte]): Slice[Byte] {
     case lower_byte { var int = data.pop_int()  data.push(int.lower_byte()) }
     case byte_to_int { var byte = data.pop()  data.push(byte.to_int()) }
     case push_padding(amount) {
-      for i in 0..amount.to_int() do data.push(0.lower_byte())
+      for i in 0..amount.to_int() do data.push(16#aa.lower_byte())
     }
     case push_1(byte) data.push(byte)
     case push_8(int) data.push(int)
@@ -92,5 +100,9 @@ fun run(ground: Ground, input: Slice[Byte]): Slice[Byte] {
     case push_indirect(target) data.push(target)
     case call_indirect { calls.push(ip)  ip = data.pop_int() }
     case return_ ip = calls.pop_maybe() or return data.to_slice()
+
+    | eprint(" stack:")
+    | for byte in data do eprint(" {byte.radix(16).format().pad_left(2, #0)}")
+    | eprintln()
   }
 }
