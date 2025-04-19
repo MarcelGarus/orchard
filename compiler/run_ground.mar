@@ -1,5 +1,82 @@
 import plum.mar
 
+struct GroundHeap { allocations: List[Allocation] }
+struct Allocation { freed: Bool, alignment: Int, bytes: Slice[Byte] }
+
+| All allocated addresses have the form 0xddddxxxxddddyyyy where x is an
+| allocation ID (index into the allocations list) and y is the offset within the
+| allocation. The dd bytes and address layout make it easy to spot addresses
+| during debugging.
+fun allocation_and_offset_to_address(allocation_id: Int, offset: Int): Int {
+  {16#dddd << 48} + {allocation_id << 32} + {16#dddd << 16} + offset
+}
+fun address_to_allocation_and_offset(address: Int): Tuple2[Int, Int] {
+  var allocation_id = {address >> 16 & 16#ffffffffffff >> 16} - {16#dddd << 16}
+  var offset = {address & 16#ffffffff} - {16#dddd << 16}
+  tuple(allocation_id, offset)
+}
+fun allocate(heap: &GroundHeap, size: Int, alignment: Int): Int {
+  var address = allocation_and_offset_to_address(heap.allocations.len, 0)
+  heap.allocations.&.push(Allocation {
+    freed = false, alignment, bytes = filled_slice(size, 0.lower_byte())
+  })
+  address
+}
+fun free(heap: &GroundHeap, address: Int, size: Int, alignment: Int) {
+  var parts = address_to_allocation_and_offset(address)
+  if parts.b != 0 then
+    panic("trying to free address that is not the base of an allocation")
+  var allocation = heap.allocations.get_ref(parts.a)
+  if allocation.bytes.len != size then
+    panic(
+      "trying to free {size} bytes, but allocated {allocation.bytes.len} bytes"
+    )
+  if allocation.alignment != alignment then
+    panic(
+      "trying to free bytes aligned to {alignment}, but allocated for 
+      'alignment {allocation.alignment} bytes"
+    )
+  allocation.freed = true
+}
+fun load_1(heap: GroundHeap, address: Int): Byte {
+  var parts = address_to_allocation_and_offset(address)
+  var allocation = heap.allocations.get(parts.a)
+  if allocation.freed then panic("load after free")
+  allocation.bytes.get(parts.b)
+}
+fun load_8(heap: GroundHeap, address: Int): Int {
+  var parts = address_to_allocation_and_offset(address)
+  var allocation = heap.allocations.get(parts.a)
+  if allocation.freed then panic("load after free")
+  allocation.bytes.subslice(parts.b ..+ 8).to_int()
+}
+fun store_1(heap: &GroundHeap, address: Int, byte: Byte) {
+  var parts = address_to_allocation_and_offset(address)
+  var allocation = heap.allocations.get(parts.a)
+  if allocation.freed then panic("store after free")
+  allocation.bytes.&.set(parts.b, byte)
+}
+fun store_8(heap: &GroundHeap, address: Int, int: Int) {
+  var parts = address_to_allocation_and_offset(address)
+  var allocation = heap.allocations.get(parts.a)
+  if allocation.freed then panic("store after free")
+  int.to_bytes().copy_to(allocation.bytes.subslice(parts.b ..+ 8))
+}
+
+struct GroundResult { heap: GroundHeap, bytes: Slice[Byte] }
+
+fun as_string(result: GroundResult): String {
+  var address = result.bytes.subslice(0..8).to_int()
+  var len = result.bytes.subslice(8..16).to_int()
+  var start = result.bytes.subslice(16..24).to_int()
+
+  var parts = address_to_allocation_and_offset(address)
+  var bytes = result.heap.allocations.get(parts.a).bytes
+  var bytes = bytes.subslice(parts.b .. bytes.len).subslice({16 + start} ..+ len)
+
+  String { data = bytes.data, len }
+}
+
 fun pop_int(data: &List[Byte]): Int {
   var int = data.to_slice().subslice({data.len - 8}..data.len).to_int()
   data.len = data.len - 8
@@ -18,12 +95,13 @@ fun pop_maybe[T](list: &List[T]): Maybe[T] {
 
 fun push(data: &List[Byte], int: Int) { data.push_all(int.to_bytes()) }
 
-fun run(ground: Ground, input: Slice[Byte]): Slice[Byte] {
+fun run(ground: Ground, input: Slice[Byte]): GroundResult {
   var num_instructions = 0
   var ip = 0                 | instruction pointer
   var calls = list[Int]().&  | call stack
   var data = list[Byte]().&  | data stack
   data.&.push_all(input)
+  var heap = GroundHeap { allocations = list[Allocation]() }
   loop {
     num_instructions = num_instructions + 1
     var instruction = ground.instructions.get(ip)
@@ -50,9 +128,8 @@ fun run(ground: Ground, input: Slice[Byte]): Slice[Byte] {
     case xor_8 { var ints = data.pop_two_ints()  data.push(ints.a ^ ints.b) }
     case lower_byte { var int = data.pop_int()  data.push(int.lower_byte()) }
     case byte_to_int { var byte = data.pop()  data.push(byte.to_int()) }
-    case push_padding(amount) {
+    case push_padding(amount)
       for i in 0..amount.to_int() do data.push(16#aa.lower_byte())
-    }
     case push_1(byte) data.push(byte)
     case push_8(int) data.push(int)
     case push_1_from_stack(offset) data.push(data.get(data.len - offset - 1))
@@ -74,27 +151,31 @@ fun run(ground: Ground, input: Slice[Byte]): Slice[Byte] {
     case malloc {
       var alignment = data.pop().to_int()
       var size = data.pop_int()
-      var address = malloc(size, alignment)
-      data.push(address.to_int())
+      var address = heap.&.allocate(size, alignment)
+      data.push(address)
     }
     case free {
-      data.pop() | alignment
-      data.pop_two_ints().ignore() | size and address
+      var alignment = data.pop().to_int()
+      var size = data.pop_int()
+      var address = data.pop_int()
+      heap.&.free(address, size, alignment)
     }
     case store_1 {
       var byte = data.pop()
-      data.pop_int().to_address().to_reference[Byte]().* = byte
+      var address = data.pop_int()
+      heap.&.store_1(address, byte)
     }
     case store_8 {
       var int = data.pop_int()
-      data.pop_int().to_address().to_reference[Int]().* = int
+      var address = data.pop_int()
+      heap.&.store_8(address, int)
     }
-    case load_1 data.push(data.pop_int().to_address().to_reference[Byte]().*)
-    case load_8 data.push(data.pop_int().to_address().to_reference[Int]().*)
+    case load_1 data.push(heap.load_1(data.pop_int()))
+    case load_8 data.push(heap.load_8(data.pop_int()))
     case store_bytes(bytes) {
-      var address = data.pop_int().to_address()
+      var address = data.pop_int()
       for byte in bytes.iter().enumerate() do
-        {address + byte.index}.to_reference[Byte]().* = byte.item
+        heap.&.store_1(address + byte.index, byte.item)
     }
     case crash panic("Plum crashed.")
     case jump(index) ip = index
@@ -102,10 +183,14 @@ fun run(ground: Ground, input: Slice[Byte]): Slice[Byte] {
     case call(target) { calls.push(ip)  ip = target }
     case push_indirect(target) data.push(target)
     case call_indirect { calls.push(ip)  ip = data.pop_int() }
-    case return_ ip = calls.pop_maybe() or return data.to_slice()
+    case return_ ip = calls.pop_maybe() or break
 
     | eprint(" stack:")
-    | for byte in data do eprint(" {byte.radix(16).format().pad_left(2, #0)}")
+    | for byte in data.iter().enumerate() do {
+    |   if byte.index % 8 == 0 and byte.index > 0 then eprint(" |")
+    |   eprint(" {byte.item.radix(16).format().pad_left(2, #0)}")
+    | }
     | eprintln()
   }
+  GroundResult { heap, bytes = data.to_slice() }
 }
