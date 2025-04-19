@@ -1,0 +1,412 @@
+| All pudding values are allocated on the heap.
+
+import plum.mar
+
+struct PuddingHeap { values: List[PuddingValueData] }
+struct PuddingValue { index: Int } | index into the heap's values
+
+struct PuddingValueData { refcount: Int, kind: PuddingValueKind }
+enum PuddingValueKind {
+  byte: Byte,
+  int: Int,
+  array: Slice[PuddingValue],
+  struct_: Map[String, PuddingValue],
+  enum_: PuddingEnumValue,
+  closure: PuddingValue,
+  lambda: PuddingLambdaValue,
+  type: YogurtType,
+}
+struct PuddingEnumValue { name: String, value: PuddingValue }
+struct PuddingLambdaValue { function: String, closure: PuddingValue }
+
+fun new(heap: &PuddingHeap, kind: PuddingValueKind): PuddingValue {
+  var value = PuddingValue { index = heap.values.len }
+  heap.values.&.push(PuddingValueData { refcount = 1, kind })
+  value
+}
+fun get(heap: PuddingHeap, value: PuddingValue): PuddingValueKind {
+  heap.ensure_is_alive(value)
+  heap.values.get(value.index).kind
+}
+fun ensure_is_alive(heap: PuddingHeap, value: PuddingValue) {
+  var data = heap.values.get(value.index)
+  if data.refcount == 0 then panic("Value *{value.index} is not alive!\n{heap}")
+  switch data.kind
+  case byte {}
+  case int {}
+  case array(items) for item in items do heap.ensure_is_alive(item)
+  case struct_(fields) for field in fields do heap.ensure_is_alive(field.value)
+  case enum_(enum_) heap.ensure_is_alive(enum_.value)
+  case closure(closure) heap.ensure_is_alive(closure)
+  case lambda(lambda) heap.ensure_is_alive(lambda.closure)
+  case type {}
+}
+fun dup(heap: &PuddingHeap, value: PuddingValue) {
+  heap.ensure_is_alive(value)
+  var data = heap.values.get_ref(value.index)
+  data.refcount = data.refcount + 1
+}
+fun drop(heap: &PuddingHeap, value: PuddingValue) {
+  heap.ensure_is_alive(value)
+  var data = heap.values.get_ref(value.index)
+  data.refcount = data.refcount - 1
+  if data.refcount == 0 then {
+    switch data.kind
+    case byte {}
+    case int {}
+    case array(items) for item in items do heap.drop(item)
+    case struct_(fields) for field in fields do heap.drop(field.value)
+    case enum_(enum_) heap.drop(enum_.value)
+    case closure(closure) heap.drop(closure)
+    case lambda(lambda) heap.drop(lambda.closure)
+    case type {}
+  }
+}
+fun write[W](writer: W, heap: PuddingHeap) {
+  writer."Heap dump:"
+  for value in heap.values.iter().enumerate() do {
+    writer."\n*{value.index} [refcount {value.item.refcount}] = "
+    switch value.item.kind
+    case byte(byte) writer."{byte}"
+    case int(int) writer."{int}"
+    case array(items) {
+      writer."Array"
+      for item in items do writer." *{item.index}"
+    }
+    case struct_(fields) {
+      writer."&"
+      for field in fields do writer." {field.key}: *{field.value.index}"
+    }
+    case enum_(enum_) writer."| {enum_.name}: *{enum_.value.index}"
+    case closure(closure) writer."Closure *{closure.index}"
+    case lambda(lambda) writer."\\ ..."
+    case type(type) writer."{type}"
+  }
+}
+
+fun write[W](writer: W, value: PuddingValue, heap: PuddingHeap) {
+  switch heap.get(value)
+  case byte(byte) writer."{byte}"
+  case int(int) writer."{int}"
+  case array(items) {
+    writer."["
+    var first = true
+    for item in items do {
+      if first then first = false else writer." "
+      writer.write(item, heap)
+    }
+    writer."]"
+  }
+  case struct_(fields) {
+    writer."(&"
+    for field in fields do {
+      writer." {field.key}: "
+      writer.write(field.value, heap)
+    }
+    writer.")"
+  }
+  case enum_(enum_) {
+    if heap.get(enum_.value) is struct_(fields) then if fields.is_empty() then {
+      writer."(| {enum_.name})"
+      return {}
+    }
+    writer."(| {enum_.name}: "
+    writer.write(enum_.value, heap)
+    writer.")"
+  }
+  case closure(closure) {
+    writer."(Closure "
+    writer.write(closure, heap)
+    writer.")"
+  }
+  case lambda(lambda) writer."(\\ ...)"
+  case type(type) writer."{type}"
+}
+
+| Assumes that the input is an Int.
+fun run(pudding: Pudding, arg: Int): PuddingResult {
+  var heap = PuddingHeap { values = list[PuddingValueData]() }
+  var args = list(heap.&.new(PuddingValueKind.int(arg))).to_slice()
+  var value = pudding.entry_point.run(args, pudding, list[String]().&, heap.&)
+  PuddingResult { heap, value }
+}
+
+struct PuddingResult { heap: PuddingHeap, value: PuddingValue }
+
+| Assumes that the result is a string.
+fun write[W](writer: W, result: PuddingResult) {
+  var bytes = list[Byte]()
+  var utf8_bytes_array =
+    result.heap.get(result.value).struct_.unwrap().get("utf8_bytes")
+  for byte in result.heap.get(utf8_bytes_array).array.unwrap() do
+    bytes.&.push(result.heap.get(byte).byte.unwrap())
+  var string = bytes.to_slice().to_string()
+  writer."{string}"
+}
+
+fun run(
+  function: String, args: Slice[PuddingValue], pudding: Pudding,
+  stack: &List[String], heap: &PuddingHeap,
+): PuddingValue {
+  for i in 0..stack.len do eprint(" ")
+  eprint("\"{function}\"")
+  for arg in args do { stderr." " stderr.write(arg, heap.*) }
+  eprintln()
+
+  stack.push(function)
+  var visible = map[Id, PuddingValue]()
+  var fun_ = pudding.funs.get(function)
+  var value = fun_.body.run(args, fun_.dag, visible.&, pudding, stack, heap)
+  stack.pop()
+
+  for i in 0..stack.len do eprint(" ")
+  stderr."-> "
+  stderr.write(value, heap.*)
+  stderr."\n"
+
+  value
+}
+
+fun run(
+  body: PuddingBody, args: Slice[PuddingValue], dag: Dag[PuddingExpr],
+  visible: &Map[Id, PuddingValue], pudding: Pudding,
+  stack: &List[String], heap: &PuddingHeap,
+): PuddingValue {
+  for both in zip(body.params.iter(), args.iter()) do
+    visible.put(both.a, both.b)
+  for id in body.exprs do {
+    var value = dag.get(id).run(dag, visible, pudding, stack, heap) or continue
+    stderr."{id} = "
+    stderr.write(value, heap.*)
+    stderr."\n"
+    visible.put(id, value)
+  }
+  visible.get(body.returns)
+}
+
+fun run(
+  expr: PuddingExpr, dag: Dag[PuddingExpr],
+  visible: &Map[Id, PuddingValue], pudding: Pudding,
+  stack: &List[String], heap: &PuddingHeap,
+): Maybe[PuddingValue] {
+  eprintln("{heap}")
+  eprintln("Running: {expr.debug()}")
+
+  switch expr.op
+  case param unreachable()
+  case int(int) some(heap.new(PuddingValueKind.int(int)))
+  case string(string) {
+    var bytes = list[PuddingValue]()
+    for byte in string.bytes() do
+      bytes.&.push(heap.new(PuddingValueKind.byte(byte)))
+    some(heap.new(PuddingValueKind.struct_(map(
+      "utf8_bytes" -> heap.new(PuddingValueKind.array(bytes.to_slice()))
+    ))))
+  }
+  case array(array) {
+    var items = list[PuddingValue]()
+    for item in array do items.&.push(visible.get(item))
+    some(heap.new(PuddingValueKind.array(items.to_slice())))
+  }
+  case struct_(struct_) {
+    var fields = map[String, PuddingValue]()
+    for field in struct_ do
+      fields.&.put(field.key, visible.get(field.value))
+    some(heap.new(PuddingValueKind.struct_(fields)))
+  }
+  case member(member)
+    some(heap.get(visible.get(member.of)).struct_.unwrap().get(member.name))
+  case enum_(enum_)
+    some(heap.new(PuddingValueKind.enum_(PuddingEnumValue {
+      name = enum_.name, value = visible.get(enum_.value)
+    })))
+  case switch_(switch_) {
+    var condition = heap.get(visible.get(switch_.condition)).enum_.unwrap()
+    var case_ = switch_.cases.get(condition.name)
+    some(case_.run(
+      list(condition.value).to_slice(), dag, visible, pudding, stack, heap
+    ))
+  }
+  case closure(inner)
+    some(heap.new(PuddingValueKind.closure(visible.get(inner))))
+  case get_closure(closure)
+    some(heap.get(visible.get(closure)).closure.unwrap())
+  case lambda(lambda)
+    some(heap.new(PuddingValueKind.lambda(PuddingLambdaValue {
+      function = lambda.function, closure = visible.get(lambda.closure)
+    })))
+  case call(call) {
+    var args = list[PuddingValue]()
+    for arg in call.args do args.&.push(visible.get(arg))
+    var args = args.to_slice()
+
+    switch call.callee
+    case lambda(lambda) {
+      var lambda = visible.get(lambda)
+      var lambda_data = heap.get(lambda).lambda.unwrap()
+      heap.dup(lambda_data.closure)
+      heap.drop(lambda)
+
+      var all_args = list[PuddingValue]()
+      for arg in args do all_args.&.push(arg)
+      all_args.&.push(lambda_data.closure)
+      some(lambda_data.function.run(all_args.to_slice(), pudding, stack, heap))
+    }
+    case fun_(signature) some(signature.run(args, pudding, stack, heap))
+    case builtin(builtin) {
+      switch builtin
+      case lower_byte {
+        var int = heap.get(args.get(0)).int.unwrap()
+        heap.drop(args.get(0))
+        some(heap.new(PuddingValueKind.byte(int.lower_byte())))
+      }
+      case byte_to_int {
+        var byte = heap.get(args.get(0)).byte.unwrap()
+        heap.drop(args.get(0))
+        some(heap.new(PuddingValueKind.int(byte.to_int())))
+      }
+      case add_ints {
+        var a = heap.get(args.get(0)).int.unwrap()
+        var b = heap.get(args.get(1)).int.unwrap()
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.int(a + b)))
+      }
+      case sub_ints {
+        var a = heap.get(args.get(0)).int.unwrap()
+        var b = heap.get(args.get(1)).int.unwrap()
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.int(a - b)))
+      }
+      case mul_ints {
+        var a = heap.get(args.get(0)).int.unwrap()
+        var b = heap.get(args.get(1)).int.unwrap()
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.int(a * b)))
+      }
+      case div_ints {
+        var a = heap.get(args.get(0)).int.unwrap()
+        var b = heap.get(args.get(1)).int.unwrap()
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.int(a / b)))
+      }
+      case mod_ints {
+        var a = heap.get(args.get(0)).int.unwrap()
+        var b = heap.get(args.get(1)).int.unwrap()
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.int(a % b)))
+      }
+      case and_ints {
+        var a = heap.get(args.get(0)).int.unwrap()
+        var b = heap.get(args.get(1)).int.unwrap()
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.int(a & b)))
+      }
+      case or_ints {
+        var a = heap.get(args.get(0)).int.unwrap()
+        var b = heap.get(args.get(1)).int.unwrap()
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.int(or(a, b))))
+      }
+      case xor_ints {
+        var a = heap.get(args.get(0)).int.unwrap()
+        var b = heap.get(args.get(1)).int.unwrap()
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.int(a ^ b)))
+      }
+      case compare_ints {
+        var a = heap.get(args.get(0)).int.unwrap()
+        var b = heap.get(args.get(1)).int.unwrap()
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        var ordering =
+          switch a <=> b
+          case less "less"
+          case equal "equal"
+          case greater "greater"
+        some(heap.new(PuddingValueKind.enum_(PuddingEnumValue {
+          name = ordering,
+          value =
+            heap.new(PuddingValueKind.struct_(map[String, PuddingValue]())),
+        })))
+      }
+      case generate_array {
+        var len = heap.get(args.get(0)).int.unwrap()
+        var lambda = heap.get(args.get(1)).lambda.unwrap()
+        heap.drop(args.get(0))
+        var items = list[PuddingValue]()
+        for index in 0..len do {
+          var index = heap.new(PuddingValueKind.int(index))
+          heap.dup(lambda.closure)
+          items.&.push(lambda.function.run(
+            list(index, lambda.closure).to_slice(), pudding, stack, heap
+          ))
+        }
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.array(items.to_slice())))
+      }
+      case array_get {
+        var array = heap.get(args.get(0)).array.unwrap()
+        var index = heap.get(args.get(1)).int.unwrap()
+        var item = array.get(index)
+        heap.dup(item)
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(item)
+      }
+      case array_set {
+        var array = heap.get(args.get(0)).array.unwrap()
+        var index = heap.get(args.get(1)).int.unwrap()
+        var item  = args.get(2)
+        var copy = list[PuddingValue]()
+        for item in array do {
+          heap.dup(item)
+          copy.&.push(item)
+        }
+        heap.drop(copy.get(index))
+        copy.&.set(index, item)
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+        some(heap.new(PuddingValueKind.array(copy.to_slice())))
+      }
+      case array_slice {
+        var array = heap.get(args.get(0)).array.unwrap()
+        var range = heap.get(args.get(1)).struct_.unwrap()
+        var start = heap.get(range.get("start")).int.unwrap()
+        var end   = heap.get(range.get("end")).int.unwrap()
+
+        var items = array.subslice(start..end)
+        for item in items do heap.dup(item)
+        heap.drop(args.get(0))
+        heap.drop(args.get(1))
+
+        some(heap.new(PuddingValueKind.array(items)))
+      }
+      case array_len {
+        var array = heap.get(args.get(0)).array.unwrap()
+        heap.drop(args.get(0))
+        some(heap.new(PuddingValueKind.int(array.len)))
+      }
+      case crash {
+        var result = PuddingResult { heap = heap.*, value = args.get(0) }
+        panic("Plum code crashed: {result}")
+      }
+    }
+  }
+  case type(type) some(heap.new(PuddingValueKind.type(type)))
+  case dup(id) {
+    heap.dup(visible.get(id))
+    none[PuddingValue]()
+  }
+  case drop(id) {
+    heap.drop(visible.get(id))
+    none[PuddingValue]()
+  }
+}
