@@ -1,0 +1,99 @@
+import mod.mar
+
+fun push_to_anything(
+  body: &YogurtBodyBuilder, value: Id, type: EggType, context: &YogurtContext
+): Id {
+  var fun_ = compile_value_to_anything_fun(type, context)
+  body.push_call_fun(fun_, list(value).to_slice(), type_anything.compile())
+}
+
+fun compile_value_to_anything_fun(
+  type: EggType, context: &YogurtContext
+): String {
+  var type = type.canonicalize()
+  var signature = "{type} to anything"
+  type.is_self_contained() or
+    panic("type is not self-contained:\n{type.indented()}")
+
+  if context.is_defined(signature) or context.is_currently_compiling(signature)
+  then return signature
+  context.start_compiling(signature)
+
+  var dag = dag[YogurtExpr]().&
+  var body = body_builder(dag).&
+
+  var param = body.push_param(type.compile())
+  var returns = compile_value_to_anything_fun_body(type, body, param, context)
+  var fun_ = YogurtFun { dag = dag.*, body = body.finish(returns) }
+
+  context.define(signature, fun_)
+  context.done_compiling()
+  signature
+}
+fun compile_value_to_anything_fun_body(
+  type: EggType, body: &YogurtBodyBuilder, value: Id, context: &YogurtContext
+): Id {
+  switch type.extend_one_level()
+  case var_ panic("type var in compile to anything")
+  case primitive(primitive) {
+    var name = primitive.name
+    if name == "Int" then body.push_enum("int", value, type_anything.compile())
+    else if name == "Byte" then
+      body.push_enum("byte", value, type_anything.compile())
+    else if name == "Array" then {
+      todo("array to anything")
+    } else {
+      panic("unknown primitive type {type}")
+    }
+  }
+  case never {
+    var message = body.push_string("")
+    return body.push_call_builtin(
+      YogurtBuiltin.crash, list(message).to_slice(), type_anything.compile()
+    )
+  }
+  case struct_(field_types) {
+    var anything_fields = list[Id]()
+    for field in field_types do {
+      var name = field.key
+      var field_type = field.value
+
+      var field_value = body.push_member(value, name, field_type.compile())
+      var field_anything_value =
+        body.push_to_anything(field_value, field_type, context)
+
+      anything_fields.&.push(body.push_struct(
+        map("name" -> body.push_string(name), "value" -> field_anything_value),
+        type_anything_field.compile(),
+      ))
+    }
+    var anything_fields = body.push_array(
+      anything_fields.to_slice(), type_anything_fields.compile()
+    )
+    body.push_enum("struct", anything_fields, type_anything.compile())
+  }
+  case enum_(variant_types) {
+    var cases = map[String, YogurtBody]()
+    for variant in variant_types do {
+      var name = variant.key
+      var variant_type = variant.value
+
+      var case_body = body_builder(body.dag).&
+      var payload_value = case_body.push_param(variant_type.compile())
+      var payload_anything =
+        case_body.push_to_anything(payload_value, variant_type, context)
+
+      var name_and_value = case_body.push_struct(
+        map("name" -> case_body.push_string(name), "value" -> payload_anything),
+        type_anything_variant.compile(),
+      )
+      cases.&.put(name, case_body.finish(name_and_value))
+    }
+    var name_and_value =
+      body.push_switch(value, cases, type_anything_variant.compile())
+    body.push_enum("enum", name_and_value, type_anything.compile())
+  }
+  case lambda
+    body.push_enum("lambda", body.push_nothing(), type_anything.compile())
+  case recursive unreachable()
+}
