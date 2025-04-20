@@ -8,50 +8,44 @@ import mod.mar
 struct YogurtContext {
   | The stack is the stack of the context itself, containing the signatures of
   | functions being currently monomorphized.
-  stack: &List[YogurtStackEntry],
+  stack: &List[String],
   egg: Egg,
   yogurt: &Yogurt,
 }
-enum YogurtStackEntry { compiling: String, running: String }
 
-fun ==(a: YogurtStackEntry, b: YogurtStackEntry): Bool {
-  switch a
-  case compiling(a) if b is compiling(b) then a == b else false
-  case running(a)   if b is running(b)   then a == b else false
-}
+struct OngoingCompilation { context: &YogurtContext, signature: String }
 
-fun start_running(context: &YogurtContext, signature: String) {
-  context.stack.&.push(YogurtStackEntry.running(signature))
-  | context.print_status()
-}
-fun done_running(context: &YogurtContext) {
-  context.stack.&.pop().running or panic("wasn't running something")
-  | context.print_status()
-  {}
-}
-fun is_currently_running(context: YogurtContext, signature: String): Bool {
-  context.stack.iter().&.contains(YogurtStackEntry.running(signature))
-}
+fun start_compiling(
+  context: &YogurtContext, signature: String
+): Result[OngoingCompilation, String] {
+  var is_defined = context.yogurt.funs.contains(signature)
+  var is_currently_compiling = context.stack.iter().&.contains(signature)
 
-fun start_compiling(context: &YogurtContext, signature: String) {
-  context.stack.&.push(YogurtStackEntry.compiling(signature))
-  | context.print_status()
+  if is_defined or is_currently_compiling
+  then error[OngoingCompilation, String](signature)
+  else {
+    context.stack.&.push(signature)
+    | context.print_status()
+    ok[OngoingCompilation, String](OngoingCompilation { context, signature })
+  }
 }
-fun done_compiling(context: &YogurtContext) {
-  context.stack.&.pop().compiling or panic("wasn't running something")
+fun done(compilation: OngoingCompilation, fun_: YogurtFun): String {
+  var signature = compilation.context.stack.&.pop()
+  if signature != compilation.signature then
+    panic("wasn't compiling {signature.debug()}")
+
   | context.print_status()
-  {}
-}
-fun is_currently_compiling(context: YogurtContext, signature: String): Bool {
-  context.stack.iter().&.contains(YogurtStackEntry.compiling(signature))
+  compilation.context.define(signature, fun_)
+  signature
 }
 
-fun define(context: &YogurtContext, signature: String, fun_: YogurtFun) {
+fun define(
+  context: &YogurtContext, signature: String, fun_: YogurtFun
+): String {
   context.yogurt.funs.&.put(signature, fun_)
+  signature
 }
-fun is_defined(context: YogurtContext, signature: String): Bool {
-  context.yogurt.funs.contains(signature)
-}
+
 fun get(context: YogurtContext, signature: String): YogurtFun {
   context.yogurt.funs.get(signature)
 }

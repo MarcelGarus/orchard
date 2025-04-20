@@ -7,7 +7,7 @@ struct YogurtBodyBuilder {
 fun body_builder(dag: &Dag[YogurtExpr]): _ {
   YogurtBodyBuilder { dag, params = list[Id](), children = list[Id]() }
 }
-fun push_param(body: &YogurtBodyBuilder, type: YogurtType): Id {
+fun param(body: &YogurtBodyBuilder, type: YogurtType): Id {
   var id = body.dag.&.put(YogurtExpr { op = YogurtOp.param, type })
   body.params.&.push(id)
   id
@@ -29,151 +29,118 @@ fun finish(body: YogurtBodyBuilder, id: Id): YogurtBody {
   }
 }
 
-| TODO: Refactor so that most functions don't need an explicit type but rather
-| figure out the type themselves?
-
-fun push_int(body: &YogurtBodyBuilder, value: Int): Id {
+fun int(body: &YogurtBodyBuilder, value: Int): Id {
   body.push(YogurtOp.int(value), YogurtType.int)
 }
-fun push_string(body: &YogurtBodyBuilder, value: String): Id {
+fun string(body: &YogurtBodyBuilder, value: String): Id {
   body.push(YogurtOp.string(value), type_string.compile())
 }
-fun push_array(
-  body: &YogurtBodyBuilder, items: Slice[Id], type: YogurtType
-): Id {
+fun array(body: &YogurtBodyBuilder, type: YogurtType, items: Slice[Id]): Id {
   body.push(YogurtOp.array(items), type)
 }
-fun push_struct(
-  body: &YogurtBodyBuilder, fields: Map[String, Id], type: YogurtType
+fun struct_(
+  body: &YogurtBodyBuilder, type: YogurtType, fields: Map[String, Id]
 ): Id {
   body.push(YogurtOp.struct_(fields), type)
 }
-fun push_member(
+fun member(
   body: &YogurtBodyBuilder, of: Id, name: String, type: YogurtType
 ): Id {
   body.push(YogurtOp.member(YogurtMember { of, name }), type)
 }
-fun push_enum(
-  body: &YogurtBodyBuilder, name: String, value: Id, type: YogurtType
+fun enum_(
+  body: &YogurtBodyBuilder, type: YogurtType, name: String, value: Id
 ): Id {
   body.push(YogurtOp.enum_(YogurtEnum { name, value }), type)
 }
-fun push_switch(
-  body: &YogurtBodyBuilder, condition: Id, cases: Map[String, YogurtBody],
-  type: YogurtType,
+fun switch_(
+  body: &YogurtBodyBuilder, condition: Id, type: YogurtType,
+  cases: Map[String, YogurtBody],
 ): Id {
   body.push(YogurtOp.switch_(YogurtSwitch { condition, cases }), type)
 }
-fun push_closure(body: &YogurtBodyBuilder, value: Id, type: YogurtType): Id {
-  body.push(YogurtOp.closure(value), type)
+fun closure(body: &YogurtBodyBuilder, value: Id): Id {
+  body.push(
+    YogurtOp.closure(value),
+    YogurtType.closure(body.type_of(value).put_on_heap()),
+  )
 }
-fun push_get_closure(
-  body: &YogurtBodyBuilder, value: Id, type: YogurtType
-): Id {
+fun get_closure(body: &YogurtBodyBuilder, value: Id, type: YogurtType): Id {
   body.push(YogurtOp.get_closure(value), type)
 }
-fun push_lambda(
-  body: &YogurtBodyBuilder, function: String, closure: Id, type: YogurtType
+fun lambda(
+  body: &YogurtBodyBuilder, type: YogurtType, function: String, closure: Id
 ): Id {
   body.push(YogurtOp.lambda(YogurtLambda { function, closure }), type)
 }
-fun push_call(
+fun call(
   body: &YogurtBodyBuilder, callee: YogurtCallee, args: Slice[Id],
   type: YogurtType,
 ): Id {
   body.push(YogurtOp.call(YogurtCall { callee, args }),type)
 }
-fun push_call_lambda(
+fun call_lambda(
   body: &YogurtBodyBuilder, lambda: Id, args: Slice[Id], type: YogurtType
 ): Id {
-  body.push_call(YogurtCallee.lambda(lambda), args, type)
+  body.call(YogurtCallee.lambda(lambda), args, type)
 }
-fun push_call_fun(
+fun call_fun(
   body: &YogurtBodyBuilder, fun_: String, args: Slice[Id], type: YogurtType
 ): Id {
-  body.push_call(YogurtCallee.fun_(fun_), args, type)
+  body.call(YogurtCallee.fun_(fun_), args, type)
 }
-fun push_call_builtin(
+fun call_builtin(
   body: &YogurtBodyBuilder, builtin: YogurtBuiltin, args: Slice[Id],
   type: YogurtType,
 ): Id {
-  body.push_call(YogurtCallee.builtin(builtin), args, type)
+  body.call(YogurtCallee.builtin(builtin), args, type)
 }
-fun push_type(body: &YogurtBodyBuilder, type: YogurtType): Id {
+fun add_ints(body: &YogurtBodyBuilder, a: Id, b: Id): Id {
+  body.call_builtin(
+    YogurtBuiltin.add_ints, list(a, b).to_slice(), YogurtType.int
+  )
+}
+fun array_get(
+  body: &YogurtBodyBuilder, array: Id, index: Id, type: YogurtType
+): Id {
+  body.call_builtin(
+    YogurtBuiltin.array_get, list(array, index).to_slice(), type
+  )
+}
+fun array_len(body: &YogurtBodyBuilder, array: Id): Id {
+  body.call_builtin(
+    YogurtBuiltin.array_len, list(array).to_slice(), YogurtType.int
+  )
+}
+fun byte_to_int(body: &YogurtBodyBuilder, byte: Id): Id {
+  body.call_builtin(
+    YogurtBuiltin.byte_to_int, list(byte).to_slice(), YogurtType.int
+  )
+}
+fun generate_array(
+  body: &YogurtBodyBuilder, length: Id, generator: Id, type: YogurtType
+): Id {
+  body.call_builtin(
+    YogurtBuiltin.generate_array, list(length, generator).to_slice(), type
+  )
+}
+fun compare_ints(body: &YogurtBodyBuilder, a: Id, b: Id): Id {
+  body.call_builtin(
+    YogurtBuiltin.compare_ints, list(a, b).to_slice(), type_ordering.compile()
+  )
+}
+fun crash(body: &YogurtBodyBuilder, message: Id, type: YogurtType): Id {
+  body.call_builtin(YogurtBuiltin.crash, list(message).to_slice(), type)
+}
+fun crash(body: &YogurtBodyBuilder, message: String, type: YogurtType): Id {
+  body.crash(body.string(message), type)
+}
+fun unreachable(body: &YogurtBodyBuilder, type: YogurtType): Id {
+  body.crash("unreachable", type)
+}
+fun type(body: &YogurtBodyBuilder, type: YogurtType): Id {
   body.push(YogurtOp.type(type), YogurtType.type)
 }
-
-fun push_nothing(body: &YogurtBodyBuilder): Id {
-  body.push_struct(map[String, Id](), type_nothing.compile())
-}
-fun push_type_info(body: &YogurtBodyBuilder, type: YogurtType): Id {
-  | todo("type info")
-  switch type
-  case byte
-    body.push_enum("byte", body.push_nothing(), type_type_info.compile())
-  case int body.push_enum("int", body.push_nothing(), type_type_info.compile())
-  case type
-    body.push_enum("type", body.push_nothing(), type_type_info.compile())
-  case array(item_type)
-    body.push_enum(
-      "array", body.push_type_info(item_type.*), type_type_info.compile()
-    )
-  case never
-    body.push_enum("never", body.push_nothing(), type_type_info.compile())
-  case struct_(struct_)
-    body.push_enum("struct", {
-      var type_field = type_struct(map(
-        "name" -> type_string, "type" -> type_type_info
-      ))
-      var fields = list[Id]()
-      for field in struct_ do
-        fields.&.push(body.push_struct(
-          map(
-            "name" -> body.push_string(field.key),
-            "type" -> body.push_type_info(field.value),
-          ),
-          type_field.compile(),
-        ))
-      body.push_array(fields.to_slice(), type_array(type_field).compile())
-    }, type_type_info.compile())
-  case enum_(enum_)
-    body.push_enum("enum", {
-      var type_variant = type_struct(map(
-        "name" -> type_string, "type" -> type_type_info
-      ))
-      var variants = list[Id]()
-      for variant in enum_ do
-        variants.&.push(body.push_struct(
-          map(
-            "name" -> body.push_string(variant.key),
-            "type" -> body.push_type_info(variant.value),
-          ),
-          type_variant.compile(),
-        ))
-      body.push_array(variants.to_slice(), type_array(type_variant).compile())
-    }, type_type_info.compile())
-  case closure unreachable()
-  case lambda(lambda)
-    body.push_enum(
-      "lambda",
-      body.push_struct(
-        map(
-          "arguments" -> {
-            var args = list[Id]()
-            for arg in lambda.args do body.&.push_type_info(arg)
-            body.push_array(
-              args.to_slice(), type_array(type_type_info).compile()
-            )
-          },
-          "return_type" -> body.push_type_info(lambda.return_type.*),
-        ),
-        type_struct(map(
-          "arguments" -> type_array(type_type_info),
-          "return_type" -> type_type_info,
-        )).compile(),
-      ),
-      type_type_info.compile(),
-    )
-  case recursive(level)
-    body.push_enum("recursive", body.push_int(level), type_type_info.compile())
+fun nothing(body: &YogurtBodyBuilder): Id {
+  body.struct_(type_nothing.compile(), map[String, Id]())
 }

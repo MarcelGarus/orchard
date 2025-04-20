@@ -5,6 +5,7 @@ import dynamic.mar
 import builder.mar
 import cast.mar
 import context.mar
+import type_info.mar
 
 fun to_yogurt(egg: Egg, entry_signature: String): Result[Yogurt, Error] {
   var main = egg.funs.get_maybe(entry_signature) or
@@ -15,7 +16,7 @@ fun to_yogurt(egg: Egg, entry_signature: String): Result[Yogurt, Error] {
   main.compile(
     entry_signature,
     Substitutions { substitutions = map[String, EggType]() },
-    YogurtContext { stack = list[YogurtStackEntry]().&, egg, yogurt = yogurt.& }.&,
+    YogurtContext { stack = list[String]().&, egg, yogurt = yogurt.& }.&,
   )?
   ok[Yogurt, Error](yogurt)
 }
@@ -24,7 +25,7 @@ fun compile(
   fun_: EggFun, signature: String,
   substitutions: Substitutions, context: &YogurtContext,
 ): Result[String, Error] {
-  var signature = {
+  var compilation = context.start_compiling({
     var b = string_builder().&
     b."{signature}"
     if substitutions.substitutions.size > 0 then {
@@ -36,12 +37,7 @@ fun compile(
       }
     }
     b.to_string()
-  }
-
-  if context.is_defined(signature) or context.is_currently_compiling(signature)
-  then
-    return ok[String, Error](signature)
-  context.start_compiling(signature)
+  }) or(signature) return ok[String, Error](signature)
 
   var mapping = map[Id, Id]() | Egg Id to Yogurt Id
   var dag = dag[YogurtExpr]()
@@ -49,9 +45,7 @@ fun compile(
     .compile(mapping.&, dag.&, fun_.dag, substitutions, context)?
   var fun_ = YogurtFun { dag, body }
 
-  context.define(signature, fun_)
-  context.done_compiling()
-  ok[String, Error](signature)
+  ok[String, Error](compilation.done(fun_))
 }
 
 fun compile(type: EggType): YogurtType {
@@ -70,13 +64,11 @@ fun compile(type: EggType): YogurtType {
   case struct_(struct_) {
     var fields = map[String, YogurtType]()
     for field in struct_ do fields.&.put(field.key, field.value.compile())
-
     YogurtType.struct_(fields)
   }
   case enum_(enum_) {
     var variants = map[String, YogurtType]()
     for variant in enum_ do variants.&.put(variant.key, variant.value.compile())
-
     YogurtType.enum_(variants)
   }
   case lambda(lambda) {
@@ -100,12 +92,11 @@ fun compile(
   egg_dag: Dag[EggExpr], substitutions: Substitutions, context: &YogurtContext
 ): Result[YogurtBody, Error] {
   var body = body_builder(dag).&
-  for egg_id in egg_body.params do {
-    var yogurt_id = body.push_param(
+  for egg_id in egg_body.params do
+    mapping.put(egg_id, body.param(
       egg_dag.type_of(egg_id).specialize(substitutions).compile()
-    )
-    mapping.put(egg_id, yogurt_id)
-  }
+    ))
+
   for egg_id in egg_body.children do {
     var yogurt_id = egg_dag.get(egg_id)
       .compile(mapping, body, egg_dag, substitutions, context)?
@@ -123,27 +114,27 @@ fun compile(
   ok[Id, Error](
     switch expr.op
     case param unreachable()
-    case int(int) body.push_int(int)
-    case string(string) body.push_string(string)
-    case struct_(struct_) {
-      var fields = map[String, Id]()
-      for field in struct_ do fields.&.put(field.key, mapping.get(field.value))
-      body.push_struct(fields, type)
-    }
-    case member(member)
-      body.push_member(mapping.get(member.of), member.name, type)
-    case enum_(enum_)
-      body.push_enum(enum_.name, mapping.get(enum_.value), type)
-    case switch_(switch_) {
-      var cases = map[String, YogurtBody]()
-      for case_ in switch_.cases do
-        cases.&.put(
-          case_.key,
-          case_.value
-            .compile(mapping, body.dag, egg_dag, substitutions, context)?,
-        )
-      body.push_switch(mapping.get(switch_.condition), cases, type)
-    }
+    case int(int) body.int(int)
+    case string(string) body.string(string)
+    case struct_(struct_)
+      body.struct_(type, {
+        var fields = map[String, Id]()
+        for field in struct_ do fields.&.put(field.key, mapping.get(field.value))
+        fields
+      })
+    case member(member) body.member(mapping.get(member.of), member.name, type)
+    case enum_(enum_) body.enum_(type, enum_.name, mapping.get(enum_.value))
+    case switch_(switch_)
+      body.switch_(mapping.get(switch_.condition), type, {
+        var cases = map[String, YogurtBody]()
+        for case_ in switch_.cases do
+          cases.&.put(
+            case_.key,
+            case_.value
+              .compile(mapping, body.dag, egg_dag, substitutions, context)?,
+          )
+        cases
+      })
     case lambda(lambda) {
       | Lambdas get compiled into stand-alone functions that explicitly receive
       | a "closure" parameter, which is a pointer to a struct containing all
@@ -153,17 +144,17 @@ fun compile(
       var captured = expr.captured_variables(egg_dag)
 
       | Create the closure in the current scope.
-      var fields = map[String, Id]()
-      var field_types = map[String, YogurtType]()
-      for entry in captured.iter().enumerate() do {
-        var mapped = mapping.get(entry.item)
-        fields.&.put("{entry.index}", mapped)
-        field_types.&.put("{entry.index}", body.type_of(mapped))
+      var struct_containing_captured = {
+        var fields = map[String, Id]()
+        var field_types = map[String, YogurtType]()
+        for entry in captured.iter().enumerate() do {
+          var mapped = mapping.get(entry.item)
+          fields.&.put("{entry.index}", mapped)
+          field_types.&.put("{entry.index}", body.type_of(mapped))
+        }
+        body.struct_(YogurtType.struct_(field_types), fields)
       }
-      var struct_type = YogurtType.struct_(field_types)
-      var struct_ = body.push_struct(fields, struct_type)
-      var closure_type = YogurtType.closure(struct_type.put_on_heap())
-      var closure = body.push_closure(struct_, closure_type)
+      var closure = body.closure(struct_containing_captured)
 
       | Compile the lambda into a function.
       var lambda_mapping = map[Id, Id]().&
@@ -172,16 +163,16 @@ fun compile(
 
       for egg_id in lambda.params do {
         var type = egg_dag.type_of(egg_id).specialize(substitutions).compile()
-        var yogurt_id = lambda_body.push_param(type)
+        var yogurt_id = lambda_body.param(type)
         lambda_mapping.put(egg_id, yogurt_id)
       }
-      var inner_closure = lambda_body.push_param(closure_type)
-      var inner_captured = lambda_body.push_get_closure(
-        inner_closure, struct_type
+      var inner_closure = lambda_body.param(body.type_of(closure))
+      var inner_captured = lambda_body.get_closure(
+        inner_closure, body.type_of(struct_containing_captured)
       )
       for entry in captured.iter().enumerate() do {
         var type = body.type_of(mapping.get(entry.item))
-        var inner_id = lambda_body.push_member(
+        var inner_id = lambda_body.member(
           inner_captured, "{entry.index}", type
         )
         lambda_mapping.&.put(entry.item, inner_id)
@@ -203,7 +194,7 @@ fun compile(
         dag = lambda_dag.*, body = lambda_body
       })
 
-      body.push_lambda(signature, closure, type)
+      body.lambda(type, signature, closure)
     }
     case call(call) {
       var args = list[Id]()
@@ -211,14 +202,14 @@ fun compile(
       var args = args.to_slice()
 
       switch call.callee
-      case lambda(lambda) body.push_call_lambda(mapping.get(lambda), args, type)
+      case lambda(lambda) body.call_lambda(mapping.get(lambda), args, type)
       case fun_(matching_fun) {
         var signature = matching_fun.signature
         var merged_substitutions =
           matching_fun.substitutions.specialize(substitutions)
         var fun_ = context.egg.funs.get(signature)
         var signature = compile(fun_, signature, merged_substitutions, context)?
-        body.push_call_fun(signature, args, type)
+        body.call_fun(signature, args, type)
       }
       case builtin(matching_builtin) {
         var merged_substitutions =
@@ -242,51 +233,47 @@ fun compile(
           case array_slice YogurtBuiltin.array_slice
           case array_len YogurtBuiltin.array_len
           case call
-            return ok[Id, Error](body.push_call_lambda(
+            return ok[Id, Error](body.call_lambda(
               args.get(0), empty_slice[Id](), type
             ))
           case crash YogurtBuiltin.crash
           case type_of
-            return ok[Id, Error](body.push_type(body.type_of(call.args.get(0))))
+            return ok[Id, Error](body.type(body.type_of(call.args.get(0))))
           case type_info {
             var type =
               matching_builtin.substitutions.substitutions.get("arg_0")
                 .specialize(substitutions).compile()
-            return ok[Id, Error](body.push_type_info(type))
+            return ok[Id, Error](body.type_info(type))
           }
           case static_to_dynamic {
             | TODO: make more beautiful after figuring out how type
             | substitutions propagate through imports
             var type = body.type_of(call.args.get(0)).assert_no_closure()
-            return ok[Id, Error](body.push_static_to_dynamic(
+            return ok[Id, Error](body.static_to_dynamic(
               call.args.get(0), type, context
             ))
           }
           case dynamic_to_static {
-            eprintln("substitutions: {matching_builtin.substitutions.substitutions}")
-            eprintln("specializing using {substitutions}")
             var type =
               matching_builtin.substitutions.substitutions.get("t")
                 .specialize(substitutions)
-            return ok[Id, Error](body.push_dynamic_to_static(
+            return ok[Id, Error](body.dynamic_to_static(
               call.args.get(0), type, context
             ))
           }
 
-        body.push_call_builtin(yogurt_builtin, args, type)
+        body.call_builtin(yogurt_builtin, args, type)
       }
     }
     case cast(id)
-      body.push_cast(
+      body.cast(
         mapping.get(id),
         egg_dag.type_of(id).specialize(substitutions),
         expr.type.specialize(substitutions),
         context,
       )
     case type(type_value)
-      body.push_type(
-        type_value.specialize(substitutions).canonicalize().compile()
-      )
+      body.type(type_value.specialize(substitutions).canonicalize().compile())
   )
 }
 

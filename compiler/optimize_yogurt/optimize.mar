@@ -13,7 +13,7 @@ fun optimize(
   mapping: &Map[Id, Id], optimized: &Map[String, YogurtFun],
 ): YogurtBody {
   var builder = body_builder(new_dag).&
-  for id in body.params do mapping.put(id, builder.push_param(dag.type_of(id)))
+  for id in body.params do mapping.put(id, builder.param(dag.type_of(id)))
   for id in body.children do
     mapping.put(id, id.optimize(dag, inlining, builder, mapping, optimized))
   var body = builder.finish(mapping.get(body.returns))
@@ -34,27 +34,28 @@ fun optimize(
 
   switch expr.op
   case param unreachable()
-  case int(int) builder.push_int(int)
-  case string(string) builder.push_string(string)
-  case array(items) {
-    var new_items = list[Id]()
-    for item in items do new_items.&.push(mapping.get(item))
-    builder.push_array(new_items.to_slice(), expr.type)
-  }
-  case struct_(struct_) {
-    var fields = map[String, Id]()
-    for field in struct_ do fields.&.put(field.key, mapping.get(field.value))
-    builder.push_struct(fields, expr.type)
-  }
+  case int(int) builder.int(int)
+  case string(string) builder.string(string)
+  case array(items)
+    builder.array(expr.type, {
+      var new_items = list[Id]()
+      for item in items do new_items.&.push(mapping.get(item))
+      new_items.to_slice()
+    })
+  case struct_(struct_)
+    builder.struct_(expr.type, {
+      var fields = map[String, Id]()
+      for field in struct_ do fields.&.put(field.key, mapping.get(field.value))
+      fields
+    })
   case member(member) {
     var of = mapping.get(member.of)
-    if builder.get(of).op is struct_(fields) then
-      fields.get(member.name)
-    else
-      builder.push_member(of, member.name, expr.type)
+    if builder.get(of).op is struct_(fields)
+    then fields.get(member.name)
+    else builder.member(of, member.name, expr.type)
   }
   case enum_(enum_)
-    builder.push_enum(enum_.name, mapping.get(enum_.value), expr.type)
+    builder.enum_(expr.type, enum_.name, mapping.get(enum_.value))
   case switch_(switch_) {
     var condition = mapping.get(switch_.condition)
     if builder.get(condition).op is enum_(enum_) then {
@@ -66,24 +67,26 @@ fun optimize(
         )
       return inner_mapping.get(case_.returns)
     }
-    var cases = map[String, YogurtBody]()
-    for case_ in switch_.cases do
-      cases.&.put(
-        case_.key,
-        case_.value.optimize(dag, inlining, builder.dag, mapping, optimized),
-      )
-    builder.push_switch(condition, cases, expr.type)
+    builder.switch_(condition, expr.type, {
+      var cases = map[String, YogurtBody]()
+      for case_ in switch_.cases do
+        cases.&.put(
+          case_.key,
+          case_.value.optimize(dag, inlining, builder.dag, mapping, optimized),
+        )
+      cases
+    })
   }
-  case closure(inner) builder.push_closure(mapping.get(inner), expr.type)
+  case closure(inner) builder.closure(mapping.get(inner))
   case get_closure(closure) {
     var closure = mapping.get(closure)
     if builder.get(closure).op is closure(inner) then
       inner
     else
-      builder.push_get_closure(closure, expr.type)
+      builder.get_closure(closure, expr.type)
   }
   case lambda(lambda)
-    builder.push_lambda(lambda.function, mapping.get(lambda.closure), expr.type)
+    builder.lambda(expr.type, lambda.function, mapping.get(lambda.closure))
   case call(call) {
     var callee =
       switch call.callee
@@ -110,9 +113,10 @@ fun optimize(
         YogurtCallee.fun_(signature)
       }
       case builtin(builtin) YogurtCallee.builtin(builtin)
+
     var args = list[Id]()
     for arg in call.args do args.&.push(mapping.get(arg))
-    builder.push_call(callee, args.to_slice(), expr.type)
+    builder.call(callee, args.to_slice(), expr.type)
   }
-  case type(type) builder.push_type(type)
+  case type(type) builder.type(type)
 }
