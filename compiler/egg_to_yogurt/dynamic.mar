@@ -1,17 +1,17 @@
 import mod.mar
 
-fun push_to_anything(
+fun push_to_dynamic(
   body: &YogurtBodyBuilder, value: Id, type: EggType, context: &YogurtContext
 ): Id {
-  var fun_ = compile_value_to_anything_fun(type, context)
-  body.push_call_fun(fun_, list(value).to_slice(), type_anything.compile())
+  var fun_ = compile_static_to_dynamic_fun(type, context)
+  body.push_call_fun(fun_, list(value).to_slice(), type_dynamic.compile())
 }
 
-fun compile_value_to_anything_fun(
+fun compile_static_to_dynamic_fun(
   type: EggType, context: &YogurtContext
 ): String {
   var type = type.canonicalize()
-  var signature = "{type} to anything"
+  var signature = "{type} to dynamic"
   type.is_self_contained() or
     panic("type is not self-contained:\n{type.indented()}")
 
@@ -23,40 +23,40 @@ fun compile_value_to_anything_fun(
   var body = body_builder(dag).&
 
   var param = body.push_param(type.compile())
-  var returns = compile_value_to_anything_fun_body(type, body, param, context)
+  var returns = compile_static_to_dynamic_fun_body(type, body, param, context)
   var fun_ = YogurtFun { dag = dag.*, body = body.finish(returns) }
 
   context.define(signature, fun_)
   context.done_compiling()
   signature
 }
-fun compile_value_to_anything_fun_body(
+fun compile_static_to_dynamic_fun_body(
   type: EggType, body: &YogurtBodyBuilder, value: Id, context: &YogurtContext
 ): Id {
   switch type.extend_one_level()
-  case var_ panic("type var in compile to anything")
+  case var_ panic("type var in compile to dynamic")
   case primitive(primitive) {
     var name = primitive.name
-    if name == "Int" then body.push_enum("int", value, type_anything.compile())
+    if name == "Int" then body.push_enum("int", value, type_dynamic.compile())
     else if name == "Byte" then
-      body.push_enum("byte", value, type_anything.compile())
+      body.push_enum("byte", value, type_dynamic.compile())
     else if name == "Array" then {
       var len = body.push_call_builtin(
         YogurtBuiltin.array_len, list(value).to_slice(), type_int.compile()
       )
       var lambda = body.push_lambda(
-        compile_array_items_to_anything_fun(primitive.args.get(0), context),
+        compile_array_items_to_dynamic_fun(primitive.args.get(0), context),
         body.push_closure(
           value, YogurtType.closure(type.compile().put_on_heap())
         ),
-        type_lambda(list(type_int).to_slice(), type_anything).compile(),
+        type_lambda(list(type_int).to_slice(), type_dynamic).compile(),
       )
       var array = body.push_call_builtin(
         YogurtBuiltin.generate_array,
         list(len, lambda).to_slice(),
-        type_anything.compile(),
+        type_dynamic.compile(),
       )
-      body.push_enum("array", array, type_anything.compile())
+      body.push_enum("array", array, type_dynamic.compile())
     } else {
       panic("unknown primitive type {type}")
     }
@@ -64,28 +64,28 @@ fun compile_value_to_anything_fun_body(
   case never {
     var message = body.push_string("")
     return body.push_call_builtin(
-      YogurtBuiltin.crash, list(message).to_slice(), type_anything.compile()
+      YogurtBuiltin.crash, list(message).to_slice(), type_dynamic.compile()
     )
   }
   case struct_(field_types) {
-    var anything_fields = list[Id]()
+    var dynamic_fields = list[Id]()
     for field in field_types do {
       var name = field.key
       var field_type = field.value
 
       var field_value = body.push_member(value, name, field_type.compile())
-      var field_anything_value =
-        body.push_to_anything(field_value, field_type, context)
+      var field_dynamic_value =
+        body.push_to_dynamic(field_value, field_type, context)
 
-      anything_fields.&.push(body.push_struct(
-        map("name" -> body.push_string(name), "value" -> field_anything_value),
-        type_anything_field.compile(),
+      dynamic_fields.&.push(body.push_struct(
+        map("name" -> body.push_string(name), "value" -> field_dynamic_value),
+        type_dynamic_field.compile(),
       ))
     }
-    var anything_fields = body.push_array(
-      anything_fields.to_slice(), type_anything_fields.compile()
+    var dynamic_fields = body.push_array(
+      dynamic_fields.to_slice(), type_dynamic_fields.compile()
     )
-    body.push_enum("struct", anything_fields, type_anything.compile())
+    body.push_enum("struct", dynamic_fields, type_dynamic.compile())
   }
   case enum_(variant_types) {
     var cases = map[String, YogurtBody]()
@@ -95,31 +95,31 @@ fun compile_value_to_anything_fun_body(
 
       var case_body = body_builder(body.dag).&
       var payload_value = case_body.push_param(variant_type.compile())
-      var payload_anything =
-        case_body.push_to_anything(payload_value, variant_type, context)
+      var payload_dynamic =
+        case_body.push_to_dynamic(payload_value, variant_type, context)
 
       var name_and_value = case_body.push_struct(
-        map("name" -> case_body.push_string(name), "value" -> payload_anything),
-        type_anything_variant.compile(),
+        map("name" -> case_body.push_string(name), "value" -> payload_dynamic),
+        type_dynamic_variant.compile(),
       )
       cases.&.put(name, case_body.finish(name_and_value))
     }
     var name_and_value =
-      body.push_switch(value, cases, type_anything_variant.compile())
-    body.push_enum("enum", name_and_value, type_anything.compile())
+      body.push_switch(value, cases, type_dynamic_variant.compile())
+    body.push_enum("enum", name_and_value, type_dynamic.compile())
   }
   case lambda
-    body.push_enum("lambda", body.push_nothing(), type_anything.compile())
+    body.push_enum("lambda", body.push_nothing(), type_dynamic.compile())
   case recursive unreachable()
 }
-fun compile_array_items_to_anything_fun(
+fun compile_array_items_to_dynamic_fun(
   item_type: EggType, context: &YogurtContext
 ): String {
   var item_type = item_type.canonicalize() | TODO: assume/check that type is canonicalized
   item_type.is_self_contained() or
     panic("type is not self-contained:\n{item_type.indented()}")
 
-  var signature = "converting array item of {item_type} to anything"
+  var signature = "converting array item of {item_type} to dynamic"
 
   if context.is_defined(signature) or context.is_currently_compiling(signature)
   then return signature
@@ -138,7 +138,7 @@ fun compile_array_items_to_anything_fun(
     list(array, index).to_slice(),
     item_type.compile(),
   )
-  var converted = body.push_to_anything(item, item_type, context)
+  var converted = body.push_to_dynamic(item, item_type, context)
   var fun_ = YogurtFun { dag = dag.*, body = body.finish(converted) }
 
   context.define(signature, fun_)
