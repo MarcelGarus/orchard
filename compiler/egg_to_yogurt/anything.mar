@@ -41,7 +41,22 @@ fun compile_value_to_anything_fun_body(
     else if name == "Byte" then
       body.push_enum("byte", value, type_anything.compile())
     else if name == "Array" then {
-      todo("array to anything")
+      var len = body.push_call_builtin(
+        YogurtBuiltin.array_len, list(value).to_slice(), type_int.compile()
+      )
+      var lambda = body.push_lambda(
+        compile_array_items_to_anything_fun(primitive.args.get(0), context),
+        body.push_closure(
+          value, YogurtType.closure(type.compile().put_on_heap())
+        ),
+        type_lambda(list(type_int).to_slice(), type_anything).compile(),
+      )
+      var array = body.push_call_builtin(
+        YogurtBuiltin.generate_array,
+        list(len, lambda).to_slice(),
+        type_anything.compile(),
+      )
+      body.push_enum("array", array, type_anything.compile())
     } else {
       panic("unknown primitive type {type}")
     }
@@ -96,4 +111,37 @@ fun compile_value_to_anything_fun_body(
   case lambda
     body.push_enum("lambda", body.push_nothing(), type_anything.compile())
   case recursive unreachable()
+}
+fun compile_array_items_to_anything_fun(
+  item_type: EggType, context: &YogurtContext
+): String {
+  var item_type = item_type.canonicalize() | TODO: assume/check that type is canonicalized
+  item_type.is_self_contained() or
+    panic("type is not self-contained:\n{item_type.indented()}")
+
+  var signature = "converting array item of {item_type} to anything"
+
+  if context.is_defined(signature) or context.is_currently_compiling(signature)
+  then return signature
+  context.start_compiling(signature)
+
+  var dag = dag[YogurtExpr]().&
+  var body = body_builder(dag).&
+
+  var index = body.push_param(item_type.compile())
+  var closure = body.push_param(
+    YogurtType.closure(type_array(item_type).compile().put_on_heap())
+  )
+  var array = body.push_get_closure(closure, type_array(item_type).compile())
+  var item = body.push_call_builtin(
+    YogurtBuiltin.array_get,
+    list(array, index).to_slice(),
+    item_type.compile(),
+  )
+  var converted = body.push_to_anything(item, item_type, context)
+  var fun_ = YogurtFun { dag = dag.*, body = body.finish(converted) }
+
+  context.define(signature, fun_)
+  context.done_compiling()
+  signature
 }
