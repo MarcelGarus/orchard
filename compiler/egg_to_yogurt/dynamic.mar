@@ -1,12 +1,11 @@
 import mod.mar
 
-fun push_to_dynamic(
+fun push_static_to_dynamic(
   body: &YogurtBodyBuilder, value: Id, type: EggType, context: &YogurtContext
 ): Id {
   var fun_ = compile_static_to_dynamic_fun(type, context)
   body.push_call_fun(fun_, list(value).to_slice(), type_dynamic.compile())
 }
-
 fun compile_static_to_dynamic_fun(
   type: EggType, context: &YogurtContext
 ): String {
@@ -75,7 +74,7 @@ fun compile_static_to_dynamic_fun_body(
 
       var field_value = body.push_member(value, name, field_type.compile())
       var field_dynamic_value =
-        body.push_to_dynamic(field_value, field_type, context)
+        body.push_static_to_dynamic(field_value, field_type, context)
 
       dynamic_fields.&.push(body.push_struct(
         map("name" -> body.push_string(name), "value" -> field_dynamic_value),
@@ -96,7 +95,7 @@ fun compile_static_to_dynamic_fun_body(
       var case_body = body_builder(body.dag).&
       var payload_value = case_body.push_param(variant_type.compile())
       var payload_dynamic =
-        case_body.push_to_dynamic(payload_value, variant_type, context)
+        case_body.push_static_to_dynamic(payload_value, variant_type, context)
 
       var name_and_value = case_body.push_struct(
         map("name" -> case_body.push_string(name), "value" -> payload_dynamic),
@@ -138,8 +137,470 @@ fun compile_array_items_to_dynamic_fun(
     list(array, index).to_slice(),
     item_type.compile(),
   )
-  var converted = body.push_to_dynamic(item, item_type, context)
+  var converted = body.push_static_to_dynamic(item, item_type, context)
   var fun_ = YogurtFun { dag = dag.*, body = body.finish(converted) }
+
+  context.define(signature, fun_)
+  context.done_compiling()
+  signature
+}
+
+fun push_dynamic_to_static(
+  body: &YogurtBodyBuilder, value: Id, type: EggType, context: &YogurtContext
+): Id {
+  var fun_ = compile_dynamic_to_static_fun(type, context)
+  body.push_call_fun(fun_, list(value).to_slice(), type.compile())
+}
+fun compile_dynamic_to_static_fun(
+  type: EggType, context: &YogurtContext
+): String {
+  var type = type.canonicalize()
+  type.is_self_contained() or
+    panic("type is not self-contained:\n{type.indented()}")
+  var signature = "dynamic to {type}"
+
+  if context.is_defined(signature) or context.is_currently_compiling(signature)
+  then return signature
+  context.start_compiling(signature)
+
+  var dag = dag[YogurtExpr]().&
+  var body = body_builder(dag).&
+
+  var param = body.push_param(type_dynamic.compile())
+  var returns = compile_dynamic_to_static_fun_body(type, body, param, context)
+  var fun_ = YogurtFun { dag = dag.*, body = body.finish(returns) }
+
+  context.define(signature, fun_)
+  context.done_compiling()
+  signature
+}
+fun compile_dynamic_to_static_fun_body(
+  type: EggType, body: &YogurtBodyBuilder, value: Id, context: &YogurtContext
+): Id {
+  switch type.extend_one_level()
+  case var_ panic("type var in compile to dynamic")
+  case primitive(primitive) {
+    var name = primitive.name
+    if name == "Int" then {
+      var cases = map[String, YogurtBody]()
+      for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
+        var name = entry.key
+        var payload_type = entry.value.canonicalize()
+        var case_body = body_builder(body.dag).&
+        var payload = case_body.push_param(payload_type.compile())
+        var result =
+          if name == "int" then {
+            payload
+          } else {
+            var message = case_body.push_string(
+              "dynamic to static failed (expected int, got {name})"
+            )
+            case_body.push_call_builtin(
+              YogurtBuiltin.crash,
+              list(message).to_slice(),
+              type_never.compile(),
+            )
+          }
+        cases.&.put(name, case_body.finish(result))
+      }
+      body.push_switch(value, cases, type.compile())
+    } else if name == "Byte" then {
+      var cases = map[String, YogurtBody]()
+      for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
+        var name = entry.key
+        var payload_type = entry.value.canonicalize()
+        var case_body = body_builder(body.dag).&
+        var payload = case_body.push_param(payload_type.compile())
+        var result =
+          if name == "byte" then {
+            payload
+          } else {
+            var message = case_body.push_string("dynamic to static failed (expected Byte)")
+            case_body.push_call_builtin(
+              YogurtBuiltin.crash,
+              list(message).to_slice(),
+              type_never.compile(),
+            )
+          }
+        cases.&.put(name, case_body.finish(result))
+      }
+      body.push_switch(value, cases, type.compile())
+    }
+    else if name == "Array" then {
+      | var len = body.push_call_builtin(
+      |   YogurtBuiltin.array_len, list(value).to_slice(), type_int.compile()
+      | )
+      | var lambda = body.push_lambda(
+      |   compile_array_items_to_dynamic_fun(primitive.args.get(0), context),
+      |   body.push_closure(
+      |     value, YogurtType.closure(type.compile().put_on_heap())
+      |   ),
+      |   type_lambda(list(type_int).to_slice(), type_dynamic).compile(),
+      | )
+      | var array = body.push_call_builtin(
+      |   YogurtBuiltin.generate_array,
+      |   list(len, lambda).to_slice(),
+      |   type_dynamic.compile(),
+      | )
+      | body.push_enum("array", array, type_dynamic.compile())
+      todo("array to static")
+    } else
+      panic("unknown primitive type {type}")
+  }
+  case never {
+    var message = body.push_string("crash to static")
+    return body.push_call_builtin(
+      YogurtBuiltin.crash, list(message).to_slice(), type_dynamic.compile()
+    )
+  }
+  case struct_(field_types) {
+    var cases = map[String, YogurtBody]()
+    for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
+      var name = entry.key
+      var payload_type = entry.value.canonicalize()
+      var case_body = body_builder(body.dag).&
+      var payload = case_body.push_param(payload_type.compile())
+      var result =
+        if name == "struct" then {
+          var fields = map[String, Id]()
+          for field in field_types do {
+            var name = field.key
+            var field_type = field.value
+            var field = case_body.push_call_fun(
+              compile_find_field_in_array_of_dynamic_fun(context),
+              list(payload, case_body.push_string(name), case_body.push_int(0)).to_slice(),
+              type_dynamic.compile(),
+            )
+            var field = case_body.push_dynamic_to_static(
+              field, field_type, context
+            )
+            fields.&.put(name, field)
+          }
+          case_body.push_struct(fields, type.compile())
+        } else {
+          var message = case_body.push_string("dynamic to static failed (expected struct)")
+          case_body.push_call_builtin(
+            YogurtBuiltin.crash,
+            list(message).to_slice(),
+            type_never.compile(),
+          )
+        }
+      cases.&.put(name, case_body.finish(result))
+    }
+    body.push_switch(value, cases, type.compile())
+  }
+  case enum_(variant_types) {
+    todo("enum to static")
+    | var cases = map[String, YogurtBody]()
+    | for variant in variant_types do {
+    |   var name = variant.key
+    |   var variant_type = variant.value
+
+    |   var case_body = body_builder(body.dag).&
+    |   var payload_value = case_body.push_param(variant_type.compile())
+    |   var payload_dynamic =
+    |     case_body.push_static_to_dynamic(payload_value, variant_type, context)
+
+    |   var name_and_value = case_body.push_struct(
+    |     map("name" -> case_body.push_string(name), "value" -> payload_dynamic),
+    |     type_dynamic_variant.compile(),
+    |   )
+    |   cases.&.put(name, case_body.finish(name_and_value))
+    | }
+    | var name_and_value =
+    |   body.push_switch(value, cases, type_dynamic_variant.compile())
+    | body.push_enum("enum", name_and_value, type_dynamic.compile())
+  }
+  case lambda {
+    todo("lambda to static")
+    | body.push_enum("lambda", body.push_nothing(), type_dynamic.compile())
+  }
+  case recursive unreachable()
+}
+| Finds the value of a field in an (Array (& name: String value: Dynamic))
+fun compile_find_field_in_array_of_dynamic_fun(
+  context: &YogurtContext
+): String {
+  var signature = "find field in (Array (& name: String value: Dynamic))"
+
+  if context.is_defined(signature) or context.is_currently_compiling(signature)
+  then return signature
+  context.start_compiling(signature)
+
+  var dag = dag[YogurtExpr]().&
+  var body = body_builder(dag).&
+
+  var array = body.push_param(type_dynamic_fields.compile())
+  var name = body.push_param(type_string.compile())
+  var index = body.push_param(type_int.compile())
+
+  var len = body.push_call_builtin(
+    YogurtBuiltin.array_len, list(array).to_slice(), type_int.compile()
+  )
+  var result = body.push_switch(
+    body.push_call_builtin(
+      YogurtBuiltin.compare_ints,
+      list(index, len).to_slice(),
+      type_ordering.compile(),
+    ),
+    map(
+      "less" -> {
+        var case_body = body_builder(body.dag).&
+        case_body.push_param(type_nothing.compile())
+        var field = case_body.push_call_builtin(
+          YogurtBuiltin.array_get,
+          list(array, index).to_slice(),
+          type_dynamic_field.compile(),
+        )
+        var field_name = case_body.push_member(
+          field, "name", type_string.compile()
+        )
+        var matches = case_body.push_call_fun(
+          compile_compare_strings_fun(context),
+          list(name, field_name).to_slice(),
+          type_bool.compile(),
+        )
+        case_body.finish(case_body.push_switch(
+          matches,
+          map(
+            "true" -> {
+              var case_body = body_builder(body.dag).&
+              case_body.push_param(type_nothing.compile())
+              var field_value = case_body.push_member(
+                field, "value", type_dynamic.compile()
+              )
+              case_body.finish(field_value)
+            },
+            "false" -> {
+              var case_body = body_builder(body.dag).&
+              case_body.push_param(type_nothing.compile())
+              case_body.finish(case_body.push_call_fun(
+                signature,
+                list(
+                  array,
+                  name,
+                  case_body.push_call_builtin(
+                    YogurtBuiltin.add_ints,
+                    list(index, case_body.push_int(1)).to_slice(),
+                    type_int.compile(),
+                  ),
+                ).to_slice(),
+                type_dynamic.compile(),
+              ))
+            }
+          ),
+          type_dynamic.compile(),
+        ))
+      },
+      "equal" -> {
+        var case_body = body_builder(body.dag).&
+        case_body.push_param(type_nothing.compile())
+        var message = case_body.push_string("field not in struct")
+        var never = case_body.push_call_builtin(
+          YogurtBuiltin.crash,
+          list(message).to_slice(),
+          type_never.compile(),
+        )
+        case_body.finish(never)
+      },
+      "greater" -> {
+        var case_body = body_builder(body.dag).&
+        case_body.push_param(type_nothing.compile())
+        var message = case_body.push_string("")
+        var never = case_body.push_call_builtin(
+          YogurtBuiltin.crash,
+          list(message).to_slice(),
+          type_never.compile(),
+        )
+        case_body.finish(never)
+      },
+    ),
+    type_dynamic.compile(),
+  )
+
+  var fun_ = YogurtFun { dag = dag.*, body = body.finish(result) }
+
+  context.define(signature, fun_)
+  context.done_compiling()
+  signature
+}
+fun compile_compare_strings_fun(context: &YogurtContext): String {
+  var signature = "compare strings"
+
+  if context.is_defined(signature) or context.is_currently_compiling(signature)
+  then return signature
+  context.start_compiling(signature)
+
+  var dag = dag[YogurtExpr]().&
+  var body = body_builder(dag).&
+
+  var a = body.push_param(type_string.compile())
+  var b = body.push_param(type_string.compile())
+
+  var a_bytes = body.push_member(a, "utf8_bytes", type_array(type_byte).compile())
+  var b_bytes = body.push_member(b, "utf8_bytes", type_array(type_byte).compile())
+
+  var a_len = body.push_call_builtin(
+    YogurtBuiltin.array_len, list(a_bytes).to_slice(), type_int.compile()
+  )
+  var b_len = body.push_call_builtin(
+    YogurtBuiltin.array_len, list(b_bytes).to_slice(), type_int.compile()
+  )
+
+  var result = body.push_switch(
+    body.push_call_builtin(
+      YogurtBuiltin.compare_ints,
+      list(a_len, b_len).to_slice(),
+      type_ordering.compile(),
+    ),
+    map(
+      "less" -> {
+        var case_body = body_builder(body.dag).&
+        case_body.push_param(type_nothing.compile())
+        case_body.finish(case_body.push_enum(
+          "false", case_body.push_nothing(), type_bool.compile()
+        ))
+      },
+      "equal" -> {
+        var case_body = body_builder(body.dag).&
+        case_body.push_param(type_nothing.compile())
+        case_body.finish(case_body.push_call_fun(
+          compile_compare_strings_rec_fun(context),
+          list(a_bytes, b_bytes, case_body.push_int(0)).to_slice(),
+          type_bool.compile(),
+        ))
+      },
+      "greater" -> {
+        var case_body = body_builder(body.dag).&
+        case_body.push_param(type_nothing.compile())
+        case_body.finish(case_body.push_enum(
+          "false", case_body.push_nothing(), type_bool.compile()
+        ))
+      },
+    ),
+    type_bool.compile(),
+  )
+
+  var fun_ = YogurtFun { dag = dag.*, body = body.finish(result) }
+
+  context.define(signature, fun_)
+  context.done_compiling()
+  signature
+}
+fun compile_compare_strings_rec_fun(context: &YogurtContext): String {
+  var signature = "compare strings rec"
+
+  if context.is_defined(signature) or context.is_currently_compiling(signature)
+  then return signature
+  context.start_compiling(signature)
+
+  var dag = dag[YogurtExpr]().&
+  var body = body_builder(dag).&
+
+  var a = body.push_param(type_array(type_byte).compile())
+  var b = body.push_param(type_array(type_byte).compile())
+  var index = body.push_param(type_int.compile())
+
+  var len = body.push_call_builtin(
+    YogurtBuiltin.array_len, list(a).to_slice(), type_int.compile()
+  )
+
+  var result = body.push_switch(
+    body.push_call_builtin(
+      YogurtBuiltin.compare_ints,
+      list(index, len).to_slice(),
+      type_ordering.compile(),
+    ),
+    map(
+      "less" -> {
+        var case_body = body_builder(body.dag).&
+        case_body.push_param(type_nothing.compile())
+        var a_byte = case_body.push_call_builtin(
+          YogurtBuiltin.array_get,
+          list(a, index).to_slice(),
+          type_byte.compile(),
+        )
+        var b_byte = case_body.push_call_builtin(
+          YogurtBuiltin.array_get,
+          list(b, index).to_slice(),
+          type_byte.compile(),
+        )
+        var ordering = case_body.push_call_builtin(
+          YogurtBuiltin.compare_ints,
+          list(
+            case_body.push_call_builtin(
+              YogurtBuiltin.byte_to_int,
+              list(a_byte).to_slice(),
+              type_int.compile(),
+            ),
+            case_body.push_call_builtin(
+              YogurtBuiltin.byte_to_int,
+              list(b_byte).to_slice(),
+              type_int.compile(),
+            ),
+          ).to_slice(),
+          type_ordering.compile(),
+        )
+        var result = case_body.push_switch(
+          ordering,
+          map(
+            "less" -> {
+              var case_body = body_builder(body.dag).&
+              case_body.push_param(type_nothing.compile())
+              case_body.finish(case_body.push_enum(
+                "false", case_body.push_nothing(), type_bool.compile()
+              ))
+            },
+            "equal" -> {
+              var case_body = body_builder(body.dag).&
+              case_body.push_param(type_nothing.compile())
+              var result = case_body.push_call_fun(
+                signature,
+                list(
+                  a,
+                  b,
+                  case_body.push_call_builtin(
+                    YogurtBuiltin.add_ints,
+                    list(index, case_body.push_int(1)).to_slice(),
+                    type_int.compile(),
+                  ),
+                ).to_slice(),
+                type_bool.compile(),
+              )
+              case_body.finish(result)
+            },
+            "greater" -> {
+              var case_body = body_builder(body.dag).&
+              case_body.push_param(type_nothing.compile())
+              case_body.finish(case_body.push_enum(
+                "false", case_body.push_nothing(), type_bool.compile()
+              ))
+            },
+          ),
+          type_bool.compile(),
+        )
+        case_body.finish(result)
+      },
+      "equal" -> {
+        var case_body = body_builder(body.dag).&
+        case_body.push_param(type_nothing.compile())
+        case_body.finish(case_body.push_enum(
+          "true", case_body.push_nothing(), type_bool.compile()
+        ))
+      },
+      "greater" -> {
+        var case_body = body_builder(body.dag).&
+        case_body.push_param(type_nothing.compile())
+        var message = case_body.push_string("unreachable")
+        case_body.finish(case_body.push_call_builtin(
+          YogurtBuiltin.crash, list(message).to_slice(), type_never.compile()
+        ))
+      },
+    ),
+    type_bool.compile(),
+  )
+
+  var fun_ = YogurtFun { dag = dag.*, body = body.finish(result) }
 
   context.define(signature, fun_)
   context.done_compiling()
