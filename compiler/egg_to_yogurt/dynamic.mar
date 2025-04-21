@@ -91,7 +91,15 @@ fun compile_static_to_dynamic_fun_body(
         cases
       })
     })
-  case lambda body.enum_(type_dynamic.compile(), "lambda", body.nothing())
+  case lambda
+    body.enum_(type_dynamic.compile(), "lambda", {
+      body.lambda(
+        type_lambda(list(type_array(type_dynamic)).to_slice(), type_dynamic)
+          .compile(),
+        compile_dynamic_lambda_wrapper_fun(type, context),
+        body.closure(value),
+      )
+    })
   case recursive unreachable()
 }
 fun compile_array_items_to_dynamic_fun(
@@ -115,6 +123,74 @@ fun compile_array_items_to_dynamic_fun(
   var array = body.get_closure(closure, type_array(item_type).compile())
   var item = body.array_get(array, index, item_type.compile())
   var converted = body.static_to_dynamic(item, item_type, context)
+
+  compilation.done(YogurtFun { dag = dag.*, body = body.finish(converted) })
+}
+fun compile_dynamic_lambda_wrapper_fun(
+  type: EggType, context: &YogurtContext
+): String {
+  var type = type.canonicalize() | TODO: assume/check that type is canonicalized
+  type.is_self_contained() or
+    panic("type is not self-contained:\n{type.indented()}")
+
+  var compilation =
+    context.start_compiling("dynamic lambda wrapper of {type}")
+      or(signature) return signature
+
+  var dag = dag[YogurtExpr]().&
+  var body = body_builder(dag).&
+
+  var args = body.param(type_array(type_dynamic).compile())
+  var closure = body.param(YogurtType.closure(type.compile().put_on_heap()))
+
+  var lambda_type = type.extend_one_level().lambda.unwrap()
+
+  | Make sure the number of arguments is correct.
+  body.switch_(
+    body.compare_ints(body.array_len(args), body.int(lambda_type.args.len)),
+    type_nothing.compile(),
+    map(
+      "less" -> {
+        var body = body_builder(body.dag).&
+        var payload = body.param(type_nothing.compile())
+        body.finish(
+          body.crash("Wrong number of arguments.", type_nothing.compile())
+        )
+      },
+      "greater" -> {
+        var body = body_builder(body.dag).&
+        var payload = body.param(type_nothing.compile())
+        body.finish(
+          body.crash("Wrong number of arguments.", type_nothing.compile())
+        )
+      },
+      "equal" -> {
+        var body = body_builder(body.dag).&
+        var payload = body.param(type_nothing.compile())
+        body.finish(body.nothing())
+      },
+    )
+  )
+
+  | Convert the arguments into static ones.
+  var static_args = list[Id]()
+  for arg in lambda_type.args.iter().enumerate() do {
+    static_args.&.push(body.dynamic_to_static(
+      body.array_get(args, body.int(arg.index), type_dynamic.compile()),
+      arg.item,
+      context,
+    ))
+  }
+  var args = static_args.to_slice()
+
+  var result = body.call_lambda(
+    body.get_closure(closure, type.compile()),
+    args,
+    lambda_type.return_type.compile(),
+  )
+  var converted = body.static_to_dynamic(
+    result, lambda_type.return_type.*, context
+  )
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(converted) })
 }
@@ -303,7 +379,28 @@ fun compile_dynamic_to_static_fun(
         cases
       })
     case lambda
-      body.crash("tried to create lambda from dynamic", type.compile())
+      body.switch_(value, type.compile(), {
+        var cases = map[String, YogurtBody]()
+        for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
+          var name = entry.key
+          var payload_type = entry.value.canonicalize()
+          var body = body_builder(body.dag).&
+          var payload = body.param(payload_type.compile())
+          var result =
+            if name == "lambda" then {
+              body.lambda(
+                type.compile(),
+                compile_static_lambda_wrapper_fun(type, context),
+                body.closure(payload),
+              )
+            } else
+              body.crash(
+                "dynamic to static failed (expected enum)", type.compile()
+              )
+          cases.&.put(name, body.finish(result))
+        }
+        cases
+      })
     case recursive unreachable()
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(result) })
@@ -517,4 +614,45 @@ fun compile_compare_strings_rec_fun(context: &YogurtContext): String {
   )
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(result) })
+}
+
+fun compile_static_lambda_wrapper_fun(
+  type: EggType, context: &YogurtContext
+): String {
+  var type = type.canonicalize() | TODO: assume/check that type is canonicalized
+  type.is_self_contained() or
+    panic("type is not self-contained:\n{type.indented()}")
+
+  var compilation =
+    context.start_compiling("static lambda wrapper of {type}")
+      or(signature) return signature
+
+  var lambda_type = type.extend_one_level().lambda.unwrap()
+
+  var dag = dag[YogurtExpr]().&
+  var body = body_builder(dag).&
+
+  var args = list[Id]()
+  for arg in lambda_type.args do
+    args.&.push(body.param(arg.compile()))
+  var closure = body.param(
+    YogurtType.closure(type_dynamic_lambda.compile().put_on_heap())
+  )
+
+  var dynamic_args = list[Id]()
+  for arg in zip(args.iter(), lambda_type.args.iter()) do
+    dynamic_args.&.push(body.static_to_dynamic(arg.a, arg.b, context))
+  var dynamic_args = body.array(
+    type_array(type_dynamic).compile(), dynamic_args.to_slice()
+  )
+
+  var result = body.call_lambda(
+    body.get_closure(closure, type_dynamic_lambda.compile()),
+    list(dynamic_args).to_slice(),
+    type_dynamic.compile(),
+  )
+  var converted =
+    body.dynamic_to_static(result, lambda_type.return_type.*, context)
+
+  compilation.done(YogurtFun { dag = dag.*, body = body.finish(converted) })
 }
