@@ -1,12 +1,12 @@
 import
   "builtins" static_to_dynamic t, dynamic_to_static Dynamic t:Type
-  "..array" Array t, iterate (Array t)
+  "..array" Array t, iterate (Array t), is_empty (Array t)
   "..bool" Bool
   "..byte" Byte, format Byte
   "..int" Int, format Int
   "..iterator"
     Iterator t, map (Iterator a) (\ a -> b), join (Iterator String) String,
-    find (Iterator a) (\ a -> Bool)
+    find (Iterator a) (\ a -> Bool), join (Iterator String)
   "..maybe" Maybe t, unwrap (Maybe t)
   "..string" String, + String String, == String String
   "..type" Type
@@ -40,18 +40,31 @@ format dynamic: Dynamic -> String =
       . +
         items
         . iterate
-        . map \ item: Dynamic -> item.format
-        . join " "
+        . map \ item: Dynamic -> " " .+ (item.format)
+        . join
       . + ")"
     struct: fields ->
-      "(& "
+      "(&"
       . +
         fields
         . iterate
         . map
             \ field: (& name: String value: Dynamic) ->
-              (field.name) .+ ": " .+ (field.value.format)
-        . join " "
+              " " .+ (field.name) .+ ": " .+ (field.value.format)
+        . join
       . + ")"
-    enum: (& name value) -> "(| " .+ name .+ ": " .+ (value.format) .+ ")"
+    enum: (& name value) ->
+      value
+      % byte  -> | show_value
+        int   -> | show_value
+        type  -> | show_value
+        array -> | show_value
+        struct: fields ->
+          fields.is_empty
+          % true  -> | omit_value
+            false -> | show_value
+        enum   -> | show_value
+        lambda -> | show_value
+      % show_value -> "(| " .+ name .+ ": " .+ (value.format) .+ ")"
+        omit_value -> "(| " .+ name .+ ")"
     lambda -> "lambda"
