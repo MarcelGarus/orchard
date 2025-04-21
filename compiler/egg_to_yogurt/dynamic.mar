@@ -106,7 +106,7 @@ fun compile_array_items_to_dynamic_fun(
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
 
-  var index = body.param(item_type.compile())
+  var index = body.param(YogurtType.int)
   var closure = body.param(
     YogurtType.closure(type_array(item_type).compile().put_on_heap())
   )
@@ -179,9 +179,33 @@ fun compile_dynamic_to_static_fun(
           }
           cases
         })
-      else if name == "Array" then {
-        todo("array to static")
-      } else
+      else if name == "Array" then
+        body.switch_(value, type.compile(), {
+          var cases = map[String, YogurtBody]()
+          for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
+            var name = entry.key
+            var payload_type = entry.value.canonicalize()
+            var body = body_builder(body.dag).&
+            var payload = body.param(payload_type.compile())
+            var result =
+              if name == "array" then {
+                var item_type = primitive.args.get(0)
+                var len = body.array_len(payload)
+                var lambda = body.lambda(
+                  type_lambda(list(type_int).to_slice(), item_type).compile(),
+                  compile_dynamic_to_array_items_fun(item_type, context),
+                  body.closure(payload),
+                )
+                body.generate_array(len, lambda, type.compile())
+              } else
+                body.crash(
+                  "dynamic to static failed (expected array)", type.compile()
+                )
+            cases.&.put(name, body.finish(result))
+          }
+          cases
+        })
+      else
         panic("unknown primitive type {type}")
     }
     case never body.crash("tried to build Never from Dynamic", type.compile())
@@ -276,6 +300,30 @@ fun compile_dynamic_to_static_fun(
     case recursive unreachable()
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(result) })
+}
+fun compile_dynamic_to_array_items_fun(
+  item_type: EggType, context: &YogurtContext
+): String {
+  var item_type = item_type.canonicalize() | TODO: assume/check that type is canonicalized
+  item_type.is_self_contained() or
+    panic("type is not self-contained:\n{item_type.indented()}")
+
+  var compilation =
+    context.start_compiling("converting dynamic to array item of {item_type}")
+      or(signature) return signature
+
+  var dag = dag[YogurtExpr]().&
+  var body = body_builder(dag).&
+
+  var index = body.param(YogurtType.int)
+  var closure = body.param(
+    YogurtType.closure(type_array(type_dynamic).compile().put_on_heap())
+  )
+  var array = body.get_closure(closure, type_array(item_type).compile())
+  var item = body.array_get(array, index, type_dynamic.compile())
+  var converted = body.dynamic_to_static(item, item_type, context)
+
+  compilation.done(YogurtFun { dag = dag.*, body = body.finish(converted) })
 }
 fun find_field_in_array(
   body: &YogurtBodyBuilder, array: Id, name: Id, context: &YogurtContext
