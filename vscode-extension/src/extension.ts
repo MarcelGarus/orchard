@@ -6,5 +6,5 @@ export function activate(_: vs.ExtensionContext) {
   console.info("Activated Plum extension!");
 }
 export function deactivate() {
-  // TODO: What to do here?
+  // Nothing to do.
 }
