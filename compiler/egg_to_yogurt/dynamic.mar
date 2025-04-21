@@ -216,9 +216,61 @@ fun compile_dynamic_to_static_fun(
         }
         cases
       })
-    case enum_(variant_types) {
-      todo("enum to static")
-    }
+    case enum_(variant_types)
+      body.switch_(value, type.compile(), {
+        var cases = map[String, YogurtBody]()
+        for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
+          var name = entry.key
+          var payload_type = entry.value.canonicalize()
+          var body = body_builder(body.dag).&
+          var payload = body.param(payload_type.compile())
+          var result =
+            if name == "enum" then {
+              var variant_name =
+                body.member(payload, "name", type_string.compile())
+              var value =
+                body.member(payload, "value", type_dynamic.compile())
+
+              var inner_body = {
+                var body = body_builder(body.dag).&
+                var payload = body.param(type_nothing.compile())
+                body.finish(body.crash("No enum case matches.", type.compile()))
+              }
+              for variant_type in variant_types do {
+                var body = body_builder(body.dag).&
+                var payload = body.param(type_nothing.compile())
+                inner_body = body.finish(body.switch_(
+                  body.compare_strings(
+                    variant_name, body.string(variant_type.key), context
+                  ),
+                  type.compile(),
+                  map(
+                    "true" -> {
+                      var body = body_builder(body.dag).&
+                      var payload = body.param(type_nothing.compile())
+                      body.finish(body.enum_(
+                        type.compile(),
+                        variant_type.key,
+                        body.dynamic_to_static(
+                          value, variant_type.value, context
+                        ),
+                      ))
+                    },
+                    "false" -> inner_body,
+                  )
+                ))
+              }
+              for id in inner_body.children do
+                body.children.&.push(id)
+              inner_body.returns
+            } else
+              body.crash(
+                "dynamic to static failed (expected enum)", type.compile()
+              )
+          cases.&.put(name, body.finish(result))
+        }
+        cases
+      })
     case lambda
       body.crash("tried to create lambda from dynamic", type.compile())
     case recursive unreachable()
