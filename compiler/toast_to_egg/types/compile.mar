@@ -135,16 +135,16 @@ fun compile(
   case primitive(primitive) {
     if primitive.name == "Byte"  then return ok[EggType, Error](type_byte)
     if primitive.name == "Int"   then return ok[EggType, Error](type_int)
-    if primitive.name == "Type"  then return ok[EggType, Error](type_type)
     if primitive.name == "Never" then return ok[EggType, Error](type_never)
+    if primitive.name == "Type"  then return ok[EggType, Error](type_type)
     if primitive.name == "Array" then {
       var item_type =
         primitive.args.get(0).compile(stack, depth + 1, defs)?
-      return ok[EggType, Error](type_array(item_type))
+      return ok[EggType, Error](type_array_without_canonicalizing(item_type))
     }
     unreachable()
   }
-  case variable(variable) ok[EggType, Error](EggType.var_(variable.string))
+  case variable(variable) ok[EggType, Error](type_variable(variable.string))
   case call(call) {
     var name = call.name
 
@@ -152,7 +152,7 @@ fun compile(
     | type instead of endlessly digging down into the type.
     for parent in stack do
       if parent.name == call.name.string and parent.args == call.args then
-        return ok[EggType, Error](EggType.recursive(depth - parent.depth))
+        return ok[EggType, Error](type_recursive(depth - parent.depth))
 
     | Look for a type with the name.
     var called_def = defs.get_maybe(name.string) or
@@ -195,7 +195,7 @@ fun compile(
         field.name.string, field.type.compile(stack, depth + 1, defs)?
       )
     }
-    ok[EggType, Error](EggType.struct_(fields))
+    ok[EggType, Error](type_struct_without_canonicalizing(fields))
   }
   case enum_(enum_) {
     var variants = map[String, EggType]()
@@ -210,7 +210,7 @@ fun compile(
         variant.type.compile(stack, depth + 1, defs)?
       )
     }
-    ok[EggType, Error](EggType.enum_(variants))
+    ok[EggType, Error](type_enum_without_canonicalizing(variants))
   }
   case lambda(lambda) {
     var args = list[EggType]()
@@ -221,9 +221,7 @@ fun compile(
     var return_type =
       lambda.return_type.compile(stack, depth + 1, defs)?
 
-    ok[EggType, Error](EggType.lambda(LambdaType {
-      args, return_type = return_type.put_on_heap()
-    }))
+    ok[EggType, Error](type_lambda_without_canonicalizing(args, return_type))
   }
 }
 
@@ -319,7 +317,7 @@ fun compile_all_types(
 
     var type = def.value.type.compile(
       list(OngoingTypeCall { name = def.key, args, depth = 0 }).&, 0, defs
-    )?
+    )?.canonicalize()
     type.is_self_contained() or
       panic("compiled type is not self-contained:\n{type.indented()}")
 
@@ -345,12 +343,12 @@ fun compile(
     if primitive.name == "Never" then return ok[EggType, Error](type_never)
     if primitive.name == "Array" then {
       var item_type = primitive.args.get(0).compile(defs)?
-      return ok[EggType, Error](type_array(item_type))
+      return ok[EggType, Error](type_array_without_canonicalizing(item_type))
     }
     unreachable()
   }
   case variable(variable) {
-    ok[EggType, Error](EggType.var_(variable.string))
+    ok[EggType, Error](type_variable(variable.string))
   }
   case call(call) {
     var name = call.name
@@ -386,14 +384,14 @@ fun compile(
     | TODO: check for duplicates
     for field in struct_ do
       fields.&.put(field.name.string, field.type.compile(defs)?)
-    ok[EggType, Error](EggType.struct_(fields))
+    ok[EggType, Error](type_struct_without_canonicalizing(fields))
   }
   case enum_(enum_) {
     var variants = map[String, EggType]()
     | TODO: check for duplicates
     for variant in enum_ do
       variants.&.put(variant.name.string, variant.type.compile(defs)?)
-    ok[EggType, Error](EggType.enum_(variants))
+    ok[EggType, Error](type_enum_without_canonicalizing(variants))
   }
   case lambda(lambda) {
     var args = list[EggType]()
@@ -402,14 +400,14 @@ fun compile(
 
     var return_type = lambda.return_type.compile(defs)?
 
-    ok[EggType, Error](EggType.lambda(LambdaType {
-      args, return_type = return_type.put_on_heap()
-    }))
+    ok[EggType, Error](type_lambda_without_canonicalizing(args, return_type))
   }
 }
 
 fun compile(
   type: ToastType, module: Module, defs: Map[String, EggTypeDef]
 ): Result[EggType, Error] {
-  type.prefix_calls_with_module(module).compile(defs)
+  ok[EggType, Error](
+    type.prefix_calls_with_module(module).compile(defs)?.canonicalize()
+  )
 }

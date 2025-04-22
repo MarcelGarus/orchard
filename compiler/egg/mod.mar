@@ -16,7 +16,8 @@
 |   resolution has already happened. Nested expressions in function bodies have
 |   been flattened to a series of small expressions.
 
-import plum.mar
+import ../plum.mar
+import type.mar
 
 struct Egg { funs: Map[String, EggFun] }
 
@@ -65,18 +66,6 @@ enum EggBuiltin {
   static_to_dynamic, dynamic_to_static,
 }
 
-enum EggType {
-  var_: String,
-  primitive: PrimitiveType,
-  never,
-  struct_: Map[String, EggType],
-  enum_: Map[String, EggType],
-  lambda: LambdaType,
-  recursive: Int, | how many levels above this should we continue?
-}
-struct PrimitiveType { name: String, args: Slice[EggType] }
-struct LambdaType { args: Slice[EggType], return_type: &EggType }
-
 var egg_builtins =
   list(
     EggBuiltin.lower_byte, EggBuiltin.byte_to_int,
@@ -102,33 +91,6 @@ fun param_types(fun_: EggFun): Slice[EggType] {
   types.to_slice()
 }
 fun return_type(fun_: EggFun): EggType { fun_.dag.type_of(fun_.body.returns) }
-
-fun ==(a: EggType, b: EggType): Bool {
-  switch a
-  case var_(a)      if b is var_(b)      then a == b else false
-  case primitive(a) if b is primitive(b) then a == b else false
-  case never(a)     if b is never(b)     then a == b else false
-  case struct_(a)   if b is struct_(b)   then a == b else false
-  case enum_(a)     if b is enum_(b)     then a == b else false
-  case lambda(a)    if b is lambda(b)    then a == b else false
-  case recursive(a) if b is recursive(b) then a == b else false
-}
-fun ==(a: PrimitiveType, b: PrimitiveType): Bool {
-  a.name == b.name and a.args == b.args
-}
-fun ==(a: LambdaType, b: LambdaType): Bool {
-  a.args == b.args and a.return_type.* == b.return_type.*
-}
-fun hash(hasher: &Hasher, type: EggType) {
-  switch type
-  case var_      { hasher.hash(0) }
-  case primitive { hasher.hash(1) }
-  case never     { hasher.hash(2) }
-  case struct_   { hasher.hash(3) }
-  case enum_     { hasher.hash(4) }
-  case lambda    { hasher.hash(5) }
-  case recursive { hasher.hash(6) }
-}
 
 fun write[W](writer: W, egg: Egg) {
   var first = true
@@ -190,37 +152,6 @@ fun write[W](writer: W, callee: EggCallee) {
   case builtin(builtin) writer."{builtin.builtin} with {builtin.substitutions}"
 }
 fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }
-fun write[W](writer: W, type: EggType) {
-  switch type
-  case var_(name) writer."{name}"
-  case primitive(primitive) {
-    if primitive.args.is_not_empty() then writer."("
-    writer."{primitive.name}"
-    for arg in primitive.args do writer." {arg}"
-    if primitive.args.is_not_empty() then writer.")"
-  }
-  case never writer."Never"
-  case struct_(fields) {
-    writer."(&"
-    for field in fields do writer." {field.key}: {field.value}"
-    writer.")"
-  }
-  case enum_(variants) {
-    writer."(|"
-    for variant in variants do
-      if variant.value == EggType.struct_(map[String, EggType]()) then
-        writer." {variant.key}"
-      else
-        writer." {variant.key}: {variant.value}"
-    writer.")"
-  }
-  case lambda(lambda) {
-    writer."(\\"
-    for arg in lambda.args do writer." {arg}"
-    writer." -> {lambda.return_type})"
-  }
-  case recursive(level) writer."^{level}"
-}
 
 struct IndentedLimited[T] { value: T, indentation: Indentation, limit: Int }
 fun indented[T](value: T): IndentedLimited[T] {
@@ -240,13 +171,14 @@ fun write[W](writer: W, type: IndentedLimited[EggType]) {
     return {}
   }
 
-  switch type.value
-  case var_(name) writer."{name}"
-  case primitive(primitive) {
-    writer."{primitive.name}"
-    for arg in primitive.args do writer."\n{arg.indented_limited(indentation + 1, limit)}"
-  }
+  switch type.value.internal_kind()
+  case variable(name) writer."{name}"
+  case byte writer."Byte"
+  case int writer."Int"
   case never writer."Never"
+  case type writer."Type"
+  case array(item)
+    writer."Array\n{item.indented_limited(indentation + 1, limit)}"
   case struct_(fields) {
     writer."&"
     var first = true
@@ -272,9 +204,9 @@ fun write[W](writer: W, type: IndentedLimited[EggType]) {
     }
   }
   case lambda(lambda) {
-    writer."\\\n"
+    writer."\\"
     for arg in lambda.args do writer."\n{arg.indented_limited(indentation + 1, limit)}"
-    writer."\n{indentation + 1}->\n{lambda.return_type.*.indented_limited(indentation + 2, limit)})"
+    writer."\n{indentation + 1}->\n{lambda.return_type.indented_limited(indentation + 2, limit)})"
   }
   case recursive(level) writer."^{level}"
 }

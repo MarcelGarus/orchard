@@ -36,9 +36,12 @@ fun union(types: Slice[EggType]): Result[EggType, String] {
   ok[EggType, String](common)
 }
 fun union(a: EggType, b: EggType): Result[EggType, String] {
+  | eprint("Unioning {a} and {b}")
   var stack = list[Tuple3[JoinMode, EggType, EggType]]()
-  switch join(JoinMode.union, a, b, stack.&)
-  case some(type) ok[EggType, String](type)
+  var result = join(JoinMode.union, a, b, stack.&)
+  | eprintln(" done")
+  switch result
+  case some(type) ok[EggType, String](type.canonicalize())
   case none error[EggType, String]({
     var b = string_builder().&
     b."Unioning types failed. This is the unioning stack:\n"
@@ -59,18 +62,14 @@ fun join(
   mode: JoinMode, a: EggType, b: EggType,
   currently_joining: &List[Tuple3[JoinMode, EggType, EggType]],
 ): Maybe[EggType] {
+  if a == b then return some(a)
   if currently_joining.iter().&.find(tuple(mode, a, b)) is some(index) then {
     var level = currently_joining.len - index
-    return some(EggType.recursive(level))
+    return some(type_recursive(level))
   }
-
   currently_joining.push(tuple(mode, a, b))
-
-  a = a.extend_one_level()
-  b = b.extend_one_level()
   var result = join_logic(mode, a, b, currently_joining)
     or return none[EggType]()
-
   currently_joining.pop()
   some(result)
 }
@@ -78,28 +77,30 @@ fun join_logic(
   mode: JoinMode, a: EggType, b: EggType,
   currently_joining: &List[Tuple3[JoinMode, EggType, EggType]],
 ): Maybe[EggType] {
-  if a is never then return some(switch mode case union b case intersection a)
-  if b is never then return some(switch mode case union a case intersection b)
+  if a.internal_kind() is never then
+    return some(switch mode case union b case intersection a)
+  if b.internal_kind() is never then
+    return some(switch mode case union a case intersection b)
+
+  var a = a.kind()
+  var b = b.kind()
 
   switch a
-  case var_(a_name) {
-    var b_name = b.var_ or return none[EggType]()
+  case variable(a_name) {
+    var b_name = b.variable or return none[EggType]()
     a_name == b_name or return none[EggType]()
-    some(EggType.var_(a_name))
+    some(type_variable(a_name))
   }
-  case primitive(a_primitive) {
-    var b_primitive = b.primitive or return none[EggType]()
-    a_primitive.name == b_primitive.name or return none[EggType]()
-    var args = list[EggType]()
-    for both in zip(a_primitive.args.iter(), b_primitive.args.iter()) do
-      args.&.push(
-        join(mode, both.a, both.b, currently_joining) or return none[EggType]()
-      )
-    some(EggType.primitive(PrimitiveType {
-      name = a_primitive.name, args = args.to_slice()
-    }))
-  }
+  case byte if b is byte then some(type_byte) else none[EggType]()
+  case int if b is int then some(type_int) else none[EggType]()
   case never unreachable()
+  case type if b is type then some(type_type) else none[EggType]()
+  case array(a_item) {
+    var b_item = b.array or return none[EggType]()
+    var item =
+      join(mode, a_item, b_item, currently_joining) or return none[EggType]()
+    some(type_array_without_canonicalizing(item))
+  }
   case struct_(a_fields) {
     var b_fields = b.struct_ or return none[EggType]()
     var fields = map[String, EggType]()
@@ -114,7 +115,7 @@ fun join_logic(
           or return none[EggType](),
       )
     }
-    some(EggType.struct_(fields))
+    some(type_struct_without_canonicalizing(fields))
   }
   case enum_(a_variants) {
     switch mode
@@ -133,7 +134,7 @@ fun join_logic(
             b_arg
         })
       }
-      some(EggType.enum_(variants))
+      some(type_enum_without_canonicalizing(variants))
     }
     case intersection {
       var b_variants = b.enum_ or return none[EggType]()
@@ -146,7 +147,7 @@ fun join_logic(
           or return none[EggType]()
         variants.&.put(variant.key, variant.value)
       }
-      some(EggType.enum_(variants))
+      some(type_enum_without_canonicalizing(variants))
     }
   }
   case lambda(a_lambda) {
@@ -166,12 +167,9 @@ fun join_logic(
     var args = args.to_slice()
 
     var return_type = join(
-      mode, a_lambda.return_type.*, b_lambda.return_type.*, currently_joining
+      mode, a_lambda.return_type, b_lambda.return_type, currently_joining
     ) or return none[EggType]()
 
-    some(EggType.lambda(LambdaType {
-      args, return_type = return_type.put_on_heap()
-    }))
+    some(type_lambda_without_canonicalizing(args, return_type))
   }
-  case recursive unreachable()
 }

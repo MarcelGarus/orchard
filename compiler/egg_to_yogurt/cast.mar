@@ -16,11 +16,6 @@ fun cast(
 fun compile_cast_fun(
   from: EggType, to: EggType, context: &YogurtContext
 ): String {
-  var from = from.canonicalize()
-  var to = to.canonicalize()
-  from.is_self_contained() or panic("from is not self-contained:\n{from.indented()}")
-  to.is_self_contained() or panic("to is not self-contained:\n{to.indented()}")
-
   var compilation =
     context.start_compiling("cast {from} to {to}")
       or(signature) return signature
@@ -38,64 +33,60 @@ fun compile_cast_fun_body(
   from_type: EggType, to_type: EggType,
   body: &YogurtBodyBuilder, from: Id, context: &YogurtContext
 ): Id {
-  if from_type is never then return body.unreachable(to_type.compile())
-  if from_type == to_type then return from | This cast the identity fun!
+  if from_type.internal_kind() is never then
+    return body.unreachable(to_type.compile())
+  if from_type == to_type then return from | This cast is the identity fun!
 
-  switch to_type.extend_one_level()
-  case primitive(to_primitive) {
-    var from_primitive =
-      from_type.extend_one_level().primitive.unwrap()
+  switch to_type.kind()
+  case byte unreachable()
+  case int unreachable()
+  case type unreachable()
+  case array(to_item_type) {
+    var from_item_type = from_type.kind().array.unwrap()
 
-    if to_primitive.name == "Array" then {
-      var from_item_type = from_primitive.args.get(0).canonicalize()
-      var to_item_type   = to_primitive.args.get(0).canonicalize()
-      | eprintln("compiling (Array {from_item_type}) to (Array {to_item_type})")
+    var length = body.array_len(from)
 
-      var length = body.array_len(from)
+    | Create a closure.
+    var closure = body.closure(from)
 
-      | Create a closure.
-      var closure = body.closure(from)
+    | Compile a lambda for getting a cast argument at a given index.
+    var lambda_dag = dag[YogurtExpr]().&
+    var lambda_body = body_builder(lambda_dag).&
 
-      | Compile a lambda for getting a cast argument at a given index.
-      var lambda_dag = dag[YogurtExpr]().&
-      var lambda_body = body_builder(lambda_dag).&
+    | The "array" is captured.
+    var index = lambda_body.param(type_int.compile()) | index: Int
+    var inner_closure = lambda_body.param(body.type_of(closure))
+    var from_array = lambda_body.get_closure(
+      inner_closure, from_type.compile()
+    )
+    var from_item = lambda_body.array_get(
+      from_array, index, from_item_type.compile()
+    )
+    var to_item = lambda_body.cast(
+      from_item,
+      from_item_type,
+      to_item_type,
+      context,
+    )
 
-      | The "array" is captured.
-      var index = lambda_body.param(type_int.compile()) | index: Int
-      var inner_closure = lambda_body.param(body.type_of(closure))
-      var from_array = lambda_body.get_closure(
-        inner_closure, from_type.compile()
-      )
-      var from_item = lambda_body.array_get(
-        from_array, index, from_item_type.compile()
-      )
-      var to_item = lambda_body.cast(
-        from_item,
-        from_item_type,
-        to_item_type,
-        context,
-      )
+    var signature = context.define(
+      "get cast item from {from_type} to {to_type}",
+      YogurtFun { dag = lambda_dag.*, body = lambda_body.finish(to_item) },
+    )
 
-      var signature = context.define(
-        "get cast item from {from_type} to {to_type}",
-        YogurtFun { dag = lambda_dag.*, body = lambda_body.finish(to_item) },
-      )
-
-      var lambda = body.lambda(
-        type_lambda(list(type_int).to_slice(), to_item_type).compile(),
-        signature, closure,
-      )
-      body.generate_array(length, lambda, to_type.compile())
-    } else
-      panic("casting {from_type} to {to_type} is not supported")
+    var lambda = body.lambda(
+      type_lambda(list(type_int).to_slice(), to_item_type).compile(),
+      signature, closure,
+    )
+    body.generate_array(length, lambda, to_type.compile())
   }
   case struct_(to_field_types)
     body.struct_(to_type.compile(), {
       var to_fields = map[String, Id]()
-      for entry in from_type.extend_one_level().struct_.unwrap() do {
+      for entry in from_type.kind().struct_.unwrap() do {
         var name = entry.key
-        var from_type = entry.value.canonicalize()
-        var to_type = to_field_types.get(name).canonicalize()
+        var from_type = entry.value
+        var to_type = to_field_types.get(name)
 
         var from = body.member(from, name, from_type.compile())
         var to = body.cast(from, from_type, to_type, context)
@@ -107,10 +98,10 @@ fun compile_cast_fun_body(
   case enum_(to_variant_types)
     body.switch_(from, to_type.compile(), {
       var cases = map[String, YogurtBody]()
-      for entry in from_type.extend_one_level().enum_.unwrap() do {
+      for entry in from_type.kind().enum_.unwrap() do {
         var name = entry.key
-        var from_value_type = entry.value.canonicalize()
-        var to_value_type = to_variant_types.get(name).canonicalize()
+        var from_value_type = entry.value
+        var to_value_type = to_variant_types.get(name)
         var case_body = body_builder(body.dag).&
         var from_value = case_body.param(from_value_type.compile())
         var to_value = case_body.cast(
@@ -122,7 +113,7 @@ fun compile_cast_fun_body(
       cases
     })
   case lambda(to_lambda_type) {
-    var from_lambda_type = from_type.extend_one_level().lambda.unwrap()
+    var from_lambda_type = from_type.kind().lambda.unwrap()
 
     | Create a closure.
     var closure = body.closure(from)
@@ -143,8 +134,8 @@ fun compile_cast_fun_body(
     for param in params.iter().enumerate() do
       cast_params.&.push(lambda_body.cast(
         param.item,
-        to_lambda_type.args.get(param.index).canonicalize(),
-        from_lambda_type.args.get(param.index).canonicalize(),
+        to_lambda_type.args.get(param.index),
+        from_lambda_type.args.get(param.index),
         context,
       ))
     var from_return = lambda_body.call_lambda(
@@ -155,8 +146,8 @@ fun compile_cast_fun_body(
 
     var to_return = lambda_body.cast(
       from_return,
-      from_lambda_type.return_type.canonicalize(),
-      to_lambda_type.return_type.canonicalize(),
+      from_lambda_type.return_type,
+      to_lambda_type.return_type,
       context,
     )
 

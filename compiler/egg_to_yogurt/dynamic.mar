@@ -9,10 +9,6 @@ fun static_to_dynamic(
 fun compile_static_to_dynamic_fun(
   type: EggType, context: &YogurtContext
 ): String {
-  var type = type.canonicalize()
-  type.is_self_contained() or
-    panic("type is not self-contained:\n{type.indented()}")
-
   var compilation = context.start_compiling("{type} to dynamic")
     or(signature) return signature
 
@@ -27,30 +23,24 @@ fun compile_static_to_dynamic_fun(
 fun compile_static_to_dynamic_fun_body(
   type: EggType, body: &YogurtBodyBuilder, value: Id, context: &YogurtContext
 ): Id {
-  switch type.extend_one_level()
-  case var_ panic("type var in compile to dynamic")
-  case primitive(primitive) {
-    var name = primitive.name
-    if name == "Int" then body.enum_(type_dynamic.compile(), "int", value)
-    else if name == "Byte" then
-      body.enum_(type_dynamic.compile(), "byte", value)
-    else if name == "Array" then {
-      var len = body.array_len(value)
-      var lambda = body.lambda(
-        type_lambda(list(type_int).to_slice(), type_dynamic).compile(),
-        compile_array_items_to_dynamic_fun(primitive.args.get(0), context),
-        body.closure(value),
-      )
-      var array = body.generate_array(
-        len, lambda, type_array(type_dynamic).compile()
-      )
-      body.enum_(type_dynamic.compile(), "array", array)
-    } else if name == "Type" then
-      body.enum_(type_dynamic.compile(), "type", body.nothing())
-    else
-      panic("unknown primitive type {type}")
-  }
+  switch type.kind()
+  case variable panic("type var in compile to dynamic")
+  case byte body.enum_(type_dynamic.compile(), "byte", value)
+  case int body.enum_(type_dynamic.compile(), "int", value)
   case never body.unreachable(type_dynamic.compile())
+  case type body.enum_(type_dynamic.compile(), "type", body.nothing())
+  case array(item) {
+    var len = body.array_len(value)
+    var lambda = body.lambda(
+      type_lambda(list(type_int).to_slice(), type_dynamic).compile(),
+      compile_array_items_to_dynamic_fun(item, context),
+      body.closure(value),
+    )
+    var array = body.generate_array(
+      len, lambda, type_array(type_dynamic).compile()
+    )
+    body.enum_(type_dynamic.compile(), "array", array)
+  }
   case struct_(field_types)
     body.enum_(type_dynamic.compile(), "struct", {
       var dynamic_fields = list[Id]()
@@ -100,15 +90,10 @@ fun compile_static_to_dynamic_fun_body(
         body.closure(value),
       )
     })
-  case recursive unreachable()
 }
 fun compile_array_items_to_dynamic_fun(
   item_type: EggType, context: &YogurtContext
 ): String {
-  var item_type = item_type.canonicalize() | TODO: assume/check that type is canonicalized
-  item_type.is_self_contained() or
-    panic("type is not self-contained:\n{item_type.indented()}")
-
   var compilation =
     context.start_compiling("converting array item of {item_type} to dynamic")
       or(signature) return signature
@@ -129,10 +114,6 @@ fun compile_array_items_to_dynamic_fun(
 fun compile_dynamic_lambda_wrapper_fun(
   type: EggType, context: &YogurtContext
 ): String {
-  var type = type.canonicalize() | TODO: assume/check that type is canonicalized
-  type.is_self_contained() or
-    panic("type is not self-contained:\n{type.indented()}")
-
   var compilation =
     context.start_compiling("dynamic lambda wrapper of {type}")
       or(signature) return signature
@@ -143,7 +124,7 @@ fun compile_dynamic_lambda_wrapper_fun(
   var args = body.param(type_array(type_dynamic).compile())
   var closure = body.param(YogurtType.closure(type.compile().put_on_heap()))
 
-  var lambda_type = type.extend_one_level().lambda.unwrap()
+  var lambda_type = type.kind().lambda.unwrap()
 
   | Make sure the number of arguments is correct.
   body.switch_(
@@ -189,7 +170,7 @@ fun compile_dynamic_lambda_wrapper_fun(
     lambda_type.return_type.compile(),
   )
   var converted = body.static_to_dynamic(
-    result, lambda_type.return_type.*, context
+    result, lambda_type.return_type, context
   )
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(converted) })
@@ -204,10 +185,6 @@ fun dynamic_to_static(
 fun compile_dynamic_to_static_fun(
   type: EggType, context: &YogurtContext
 ): String {
-  var type = type.canonicalize()
-  type.is_self_contained() or
-    panic("type is not self-contained:\n{type.indented()}")
-
   var compilation =
     context.start_compiling("dynamic to {type}") or(signature) return signature
 
@@ -216,88 +193,82 @@ fun compile_dynamic_to_static_fun(
 
   var value = body.param(type_dynamic.compile())
   var result =
-    switch type.extend_one_level()
-    case var_ panic("type var in compile to dynamic")
-    case primitive(primitive) {
-      var name = primitive.name
-      if name == "Int" then
-        body.switch_(value, type.compile(), {
-          var cases = map[String, YogurtBody]()
-          for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
-            var name = entry.key
-            var payload_type = entry.value.canonicalize()
-            var body = body_builder(body.dag).&
-            var payload = body.param(payload_type.compile())
-            var result =
-              if name == "int"
-              then payload
-              else body.crash(
-                "dynamic to static failed (expected int, got {name})",
-                type_never.compile(),
-              )
-            cases.&.put(name, body.finish(result))
-          }
-          cases
-        })
-      else if name == "Byte" then
-        body.switch_(value, type.compile(), {
-          var cases = map[String, YogurtBody]()
-          for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
-            var name = entry.key
-            var payload_type = entry.value.canonicalize()
-            var body = body_builder(body.dag).&
-            var payload = body.param(payload_type.compile())
-            var result =
-              if name == "byte"
-              then payload
-              else body.crash(
-                "dynamic to static failed (expected Byte)", type_never.compile()
-              )
-            cases.&.put(name, body.finish(result))
-          }
-          cases
-        })
-      else if name == "Array" then
-        body.switch_(value, type.compile(), {
-          var cases = map[String, YogurtBody]()
-          for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
-            var name = entry.key
-            var payload_type = entry.value.canonicalize()
-            var body = body_builder(body.dag).&
-            var payload = body.param(payload_type.compile())
-            var result =
-              if name == "array" then {
-                var item_type = primitive.args.get(0)
-                var len = body.array_len(payload)
-                var lambda = body.lambda(
-                  type_lambda(list(type_int).to_slice(), item_type).compile(),
-                  compile_dynamic_to_array_items_fun(item_type, context),
-                  body.closure(payload),
-                )
-                body.generate_array(len, lambda, type.compile())
-              } else
-                body.crash(
-                  "dynamic to static failed (expected array)", type.compile()
-                )
-            cases.&.put(name, body.finish(result))
-          }
-          cases
-        })
-      else if name == "Type" then
-        | Note: We don't need to re-create the exact type, as you can't inspect
-        | non-statically-known types – during runtime, Types don't store
-        | anything. So, we just give you _any_ type.
-        body.type(YogurtType.type)
-      else
-        panic("unknown primitive type {type}")
-    }
+    switch type.kind()
+    case variable panic("type var in compile to dynamic")
+    case byte
+      body.switch_(value, type.compile(), {
+        var cases = map[String, YogurtBody]()
+        for entry in type_dynamic.kind().enum_.unwrap() do {
+          var name = entry.key
+          var payload_type = entry.value
+          var body = body_builder(body.dag).&
+          var payload = body.param(payload_type.compile())
+          var result =
+            if name == "byte"
+            then payload
+            else body.crash(
+              "dynamic to static failed (expected Byte)", type_never.compile()
+            )
+          cases.&.put(name, body.finish(result))
+        }
+        cases
+      })
+    case int
+      body.switch_(value, type.compile(), {
+        var cases = map[String, YogurtBody]()
+        for entry in type_dynamic.kind().enum_.unwrap() do {
+          var name = entry.key
+          var payload_type = entry.value
+          var body = body_builder(body.dag).&
+          var payload = body.param(payload_type.compile())
+          var result =
+            if name == "int"
+            then payload
+            else body.crash(
+              "dynamic to static failed (expected int, got {name})",
+              type_never.compile(),
+            )
+          cases.&.put(name, body.finish(result))
+        }
+        cases
+      })
     case never body.crash("tried to build Never from Dynamic", type.compile())
+    case type
+      | Note: We don't need to re-create the exact type, as you can't inspect
+      | non-statically-known types – during runtime, Types don't store
+      | anything. So, we just give you _any_ type.
+      body.type(YogurtType.type)
+    case array(item_type)
+      body.switch_(value, type.compile(), {
+        var cases = map[String, YogurtBody]()
+        for entry in type_dynamic.kind().enum_.unwrap() do {
+          var name = entry.key
+          var payload_type = entry.value
+          var body = body_builder(body.dag).&
+          var payload = body.param(payload_type.compile())
+          var result =
+            if name == "array" then {
+              var len = body.array_len(payload)
+              var lambda = body.lambda(
+                type_lambda(list(type_int).to_slice(), item_type).compile(),
+                compile_dynamic_to_array_items_fun(item_type, context),
+                body.closure(payload),
+              )
+              body.generate_array(len, lambda, type.compile())
+            } else
+              body.crash(
+                "dynamic to static failed (expected array)", type.compile()
+              )
+          cases.&.put(name, body.finish(result))
+        }
+        cases
+      })
     case struct_(field_types)
       body.switch_(value, type.compile(), {
         var cases = map[String, YogurtBody]()
-        for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
+        for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
-          var payload_type = entry.value.canonicalize()
+          var payload_type = entry.value
           var body = body_builder(body.dag).&
           var payload = body.param(payload_type.compile())
           var result =
@@ -326,9 +297,9 @@ fun compile_dynamic_to_static_fun(
     case enum_(variant_types)
       body.switch_(value, type.compile(), {
         var cases = map[String, YogurtBody]()
-        for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
+        for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
-          var payload_type = entry.value.canonicalize()
+          var payload_type = entry.value
           var body = body_builder(body.dag).&
           var payload = body.param(payload_type.compile())
           var result =
@@ -381,9 +352,9 @@ fun compile_dynamic_to_static_fun(
     case lambda
       body.switch_(value, type.compile(), {
         var cases = map[String, YogurtBody]()
-        for entry in type_dynamic.extend_one_level().enum_.unwrap() do {
+        for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
-          var payload_type = entry.value.canonicalize()
+          var payload_type = entry.value
           var body = body_builder(body.dag).&
           var payload = body.param(payload_type.compile())
           var result =
@@ -401,17 +372,12 @@ fun compile_dynamic_to_static_fun(
         }
         cases
       })
-    case recursive unreachable()
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(result) })
 }
 fun compile_dynamic_to_array_items_fun(
   item_type: EggType, context: &YogurtContext
 ): String {
-  var item_type = item_type.canonicalize() | TODO: assume/check that type is canonicalized
-  item_type.is_self_contained() or
-    panic("type is not self-contained:\n{item_type.indented()}")
-
   var compilation =
     context.start_compiling("converting dynamic to array item of {item_type}")
       or(signature) return signature
@@ -619,15 +585,11 @@ fun compile_compare_strings_rec_fun(context: &YogurtContext): String {
 fun compile_static_lambda_wrapper_fun(
   type: EggType, context: &YogurtContext
 ): String {
-  var type = type.canonicalize() | TODO: assume/check that type is canonicalized
-  type.is_self_contained() or
-    panic("type is not self-contained:\n{type.indented()}")
-
   var compilation =
     context.start_compiling("static lambda wrapper of {type}")
       or(signature) return signature
 
-  var lambda_type = type.extend_one_level().lambda.unwrap()
+  var lambda_type = type.kind().lambda.unwrap()
 
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
@@ -652,7 +614,7 @@ fun compile_static_lambda_wrapper_fun(
     type_dynamic.compile(),
   )
   var converted =
-    body.dynamic_to_static(result, lambda_type.return_type.*, context)
+    body.dynamic_to_static(result, lambda_type.return_type, context)
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(converted) })
 }

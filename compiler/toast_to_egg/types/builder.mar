@@ -1,215 +1,73 @@
-import mod.mar
+fun field(type: EggType, name: String): EggType {
+  type.kind().struct_.unwrap().get(name)
+}
+fun variant(type: EggType, name: String): EggType {
+  type.kind().enum_.unwrap().get(name)
+}
 
-fun type_var(name: String): EggType { EggType.var_(name) }
-fun type_primitive(name: String, args: Slice[EggType]): EggType {
-  EggType.primitive(PrimitiveType { name, args })
-}
-var type_never = EggType.never
-fun type_struct(fields: Map[String, EggType]): EggType {
-  EggType.struct_(fields)
-}
-fun type_enum(variants: Map[String, EggType]): EggType {
-  EggType.enum_(variants)
-}
-fun type_lambda(args: Slice[EggType], return_type: EggType): EggType {
-  EggType.lambda(LambdaType {
-    args, return_type = return_type.put_on_heap()
-  })
-}
-fun type_recursive(level: Int): EggType { EggType.recursive(level) }
-
-var type_var_t = EggType.var_("t")
+var type_var_t = type_variable("t")
 var type_nothing = type_struct(map[String, EggType]())
-var type_byte = type_primitive("Byte", empty_slice[EggType]())
-var type_int = type_primitive("Int", empty_slice[EggType]())
-var type_type = type_primitive("Type", empty_slice[EggType]())
-fun type_array(item_type: EggType): EggType {
-  type_primitive("Array", list(item_type).to_slice())
-}
 var type_string = type_struct(map("utf8_bytes" -> type_array(type_byte)))
 var type_bool = type_enum(map("true" -> type_nothing, "false" -> type_nothing))
 var type_ordering = type_enum(map(
   "less" -> type_nothing, "equal" -> type_nothing, "greater" -> type_nothing
 ))
-
-var type_type_info = type_enum(map(
-  "byte"   -> type_nothing,
-  "int"    -> type_nothing,
-  "type"   -> type_nothing,
-  "array"  -> type_recursive(1),
-  "never"  -> type_nothing,
-  "struct" -> type_array(type_struct(map(
-    "name" -> type_string, "type" -> type_recursive(3)
-  ))),
-  "enum"   -> type_array(type_struct(map(
-    "name" -> type_string, "type" -> type_recursive(3)
-  ))),
-  "lambda" -> type_struct(map(
-    "arguments" -> type_array(type_recursive(3)),
-    "return_type" -> type_recursive(2),
-  )),
-  "recursive" -> type_int,
-))
-var type_type_info_field = type_struct(map(
-  "name" -> type_string,
-  "type" -> type_enum(map(
-    "byte"   -> type_nothing,
-    "int"    -> type_nothing,
-    "type"   -> type_nothing,
-    "array"  -> type_recursive(1),
-    "never"  -> type_nothing,
-    "struct" -> type_array(type_recursive(3)),
-    "enum"   -> type_array(type_recursive(3)),
-    "lambda" -> type_struct(map(
-      "arguments" -> type_array(type_recursive(3)),
-      "return_type" -> type_recursive(2),
-    )),
-    "recursive" -> type_int,
-  )),
-))
-var type_type_info_fields = type_array(type_struct(map(
-  "name" -> type_string,
-  "type" -> type_enum(map(
-    "byte"   -> type_nothing,
-    "int"    -> type_nothing,
-    "type"   -> type_nothing,
-    "array"  -> type_recursive(1),
-    "never"  -> type_nothing,
-    "struct" -> type_recursive(3),
-    "enum"   -> type_recursive(3),
-    "lambda" -> type_struct(map(
-      "arguments" -> type_array(type_recursive(3)),
-      "return_type" -> type_recursive(2),
-    )),
-    "recursive" -> type_int,
-  )),
-)))
-var type_type_info_variant = type_type_info_field
-var type_type_info_variants = type_type_info_fields
-var type_type_info_lambda = type_struct(map(
-  "arguments" -> type_array(type_enum(map(
-    "byte"   -> type_nothing,
-    "int"    -> type_nothing,
-    "type"   -> type_nothing,
-    "array"  -> type_recursive(1),
-    "never"  -> type_nothing,
-    "struct" -> type_array(type_struct(map(
-      "name" -> type_string, "type" -> type_recursive(3)
-    ))),
-    "enum"   -> type_array(type_struct(map(
-      "name" -> type_string, "type" -> type_recursive(3)
-    ))),
-    "lambda" -> type_recursive(3),
-    "recursive" -> type_int,
-  ))),
-  "return_type" -> type_enum(map(
-    "byte"   -> type_nothing,
-    "int"    -> type_nothing,
-    "type"   -> type_nothing,
-    "array"  -> type_recursive(1),
-    "never"  -> type_nothing,
-    "struct" -> type_array(type_struct(map(
-      "name" -> type_string, "type" -> type_recursive(3)
-    ))),
-    "enum"   -> type_array(type_struct(map(
-      "name" -> type_string, "type" -> type_recursive(3)
-    ))),
-    "lambda" -> type_recursive(2),
-    "recursive" -> type_int,
-  )),
-))
-var type_type_info_lambda_args = type_array(type_enum(map(
-  "byte"   -> type_nothing,
-  "int"    -> type_nothing,
-  "type"   -> type_nothing,
-  "array"  -> type_recursive(1),
-  "never"  -> type_nothing,
-  "struct" -> type_array(type_struct(map(
-    "name" -> type_string, "type" -> type_recursive(3)
-  ))),
-  "enum"   -> type_array(type_struct(map(
-    "name" -> type_string, "type" -> type_recursive(3)
-  ))),
-  "lambda" -> type_struct(map(
-    "arguments" -> type_recursive(3),
-    "return_type" -> type_recursive(2),
-  )),
-  "recursive" -> type_int,
-)))
-
-var type_dynamic = type_enum(map(
-  "byte"   -> type_byte,
-  "int"    -> type_int,
-  "type"   -> type_nothing,
-  "array"  -> type_array(type_recursive(2)),
-  "struct" -> type_array(type_struct(map(
-    "name" -> type_string, "value" -> type_recursive(3)
-  ))),
-  "enum"   -> type_struct(map(
-    "name" -> type_string, "value" -> type_recursive(2)
-  )),
-  "lambda" -> type_lambda(
-    list(type_array(type_recursive(3))).to_slice(), type_recursive(2),
-  ),
-))
-var type_dynamic_field = type_struct(map(
-  "name" -> type_string,
-  "value" -> type_enum(map(
-    "byte"   -> type_byte,
-    "int"    -> type_int,
-    "type"   -> type_nothing,
-    "array"  -> type_array(type_recursive(2)),
-    "struct" -> type_array(type_recursive(3)),
-    "enum"   -> type_recursive(2),
-    "lambda" -> type_lambda(
-      list(type_array(type_recursive(3))).to_slice(), type_recursive(2),
-    ),
-  )),
-))
-var type_dynamic_fields = type_array(type_struct(map(
-  "name" -> type_string,
-  "value" -> type_enum(map(
-    "byte"   -> type_byte,
-    "int"    -> type_int,
-    "type"   -> type_nothing,
-    "array"  -> type_array(type_recursive(2)),
-    "struct" -> type_recursive(3),
-    "enum"   -> type_recursive(2),
-    "lambda" -> type_lambda(
-      list(type_array(type_recursive(3))).to_slice(), type_recursive(2),
-    ),
-  )),
-)))
-var type_dynamic_variant = type_dynamic_field
-var type_dynamic_lambda = type_lambda(
-  list(type_array(type_enum(map(
-    "byte"   -> type_byte,
-    "int"    -> type_int,
-    "type"   -> type_nothing,
-    "array"  -> type_recursive(2),
-    "struct" -> type_array(type_struct(map(
-      "name" -> type_string, "value" -> type_recursive(3)
-    ))),
-    "enum"   -> type_struct(map(
-      "name" -> type_string, "value" -> type_recursive(2)
-    )),
-    "lambda" -> type_recursive(3),
-  )))).to_slice(),
-  type_enum(map(
-    "byte"   -> type_byte,
-    "int"    -> type_int,
-    "type"   -> type_nothing,
-    "array"  -> type_array(type_recursive(2)),
-    "struct" -> type_array(type_struct(map(
-      "name" -> type_string, "value" -> type_recursive(3)
-    ))),
-    "enum"   -> type_struct(map(
-      "name" -> type_string, "value" -> type_recursive(2)
-    )),
-    "lambda" -> type_recursive(2),
-  )),
-)
-
 fun type_range(item: EggType): EggType {
   type_struct(map("start" -> item, "end" -> item))
 }
+
+var type_type_info = canonicalize(
+  type_enum_without_canonicalizing(map(
+    "byte"   -> type_nothing,
+    "int"    -> type_nothing,
+    "type"   -> type_nothing,
+    "array"  -> type_recursive(1),
+    "never"  -> type_nothing,
+    "struct" -> type_array_without_canonicalizing(
+      type_struct_without_canonicalizing(map(
+        "name" -> type_string, "type" -> type_recursive(3)
+      ))
+    ),
+    "enum"   -> type_array_without_canonicalizing(
+      type_struct_without_canonicalizing(map(
+        "name" -> type_string, "type" -> type_recursive(3)
+      ))
+    ),
+    "lambda" -> type_struct_without_canonicalizing(map(
+      "arguments" -> type_array_without_canonicalizing(type_recursive(3)),
+      "return_type" -> type_recursive(2),
+    )),
+    "recursive" -> type_int,
+  ))
+)
+var type_type_info_fields = type_type_info.variant("struct")
+var type_type_info_field = type_type_info_fields.kind().array.unwrap()
+var type_type_info_variants = type_type_info.variant("enum")
+var type_type_info_variant = type_type_info_variants.kind().array.unwrap()
+var type_type_info_lambda = type_type_info.variant("lambda")
+var type_type_info_lambda_args = type_type_info_lambda.field("arguments")
+
+var type_dynamic = canonicalize(
+  type_enum_without_canonicalizing(map(
+    "byte"   -> type_byte,
+    "int"    -> type_int,
+    "type"   -> type_nothing,
+    "array"  -> type_array_without_canonicalizing(type_recursive(2)),
+    "struct" -> type_array_without_canonicalizing(
+        type_struct_without_canonicalizing(map(
+        "name" -> type_string, "value" -> type_recursive(3)
+      ))
+    ),
+    "enum"   -> type_struct_without_canonicalizing(map(
+      "name" -> type_string, "value" -> type_recursive(2)
+    )),
+    "lambda" -> type_lambda_without_canonicalizing(
+      list(type_array_without_canonicalizing(type_recursive(3))).to_slice(),
+      type_recursive(2),
+    ),
+  ))
+)
+var type_dynamic_fields = type_dynamic.variant("struct")
+var type_dynamic_field = type_dynamic_fields.kind().array.unwrap()
+var type_dynamic_variant = type_dynamic.variant("enum")
+var type_dynamic_lambda = type_dynamic.variant("lambda")

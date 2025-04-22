@@ -57,7 +57,7 @@ fun check_coherency(
       case some(existing)
         union(existing, concrete) or return none[Substitutions]()
       case none concrete
-    substitutions.&.put(variable, type.canonicalize())
+    substitutions.&.put(variable, type)
   }
   some(Substitutions { substitutions })
 }
@@ -71,8 +71,6 @@ fun match_against(
 
   currently_matching.push(tuple(concrete, generic))
 
-  concrete = concrete.extend_one_level()
-  generic = generic.extend_one_level()
   var result = match_against_logic(
     concrete, generic, constraints, currently_matching
   )
@@ -85,21 +83,25 @@ fun match_against_logic(
   constraints: &TypeVariableConstraints,
   currently_matching: &List[Tuple2[EggType, EggType]],
 ): Bool {
+  var original_concrete = concrete
+  var generic  = generic.kind()
+  var concrete = concrete.kind()
+
   if concrete is never then return true
 
   switch generic
-  case var_(name) {
-    constraints.add(name, concrete)
+  case variable(name) {
+    constraints.add(name, original_concrete)
     true
   }
-  case primitive(generic_primitive) {
-    var concrete_primitive = concrete.primitive or return false
-    concrete_primitive.name == generic_primitive.name or return false
-    concrete_primitive.args.match_against(
-      generic_primitive.args, constraints, currently_matching
-    )
-  }
+  case byte concrete is byte
+  case int concrete is int
   case never concrete is never
+  case type concrete is type
+  case array(generic_item) {
+    var concrete_item = concrete.array or return false
+    concrete_item.match_against(generic_item, constraints, currently_matching)
+  }
   case struct_(generic_fields) {
     var concrete_fields = concrete.struct_ or return false
     for field in concrete_fields do {
@@ -127,11 +129,10 @@ fun match_against_logic(
     concrete_lambda.args.match_against(
       generic_lambda.args, constraints, currently_matching
     ) or return false
-    concrete_lambda.return_type.*.match_against(
-      generic_lambda.return_type.*, constraints, currently_matching
+    concrete_lambda.return_type.match_against(
+      generic_lambda.return_type, constraints, currently_matching
     ) or return false
   }
-  case recursive unreachable()
 }
 fun match_against(
   concrete: Slice[EggType], generic: Slice[EggType],
@@ -157,42 +158,52 @@ fun write[W](writer: W, substitutions: Substitutions) {
 | Specializing types  
 | For example, specializing (List t) using {t -> Int} to (List Int).
 
+
 fun specialize(
   type: EggType, substitutions: Substitutions
 ): EggType {
-  switch type
-  case var_(name)
+  type.specialize_rec(substitutions).canonicalize()
+}
+fun specialize_rec(
+  type: EggType, substitutions: Substitutions
+): EggType {
+  switch type.internal_kind()
+  case variable(name)
     substitutions.substitutions.get_maybe(name) or
       panic("substitution for {name} missing: {substitutions.substitutions}")
-  case primitive(primitive)
-    EggType.primitive(PrimitiveType {
-      name = primitive.name, args = primitive.args.specialize(substitutions)
-    })
-  case never EggType.never
-  case struct_(fields) EggType.struct_(fields.specialize(substitutions))
-  case enum_(variants) EggType.enum_(variants.specialize(substitutions))
+  case byte type
+  case int type
+  case never type
+  case type type
+  case array(item)
+    type_array_without_canonicalizing(item.specialize_rec(substitutions))
+  case struct_(fields)
+    type_struct_without_canonicalizing(fields.specialize_rec(substitutions))
+  case enum_(variants)
+    type_enum_without_canonicalizing(variants.specialize_rec(substitutions))
   case lambda(lambda)
-    EggType.lambda(LambdaType {
-      args = lambda.args.specialize(substitutions),
-      return_type = lambda.return_type.specialize(substitutions).put_on_heap(),
-    })
-  case recursive(level) EggType.recursive(level)
+    type_lambda_without_canonicalizing(
+      lambda.args.specialize_rec(substitutions),
+      lambda.return_type.specialize_rec(substitutions),
+    )
+  case recursive type
 }
-fun specialize(
+fun specialize_rec(
   types: Map[String, EggType], substitutions: Substitutions
 ): Map[String, EggType] {
   var specialized = map[String, EggType]()
   for entry in types do
-    specialized.&.put(entry.key, entry.value.specialize(substitutions))
+    specialized.&.put(entry.key, entry.value.specialize_rec(substitutions))
   specialized
 }
-fun specialize(
+fun specialize_rec(
   types: Slice[EggType], substitutions: Substitutions
 ): Slice[EggType] {
   var specialized = list[EggType]()
-  for type in types do specialized.&.push(type.specialize(substitutions))
+  for type in types do specialized.&.push(type.specialize_rec(substitutions))
   specialized.to_slice()
 }
+
 fun specialize(a: Substitutions, b: Substitutions): Substitutions {
   var result = map[String, EggType]()
   for entry in a.substitutions do

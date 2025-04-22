@@ -9,7 +9,7 @@ fun compile(
 
   var param_types = list[EggType]()
   for param in fun_.params do {
-    var type = param.type.compile(module, types)?.canonicalize()
+    var type = param.type.compile(module, types)?
     var id = body.push_param(type, param.name.src)
     visible.&.define(param.name.string, id)
     param_types.&.push(type)
@@ -18,14 +18,17 @@ fun compile(
 
   | Push the type variables into the body.
   for var_ in param_types.collect_type_variables() do {
-    var id = body.push(EggOp.type(type_var(var_)).expr(type_type, invalid_src))
+    var id = body.push(
+      EggOp.type(type_variable(var_)).expr(type_type, invalid_src)
+    )
     visible.&.define(var_, id)
   }
   for param in fun_.params do {
-    var type = param.type.compile(module, types)?.canonicalize()
+    var type = param.type.compile(module, types)?
     if type == type_type then {
       var id = body.push(
-        EggOp.type(type_var(param.name.string)).expr(type_type, invalid_src)
+        EggOp.type(type_variable(param.name.string))
+          .expr(type_type, invalid_src)
       )
       visible.&.define(param.name.string, id)
     }
@@ -35,7 +38,7 @@ fun compile(
     visible_by_module, funs, types
   })?
 
-  var return_type = fun_.return_type.compile(module, types)?.canonicalize()
+  var return_type = fun_.return_type.compile(module, types)?
   dag.type_of(returned).is_assignable_to(return_type) or
     return error[EggFun, Error](error(
       "Function returns something different than its claimed return type:\n
@@ -99,9 +102,8 @@ fun compile(
       body.push(EggOp.string(string.string).expr(type_string, string.src))
     case type(type)
       body.push(
-        EggOp.type(type.compile(module, context.types)?.canonicalize()).expr(
-          type_type, invalid_src
-        )
+        EggOp.type(type.compile(module, context.types)?)
+          .expr(type_type, invalid_src)
       )
     case struct_(struct_) {
       var fields = map[String, Id]()
@@ -120,26 +122,22 @@ fun compile(
       }
 
       body.push(
-        EggOp.struct_(fields).expr(
-          type_struct(types).canonicalize(), struct_.ampersand.src
-        )
+        EggOp.struct_(fields).expr(type_struct(types), struct_.ampersand.src)
       )
     }
     case enum_(enum_) {
       var name = enum_.name.string
       var value = enum_.value.compile(body, module, visible, context)?
       body.push(
-        EggOp.enum_(EggEnum { name, value }).expr(
-          type_enum(map(name -> body.type_of(value))).canonicalize(),
-          enum_.pipe.src,
-        )
+        EggOp.enum_(EggEnum { name, value })
+          .expr(type_enum(map(name -> body.type_of(value))), enum_.pipe.src)
       )
     }
     case switch_(switch_) {
       | Compile the condition.
       var condition = switch_.condition.compile(body, module, visible, context)?
-      var condition_type = body.type_of(condition).extend_one_level()
-      var variant_types = condition_type.enum_
+      var condition_type = body.type_of(condition)
+      var variant_types = condition_type.kind().enum_
         or return error[Id, Error](error(
           "Switched on non-enum: {condition_type}", switch_.percent.src
         ))
@@ -189,7 +187,7 @@ fun compile(
         return error[Id, Error](error(
           "Couldn't union types {case_types}", switch_.percent.src
         ))
-      var common_type = common_type.canonicalize()
+      var common_type = common_type
       var cases = map[String, EggBody]()
       for compiler in case_compilers do {
         var symbol = compiler.key
@@ -202,9 +200,8 @@ fun compile(
       }
 
       body.push(
-        EggOp.switch_(EggSwitch { condition, cases }).expr(
-          common_type, switch_.percent.src
-        )
+        EggOp.switch_(EggSwitch { condition, cases })
+          .expr(common_type, switch_.percent.src)
       )
     }
     case name(name)
@@ -230,7 +227,7 @@ fun compile(
 
       body.push(
         EggOp.lambda(lambda_body).expr(
-          type_lambda(param_types.to_slice(), return_type).canonicalize(),
+          type_lambda(param_types.to_slice(), return_type),
           lambda.backslash.src,
         )
       )
@@ -252,11 +249,11 @@ fun compile(
         case name(name) {
           | Check if the call is actually a struct access.
           if arg_types.len == 1 then
-            if arg_types.get(0) is struct_(fields) then
+            if arg_types.get(0).internal_kind() is struct_(fields) then
               if fields.contains(name.string) then {
                 | This is a struct access!
                 var struct_ = args.get(0)
-                var field_type = body.type_of(struct_).extend_one_level()
+                var field_type = body.type_of(struct_).kind()
                   .struct_.unwrap().get(name.string)
                 return ok[Id, Error](body.push(
                   EggOp.member(EggMember {
@@ -307,7 +304,6 @@ fun compile(
               var return_type = local_fun.fun_.return_type
                 .compile(local_fun.module, context.types)?
                 .specialize(substitutions)
-                .canonicalize()
               break(return_type)
             }
             case imported(new_signature) {
@@ -321,7 +317,6 @@ fun compile(
                   var return_type =
                     builtin.signature().return_type
                       .specialize(substitutions)
-                      .canonicalize()
                   return ok[Id, Error](body.push(
                     EggOp.call(EggCall {
                       callee = EggCallee.builtin(MatchingBuiltin {
@@ -345,8 +340,7 @@ fun compile(
         var cast_args = list[Id]()
         for both in zip(args.iter(), fun_.params.iter()) do {
           var arg = both.a
-          var expected_type =
-            both.b.type.specialize(substitutions).canonicalize()
+          var expected_type = both.b.type.specialize(substitutions)
           cast_args.&.push(body.push_cast(arg, expected_type, name.src))
         }
         var args = cast_args.to_slice()
@@ -362,7 +356,7 @@ fun compile(
       case none { | lambda
         var lambda = call.function.compile(body, module, visible, context)?
         var lambda_type = body.type_of(lambda)
-        var lambda_type = lambda_type.lambda or
+        var lambda_type = lambda_type.kind().lambda or
           return return error[Id, Error](error(
             "Tried to call non-lambda: {lambda_type}",
             call.function.src(),
@@ -386,7 +380,7 @@ fun compile(
 
         body.push(
           EggOp.call(EggCall { callee = EggCallee.lambda(lambda), args }).expr(
-            lambda_type.return_type.*, call.function.src()
+            lambda_type.return_type, call.function.src()
           )
         )
       }
@@ -424,8 +418,8 @@ fun compile_pattern(
       "Type literals can't be in patterns.", pattern.src()
     ))
   case struct_(pattern) {
-    var type = body.type_of(matched).extend_one_level()
-    var struct_fields = type.struct_ or
+    var type = body.type_of(matched)
+    var struct_fields = type.kind().struct_ or
       return error[Nothing, Error](error(
         "Tried to use a struct pattern to match on {type}.",
         pattern.ampersand.src,
