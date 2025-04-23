@@ -69,7 +69,7 @@ fun main(): Never {
 
   var args = get_process_args()
   var path = args.get_maybe(1) or exit(1, "You didn't specify a file.\n")
-  var ground = module(path).compile() or(error)
+  var ground = module(path).compile("main (Int)") or(error)
     exit(1, "Oh no! An error occurred:\n\n{error}\n")
   var bytes = ground.to_bytes()
   write_file("{path}.ground", bytes)
@@ -82,29 +82,86 @@ fun exit(status: Int, message: String): Never {
   exit(status)
 }
 
-fun compile(module: Module): Result[Ground, Error] {
-  println("Bacons and Toasts")
+fun report_time(duration: Duration) {
+  println("{duration.in_milliseconds().to_int().format().pad_left(4)} ms")
+}
+
+fun compile(module: Module, function: String): Result[Ground, Error] {
+  var total_timer = start_timer()
+
+  println("Bacon")
+  print("& Toast ")
+  var timer = start_timer()
   var toasts = map[Module, Toast]()
   module.parse_toasts(toasts.&)?
   | eprintln("Toasts:")
   | for toast in toasts do
   |   eprintln("{toast.key}:\n{toast.value}")
-  var entry = "{module}.main (Int)"
-  println("Egg")     var egg     = toasts.to_egg(module)? |eprintln("{egg}")
-  println("Yogurt")  var yogurt  = egg.to_yogurt(entry)?  |eprintln("{yogurt}")
-  | println("Running") eprintln(yogurt.run(list(YogurtValue.int(5)).to_slice()).as_string())
-  println("Opt")     var yogurt  = yogurt.optimize()      |eprintln("{yogurt}")
-  println("Pudding") var pudding = yogurt.to_pudding()    |eprintln("{pudding}")
-  | println("Running") eprintln(pudding.run(5))
-  println("Pesto")   var pesto   = pudding.to_pesto()     |eprintln("{pesto}")
-  | println("Running") eprintln(pesto.run(list(PestoValue.int(5)).to_slice()).as_string())
-  println("Waffle")  var waffle  = pesto.to_waffle()      |eprintln("{waffle}")
-  println("Opt")     var waffle  = waffle.optimize()      |eprintln("{waffle}")
-  | println("Running") eprintln(waffle.run(5.to_bytes()).as_string())
-  println("Ground")  var ground  = waffle.to_ground()     |eprintln("{ground}")
-  | println("Running") eprintln(ground.run(5.to_bytes()).as_string())
+  report_time(timer.read_duration())
+
+  print("Egg     ")
+  var timer = start_timer()
+  var egg = toasts.to_egg(module)?
+  report_time(timer.read_duration())
+  | eprintln("{egg}")
+
+  print("Yogurt  ")
+  var timer = start_timer()
+  var yogurt = egg.to_yogurt("{module}.{function}")?
+  report_time(timer.read_duration())
+  | eprintln("{yogurt}")
+  | println("Running")
+  | eprintln(yogurt.run(list(YogurtValue.int(5)).to_slice()).as_string())
+
+  print("Opt     ")
+  var timer = start_timer()
+  var yogurt  = yogurt.optimize()
+  report_time(timer.read_duration())
+  | eprintln("{yogurt}")
+
+  print("Pudding ")
+  var timer = start_timer()
+  var pudding = yogurt.to_pudding()
+  report_time(timer.read_duration())
+  | eprintln("{pudding}")
+  | println("Running")
+  | eprintln(pudding.run(5))
+
+  print("Pesto   ")
+  var timer = start_timer()
+  var pesto = pudding.to_pesto()
+  report_time(timer.read_duration())
+  | eprintln("{pesto}")
+  | println("Running")
+  | eprintln(pesto.run(list(PestoValue.int(5)).to_slice()).as_string())
+
+  print("Waffle  ")
+  var timer = start_timer()
+  var waffle = pesto.to_waffle()
+  report_time(timer.read_duration())
+  | eprintln("{waffle}")
+
+  print("Opt     ")
+  var timer = start_timer()
+  var waffle = waffle.optimize()
+  report_time(timer.read_duration())
+  | eprintln("{waffle}")
+  | println("Running")
+  | eprintln(waffle.run(5.to_bytes()).as_string())
+
+  print("Ground  ")
+  var timer = start_timer()
+  var ground = waffle.to_ground()
+  report_time(timer.read_duration())
+  | eprintln("{ground}")
+  | println("Running")
+  | eprintln(ground.run(5.to_bytes()).as_string())
+
+  print("Total   ")
+  report_time(total_timer.read_duration())
+
   ok[Ground, Error](ground)
-  |todo("fds")
+  | todo("fds")
 }
 fun parse_toasts(
   module: Module, out: &Map[Module, Toast]
