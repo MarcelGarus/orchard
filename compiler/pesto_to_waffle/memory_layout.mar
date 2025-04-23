@@ -66,8 +66,19 @@ fun evenness(layout: FieldMemoryLayout): Int {
   1
 }
 fun <=>(a: FieldMemoryLayout, b: FieldMemoryLayout): Ordering {
+  | We layout fields in this order:
+  | - first, by the "evenness" of the field's size
+  |   - fields where the size is a multiple of 8
+  |   - fields where the size is a multiple of 4
+  |   - fields where the size is a multiple of 2
+  |   - fields where the size is a multiple of 1
+  | - second, by decreasing size
+  | - third, by increasing name (this makes the sort and memory layout
+  |   deterministic, even if multiple definitions of the struct use different
+  |   field orderings)
   if a.evenness() != b.evenness() then
     return {a.evenness() <=> b.evenness()}.flip()
+  if a.size != b.size then return {a.size <=> b.size}.flip()
   a.name <=> b.name
 }
 
@@ -91,15 +102,6 @@ fun memory_layout_struct(type: PestoType): StructLayout {
   var layouts = layouts.to_slice()
 
   | Choose in which order to place the fields:
-  | - first, by the "evenness" of the field's size
-  |   - fields where the size is a multiple of 8
-  |   - fields where the size is a multiple of 4
-  |   - fields where the size is a multiple of 2
-  |   - fields where the size is a multiple of 1
-  | - second, by decreasing size
-  | - third, by increasing name (this makes the sort and memory layout
-  |   deterministic, even if multiple definitions of the struct use different
-  |   field orderings)
   layouts.&.sort()
 
   | Place the fields.
