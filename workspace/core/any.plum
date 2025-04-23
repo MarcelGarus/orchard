@@ -1,5 +1,7 @@
 import
-  "..array" Array t, empty_array t:Type, iterate (Array t)
+  "..array"
+    Array t, empty_array t:Type, generate_array Int (\ Int -> t),
+    length (Array t), get (Array t) Int, iterate (Array t)
   "..bool" Bool, not Bool
   "..byte" lower_byte Int
   "..dynamic" Dynamic, to_static Dynamic t:Type
@@ -26,29 +28,23 @@ any type: TypeInfo -> Dynamic =
     never -> crash "can't generate Never instance"
     struct: fields ->
       | struct:
-          fields
-          . iterate
-          . map
-              \ field: (& name: String type: TypeInfo) ->
-                (& name: field.name value: (any (field.type)))
-          . to_list
-          . to_array
+          generate_array
+            fields.length
+            \ index: Int ->
+              (& name type) = fields .get index
+              (& name value: (any type))
     enum: variants ->
-      variant =
+      (& name type) =
         variants
         . iterate
         . filter
-          \ variant: (& name: String type: TypeInfo) ->
-            not(variant.type.is_definitely_root_recursive)
+            \ variant: (& name: String type: TypeInfo) ->
+              not(variant.type.is_definitely_root_recursive)
         . first
         . unwrap
-      | enum:
-          & name: variant.name
-            value: (any (variant.type))
-    lambda: lambda ->
-      | lambda:
-          \ args: (Array Dynamic) ->
-            any (lambda.return_type)
+      | enum: & name value: (any type)
+    lambda: (& arguments return_type) ->
+      | lambda: \ args: (Array Dynamic) -> any return_type
     recursive -> crash "type is infinitely recursive"
 
 is_definitely_root_recursive type: TypeInfo -> Bool =
