@@ -3,31 +3,36 @@ import mod.mar
 fun optimize(fun_: YogurtFun, optimized: &Map[String, YogurtFun]): YogurtFun {
   var new_dag = dag[YogurtExpr]()
   var mapping = map[Id, Id]()
-  var body = fun_.body.optimize(fun_.dag, true, new_dag.&, mapping.&, optimized)
+  var body = fun_.body.optimize(fun_.dag, 2, new_dag.&, mapping.&, optimized)
   YogurtFun { dag = new_dag, body }
 }
 
 fun optimize(
-  body: YogurtBody, dag: Dag[YogurtExpr], inlining: Bool,
+  body: YogurtBody, dag: Dag[YogurtExpr], inline_depth: Int,
   new_dag: &Dag[YogurtExpr],
   mapping: &Map[Id, Id], optimized: &Map[String, YogurtFun],
 ): YogurtBody {
   var builder = body_builder(new_dag).&
   for id in body.params do mapping.put(id, builder.param(dag.type_of(id)))
   for id in body.children do
-    mapping.put(id, id.optimize(dag, inlining, builder, mapping, optimized))
+    mapping.put(id, id.optimize(dag, inline_depth, builder, mapping, optimized))
   var body = builder.finish(mapping.get(body.returns))
   var body = body.tree_shake(new_dag.*)
   body
 }
 
 fun optimize(
-  id: Id, dag: Dag[YogurtExpr], inlining: Bool,
+  id: Id, dag: Dag[YogurtExpr], inline_depth: Int,
   builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
   optimized: &Map[String, YogurtFun],
 ): Id {
-  var expr = dag.get(id)
-
+  dag.get(id).optimize(dag, inline_depth, builder, mapping, optimized)
+}
+fun optimize(
+  expr: YogurtExpr, dag: Dag[YogurtExpr], inline_depth: Int,
+  builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
+  optimized: &Map[String, YogurtFun],
+): Id {
   | stderr."Optimizing:"
   | stderr.write(expr.op, dag, 0)
   | stderr."\n"
@@ -63,7 +68,8 @@ fun optimize(
       var inner_mapping = map(case_.params.get(0) -> enum_.value)
       for id in case_.children do
         inner_mapping.&.put(
-          id, id.optimize(dag, inlining, builder, inner_mapping.&, optimized)
+          id,
+          id.optimize(dag, inline_depth, builder, inner_mapping.&, optimized),
         )
       return inner_mapping.get(case_.returns)
     }
@@ -72,7 +78,9 @@ fun optimize(
       for case_ in switch_.cases do
         cases.&.put(
           case_.key,
-          case_.value.optimize(dag, inlining, builder.dag, mapping, optimized),
+          case_.value.optimize(
+            dag, inline_depth, builder.dag, mapping, optimized
+          ),
         )
       cases
     })
@@ -90,11 +98,31 @@ fun optimize(
   case call(call) {
     var callee =
       switch call.callee
-      case lambda(lambda) YogurtCallee.lambda(mapping.get(lambda))
+      case lambda(lambda) {
+        if builder.get(lambda).op is lambda(lambda) then {
+          | return YogurtExpr {
+          |   op = YogurtOp.call(YogurtCall {
+          |     callee = YogurtCallee.fun_(lambda.function),
+          |     args = {
+          |       var args = list[Id]()
+          |       for arg in call.args do args.&.push(arg)
+          |       args.&.push(lambda.closure)
+          |       args.to_slice()
+          |     },
+          |   }),
+          |   type = expr.type,
+          | }.optimize(dag, inline_depth, builder, mapping, optimized)
+        }
+        YogurtCallee.lambda(mapping.get(lambda))
+      }
       case fun_(signature) {
-        if inlining then {
+        if inline_depth > 0 then {
           if optimized.get_maybe(signature) is some(called) then {
-            if called.complexity() < 10 then {
+            var should_inline = called.complexity() < 20 or {
+              | TODO: Check if all the args are comptime-known.
+              false
+            }
+            if should_inline then {
               | Inline the called function!
               var inner_mapping = map[Id, Id]()
               for both in zip(called.body.params.iter(), call.args.iter()) do
@@ -103,7 +131,11 @@ fun optimize(
                 inner_mapping.&.put(
                   id,
                   id.optimize(
-                    called.dag, false, builder, inner_mapping.&, optimized
+                    called.dag,
+                    inline_depth - 1,
+                    builder,
+                    inner_mapping.&,
+                    optimized,
                   ),
                 )
               return inner_mapping.get(called.body.returns)
