@@ -11,7 +11,7 @@ import
     set (Array t) Int t
     slice (Array t) (Range Int)
   "..bool" Bool
-  "..hash" Hash
+  "..hash" Hash, to_int Hash, hash Int, hash String
   "..int"
     Int
     == Int Int
@@ -28,13 +28,15 @@ import
     filter_map (Iterator a) (\ a -> (Maybe b))
     map (Iterator a) (\ a -> b)
     next (Iterator t)
+    fold (Iterator a) s (\ s a -> s)
+  "..list" List t, iterate (List t)
   "..maybe"
     Maybe t
     else (Maybe t) t
     is_some (Maybe t)
     unwrap (Maybe t) String
   "..never" crash String
-  "..string" String
+  "..string" String, == String String
   "..range" Range t, to t t, length (Range Int), contains (Range Int) Int
   "..test" assert Bool
   "..type" Type, as t t: Type
@@ -75,18 +77,16 @@ reserve map: (Map k v) target_size: Int -> (Map k v) =
     true ->
       (& buckets size hash equals) = map
       capacity = (required_buckets target_size) .round_up_to_power_of 2
-      empty_map k v capacity hash equals
-      # TODO: copy items to the new map
+      empty_map k v capacity hash equals .put_all (map.iterate)
 
 put map: (Map k v) entry: (Entry k v) -> (Map k v) =
   (& key value) = entry
   map .put key value
 
 put map: (Map k v) key: k value: v -> (Map k v) =
-  (& buckets size hash: hash_fun equals) = map .reserve (map.size .+ 1)
-  hash = hash_fun key
-  new_buckets = raw_put buckets hash key value
-  & buckets: new_buckets size: (size .+ 1) hash: hash_fun equals
+  (& buckets size hash equals) = map .reserve (map.size .+ 1)
+  new_buckets = raw_put buckets (hash key .to_int) key value
+  & buckets: new_buckets size: (size .+ 1) hash equals
 
 raw_put
   buckets: (Array (Bucket k v)) index: Int key: k value: v
@@ -99,12 +99,15 @@ raw_put
   % use_this_bucket -> buckets .set index | filled: & key value
     keep_searching  -> raw_put buckets (index .+ 1) key value
 
+put_all map: (Map k v) entries: (Iterator (Entry k v)) -> (Map k v) =
+  entries .fold map \ map: (Map k v) entry: (Entry k v) -> map .put entry
+
 get map: (Map k v) key: k -> v =
   map .get_maybe key .unwrap "Key is not in the map."
 
 get_maybe map: (Map k v) key: k -> (Maybe v) =
-  hash = (map.hash) key
-  map.buckets .raw_get_maybe hash key (map.equals)
+  (& buckets size hash equals) = map
+  buckets .raw_get_maybe (hash key .to_int) key equals
 
 raw_get_maybe
   buckets: (Array (Bucket k v)) index: Int key: k equals: (\ k k -> Bool)
@@ -123,7 +126,7 @@ raw_get_maybe
 
 remove map: (Map k v) key: k -> (Map k v) =
   (& buckets size hash equals) = map
-  & buckets: buckets .raw_remove (hash key) key equals
+  & buckets: buckets .raw_remove (hash key .to_int) key equals
     size: size .- 1
     hash
     equals
@@ -164,13 +167,21 @@ contains map: (Map k v) key: k -> Bool = map .get_maybe key .is_some
 # get_or_put
 # put_no_clobber
 # get_put
-# remove
 
 # Specialized constructors for common map key types.
 
 empty_int_map v: Type -> (Map Int v) =
-  empty_map Int v (\ key: Int -> key) (\ a: Int b: Int -> a .== b)
+  empty_map Int v (\ key: Int -> key.hash) (\ a: Int b: Int -> a .== b)
 
-#map entries: (List (Entry Int v)) -> (Map Int v) =
-#  empty_int_map .put_all (entries.iterate)
-#  # TODO: add entries
+empty_string_map v: Type -> (Map String v) =
+  empty_map
+    String
+    v
+    \ key: String -> key.hash
+    \ a: String b: String -> a .== b
+
+map entries: (List (Entry Int v)) -> (Map Int v) =
+ empty_int_map v .put_all (entries.iterate)
+
+map entries: (List (Entry String v)) -> (Map String v) =
+ empty_string_map v .put_all (entries.iterate)
