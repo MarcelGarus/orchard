@@ -38,8 +38,7 @@ any type: TypeInfo -> Dynamic =
         variants
         . iterate
         . filter
-            \ variant: (& name: String type: TypeInfo) ->
-              not(variant.type.is_definitely_root_recursive)
+            \ variant: (& name: String type: TypeInfo) -> variant.type.is_finite
         . first
         . unwrap
       | enum: & name value: (any type)
@@ -47,29 +46,21 @@ any type: TypeInfo -> Dynamic =
       | lambda: \ args: (Array Dynamic) -> any return_type
     recursive -> crash "type is infinitely recursive"
 
-is_definitely_root_recursive type: TypeInfo -> Bool =
-  # Returns whether an instance necessarily contains an instance of the root
-  # type.
-  is_definitely_root_recursive type 0
-
-is_definitely_root_recursive type: TypeInfo depth: Int -> Bool =
+is_finite type: TypeInfo -> Bool =
   type
-  % byte -> | false
-    int -> | false
-    type -> | false
-    array -> | false
-    never -> | true
+  % byte  -> | true
+    int   -> | true
+    type  -> | true
+    array -> | true
+    never -> | false
     struct: fields ->
       fields
       . iterate
-      . any
-          \ field: (& name: String type: TypeInfo) ->
-            field.type .is_definitely_root_recursive (depth .+ 1)
+      . all \ field: (& name: String type: TypeInfo) -> field.type.is_finite
     enum: variants ->
       variants
       . iterate
-      . all
-        \ variant: (& name: String type: TypeInfo) ->
-          variant.type .is_definitely_root_recursive (depth .+ 1)
-    lambda -> | false
-    recursive: rec_depth -> rec_depth .>= depth
+      . any
+        \ variant: (& name: String type: TypeInfo) -> variant.type.is_finite
+    lambda -> | true
+    recursive -> | false
