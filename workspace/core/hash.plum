@@ -4,16 +4,57 @@
 # calling other hash functions on it. In the end, all hash functions boil down
 # to hash(&Hasher, Int). The Hasher uses the djb2 algorithm.
 
-import "..int" Int
+import
+  "..array" Array t, length (Array t), iterate (Array t)
+  "..bool" Bool
+  "..byte" Byte, to_int Byte
+  "..dynamic" Dynamic, to_dynamic t
+  "..int" Int, + Int Int, * Int Int
+  "..iterator" Iterator t, fold (Iterator a) s (\ s a -> s)
+  "..list" List t
+  "..string" String
 
-Hash = Int
+Hash = | hash: Int
 
-# ...
+to_int hash: Hash -> Int =
+  hash
+  % hash: value -> value
 
-#initial_hasher -> Hasher = Hasher 5381
-#add hasher: Hasher value: Int -> Hasher =
-#  hasher
-#  % Hasher state: state | * 33 | + value | Hasher
-#finish hasher: Hasher -> Int =
-#  hasher
-#  % Hasher state: state | * 33
+combine a: Hash b: Hash -> Hash = | hash: a.to_int .* 33 .+ (b.to_int)
+
+# Hashers for standard library types
+
+default_hash value: t -> Hash = value.to_dynamic.hash
+
+hash bool: Bool -> Hash =
+  bool
+  % true  -> | hash: 1
+    false -> | hash: 0
+
+hash byte: Byte -> Hash = | hash: byte.to_int
+
+hash int: Int -> Hash = | hash: int
+
+hash iterator: (Iterator t) hash_item: (\ t -> Hash) -> Hash =
+  iterator
+  . fold (| hash: 5381) (\ hash: Hash item: t -> combine hash (item.hash_item))
+
+hash array: (Array t) hash_item: (\ t -> Hash) -> Hash =
+  combine (array.length.hash) (array.iterate .hash hash_item)
+
+hash string: String -> Hash = string.utf8_bytes.hash (\ byte: Byte -> byte.hash)
+
+hash dynamic: Dynamic -> Hash =
+  dynamic
+  % byte: byte -> byte.hash
+    int: int -> int.hash
+    type -> | hash: 123
+    array: items -> items.hash (\ item: Dynamic -> item.hash)
+    struct: fields ->
+      fields
+      . iterate
+      . hash
+          \ field: (& name: String value: Dynamic) ->
+            combine (field.name.hash) (field.value.hash)
+    enum: (& name value) -> combine (name.hash) (value.hash)
+    lambda -> (| hash: 456)
