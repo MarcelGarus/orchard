@@ -1,19 +1,48 @@
 import mod.mar
 
-| TODO: Allow multiline?
-
 fun parse_string(parser: &LineParser): Result[Maybe[StringAndSrc], Error] {
   var start_quote = parser.consume("\"") or return no_match[StringAndSrc]()
-  var start = parser.cursor
-  loop {
+  var b = string_builder().&
+  var end_quote = loop {
     if parser.is_at_end() then
       return bad_input[StringAndSrc](error(
-        "string doesn't end until end of input", parser.src_of_rest()))
-    if parser.current() == #" then break
-    parser.advance()
+        "String doesn't end until the end of the input.", parser.src_of_rest()
+      ))
+    if parser.consume("\"") is some(end_quote) then break(end_quote)
+    if parser.parse_escaped()? is some(escaped) then
+      b.write(escaped)
+    else
+      b.write(parser.consume_char())
   }
-  var end = parser.cursor
-  parser.advance() | consume the "
-  var end_quote = "\"" @ parser.src_of(end ..+ 1)
-  parsed(parser.input.substr(start..end) @ {start_quote.src ... end_quote.src})
+  parsed(b.to_string() @ {start_quote.src ... end_quote.src})
+}
+
+fun parse_string(bacon: Bacon): Result[Maybe[StringAndSrc], Error] {
+  bacon.line == "'" or return no_match[StringAndSrc]()
+  var b = string_builder().&
+  for child in bacon.children do {
+    var parser = parser(child.line, child.src)
+    loop {
+      if parser.rest().is_empty() then break
+      if parser.&.parse_escaped()? is some(escaped) then
+        b.write(escaped)
+      else
+        b.write(parser.&.consume_char())
+    }
+  }
+  parsed(b.to_string() @ bacon.src)
+}
+
+fun parse_escaped(parser: &LineParser): Result[Maybe[String], Error] {
+  parser.current() == #\ or return no_match[String]()
+  parser.advance()
+  if parser.is_at_end() then
+    return bad_input[String](
+      error("Expected escape sequence.", parser.src_of_rest())
+    )
+  var char = parser.consume_char()
+  if char == #\ then return parsed("\\")
+  if char == #" then return parsed("\"")
+  if char == #n then return parsed("\n")
+  bad_input[String](error("Invalid escape sequence.", parser.src_of_rest()))
 }
