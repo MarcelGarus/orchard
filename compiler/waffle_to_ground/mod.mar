@@ -49,6 +49,7 @@ fun compile(body: WaffleBody, builder: &FlowGroundBuilder) {
   var stack_size_at_body_start = builder.stack_size
 
   for local in body.locals do {
+    if builder.has_crashed then return {}
     var expr = builder.context.fun_.dag.get(local)
     builder.align_to(expr.alignment)
     builder.add_mapping(local, builder.stack_size)
@@ -57,19 +58,24 @@ fun compile(body: WaffleBody, builder: &FlowGroundBuilder) {
       panic("removed too much from the stack")
   }
 
+  if builder.has_crashed then return {}
   builder.align_to(body.returns.alignment)
   var locals_size = builder.stack_size - stack_size_at_body_start
   body.returns.compile(builder)
 
   var return_value_size = body.returns.size
 
-  if not(builder.has_crashed) then
-    builder.pop_below_top(return_value_size, locals_size)
+  if builder.has_crashed then return {}
+  builder.pop_below_top(return_value_size, locals_size)
 }
 
 | Compiles an expression. Assumes that the stack is already aligned for the
 | expression.
 fun compile(expr: WaffleExpr, builder: &FlowGroundBuilder) {
+  | eprintln("Compiling {expr.debug()}")
+  | if not(builder.stack_size.is_multiple_of(expr.alignment)) then
+  |   panic("stack not aligned for expr (stack size is {builder.stack_size})")
+  
   switch expr.kind
   case param builder.stack_size = builder.stack_size + expr.size
   case padding(amount) builder.push_padding(amount)
@@ -131,13 +137,12 @@ fun compile(expr: WaffleExpr, builder: &FlowGroundBuilder) {
   case call_indirect(call) {
     var padding = builder.align_to(call.args.alignment)
     call.args.compile(builder)
-    | var more_padding = builder.align_to(8)
+    var more_padding = builder.align_to(8)
     call.function_ptr.compile(builder)
-    var stack_diff = 0
-      | - more_padding   | the function consumes the padding. TODO: Does it?
+    var fun_stack_diff = 0
       - call.args.size | as well as the arguments
       + expr.size      | and pushes its result
-    builder.call_indirect(stack_diff)
+    builder.call_indirect(more_padding.lower_byte(), fun_stack_diff)
     builder.pop_below_top(expr.size, padding)
   }
   case function_ptr(signature) builder.push_indirect(signature)
@@ -146,7 +151,12 @@ fun compile(expr: WaffleExpr, builder: &FlowGroundBuilder) {
   case mul(args)         { args.compile(builder)  builder.mul_8() }
   case div(args)         { args.compile(builder)  builder.div_8() }
   case mod(args)         { args.compile(builder)  builder.mod_8() }
-  case compare_zero(arg) { arg.compile(builder)   builder.compare_zero_8() }
+  case compare_zero(arg) {
+    var padding = builder.align_to(8)
+    arg.compile(builder)
+    builder.compare_zero_8()
+    builder.pop_below_top(1, padding)
+  }
   case and_(args)        { args.compile(builder)  builder.and_8() }
   case or_(args)         { args.compile(builder)  builder.or_8() }
   case xor(args)         { args.compile(builder)  builder.xor_8() }

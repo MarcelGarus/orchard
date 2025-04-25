@@ -65,19 +65,25 @@ fun store_8(heap: &GroundHeap, address: Int, int: Int) {
 
 struct GroundResult { heap: GroundHeap, bytes: Slice[Byte] }
 
-fun as_string(result: GroundResult): String {
-  var address = result.bytes.subslice(0..8).to_int()
-  var len = result.bytes.subslice(8..16).to_int()
-  var start = result.bytes.subslice(16..24).to_int()
+| fun as_string(result: GroundResult): String {
+|   var address = result.bytes.subslice(0..8).to_int()
+|   var len = result.bytes.subslice(8..16).to_int()
+|   var start = result.bytes.subslice(16..24).to_int()
 
-  var parts = address_to_allocation_and_offset(address)
-  var bytes = result.heap.allocations.get(parts.a).bytes
-  var bytes = bytes.subslice(parts.b .. bytes.len).subslice({16 + start} ..+ len)
+|   var parts = address_to_allocation_and_offset(address)
+|   var bytes = result.heap.allocations.get(parts.a).bytes
+|   var bytes = bytes.subslice(parts.b .. bytes.len).subslice({16 + start} ..+ len)
 
-  String { data = bytes.data, len }
+|   String { data = bytes.data, len }
+| }
+
+fun assert_8_bytes_aligned(data: List[Byte]) {
+  if not(data.len.is_multiple_of(8)) then
+    panic("stack is not aligned to 8 bytes")
 }
 
 fun pop_int(data: &List[Byte]): Int {
+  data.assert_8_bytes_aligned()
   var int = data.to_slice().subslice({data.len - 8}..data.len).to_int()
   data.len = data.len - 8
   int
@@ -93,7 +99,10 @@ fun pop_maybe[T](list: &List[T]): Maybe[T] {
   if list.is_empty() then none[T]() else some(list.pop())
 }
 
-fun push(data: &List[Byte], int: Int) { data.push_all(int.to_bytes()) }
+fun push(data: &List[Byte], int: Int) {
+  data.assert_8_bytes_aligned()
+  data.push_all(int.to_bytes())
+}
 
 fun run(ground: Ground, input: Slice[Byte]): GroundResult {
   var num_instructions = 0
@@ -106,8 +115,8 @@ fun run(ground: Ground, input: Slice[Byte]): GroundResult {
     num_instructions = num_instructions + 1
     var instruction = ground.instructions.get(ip)
 
-    | eprint("Instruction {num_instructions}: ")
-    | eprint("{instruction.format().pad_right(20)}")
+    eprint("Instruction {num_instructions}: ")
+    eprint("{instruction.format().pad_right(20)}")
 
     ip = ip + 1
     switch instruction
@@ -185,12 +194,12 @@ fun run(ground: Ground, input: Slice[Byte]): GroundResult {
     case call_indirect { calls.push(ip)  ip = data.pop_int() }
     case return_ ip = calls.pop_maybe() or break
 
-    | eprint(" stack:")
-    | for byte in data.iter().enumerate() do {
-    |   if byte.index % 8 == 0 and byte.index > 0 then eprint(" |")
-    |   eprint(" {byte.item.radix(16).format().pad_left(2, #0)}")
-    | }
-    | eprintln()
+    eprint(" stack:")
+    for byte in data.iter().enumerate() do {
+      if byte.index % 8 == 0 and byte.index > 0 then eprint(" |")
+      eprint(" {byte.item.radix(16).format().pad_left(2, #0)}")
+    }
+    eprintln()
   }
   GroundResult { heap, bytes = data.to_slice() }
 }

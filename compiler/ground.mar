@@ -54,7 +54,7 @@ enum GroundInstruction {
   jump_table: Slice[Int], | indices into the instructions array
   call: Int,              | index into the instructions array
   push_indirect: Int,     | index into the instructions array
-  call_indirect,
+  call_indirect: Byte,
   return_,
 }
 
@@ -104,7 +104,7 @@ fun write[W](writer: W, instruction: GroundInstruction) {
   }
   case call(target) writer."call {target}"
   case push_indirect(target) writer."push_indirect {target}"
-  case call_indirect writer."call_indirect"
+  case call_indirect(pop_amount) writer."call_indirect {pop_amount}"
   case return_ writer."return"
 }
 
@@ -204,7 +204,10 @@ fun to_bytes(ground: Ground): Slice[Byte] {
       patches.&.push(tuple(bytes.len, target))
       bytes.push_little_endian_bytes(0) | placeholder
     }
-    case call_indirect bytes.push(16#f4.lower_byte())
+    case call_indirect(pop_amount) {
+      bytes.push(16#f4.lower_byte())
+      bytes.push(pop_amount)
+    }
     case return_ bytes.push(16#f5.lower_byte())
   }
 

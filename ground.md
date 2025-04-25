@@ -126,8 +126,8 @@ The encoded uses little endian encoding for 64-bit integers; VMs are free to cho
   The VM is supposed to maintain a call stack so that the corresponding _return_ instruction returns to the instruction after this one.
 - `f3 xx xx xx xx xx xx xx xx`: **push_indirect**:
   Pushes an 8-byte "indirect call token" that represents the offset x in the encoding.
-- `f4`: **call_indirect**:
-  Like call, but the target is not immediately encoded in the instruction, but popped from the stack.
+- `f4 xx`: **call_indirect**:
+  Pops a target from the stack, pops x bytes, then calls the target.
   The target has to be an "indirect call token" previously created using _push_indirect_.
 - `f5`: **return**:
   Returns from a function call.
