@@ -3,11 +3,13 @@ import
     Int, String, Dynamic, to_dynamic t, format Dynamic, list t t t, List t,
     iterate (List t), map (Iterator a) (\ a -> b), sum (Iterator Int),
     Iterator t, + Int Int, format Int, debug_format value:t, list t t t t t,
-    any t:Type, Type, Bool, + String String
-
-Point =
-  & x: Int
-    y: Int
+    any t:Type, Type, Bool, + String String, generate_array Int (\ Int -> t),
+    list t, empty_list t:Type, length (Array t), Array t, < Int Int,
+    push (List t) t, get_maybe (Array t) Int, else (Maybe t) t, Maybe t,
+    crash String, String, as t t:Type, call (\ -> t), compare Int Int,
+    mod Int Int, get (Array t) Int, >= Int Int, to_int Byte, <= Int Int, Byte,
+    and Bool Bool, - Int Int, is_empty (Array t), substring String (Range Int),
+    Range t, + Int Int, * Int Int, length String, to t t
 
 Task =
   | exit
@@ -16,11 +18,41 @@ Task =
     read_line: \ String -> Task
 
 main a: Int -> Task =
+  | random: \ random: Int -> ask_for_number (random .mod 100)
+
+ask_for_number correct: Int -> Task =
   | print:
-      & message: "What's your name?"
-        then:
-          \ ->
-            | read_line:
-                \ name: String ->      
-                  | print:
-                      & message: ("Hello, " .+ name .+ "!") then: \ -> | exit
+      & message: "What's your guess?"
+        then: \ -> | read_line: \ guess: String -> check_guess correct guess
+
+check_guess correct: Int guess: String -> Task =
+  guess.parse_number
+  % none ->
+      | print: & message: "Not a number." then: \ -> ask_for_number correct
+    some: guess -> check_guess correct guess
+
+check_guess correct: Int guess: Int -> Task =
+  compare guess correct
+  % less    -> | print: & message: "Greater."  then: \ -> ask_for_number correct
+    equal   -> | print: & message: "Found it!" then: \ -> | exit
+    greater -> | print: & message: "Less."     then: \ -> ask_for_number correct
+
+parse_number string: String -> (Maybe Int) =
+  string.utf8_bytes.is_empty
+  % true -> | none
+    false -> parse_number 0 string
+
+parse_number parsed_so_far: Int string: String -> (Maybe Int) =
+  string.utf8_bytes.is_empty
+  % true -> | some: parsed_so_far
+    false ->
+      char = string.utf8_bytes .get 0
+      and
+        char.to_int .>= ("0".utf8_bytes .get 0 .to_int)
+        char.to_int .<= ("9".utf8_bytes .get 0 .to_int)
+      % false -> | none
+        true ->
+          digit = char.to_int .- ("0".utf8_bytes .get 0 .to_int)
+          parse_number
+            parsed_so_far .* 10 .+ digit
+            string .substring (1 .to (string.length))
