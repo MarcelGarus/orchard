@@ -16,6 +16,10 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
   case byte {}
   case int {}
   case type {}
+  case box {
+    var inner_type = type.assert_no_closure().kind().box.unwrap()
+    builder.dup(value, inner_type.compile(), pesto).ignore()
+  }
   case array {
     var buffer = builder.member(value, "buffer")
     builder.dup_buffer(buffer, pesto).ignore()
@@ -71,6 +75,23 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   case byte {}
   case int {}
   case type {}
+  case box {
+    var new_refcount = builder.decrement_reference_count(value)
+    builder.switch_(builder.compare_ints(new_refcount, builder.int(0)), map(
+      "less" -> | Never runs in practice; refcount is always >= 0.
+        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+      "greater" ->
+        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
+      "equal" -> {
+        var builder = body_builder(dag.&, pesto_nothing.type).&
+        var inner_type = type.assert_no_closure().kind().box.unwrap().compile()
+        var inner = builder.load(value, inner_type.to_pesto())
+        builder.drop(inner, inner_type, pesto)
+        builder.free(value, inner_type.to_pesto())
+        builder.finish_with_nothing()
+      },
+    )).ignore()
+  }
   case array {
     var buffer = builder.member(value, "buffer")
     var item_type = type.assert_no_closure().kind().array.unwrap().compile()

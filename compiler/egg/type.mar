@@ -89,6 +89,7 @@ struct EggType {
   | - [(Int)]
   | - [(Never)]
   | - [(Type)]
+  | - [(Box ] <type> [)]
   | - [(Array ] <type> [)]
   | - [(&] ([ ] <name> [: ] <type>)* [)], fields sorted alphabetically
   | - [(|] ([ ] <name> [: ] <type>)* [)], variants sorted alphabetically
@@ -412,6 +413,7 @@ enum InternalEggTypeKind {
   byte,
   int,
   type,
+  box: EggType,
   array: EggType,
   struct_: Map[String, EggType],
   enum_: Map[String, EggType],
@@ -425,6 +427,10 @@ fun internal_kind(type: EggType): InternalEggTypeKind {
   if string == "Byte" then return InternalEggTypeKind.byte
   if string == "Int" then return InternalEggTypeKind.int
   if string == "Type" then return InternalEggTypeKind.type
+  if string.starts_with("Box ") then
+    return InternalEggTypeKind.box(EggType {
+      string = string.without_first("Box ".len)
+    })
   if string.starts_with("Array ") then
     return InternalEggTypeKind.array(EggType {
       string = string.without_first("Array ".len)
@@ -510,6 +516,7 @@ enum EggTypeKind {
   byte,
   int,
   type,
+  box: EggType,
   array: EggType,
   struct_: Map[String, EggType],
   enum_: Map[String, EggType],
@@ -525,6 +532,10 @@ fun kind(type: EggType): EggTypeKind {
   case byte EggTypeKind.byte
   case int EggTypeKind.int
   case type EggTypeKind.type
+  case box(inner) {
+    var extension = EggType { string = "(Box (Root))" }
+    EggTypeKind.box(inner.extend_recursive_types(extension).canonicalize())
+  }
   case array(item) {
     var extension = EggType { string = "(Array (Root))" }
     EggTypeKind.array(item.extend_recursive_types(extension).canonicalize())
@@ -593,6 +604,12 @@ var type_never = EggType { string = "(Never)" }
 var type_byte = EggType { string = "(Byte)" }
 var type_int = EggType { string = "(Int)" }
 var type_type = EggType { string = "(Type)" }
+fun type_box(inner: EggType): EggType {
+  type_box_without_canonicalizing(inner).canonicalize()
+}
+fun type_box_without_canonicalizing(inner: EggType): EggType {
+  EggType { string = "(Box {inner})" }
+}
 fun type_array(item: EggType): EggType {
   type_array_without_canonicalizing(item).canonicalize()
 }

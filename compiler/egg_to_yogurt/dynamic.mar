@@ -29,6 +29,11 @@ fun compile_static_to_dynamic_fun_body(
   case int body.enum_(type_dynamic.compile(), "int", value)
   case never body.unreachable(type_dynamic.compile())
   case type body.enum_(type_dynamic.compile(), "type", body.nothing())
+  case box(inner) {
+    var value = body.unbox(value, inner.compile())
+    var value = body.static_to_dynamic(value, inner, context)
+    body.enum_(type_dynamic.compile(), "box", value)
+  }
   case array(item) {
     var len = body.array_len(value)
     var lambda = body.lambda(
@@ -239,6 +244,26 @@ fun compile_dynamic_to_static_fun(
       | non-statically-known types – during runtime, Types don't store
       | anything. So, we just give you _any_ type.
       body.type(YogurtType.type)
+    case box(inner_type)
+      body.switch_(value, type.compile(), {
+        var cases = map[String, YogurtBody]()
+        for entry in type_dynamic.kind().enum_.unwrap() do {
+          var name = entry.key
+          var payload_type = entry.value
+          var body = body_builder(body.dag).&
+          var payload = body.param(payload_type.compile())
+          var result =
+            if name == "box" then {
+              var inner = body.dynamic_to_static(payload, inner_type, context)
+              body.box(inner, type.compile())
+            } else
+              body.crash(
+                "dynamic to static failed (expected box)", type.compile()
+              )
+          cases.&.put(name, body.finish(result))
+        }
+        cases
+      })
     case array(item_type)
       body.switch_(value, type.compile(), {
         var cases = map[String, YogurtBody]()

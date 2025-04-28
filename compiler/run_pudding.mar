@@ -9,6 +9,7 @@ struct PuddingValueData { refcount: Int, kind: PuddingValueKind }
 enum PuddingValueKind {
   byte: Byte,
   int: Int,
+  box: PuddingValue,
   array: Slice[PuddingValue],
   struct_: Map[String, PuddingValue],
   enum_: PuddingEnumValue,
@@ -34,6 +35,7 @@ fun ensure_is_alive(heap: PuddingHeap, value: PuddingValue) {
   switch data.kind
   case byte {}
   case int {}
+  case box(inner) heap.ensure_is_alive(inner)
   case array(items) for item in items do heap.ensure_is_alive(item)
   case struct_(fields) for field in fields do heap.ensure_is_alive(field.value)
   case enum_(enum_) heap.ensure_is_alive(enum_.value)
@@ -54,6 +56,7 @@ fun drop(heap: &PuddingHeap, value: PuddingValue) {
     switch data.kind
     case byte {}
     case int {}
+    case box(inner) heap.drop(inner)
     case array(items) for item in items do heap.drop(item)
     case struct_(fields) for field in fields do heap.drop(field.value)
     case enum_(enum_) heap.drop(enum_.value)
@@ -69,6 +72,7 @@ fun write[W](writer: W, heap: PuddingHeap) {
     switch value.item.kind
     case byte(byte) writer."{byte}"
     case int(int) writer."{int}"
+    case box(inner) writer."Box *{inner.index}"
     case array(items) {
       writer."Array"
       for item in items do writer." *{item.index}"
@@ -88,6 +92,11 @@ fun write[W](writer: W, value: PuddingValue, heap: PuddingHeap) {
   switch heap.get(value)
   case byte(byte) writer."{byte}"
   case int(int) writer."{int}"
+  case box(inner) {
+    writer."(Box "
+    writer.write(inner, heap)
+    writer.")"
+  }
   case array(items) {
     writer."["
     var first = true
@@ -330,6 +339,8 @@ fun run(
             heap.new(PuddingValueKind.struct_(map[String, PuddingValue]())),
         })))
       }
+      case box some(heap.new(PuddingValueKind.box(args.get(0))))
+      case unbox some(heap.get(args.get(0)).box.unwrap())
       case generate_array {
         var len = heap.get(args.get(0)).int.unwrap()
         var lambda = heap.get(args.get(1)).lambda.unwrap()

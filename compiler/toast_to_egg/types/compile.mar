@@ -137,9 +137,12 @@ fun compile(
     if primitive.name == "Int"   then return ok[EggType, Error](type_int)
     if primitive.name == "Never" then return ok[EggType, Error](type_never)
     if primitive.name == "Type"  then return ok[EggType, Error](type_type)
+    if primitive.name == "Box" then {
+      var inner_type = primitive.args.get(0).compile(stack, depth + 1, defs)?
+      return ok[EggType, Error](type_box_without_canonicalizing(inner_type))
+    }
     if primitive.name == "Array" then {
-      var item_type =
-        primitive.args.get(0).compile(stack, depth + 1, defs)?
+      var item_type = primitive.args.get(0).compile(stack, depth + 1, defs)?
       return ok[EggType, Error](type_array_without_canonicalizing(item_type))
     }
     unreachable()
@@ -254,6 +257,7 @@ fun compile_all_types(
   defs.&.put_primitive("Byte", empty_slice[String]())
   defs.&.put_primitive("Int", empty_slice[String]())
   defs.&.put_primitive("Type", empty_slice[String]())
+  defs.&.put_primitive("Box", list("t").to_slice())
   defs.&.put_primitive("Array", list("t").to_slice())
 
   for entry in toasts do {
@@ -341,6 +345,10 @@ fun compile(
     if primitive.name == "Int" then return ok[EggType, Error](type_int)
     if primitive.name == "Type" then return ok[EggType, Error](type_type)
     if primitive.name == "Never" then return ok[EggType, Error](type_never)
+    if primitive.name == "Box" then {
+      var inner_type = primitive.args.get(0).compile(defs)?
+      return ok[EggType, Error](type_box_without_canonicalizing(inner_type))
+    }
     if primitive.name == "Array" then {
       var item_type = primitive.args.get(0).compile(defs)?
       return ok[EggType, Error](type_array_without_canonicalizing(item_type))

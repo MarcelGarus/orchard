@@ -17,6 +17,7 @@ fun to_pesto(type: YogurtType): PestoType {
   case byte PestoType.byte
   case int PestoType.int
   case type PestoType.struct_(map[String, PestoType]())
+  case box PestoType.ptr
   case array pesto_array_type
   case never PestoType.never
   case struct_(struct_) {
@@ -31,7 +32,7 @@ fun to_pesto(type: YogurtType): PestoType {
       var payload = variant.value
       variants.&.put(
         variant.key,
-        if payload.is_recursive(1) then PestoType.ptr else payload.to_pesto(),
+        if payload.is_unboxed_recursive(1) then PestoType.ptr else payload.to_pesto(),
       )
     }
     PestoType.enum_(variants)
@@ -41,25 +42,26 @@ fun to_pesto(type: YogurtType): PestoType {
   case recursive unreachable()
 }
 
-fun is_recursive(type: YogurtType, depth: Int): Bool {
+fun is_unboxed_recursive(type: YogurtType, depth: Int): Bool {
   switch type
   case byte false
   case int false
   case type false
-  case array(item) item.is_recursive(depth + 1)
+  case box false
+  case array(item) item.is_unboxed_recursive(depth + 1)
   case never false
   case struct_(struct_) {
     for field in struct_ do
-      if field.value.is_recursive(depth + 1) then return true
+      if field.value.is_unboxed_recursive(depth + 1) then return true
     false
   }
   case enum_(enum_) {
     for variant in enum_ do
-      if variant.value.is_recursive(depth + 1) then return true
+      if variant.value.is_unboxed_recursive(depth + 1) then return true
     false
   }
   case closure unreachable()
-  case lambda(lambda) false
+  case lambda false
   case recursive(level) level >= depth
 }
 
@@ -84,6 +86,7 @@ fun assert_no_closure(type: YogurtType): EggType {
   case byte type_byte
   case int type_int
   case type type_type
+  case box(inner) type_box_without_canonicalizing(inner.assert_no_closure())
   case array(item) type_array_without_canonicalizing(item.assert_no_closure())
   case never type_never
   case struct_(struct_) {
