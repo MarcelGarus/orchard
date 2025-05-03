@@ -47,17 +47,28 @@ The encoded uses little endian encoding for 64-bit integers; VMs are free to cho
   Pops two 64-bit integers, adds them, and pushes the result as a 64-bit integer.
 - `a1`: **sub_8**:
   Pops two 64-bit integers, subtracts the second (further up on the stack) from the first (further down on the stack) them, and pushes the result as a 64-bit integer.
-- `a2`: **mul_8**:
-  Pops two 64-bit integers, multiplies them, and pushes the result as a 64-bit integer.
-- `a3`: **div_8**:
-  Pops two 64-bit integers, divides the first (further down on the stack) by the second (further up on the stack), and pushes the result as a 64-bit integer.
+- `a2`: **signed_mul_8**:
+  Pops two signed 64-bit integers, multiplies them, and pushes the result as a 64-bit signed integer.
+- `a3`: **signed_div_8**:
+  Pops two signed 64-bit integers, divides the first (further down on the stack) by the second (further up on the stack), and pushes the result as a 64-bit integer.
   Division always rounds towards zero (`@divTrunc` in Zig).
-- `a4`: **mod_8**:
+- `a4`: **signed_mod_8**:
   Pops two 64-bit integers, mods the first (further down on the stack) by the second (further up on the stack), and pushes the result as a 64-bit integer.
   This is true modulo, not the remainder (so, not `%` in C).
   As a consequence, the result is always positive.
 - `a5`: **compare_zero_8**:
-  Pops a 64-bit integer and compares it to zero.
+  Pops a signed 64-bit integer and compares it to zero.
+  Then pushes a byte indicating the result:
+  | value | byte |
+  | ----- | ---- |
+  | == 0 | 0 |
+  | > 0 | 1 |
+  | < 0 | 2 |
+- `a6`: **add_1**: Pops two bytes, adds them, and pushes the result as a byte.
+- `a7`: **sub_1**:
+  Pops two bytes, subtracts the second (further up on the stack) from the first (further down on the stack), and pushes the result as a byte.
+- `a8`: **compare_zero_1**:
+  Pops a signed byte and compares it to zero.
   Then pushes a byte indicating the result:
   | value | byte |
   | ----- | ---- |
@@ -89,14 +100,14 @@ The encoded uses little endian encoding for 64-bit integers; VMs are free to cho
   Pops x bytes from the stack.
 - `c6 xx xx xx xx xx xx xx xx yy`: **pop_below_top**:
   Pops y bytes below the top x bytes.
-- `d0`: **malloc**:
-  First pops an alignment (1 byte), then a size (8 bytes).
-  Allocates memory of the requested alignment and size.
+- `d0`: **malloc_8_aligned**:
+  Pops a size (8 bytes).
+  Allocates memory of the alignment 8 and the given size.
   If that worked, pushes the address (8 bytes).
   If that didn't work, pushes 0 (8 bytes).
-- `d1`: **free**:
-  First pops an alignment (1) byte, then a size (8 bytes), then an address (8 bytes).
-  Frees the memory at that address, which has to have the given size and alignment.
+- `d1`: **free_8_aligned**:
+  First pops a size (8 bytes), then an address (8 bytes).
+  Frees the memory at that address, which has to have the given size and the alignment 8.
 - `d2`: **store_1**:
   First pops a value (1 byte), then an address (8 bytes), and stores the value to the memory at that address.
 - `d3`: **store_8**:
@@ -110,6 +121,14 @@ The encoded uses little endian encoding for 64-bit integers; VMs are free to cho
   The x indicates the number of the bytes.
   After the first 9 bytes, there are another x bytes.
   The _store_bytes_ instruction pops an address (8 bytes) and stores the literal bytes to that address.
+- `d7`: **malloc_1_aligned**:
+  Pops a size (8 bytes).
+  Allocates memory of the alignment 1 and the given size.
+  If that worked, pushes the address (8 bytes).
+  If that didn't work, pushes 0 (8 bytes).
+- `d8`: **free_1_aligned**:
+  First pops a size (8 bytes), then an address (8 bytes).
+  Frees the memory at that address, which has to have the given size and the alignment 1.
 - `e0`: **crash**:
   First pops a length (8 bytes), then an address (8 bytes).
   Crashes the VM with the message at that address with that length.
