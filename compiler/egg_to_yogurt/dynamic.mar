@@ -4,7 +4,7 @@ fun static_to_dynamic(
   body: &YogurtBodyBuilder, value: Id, type: EggType, context: &YogurtContext
 ): Id {
   var fun_ = compile_static_to_dynamic_fun(type, context)
-  body.call_fun(fun_, list(value).to_slice(), type_dynamic.compile())
+  body.call_fun(fun_, list(value).to_slice(), type_dynamic)
 }
 fun compile_static_to_dynamic_fun(
   type: EggType, context: &YogurtContext
@@ -15,7 +15,7 @@ fun compile_static_to_dynamic_fun(
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
 
-  var param = body.param(type.compile())
+  var param = body.param(type)
   var returns = compile_static_to_dynamic_fun_body(type, body, param, context)
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(returns) })
@@ -25,61 +25,56 @@ fun compile_static_to_dynamic_fun_body(
 ): Id {
   switch type.kind()
   case variable panic("type var in compile to dynamic")
-  case byte body.enum_(type_dynamic.compile(), "byte", value)
-  case int body.enum_(type_dynamic.compile(), "int", value)
-  case never body.unreachable(type_dynamic.compile())
-  case type body.enum_(type_dynamic.compile(), "type", body.nothing())
-  case box(inner) {
-    var value = body.unbox(value, inner.compile())
-    var value = body.static_to_dynamic(value, inner, context)
-    body.enum_(type_dynamic.compile(), "box", value)
-  }
-  case array(item) {
-    var len = body.array_len(value)
-    var lambda = body.lambda(
-      type_lambda(list(type_int).to_slice(), type_dynamic).compile(),
-      compile_array_items_to_dynamic_fun(item, context),
-      body.closure(value),
-    )
-    var array = body.generate_array(
-      len, lambda, type_array(type_dynamic).compile()
-    )
-    body.enum_(type_dynamic.compile(), "array", array)
-  }
+  case byte body.enum_(type_dynamic, "byte", value)
+  case int body.enum_(type_dynamic, "int", value)
+  case never body.unreachable(type_dynamic)
+  case type body.enum_(type_dynamic, "type", body.nothing())
+  case box(inner)
+    body.enum_(type_dynamic, "box", {
+      body.static_to_dynamic(body.unbox(value), inner, context)
+    })
+  case array(item)
+    body.enum_(type_dynamic, "array", {
+      body.generate_array(
+        body.array_len(value),
+        body.lambda(
+          type_lambda(list(type_int).to_slice(), type_dynamic),
+          compile_array_items_to_dynamic_fun(item, context),
+          body.box(value),
+        ),
+      )
+    })
   case struct_(field_types)
-    body.enum_(type_dynamic.compile(), "struct", {
+    body.enum_(type_dynamic, "struct", {
       var dynamic_fields = list[Id]()
       for field in field_types do {
         var name = field.key
         var field_type = field.value
-
-        var field_value = body.member(value, name, field_type.compile())
-        var field_dynamic_value =
-          body.static_to_dynamic(field_value, field_type, context)
-
-        dynamic_fields.&.push(body.struct_(type_dynamic_field.compile(), map(
+        dynamic_fields.&.push(body.struct_(map(
           "name" -> body.string(name),
-          "value" -> field_dynamic_value,
+          "value" -> body.static_to_dynamic(
+            body.member(value, name), field_type, context
+          ),
         )))
       }
-      body.array(type_dynamic_fields.compile(), dynamic_fields.to_slice())
+      body.array(type_dynamic_fields, dynamic_fields.to_slice())
     })
   case enum_(variant_types)
-    body.enum_(type_dynamic.compile(), "enum", {
-      body.switch_(value, type_dynamic_variant.compile(), {
+    body.enum_(type_dynamic, "enum", {
+      body.switch_(value, type_dynamic_variant, {
         var cases = map[String, YogurtBody]()
         for variant in variant_types do {
           var name = variant.key
           var variant_type = variant.value
 
           var body = body_builder(body.dag).&
-          var payload_value = body.param(variant_type.compile())
-          var payload_dynamic =
-            body.static_to_dynamic(payload_value, variant_type, context)
+          var payload_value = body.param(variant_type)
 
-          var name_and_value = body.struct_(type_dynamic_variant.compile(), map(
+          var name_and_value = body.struct_(map(
             "name" -> body.string(name),
-            "value" -> payload_dynamic,
+            "value" -> body.static_to_dynamic(
+              payload_value, variant_type, context
+            ),
           ))
           cases.&.put(name, body.finish(name_and_value))
         }
@@ -87,12 +82,11 @@ fun compile_static_to_dynamic_fun_body(
       })
     })
   case lambda
-    body.enum_(type_dynamic.compile(), "lambda", {
+    body.enum_(type_dynamic, "lambda", {
       body.lambda(
-        type_lambda(list(type_array(type_dynamic)).to_slice(), type_dynamic)
-          .compile(),
+        type_lambda(list(type_array(type_dynamic)).to_slice(), type_dynamic),
         compile_dynamic_lambda_wrapper_fun(type, context),
-        body.closure(value),
+        body.box(value),
       )
     })
 }
@@ -105,13 +99,11 @@ fun compile_array_items_to_dynamic_fun(
 
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
+  var index = body.param(type_int)
+  var closure = body.param(type_box(type_array(item_type)))
 
-  var index = body.param(YogurtType.int)
-  var closure = body.param(
-    YogurtType.closure(type_array(item_type).compile().put_on_heap())
-  )
-  var array = body.get_closure(closure, type_array(item_type).compile())
-  var item = body.array_get(array, index, item_type.compile())
+  var array = body.unbox(closure)
+  var item = body.array_get(array, index)
   var converted = body.static_to_dynamic(item, item_type, context)
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(converted) })
@@ -126,34 +118,29 @@ fun compile_dynamic_lambda_wrapper_fun(
 
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
-
-  var args = body.param(type_array(type_dynamic).compile())
-  var closure = body.param(YogurtType.closure(type.compile().put_on_heap()))
+  var args = body.param(type_array(type_dynamic))
+  var closure = body.param(type_box(type))
 
   var lambda_type = type.kind().lambda.unwrap()
 
   | Make sure the number of arguments is correct.
   body.switch_(
     body.compare_ints(body.array_len(args), body.int(lambda_type.args.len)),
-    type_nothing.compile(),
+    type_nothing,
     map(
       "less" -> {
         var body = body_builder(body.dag).&
-        var payload = body.param(type_nothing.compile())
-        body.finish(
-          body.crash("Wrong number of arguments.", type_nothing.compile())
-        )
+        var payload = body.param(type_nothing)
+        body.finish(body.crash("Wrong number of arguments.", type_nothing))
       },
       "greater" -> {
         var body = body_builder(body.dag).&
-        var payload = body.param(type_nothing.compile())
-        body.finish(
-          body.crash("Wrong number of arguments.", type_nothing.compile())
-        )
+        var payload = body.param(type_nothing)
+        body.finish(body.crash("Wrong number of arguments.", type_nothing))
       },
       "equal" -> {
         var body = body_builder(body.dag).&
-        var payload = body.param(type_nothing.compile())
+        var payload = body.param(type_nothing)
         body.finish(body.nothing())
       },
     )
@@ -163,17 +150,13 @@ fun compile_dynamic_lambda_wrapper_fun(
   var static_args = list[Id]()
   for arg in lambda_type.args.iter().enumerate() do {
     static_args.&.push(body.dynamic_to_static(
-      body.array_get(args, body.int(arg.index), type_dynamic.compile()),
-      arg.item,
-      context,
+      body.array_get(args, body.int(arg.index)), arg.item, context
     ))
   }
   var args = static_args.to_slice()
 
   var result = body.call_lambda(
-    body.get_closure(closure, type.compile()),
-    args,
-    lambda_type.return_type.compile(),
+    body.unbox(closure), args, lambda_type.return_type
   )
   var converted = body.static_to_dynamic(
     result, lambda_type.return_type, context
@@ -186,7 +169,7 @@ fun dynamic_to_static(
   body: &YogurtBodyBuilder, value: Id, type: EggType, context: &YogurtContext
 ): Id {
   var fun_ = compile_dynamic_to_static_fun(type, context)
-  body.call_fun(fun_, list(value).to_slice(), type.compile())
+  body.call_fun(fun_, list(value).to_slice(), type)
 }
 fun compile_dynamic_to_static_fun(
   type: EggType, context: &YogurtContext
@@ -197,109 +180,104 @@ fun compile_dynamic_to_static_fun(
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
 
-  var value = body.param(type_dynamic.compile())
+  var value = body.param(type_dynamic)
   var result =
     switch type.kind()
     case variable panic("type var in compile to dynamic")
     case byte
-      body.switch_(value, type.compile(), {
+      body.switch_(value, type, {
         var cases = map[String, YogurtBody]()
         for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
           var payload_type = entry.value
           var body = body_builder(body.dag).&
-          var payload = body.param(payload_type.compile())
+          var payload = body.param(payload_type)
           var result =
             if name == "byte"
             then payload
             else body.crash(
-              "dynamic to static failed (expected Byte)", type_never.compile()
+              "dynamic to static failed (expected Byte)", type_never
             )
           cases.&.put(name, body.finish(result))
         }
         cases
       })
     case int
-      body.switch_(value, type.compile(), {
+      body.switch_(value, type, {
         var cases = map[String, YogurtBody]()
         for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
           var payload_type = entry.value
           var body = body_builder(body.dag).&
-          var payload = body.param(payload_type.compile())
+          var payload = body.param(payload_type)
           var result =
             if name == "int"
             then payload
             else body.crash(
-              "dynamic to static failed (expected int, got {name})",
-              type_never.compile(),
+              "dynamic to static failed (expected int, got {name})", type_never
             )
           cases.&.put(name, body.finish(result))
         }
         cases
       })
-    case never body.crash("tried to build Never from Dynamic", type.compile())
+    case never body.crash("tried to build Never from Dynamic", type)
     case type
       | Note: We don't need to re-create the exact type, as you can't inspect
       | non-statically-known types – during runtime, Types don't store
       | anything. So, we just give you _any_ type.
-      body.type(YogurtType.type)
+      body.type(type_type)
     case box(inner_type)
-      body.switch_(value, type.compile(), {
+      body.switch_(value, type, {
         var cases = map[String, YogurtBody]()
         for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
           var payload_type = entry.value
           var body = body_builder(body.dag).&
-          var payload = body.param(payload_type.compile())
+          var payload = body.param(payload_type)
           var result =
-            if name == "box" then {
-              var inner = body.dynamic_to_static(payload, inner_type, context)
-              body.box(inner, type.compile())
-            } else
-              body.crash(
-                "dynamic to static failed (expected box)", type.compile()
-              )
+            if name == "box" then
+              body.box(body.dynamic_to_static(payload, inner_type, context))
+            else
+              body.crash("dynamic to static failed (expected box)", type)
           cases.&.put(name, body.finish(result))
         }
         cases
       })
     case array(item_type)
-      body.switch_(value, type.compile(), {
+      body.switch_(value, type, {
         var cases = map[String, YogurtBody]()
         for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
           var payload_type = entry.value
           var body = body_builder(body.dag).&
-          var payload = body.param(payload_type.compile())
+          var payload = body.param(payload_type)
           var result =
-            if name == "array" then {
-              var len = body.array_len(payload)
-              var lambda = body.lambda(
-                type_lambda(list(type_int).to_slice(), item_type).compile(),
-                compile_dynamic_to_array_items_fun(item_type, context),
-                body.closure(payload),
+            if name == "array" then
+              body.generate_array(
+                body.array_len(payload),
+                body.lambda(
+                  type_lambda(list(type_int).to_slice(), item_type),
+                  compile_dynamic_to_array_items_fun(item_type, context),
+                  body.box(payload),
+                ),
               )
-              body.generate_array(len, lambda, type.compile())
-            } else
-              body.crash(
-                "dynamic to static failed (expected array)", type.compile()
-              )
+            else
+              body.crash("dynamic to static failed (expected array)", type)
           cases.&.put(name, body.finish(result))
         }
         cases
       })
     case struct_(field_types)
-      body.switch_(value, type.compile(), {
+      body.switch_(value, type, {
         var cases = map[String, YogurtBody]()
         for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
           var payload_type = entry.value
           var body = body_builder(body.dag).&
-          var payload = body.param(payload_type.compile())
+          var payload = body.param(payload_type)
           var result =
             if name == "struct" then
-              body.struct_(type.compile(), {
+              body.struct_({
                 var fields = map[String, Id]()
                 for field in field_types do {
                   var name = field.key
@@ -313,47 +291,43 @@ fun compile_dynamic_to_static_fun(
                 fields
               })
             else
-              body.crash(
-                "dynamic to static failed (expected struct)", type.compile()
-              )
+              body.crash("dynamic to static failed (expected struct)", type)
           cases.&.put(name, body.finish(result))
         }
         cases
       })
     case enum_(variant_types)
-      body.switch_(value, type.compile(), {
+      body.switch_(value, type, {
         var cases = map[String, YogurtBody]()
         for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
           var payload_type = entry.value
           var body = body_builder(body.dag).&
-          var payload = body.param(payload_type.compile())
+          var payload = body.param(payload_type)
           var result =
             if name == "enum" then {
-              var variant_name =
-                body.member(payload, "name", type_string.compile())
-              var value =
-                body.member(payload, "value", type_dynamic.compile())
+              var variant_name = body.member(payload, "name")
+              var value = body.member(payload, "value")
 
               var inner_body = {
                 var body = body_builder(body.dag).&
-                var payload = body.param(type_nothing.compile())
-                body.finish(body.crash("No enum case matches.", type.compile()))
+                var payload = body.param(type_nothing)
+                body.finish(body.crash("No enum case matches.", type))
               }
               for variant_type in variant_types do {
                 var body = body_builder(body.dag).&
-                var payload = body.param(type_nothing.compile())
+                var payload = body.param(type_nothing)
                 inner_body = body.finish(body.switch_(
                   body.compare_strings(
                     variant_name, body.string(variant_type.key), context
                   ),
-                  type.compile(),
+                  type,
                   map(
                     "true" -> {
                       var body = body_builder(body.dag).&
-                      var payload = body.param(type_nothing.compile())
+                      var payload = body.param(type_nothing)
                       body.finish(body.enum_(
-                        type.compile(),
+                        type,
                         variant_type.key,
                         body.dynamic_to_static(
                           value, variant_type.value, context
@@ -364,37 +338,31 @@ fun compile_dynamic_to_static_fun(
                   )
                 ))
               }
-              for id in inner_body.children do
-                body.children.&.push(id)
+              for id in inner_body.children do body.children.&.push(id)
               inner_body.returns
             } else
-              body.crash(
-                "dynamic to static failed (expected enum)", type.compile()
-              )
+              body.crash("dynamic to static failed (expected enum)", type)
           cases.&.put(name, body.finish(result))
         }
         cases
       })
     case lambda
-      body.switch_(value, type.compile(), {
+      body.switch_(value, type, {
         var cases = map[String, YogurtBody]()
         for entry in type_dynamic.kind().enum_.unwrap() do {
           var name = entry.key
           var payload_type = entry.value
           var body = body_builder(body.dag).&
-          var payload = body.param(payload_type.compile())
+          var payload = body.param(payload_type)
           var result =
-            if name == "lambda" then {
+            if name == "lambda" then
               body.lambda(
-                type.compile(),
+                type,
                 compile_static_lambda_wrapper_fun(type, context),
-                body.closure(payload),
+                body.box(payload),
               )
-            }
             else
-              body.crash(
-                "dynamic to static failed (expected enum)", type.compile()
-              )
+              body.crash("dynamic to static failed (expected enum)", type)
           cases.&.put(name, body.finish(result))
         }
         cases
@@ -411,13 +379,11 @@ fun compile_dynamic_to_array_items_fun(
 
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
+  var index = body.param(type_int)
+  var closure = body.param(type_box(type_array(type_dynamic)))
 
-  var index = body.param(YogurtType.int)
-  var closure = body.param(
-    YogurtType.closure(type_array(type_dynamic).compile().put_on_heap())
-  )
-  var array = body.get_closure(closure, type_array(item_type).compile())
-  var item = body.array_get(array, index, type_dynamic.compile())
+  var array = body.unbox(closure)
+  var item = body.array_get(array, index)
   var converted = body.dynamic_to_static(item, item_type, context)
 
   compilation.done(YogurtFun { dag = dag.*, body = body.finish(converted) })
@@ -428,7 +394,7 @@ fun find_field_in_array(
   body.call_fun(
     compile_find_field_in_array_fun(context),
     list(array, name, body.int(0)).to_slice(),
-    type_dynamic.compile(),
+    type_dynamic,
   )
 }
 | Finds the value of a field in an (Array (& name: String value: Dynamic))
@@ -441,47 +407,47 @@ fun compile_find_field_in_array_fun(context: &YogurtContext): String {
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
 
-  var array = body.param(type_dynamic_fields.compile())
-  var name = body.param(type_string.compile())
-  var index = body.param(type_int.compile())
+  var array = body.param(type_dynamic_fields)
+  var name  = body.param(type_string)
+  var index = body.param(type_int)
 
   var len = body.array_len(array)
   var result = body.switch_(
     body.compare_ints(index, len),
-    type_dynamic.compile(),
+    type_dynamic,
     map(
       "less" -> {
         var body = body_builder(body.dag).&
-        body.param(type_nothing.compile())
-        var field = body.array_get(array, index, type_dynamic_field.compile())
-        var field_name = body.member(field, "name", type_string.compile())
+        body.param(type_nothing)
+        var field = body.array_get(array, index)
+        var field_name = body.member(field, "name")
         var matches = body.compare_strings(name, field_name, context)
-        body.finish(body.switch_(matches, type_dynamic.compile(), map(
+        body.finish(body.switch_(matches, type_dynamic, map(
           "true" -> {
             var body = body_builder(body.dag).&
-            body.param(type_nothing.compile())
-            body.finish(body.member(field, "value", type_dynamic.compile()))
+            body.param(type_nothing)
+            body.finish(body.member(field, "value"))
           },
           "false" -> {
             var body = body_builder(body.dag).&
-            body.param(type_nothing.compile())
+            body.param(type_nothing)
             body.finish(body.call_fun(
               compile_find_field_in_array_fun(context),
               list(array, name, body.add_ints(index, body.int(1))).to_slice(),
-              type_dynamic.compile(),
+              type_dynamic,
             ))
           }
         )))
       },
       "equal" -> {
         var body = body_builder(body.dag).&
-        body.param(type_nothing.compile())
-        body.finish(body.crash("field not in struct", type_dynamic.compile()))
+        body.param(type_nothing)
+        body.finish(body.crash("field not in struct", type_dynamic))
       },
       "greater" -> {
         var body = body_builder(body.dag).&
-        body.param(type_nothing.compile())
-        body.finish(body.unreachable(type_dynamic.compile()))
+        body.param(type_nothing)
+        body.finish(body.unreachable(type_dynamic))
       },
     ),
   )
@@ -494,7 +460,7 @@ fun compare_strings(
   body.call_fun(
     compile_compare_strings_fun(context),
     list(a, b).to_slice(),
-    type_bool.compile(),
+    type_bool,
   )
 }
 fun compile_compare_strings_fun(context: &YogurtContext): String {
@@ -503,35 +469,34 @@ fun compile_compare_strings_fun(context: &YogurtContext): String {
 
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
+  var a = body.param(type_string)
+  var b = body.param(type_string)
 
-  var a = body.param(type_string.compile())
-  var b = body.param(type_string.compile())
-
-  var a_bytes = body.member(a, "utf8_bytes", type_array(type_byte).compile())
-  var b_bytes = body.member(b, "utf8_bytes", type_array(type_byte).compile())
+  var a_bytes = body.member(a, "utf8_bytes")
+  var b_bytes = body.member(b, "utf8_bytes")
 
   var result = body.switch_(
     body.compare_ints(body.array_len(a_bytes), body.array_len(b_bytes)),
-    type_bool.compile(),
+    type_bool,
     map(
       "less" -> {
         var body = body_builder(body.dag).&
-        body.param(type_nothing.compile())
-        body.finish(body.enum_(type_bool.compile(), "false", body.nothing()))
+        body.param(type_nothing)
+        body.finish(body.enum_(type_bool, "false", body.nothing()))
       },
       "equal" -> {
         var body = body_builder(body.dag).&
-        body.param(type_nothing.compile())
+        body.param(type_nothing)
         body.finish(body.call_fun(
           compile_compare_strings_rec_fun(context),
           list(a_bytes, b_bytes, body.int(0)).to_slice(),
-          type_bool.compile(),
+          type_bool,
         ))
       },
       "greater" -> {
         var body = body_builder(body.dag).&
-        body.param(type_nothing.compile())
-        body.finish(body.enum_(type_bool.compile(), "false", body.nothing()))
+        body.param(type_nothing)
+        body.finish(body.enum_(type_bool, "false", body.nothing()))
       },
     ),
   )
@@ -545,63 +510,56 @@ fun compile_compare_strings_rec_fun(context: &YogurtContext): String {
 
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
-
-  var a = body.param(type_array(type_byte).compile())
-  var b = body.param(type_array(type_byte).compile())
-  var index = body.param(type_int.compile())
+  var a = body.param(type_array(type_byte))
+  var b = body.param(type_array(type_byte))
+  var index = body.param(type_int)
 
   var result = body.switch_(
     body.compare_ints(index, body.array_len(a)),
-    type_bool.compile(),
+    type_bool,
     map(
       "less" -> {
         var body = body_builder(body.dag).&
-        body.param(type_nothing.compile())
+        body.param(type_nothing)
         body.finish(body.switch_(
           body.compare_ints(
-            body.byte_to_int(body.array_get(a, index, YogurtType.byte)),
-            body.byte_to_int(body.array_get(b, index, YogurtType.byte)),
+            body.byte_to_int(body.array_get(a, index)),
+            body.byte_to_int(body.array_get(b, index)),
           ),
-          type_bool.compile(),
+          type_bool,
           map(
             "less" -> {
               var body = body_builder(body.dag).&
-              body.param(type_nothing.compile())
-              body.finish(body.enum_(
-                type_bool.compile(), "false", body.nothing()
-              ))
+              body.param(type_nothing)
+              body.finish(body.enum_(type_bool, "false", body.nothing()))
             },
             "equal" -> {
               var body = body_builder(body.dag).&
-              body.param(type_nothing.compile())
+              body.param(type_nothing)
               var result = body.call_fun(
                 compile_compare_strings_rec_fun(context),
                 list(a, b, body.add_ints(index, body.int(1))).to_slice(),
-                type_bool.compile(),
+                type_bool,
               )
               body.finish(result)
             },
             "greater" -> {
               var body = body_builder(body.dag).&
-              body.param(type_nothing.compile())
-              body.finish(body.enum_(
-                type_bool.compile(), "false", body.nothing()
-              ))
+              body.param(type_nothing)
+              body.finish(body.enum_(type_bool, "false", body.nothing()))
             },
           ),
         ))
       },
       "equal" -> {
         var body = body_builder(body.dag).&
-        body.param(type_nothing.compile())
-        body.finish(body.enum_(
-          type_bool.compile(), "true", body.nothing()
-        ))
+        body.param(type_nothing)
+        body.finish(body.enum_(type_bool, "true", body.nothing()))
       },
       "greater" -> {
         var body = body_builder(body.dag).&
-        body.param(type_nothing.compile())
-        body.finish(body.unreachable(type_bool.compile()))
+        body.param(type_nothing)
+        body.finish(body.unreachable(type_bool))
       },
     ),
   )
@@ -623,23 +581,18 @@ fun compile_static_lambda_wrapper_fun(
   var body = body_builder(dag).&
 
   var args = list[Id]()
-  for arg in lambda_type.args do
-    args.&.push(body.param(arg.compile()))
-  var closure = body.param(
-    YogurtType.closure(type_dynamic_lambda.compile().put_on_heap())
-  )
+  for arg in lambda_type.args do args.&.push(body.param(arg))
+  var closure = body.param(type_box(type_dynamic_lambda))
 
   var dynamic_args = list[Id]()
   for arg in zip(args.iter(), lambda_type.args.iter()) do
     dynamic_args.&.push(body.static_to_dynamic(arg.a, arg.b, context))
   var dynamic_args = body.array(
-    type_array(type_dynamic).compile(), dynamic_args.to_slice()
+    type_array(type_dynamic), dynamic_args.to_slice()
   )
 
   var result = body.call_lambda(
-    body.get_closure(closure, type_dynamic_lambda.compile()),
-    list(dynamic_args).to_slice(),
-    type_dynamic.compile(),
+    body.unbox(closure), list(dynamic_args).to_slice(), type_dynamic
   )
   var converted =
     body.dynamic_to_static(result, lambda_type.return_type, context)

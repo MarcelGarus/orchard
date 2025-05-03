@@ -1,56 +1,50 @@
 import mod.mar
 
-fun type_info(body: &YogurtBodyBuilder, type: YogurtType): Id {
+fun type_info(body: &YogurtBodyBuilder, type: EggType): Id {
   var variant_and_payload =
-    switch type
+    switch type.internal_kind()
+    case variable unreachable()
     case byte tuple("byte", body.nothing())
     case int tuple("int", body.nothing())
     case type tuple("type", body.nothing())
-    case box(inner_type) tuple("box", body.type_info(inner_type.*))
-    case array(item_type) tuple("array", body.type_info(item_type.*))
+    case box(inner_type) tuple("box", body.type_info(inner_type))
+    case array(item_type) tuple("array", body.type_info(item_type))
     case never tuple("never", body.nothing())
-    case struct_(struct_)
-      tuple(
-        "struct",
-        body.array(type_type_info_fields.compile(), {
-          var fields = list[Id]()
-          for field in struct_ do
-            fields.&.push(body.struct_(type_type_info_field.compile(), map(
-              "name" -> body.string(field.key),
-              "type" -> body.type_info(field.value),
-            )))
-          fields.to_slice()
-        })
-      )
-    case enum_(enum_)
+    case struct_(struct_) {
+      var fields = list[Id]()
+      for field in struct_ do
+        fields.&.push(body.struct_(map(
+          "name" -> body.string(field.key),
+          "type" -> body.type_info(field.value),
+        )))
+      tuple("struct", body.array(type_type_info_fields, fields.to_slice()))
+    }
+    case enum_(enum_) {
+      var variants = list[Id]()
+      for variant in enum_ do
+        variants.&.push(body.struct_(map(
+          "name" -> body.string(variant.key),
+          "type" -> body.type_info(variant.value),
+        )))
       tuple(
         "enum",
-        body.array(type_type_info_variants.compile(), {
-          var variants = list[Id]()
-          for variant in enum_ do
-            variants.&.push(body.struct_(type_type_info_variant.compile(), map(
-              "name" -> body.string(variant.key),
-              "type" -> body.type_info(variant.value),
-            )))
-          variants.to_slice()
-        })
+        body.array(type_type_info_variants, variants.to_slice()),
       )
-    case closure unreachable()
-    case lambda(lambda)
+    }
+    case lambda(lambda) {
       tuple(
         "lambda",
-        body.struct_(type_type_info_lambda.compile(), map(
-          "arguments" -> body.array(type_type_info_lambda_args.compile(), {
+        body.struct_(map(
+          "arguments" -> body.array(type_type_info_lambda_args, {
             var args = list[Id]()
             for arg in lambda.args do body.&.type_info(arg)
             args.to_slice()
           }),
-          "return_type" -> body.type_info(lambda.return_type.*),
+          "return_type" -> body.type_info(lambda.return_type),
         )),
       )
+    }
     case recursive(level) tuple("recursive", body.int(level))
 
-  body.enum_(
-    type_type_info.compile(), variant_and_payload.a, variant_and_payload.b
-  )
+  body.enum_(type_type_info, variant_and_payload.a, variant_and_payload.b)
 }

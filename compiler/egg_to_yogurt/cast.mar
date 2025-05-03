@@ -1,15 +1,14 @@
 import mod.mar
 
 fun cast(
-  body: &YogurtBodyBuilder, from: Id,
-  from_type: EggType, to_type: EggType,
+  body: &YogurtBodyBuilder, from: Id, from_type: EggType, to_type: EggType,
   context: &YogurtContext,
 ): Id {
   if from_type == to_type then return from
   body.call_fun(
     compile_cast_fun(from_type, to_type, context),
     list(from).to_slice(),
-    to_type.compile(),
+    to_type,
   )
 }
 
@@ -22,8 +21,7 @@ fun compile_cast_fun(
 
   var dag = dag[YogurtExpr]().&
   var body = body_builder(dag).&
-
-  var param = body.param(from.compile())
+  var param = body.param(from)
   var returns = compile_cast_fun_body(from, to, body, param, context)
   var fun_ = YogurtFun { dag = dag.*, body = body.finish(returns) }
 
@@ -33,8 +31,7 @@ fun compile_cast_fun_body(
   from_type: EggType, to_type: EggType,
   body: &YogurtBodyBuilder, from: Id, context: &YogurtContext
 ): Id {
-  if from_type.internal_kind() is never then
-    return body.unreachable(to_type.compile())
+  if from_type.internal_kind() is never then return body.unreachable(to_type)
   if from_type == to_type then return from | This cast is the identity fun!
 
   switch to_type.kind()
@@ -47,26 +44,18 @@ fun compile_cast_fun_body(
     var length = body.array_len(from)
 
     | Create a closure.
-    var closure = body.closure(from)
+    var closure = body.box(from)
 
     | Compile a lambda for getting a cast argument at a given index.
     var lambda_dag = dag[YogurtExpr]().&
     var lambda_body = body_builder(lambda_dag).&
+    var index = lambda_body.param(type_int) | index: Int
+    var inner_closure = lambda_body.param(body.type_of(closure)) | the array
 
-    | The "array" is captured.
-    var index = lambda_body.param(type_int.compile()) | index: Int
-    var inner_closure = lambda_body.param(body.type_of(closure))
-    var from_array = lambda_body.get_closure(
-      inner_closure, from_type.compile()
-    )
-    var from_item = lambda_body.array_get(
-      from_array, index, from_item_type.compile()
-    )
+    var from_array = lambda_body.unbox(inner_closure)
+    var from_item = lambda_body.array_get(from_array, index)
     var to_item = lambda_body.cast(
-      from_item,
-      from_item_type,
-      to_item_type,
-      context,
+      from_item, from_item_type, to_item_type, context
     )
 
     var signature = context.define(
@@ -75,39 +64,37 @@ fun compile_cast_fun_body(
     )
 
     var lambda = body.lambda(
-      type_lambda(list(type_int).to_slice(), to_item_type).compile(),
+      type_lambda(list(type_int).to_slice(), to_item_type),
       signature, closure,
     )
-    body.generate_array(length, lambda, to_type.compile())
+    body.generate_array(length, lambda)
   }
   case struct_(to_field_types)
-    body.struct_(to_type.compile(), {
+    body.struct_({
       var to_fields = map[String, Id]()
       for entry in from_type.kind().struct_.unwrap() do {
         var name = entry.key
         var from_type = entry.value
         var to_type = to_field_types.get(name)
-
-        var from = body.member(from, name, from_type.compile())
-        var to = body.cast(from, from_type, to_type, context)
-
-        to_fields.&.put(name, to)
+        to_fields.&.put(
+          name, body.cast(body.member(from, name), from_type, to_type, context)
+        )
       }
       to_fields
     })
   case enum_(to_variant_types)
-    body.switch_(from, to_type.compile(), {
+    body.switch_(from, to_type, {
       var cases = map[String, YogurtBody]()
       for entry in from_type.kind().enum_.unwrap() do {
         var name = entry.key
         var from_value_type = entry.value
         var to_value_type = to_variant_types.get(name)
         var case_body = body_builder(body.dag).&
-        var from_value = case_body.param(from_value_type.compile())
+        var from_value = case_body.param(from_value_type)
         var to_value = case_body.cast(
           from_value, from_value_type, to_value_type, context
         )
-        var to = case_body.enum_(to_type.compile(), name, to_value)
+        var to = case_body.enum_(to_type, name, to_value)
         cases.&.put(name, case_body.finish(to))
       }
       cases
@@ -116,7 +103,7 @@ fun compile_cast_fun_body(
     var from_lambda_type = from_type.kind().lambda.unwrap()
 
     | Create a closure.
-    var closure = body.closure(from)
+    var closure = body.box(from)
 
     | Compile the casting lambda into a function.
     var lambda_dag = dag[YogurtExpr]().&
@@ -125,11 +112,9 @@ fun compile_cast_fun_body(
     | The "from lambda" is captured.
     var params = list[Id]()
     for param_type in to_lambda_type.args do
-      params.&.push(lambda_body.param(param_type.compile()))
+      params.&.push(lambda_body.param(param_type))
     var inner_closure = lambda_body.param(body.type_of(closure))
-    var from_lambda = lambda_body.get_closure(
-      inner_closure, from_type.compile()
-    )
+    var from_lambda = lambda_body.unbox(inner_closure)
     var cast_params = list[Id]()
     for param in params.iter().enumerate() do
       cast_params.&.push(lambda_body.cast(
@@ -139,9 +124,7 @@ fun compile_cast_fun_body(
         context,
       ))
     var from_return = lambda_body.call_lambda(
-      from_lambda,
-      cast_params.to_slice(),
-      from_lambda_type.return_type.compile()
+      from_lambda, cast_params.to_slice(), from_lambda_type.return_type
     )
 
     var to_return = lambda_body.cast(
@@ -156,7 +139,7 @@ fun compile_cast_fun_body(
       YogurtFun { dag = lambda_dag.*, body = lambda_body.finish(to_return) },
     )
 
-    body.lambda(to_type.compile(), signature, closure)
+    body.lambda(to_type, signature, closure)
   }
   default panic("casting {from_type} to {to_type} is not supported")
 }

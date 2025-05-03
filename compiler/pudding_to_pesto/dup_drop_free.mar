@@ -3,7 +3,7 @@ import mod.mar
 | Creates a function that accepts a value of the given type, traverses that
 | value, and calls dup on all inner members. If it reaches a pointer, it instead
 | just increments that pointer's reference count.
-fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
+fun compile_dup_fun(type: EggType, pesto: &Pesto): String {
   var signature = "dup {type}"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
@@ -12,42 +12,35 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
   var builder = body_builder(dag.&, type.to_pesto()).&
   var value = builder.param
 
-  switch type
+  switch type.kind()
+  case variable unreachable()
   case byte {}
   case int {}
   case type {}
-  case box {
-    var inner_type = type.assert_no_closure().kind().box.unwrap()
-    builder.dup(value, inner_type.compile(), pesto).ignore()
-  }
+  case box builder.dup(value, type.kind().box.unwrap(), pesto).ignore()
   case array {
     var buffer = builder.member(value, "buffer")
     builder.dup_buffer(buffer, pesto).ignore()
   }
   case never {}
   case struct_
-    for field in type.assert_no_closure().kind().struct_.unwrap() do
-      builder.dup(
-        builder.member(value, field.key), field.value.compile(), pesto
-      )
+    for field in type.kind().struct_.unwrap() do
+      builder.dup(builder.member(value, field.key), field.value, pesto)
   case enum_ {
     var cases = map[String, PestoBody]()
-    for variant in type.assert_no_closure().kind().enum_.unwrap()
-    do {
+    for variant in type.kind().enum_.unwrap() do {
       var payload_type = builder.type_of(value).enum_.unwrap().get(variant.key)
       var builder = body_builder(dag.&, payload_type).&
       if payload_type is ptr then
         builder.increment_reference_count(builder.param)
       else
-        builder.dup(builder.param, variant.value.compile(), pesto)
+        builder.dup(builder.param, variant.value, pesto)
       cases.&.put(variant.key, builder.finish_with_nothing())
     }
     builder.switch_(value, cases).ignore()
   }
-  case closure builder.increment_reference_count(value).ignore()
   case lambda
     builder.increment_reference_count(builder.member(value, "closure")).ignore()
-  case recursive unreachable()
 
   var body = builder.finish_with_nothing()
   var fun_ = PestoFun { dag, body }
@@ -62,7 +55,7 @@ fun compile_dup_fun(type: YogurtType, pesto: &Pesto): String {
 | zero, it drops the pointed-to value and frees the allocation. For lambdas
 | where the closure reaches a reference count of zero, it uses the free function
 | pointer to free the closure.
-fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
+fun compile_drop_fun(type: EggType, pesto: &Pesto): String {
   var signature = "drop {type}"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
@@ -71,7 +64,8 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   var builder = body_builder(dag.&, type.to_pesto()).&
   var value = builder.param
 
-  switch type
+  switch type.kind()
+  case variable unreachable()
   case byte {}
   case int {}
   case type {}
@@ -84,7 +78,7 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
         body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
       "equal" -> {
         var builder = body_builder(dag.&, pesto_nothing.type).&
-        var inner_type = type.assert_no_closure().kind().box.unwrap().compile()
+        var inner_type = type.kind().box.unwrap()
         var inner = builder.load(value, inner_type.to_pesto())
         builder.drop(inner, inner_type, pesto)
         builder.free(value, inner_type.to_pesto())
@@ -94,19 +88,17 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   }
   case array {
     var buffer = builder.member(value, "buffer")
-    var item_type = type.assert_no_closure().kind().array.unwrap().compile()
+    var item_type = type.kind().array.unwrap()
     builder.drop_buffer(buffer, item_type, pesto).ignore()
   }
   case never {}
   case struct_
-    for field in type.assert_no_closure().kind().struct_.unwrap() do
-      builder.drop(
-        builder.member(value, field.key), field.value.compile(), pesto
-      )
+    for field in type.kind().struct_.unwrap() do
+      builder.drop(builder.member(value, field.key), field.value, pesto)
   case enum_ {
     var cases = map[String, PestoBody]()
-    for variant in type.assert_no_closure().kind().enum_.unwrap() do {
-      var payload_type = variant.value.compile()
+    for variant in type.kind().enum_.unwrap() do {
+      var payload_type = variant.value
       var inline_type = dag.type_of(value).enum_.unwrap().get(variant.key)
       var builder = body_builder(dag.&, inline_type).&
       var payload = builder.param
@@ -135,24 +127,6 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
     }
     builder.switch_(value, cases).ignore()
   }
-  case closure(captured) {
-    var new_refcount = builder.decrement_reference_count(value)
-    builder.switch_(builder.compare_ints(new_refcount, builder.int(0)), map(
-      "less" -> | Never runs in practice; refcount is always >= 0.
-        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
-      "greater" ->
-        body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
-      "equal" -> {
-        var builder = body_builder(dag.&, pesto_nothing.type).&
-        var closure = builder.load(value, captured.*.to_pesto())
-        builder.call(
-          captured.*.compile_drop_fun(pesto), closure, pesto_nothing.type
-        )
-        builder.free(value, dag.type_of(closure))
-        builder.finish_with_nothing()
-      },
-    )).ignore()
-  }
   case lambda {
     var closure_ptr = builder.member(value, "closure")
     var new_refcount = builder.decrement_reference_count(closure_ptr)
@@ -169,7 +143,6 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
       },
     )).ignore()
   }
-  case recursive unreachable()
 
   var body = builder.finish_with_nothing()
   var fun_ = PestoFun { dag, body }
@@ -178,7 +151,7 @@ fun compile_drop_fun(type: YogurtType, pesto: &Pesto): String {
   signature
 }
 
-fun compile_drop_buffer_fun(item_type: YogurtType, pesto: &Pesto): String {
+fun compile_drop_buffer_fun(item_type: EggType, pesto: &Pesto): String {
   var signature = "drop buffer({item_type})"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
@@ -213,7 +186,7 @@ fun compile_drop_buffer_fun(item_type: YogurtType, pesto: &Pesto): String {
 }
 
 | Accepts aggregate with ptr and cursor. Calls itself recursively.
-fun compile_drop_buffer_items_fun(item_type: YogurtType, pesto: &Pesto): String {
+fun compile_drop_buffer_items_fun(item_type: EggType, pesto: &Pesto): String {
   var signature = "drop buffer({item_type}) items"
   if pesto.funs.contains(signature) then return signature
   pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
@@ -246,26 +219,6 @@ fun compile_drop_buffer_items_fun(item_type: YogurtType, pesto: &Pesto): String 
     "equal" ->
       body_builder(dag.&, pesto_nothing.type).&.finish_with_nothing(),
   )).ignore()
-
-  var body = builder.finish_with_nothing()
-  var fun_ = PestoFun { dag, body }
-
-  pesto.funs.&.put(signature, fun_)
-  signature
-}
-
-| Accepts a pointer to a closure that captures the given types. Frees it.
-fun compile_closure_free_fun(captured: YogurtType, pesto: &Pesto): String {
-  var signature = "free closure of {captured}"
-  if pesto.funs.contains(signature) then return signature
-  pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
-
-  var dag = dag[PestoExpr]()
-  var builder = body_builder(dag.&, PestoType.ptr).&
-
-  var captured_values = builder.load(builder.param, captured.to_pesto())
-  builder.drop(captured_values, captured, pesto)
-  builder.free(builder.param, captured.to_pesto())
 
   var body = builder.finish_with_nothing()
   var fun_ = PestoFun { dag, body }

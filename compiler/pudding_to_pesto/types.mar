@@ -12,8 +12,9 @@ var pesto_lambda_type = PestoType.struct_(map(
   "free" -> PestoType.ptr,
 ))
 
-fun to_pesto(type: YogurtType): PestoType {
-  switch type
+fun to_pesto(type: EggType): PestoType {
+  switch type.internal_kind()
+  case variable unreachable()
   case byte PestoType.byte
   case int PestoType.int
   case type PestoType.struct_(map[String, PestoType]())
@@ -37,13 +38,13 @@ fun to_pesto(type: YogurtType): PestoType {
     }
     PestoType.enum_(variants)
   }
-  case closure PestoType.ptr
   case lambda pesto_lambda_type
   case recursive unreachable()
 }
 
-fun is_unboxed_recursive(type: YogurtType, depth: Int): Bool {
-  switch type
+fun is_unboxed_recursive(type: EggType, depth: Int): Bool {
+  switch type.internal_kind()
+  case variable unreachable()
   case byte false
   case int false
   case type false
@@ -60,7 +61,6 @@ fun is_unboxed_recursive(type: YogurtType, depth: Int): Bool {
       if variant.value.is_unboxed_recursive(depth + 1) then return true
     false
   }
-  case closure unreachable()
   case lambda false
   case recursive(level) level >= depth
 }
@@ -79,35 +79,4 @@ fun contains_ptr(type: PestoType): Bool {
     false
   }
   case never false
-}
-
-fun assert_no_closure(type: YogurtType): EggType {
-  switch type
-  case byte type_byte
-  case int type_int
-  case type type_type
-  case box(inner) type_box_without_canonicalizing(inner.assert_no_closure())
-  case array(item) type_array_without_canonicalizing(item.assert_no_closure())
-  case never type_never
-  case struct_(struct_) {
-    var fields = map[String, EggType]()
-    for field in struct_ do
-      fields.&.put(field.key, field.value.assert_no_closure())
-    type_struct_without_canonicalizing(fields)
-  }
-  case enum_(enum_) {
-    var variants = map[String, EggType]()
-    for variant in enum_ do
-      variants.&.put(variant.key, variant.value.assert_no_closure())
-    type_enum_without_canonicalizing(variants)
-  }
-  case closure unreachable()
-  case lambda(lambda) {
-    var args = list[EggType]()
-    for arg in lambda.args do args.&.push(arg.assert_no_closure())
-    var args = args.to_slice()
-    var return_type = lambda.return_type.assert_no_closure()
-    type_lambda_without_canonicalizing(args, return_type)
-  }
-  case recursive(level) type_recursive(level)
 }

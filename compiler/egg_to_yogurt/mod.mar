@@ -48,39 +48,6 @@ fun compile(
   ok[String, Error](compilation.done(fun_))
 }
 
-fun compile(type: EggType): YogurtType {
-  switch type.internal_kind()
-  case variable(name) panic("compiling type that still contains variable {name}")
-  case byte YogurtType.byte
-  case int YogurtType.int
-  case never YogurtType.never
-  case type YogurtType.type
-  case box(inner) YogurtType.box(inner.compile().put_on_heap())
-  case array(item) YogurtType.array(item.compile().put_on_heap())
-  case struct_(struct_) {
-    var fields = map[String, YogurtType]()
-    for field in struct_ do fields.&.put(field.key, field.value.compile())
-    YogurtType.struct_(fields)
-  }
-  case enum_(enum_) {
-    var variants = map[String, YogurtType]()
-    for variant in enum_ do variants.&.put(variant.key, variant.value.compile())
-    YogurtType.enum_(variants)
-  }
-  case lambda(lambda) {
-    var args = list[YogurtType]()
-    for arg in lambda.args do args.&.push(arg.compile())
-    var args = args.to_slice()
-
-    var return_type = lambda.return_type.compile()
-
-    YogurtType.lambda(YogurtLambdaType {
-      args, return_type = return_type.put_on_heap()
-    })
-  }
-  case recursive(level) YogurtType.recursive(level)
-}
-
 | Assumes that mappings for the parameters exist.
 fun compile(
   egg_body: EggBody,
@@ -89,9 +56,9 @@ fun compile(
 ): Result[YogurtBody, Error] {
   var body = body_builder(dag).&
   for egg_id in egg_body.params do
-    mapping.put(egg_id, body.param(
-      egg_dag.type_of(egg_id).specialize(substitutions).compile()
-    ))
+    mapping.put(
+      egg_id, body.param(egg_dag.type_of(egg_id).specialize(substitutions))
+    )
 
   for egg_id in egg_body.children do {
     var yogurt_id = egg_dag.get(egg_id)
@@ -106,19 +73,18 @@ fun compile(
   mapping: &Map[Id, Id], body: &YogurtBodyBuilder,
   egg_dag: Dag[EggExpr], substitutions: Substitutions, context: &YogurtContext,
 ): Result[Id, Error] {
-  var type = expr.type.specialize(substitutions).compile()
+  var type = expr.type.specialize(substitutions)
   ok[Id, Error](
     switch expr.op
     case param unreachable()
     case int(int) body.int(int)
     case string(string) body.string(string)
-    case struct_(struct_)
-      body.struct_(type, {
-        var fields = map[String, Id]()
-        for field in struct_ do fields.&.put(field.key, mapping.get(field.value))
-        fields
-      })
-    case member(member) body.member(mapping.get(member.of), member.name, type)
+    case struct_(struct_) {
+      var fields = map[String, Id]()
+      for field in struct_ do fields.&.put(field.key, mapping.get(field.value))
+      body.struct_(fields)
+    }
+    case member(member) body.member(mapping.get(member.of), member.name)
     case enum_(enum_) body.enum_(type, enum_.name, mapping.get(enum_.value))
     case switch_(switch_)
       body.switch_(mapping.get(switch_.condition), type, {
@@ -142,15 +108,11 @@ fun compile(
       | Create the closure in the current scope.
       var struct_containing_captured = {
         var fields = map[String, Id]()
-        var field_types = map[String, YogurtType]()
-        for entry in captured.iter().enumerate() do {
-          var mapped = mapping.get(entry.item)
-          fields.&.put("{entry.index}", mapped)
-          field_types.&.put("{entry.index}", body.type_of(mapped))
-        }
-        body.struct_(YogurtType.struct_(field_types), fields)
+        for entry in captured.iter().enumerate() do
+          fields.&.put("{entry.index}", mapping.get(entry.item))
+        body.struct_(fields)
       }
-      var closure = body.closure(struct_containing_captured)
+      var closure = body.box(struct_containing_captured)
 
       | Compile the lambda into a function.
       var lambda_mapping = map[Id, Id]().&
@@ -158,19 +120,14 @@ fun compile(
       var lambda_body = body_builder(lambda_dag).&
 
       for egg_id in lambda.params do {
-        var type = egg_dag.type_of(egg_id).specialize(substitutions).compile()
+        var type = egg_dag.type_of(egg_id).specialize(substitutions)
         var yogurt_id = lambda_body.param(type)
         lambda_mapping.put(egg_id, yogurt_id)
       }
       var inner_closure = lambda_body.param(body.type_of(closure))
-      var inner_captured = lambda_body.get_closure(
-        inner_closure, body.type_of(struct_containing_captured)
-      )
+      var inner_captured = lambda_body.unbox(inner_closure)
       for entry in captured.iter().enumerate() do {
-        var type = body.type_of(mapping.get(entry.item))
-        var inner_id = lambda_body.member(
-          inner_captured, "{entry.index}", type
-        )
+        var inner_id = lambda_body.member(inner_captured, "{entry.index}")
         lambda_mapping.&.put(entry.item, inner_id)
       }
 
@@ -240,13 +197,13 @@ fun compile(
           case type_info {
             var type =
               matching_builtin.substitutions.substitutions.get("arg_0")
-                .specialize(substitutions).compile()
+                .specialize(substitutions)
             return ok[Id, Error](body.type_info(type))
           }
           case static_to_dynamic {
             | TODO: make more beautiful after figuring out how type
             | substitutions propagate through imports
-            var type = body.type_of(call.args.get(0)).assert_no_closure()
+            var type = body.type_of(call.args.get(0))
             return ok[Id, Error](body.static_to_dynamic(
               call.args.get(0), type, context
             ))
@@ -270,8 +227,7 @@ fun compile(
         expr.type.specialize(substitutions),
         context,
       )
-    case type(type_value)
-      body.type(type_value.specialize(substitutions).canonicalize().compile())
+    case type(type_value) body.type(type_value.specialize(substitutions))
   )
 }
 

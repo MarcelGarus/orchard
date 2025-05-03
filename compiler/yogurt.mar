@@ -10,22 +10,7 @@ struct Yogurt { entry_point: String, funs: Map[String, YogurtFun] }
 
 struct YogurtFun { dag: Dag[YogurtExpr], body: YogurtBody }
 struct YogurtBody { params: Slice[Id], children: Slice[Id], returns: Id }
-struct YogurtExpr { op: YogurtOp, type: YogurtType }
-
-enum YogurtType {
-  byte,
-  int,
-  type,
-  box: &YogurtType,
-  array: &YogurtType,
-  never,
-  struct_: Map[String, YogurtType],
-  enum_: Map[String, YogurtType],
-  closure: &YogurtType,
-  lambda: YogurtLambdaType,
-  recursive: Int, | how many levels above this should we continue?
-}
-struct YogurtLambdaType { args: Slice[YogurtType], return_type: &YogurtType }
+struct YogurtExpr { op: YogurtOp, type: EggType }
 
 enum YogurtOp {
   param,
@@ -36,11 +21,9 @@ enum YogurtOp {
   member: YogurtMember,
   enum_: YogurtEnum,
   switch_: YogurtSwitch,
-  closure: Id,
-  get_closure: Id,
   lambda: YogurtLambda,
   call: YogurtCall,
-  type: YogurtType,
+  type: EggType,
 }
 struct YogurtMember { of: Id, name: String }
 struct YogurtSwitch { condition: Id, cases: Map[String, YogurtBody] }
@@ -67,47 +50,15 @@ fun yogurt(entry_point: String): Yogurt {
   Yogurt { entry_point, funs = map[String, YogurtFun]() }
 }
 
-fun signature(module: Module, name: String, params: Slice[YogurtType]): String {
+fun signature(module: Module, name: String, params: Slice[EggType]): String {
   var b = string_builder().&
   b."{module}.{name}"
   for param in params do b." {param}"
   b.to_string()
 }
 
-fun return_type(fun_: YogurtFun): YogurtType {
+fun return_type(fun_: YogurtFun): EggType {
   fun_.dag.type_of(fun_.body.returns)
-}
-
-fun ==(a: YogurtType, b: YogurtType): Bool {
-  switch a
-  case byte         b is byte
-  case int          b is int
-  case type         b is type
-  case box(a)       if b is box(b)       then a.* == b.* else false
-  case array(a)     if b is array(b)     then a.* == b.* else false
-  case never(a)     if b is never(b)     then a == b else false
-  case struct_(a)   if b is struct_(b)   then a == b else false
-  case enum_(a)     if b is enum_(b)     then a == b else false
-  case closure(a)   if b is closure(b)   then a.* == b.* else false
-  case lambda(a)    if b is lambda(b)    then a == b else false
-  case recursive(a) if b is recursive(b) then a == b else false
-}
-fun ==(a: YogurtLambdaType, b: YogurtLambdaType): Bool {
-  a.args == b.args and a.return_type.* == b.return_type.*
-}
-
-fun hash(hasher: &Hasher, type: YogurtType) {
-  switch type
-  case byte      { hasher.hash(0) }
-  case int       { hasher.hash(1) }
-  case type      { hasher.hash(2) }
-  case array     { hasher.hash(3) }
-  case never     { hasher.hash(4) }
-  case struct_   { hasher.hash(5) }
-  case enum_     { hasher.hash(6) }
-  case closure   { hasher.hash(7) }
-  case lambda    { hasher.hash(8) }
-  case recursive { hasher.hash(9) }
 }
 
 fun write[W](writer: W, yogurt: Yogurt) {
@@ -117,36 +68,6 @@ fun write[W](writer: W, yogurt: Yogurt) {
     writer."{fun_.key}:"
     writer.write(fun_.value.body, fun_.value.dag, 1)
   }
-}
-fun write[W](writer: W, type: YogurtType) {
-  switch type
-  case byte writer."Byte"
-  case int writer."Int"
-  case type writer."Type"
-  case box(inner) writer."(Box {inner})"
-  case array(item) writer."(Array {item})"
-  case never writer."Never"
-  case struct_(fields) {
-    writer."(&"
-    for field in fields do writer." {field.key}: {field.value}"
-    writer.")"
-  }
-  case enum_(variants) {
-    writer."(|"
-    for variant in variants do
-      if variant.value == YogurtType.struct_(map[String, YogurtType]()) then
-        writer." {variant.key}"
-      else
-        writer." {variant.key}: {variant.value}"
-    writer.")"
-  }
-  case closure(inner) writer."(Closure {inner})"
-  case lambda(lambda) {
-    writer."(\\"
-    for arg in lambda.args do writer." {arg}"
-    writer." -> {lambda.return_type})"
-  }
-  case recursive(level) writer."^{level}"
 }
 fun write[W](writer: W, body: YogurtBody, dag: Dag[YogurtExpr], indentation: Int) {
   for param in body.params do writer." {param}"
@@ -185,8 +106,6 @@ fun write[W](writer: W, op: YogurtOp, dag: Dag[YogurtExpr], indentation: Int) {
       writer.write(case_.value, dag, indentation + 2)
     }
   }
-  case closure(inner) writer."closure {inner}"
-  case get_closure(closure) writer."get_closure {closure}"
   case lambda(lambda)
     writer."lambda [closure {lambda.closure}] {lambda.function}"
   case call(call) {

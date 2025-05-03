@@ -7,18 +7,18 @@ struct YogurtBodyBuilder {
 fun body_builder(dag: &Dag[YogurtExpr]): _ {
   YogurtBodyBuilder { dag, params = list[Id](), children = list[Id]() }
 }
-fun param(body: &YogurtBodyBuilder, type: YogurtType): Id {
+fun param(body: &YogurtBodyBuilder, type: EggType): Id {
   var id = body.dag.&.put(YogurtExpr { op = YogurtOp.param, type })
   body.params.&.push(id)
   id
 }
-fun push(body: &YogurtBodyBuilder, op: YogurtOp, type: YogurtType): Id {
+fun push(body: &YogurtBodyBuilder, op: YogurtOp, type: EggType): Id {
   var id = body.dag.&.put(YogurtExpr { op, type })
   body.children.&.push(id)
   id
 }
 fun get(body: YogurtBodyBuilder, id: Id): YogurtExpr { body.dag.get(id) }
-fun type_of(body: YogurtBodyBuilder, id: Id): YogurtType {
+fun type_of(body: YogurtBodyBuilder, id: Id): EggType {
   body.dag.type_of(id)
 }
 fun finish(body: YogurtBodyBuilder, id: Id): YogurtBody {
@@ -30,123 +30,111 @@ fun finish(body: YogurtBodyBuilder, id: Id): YogurtBody {
 }
 
 fun int(body: &YogurtBodyBuilder, value: Int): Id {
-  body.push(YogurtOp.int(value), YogurtType.int)
+  body.push(YogurtOp.int(value), type_int)
 }
 fun string(body: &YogurtBodyBuilder, value: String): Id {
-  body.push(YogurtOp.string(value), type_string.compile())
+  body.push(YogurtOp.string(value), type_string)
 }
-fun array(body: &YogurtBodyBuilder, type: YogurtType, items: Slice[Id]): Id {
+fun array(body: &YogurtBodyBuilder, type: EggType, items: Slice[Id]): Id {
   body.push(YogurtOp.array(items), type)
 }
-fun struct_(
-  body: &YogurtBodyBuilder, type: YogurtType, fields: Map[String, Id]
-): Id {
-  body.push(YogurtOp.struct_(fields), type)
+fun struct_(body: &YogurtBodyBuilder, fields: Map[String, Id]): Id {
+  var field_types = map[String, EggType]()
+  for field in fields do field_types.&.put(field.key, body.type_of(field.value))
+  body.push(YogurtOp.struct_(fields), type_struct(field_types))
 }
-fun member(
-  body: &YogurtBodyBuilder, of: Id, name: String, type: YogurtType
-): Id {
+fun member(body: &YogurtBodyBuilder, of: Id, name: String): Id {
+  var type = body.type_of(of).kind().struct_.unwrap().get(name)
   body.push(YogurtOp.member(YogurtMember { of, name }), type)
 }
 fun enum_(
-  body: &YogurtBodyBuilder, type: YogurtType, name: String, value: Id
+  body: &YogurtBodyBuilder, type: EggType, name: String, value: Id
 ): Id {
   body.push(YogurtOp.enum_(YogurtEnum { name, value }), type)
 }
 fun switch_(
-  body: &YogurtBodyBuilder, condition: Id, type: YogurtType,
+  body: &YogurtBodyBuilder, condition: Id, type: EggType,
   cases: Map[String, YogurtBody],
 ): Id {
   body.push(YogurtOp.switch_(YogurtSwitch { condition, cases }), type)
 }
-fun closure(body: &YogurtBodyBuilder, value: Id): Id {
-  body.push(
-    YogurtOp.closure(value),
-    YogurtType.closure(body.type_of(value).put_on_heap()),
-  )
-}
-fun get_closure(body: &YogurtBodyBuilder, value: Id, type: YogurtType): Id {
-  body.push(YogurtOp.get_closure(value), type)
-}
 fun lambda(
-  body: &YogurtBodyBuilder, type: YogurtType, function: String, closure: Id
+  body: &YogurtBodyBuilder, type: EggType, function: String, closure: Id
 ): Id {
   body.push(YogurtOp.lambda(YogurtLambda { function, closure }), type)
 }
 fun call(
   body: &YogurtBodyBuilder, callee: YogurtCallee, args: Slice[Id],
-  type: YogurtType,
+  return_type: EggType,
 ): Id {
-  body.push(YogurtOp.call(YogurtCall { callee, args }),type)
+  body.push(YogurtOp.call(YogurtCall { callee, args }), return_type)
 }
 fun call_lambda(
-  body: &YogurtBodyBuilder, lambda: Id, args: Slice[Id], type: YogurtType
+  body: &YogurtBodyBuilder, lambda: Id, args: Slice[Id], return_type: EggType
 ): Id {
-  body.call(YogurtCallee.lambda(lambda), args, type)
+  body.call(YogurtCallee.lambda(lambda), args, return_type)
 }
 fun call_fun(
-  body: &YogurtBodyBuilder, fun_: String, args: Slice[Id], type: YogurtType
+  body: &YogurtBodyBuilder, fun_: String, args: Slice[Id], return_type: EggType
 ): Id {
-  body.call(YogurtCallee.fun_(fun_), args, type)
+  body.call(YogurtCallee.fun_(fun_), args, return_type)
 }
 fun call_builtin(
   body: &YogurtBodyBuilder, builtin: YogurtBuiltin, args: Slice[Id],
-  type: YogurtType,
+  return_type: EggType,
 ): Id {
-  body.call(YogurtCallee.builtin(builtin), args, type)
+  body.call(YogurtCallee.builtin(builtin), args, return_type)
 }
 fun add_ints(body: &YogurtBodyBuilder, a: Id, b: Id): Id {
-  body.call_builtin(
-    YogurtBuiltin.add_ints, list(a, b).to_slice(), YogurtType.int
-  )
+  body.call_builtin(YogurtBuiltin.add_ints, list(a, b).to_slice(), type_int)
 }
-fun array_get(
-  body: &YogurtBodyBuilder, array: Id, index: Id, type: YogurtType
-): Id {
+fun array_get(body: &YogurtBodyBuilder, array: Id, index: Id): Id {
   body.call_builtin(
-    YogurtBuiltin.array_get, list(array, index).to_slice(), type
+    YogurtBuiltin.array_get,
+    list(array, index).to_slice(),
+    body.type_of(array).kind().array.unwrap(),
   )
 }
 fun array_len(body: &YogurtBodyBuilder, array: Id): Id {
+  body.call_builtin(YogurtBuiltin.array_len, list(array).to_slice(), type_int)
+}
+fun box(body: &YogurtBodyBuilder, inner: Id): Id {
   body.call_builtin(
-    YogurtBuiltin.array_len, list(array).to_slice(), YogurtType.int
+    YogurtBuiltin.box, list(inner).to_slice(), type_box(body.type_of(inner))
   )
 }
-fun box(body: &YogurtBodyBuilder, inner: Id, type: YogurtType): Id {
-  body.call_builtin(YogurtBuiltin.box, list(inner).to_slice(), type)
-}
-fun unbox(body: &YogurtBodyBuilder, inner: Id, type: YogurtType): Id {
-  body.call_builtin(YogurtBuiltin.unbox, list(inner).to_slice(), type)
+fun unbox(body: &YogurtBodyBuilder, inner: Id): Id {
+  body.call_builtin(
+    YogurtBuiltin.unbox,
+    list(inner).to_slice(),
+    body.type_of(inner).kind().box.unwrap(),
+  )
 }
 fun byte_to_int(body: &YogurtBodyBuilder, byte: Id): Id {
-  body.call_builtin(
-    YogurtBuiltin.byte_to_int, list(byte).to_slice(), YogurtType.int
-  )
+  body.call_builtin(YogurtBuiltin.byte_to_int, list(byte).to_slice(), type_int)
 }
-fun generate_array(
-  body: &YogurtBodyBuilder, length: Id, generator: Id, type: YogurtType
-): Id {
+fun generate_array(body: &YogurtBodyBuilder, length: Id, generator: Id): Id {
   body.call_builtin(
-    YogurtBuiltin.generate_array, list(length, generator).to_slice(), type
+    YogurtBuiltin.generate_array,
+    list(length, generator).to_slice(),
+    type_array(body.type_of(generator).kind().lambda.unwrap().return_type),
   )
 }
 fun compare_ints(body: &YogurtBodyBuilder, a: Id, b: Id): Id {
   body.call_builtin(
-    YogurtBuiltin.compare_ints, list(a, b).to_slice(), type_ordering.compile()
+    YogurtBuiltin.compare_ints, list(a, b).to_slice(), type_ordering
   )
 }
-fun crash(body: &YogurtBodyBuilder, message: Id, type: YogurtType): Id {
+fun crash(body: &YogurtBodyBuilder, message: Id, type: EggType): Id {
   body.call_builtin(YogurtBuiltin.crash, list(message).to_slice(), type)
 }
-fun crash(body: &YogurtBodyBuilder, message: String, type: YogurtType): Id {
+fun crash(body: &YogurtBodyBuilder, message: String, type: EggType): Id {
   body.crash(body.string(message), type)
 }
-fun unreachable(body: &YogurtBodyBuilder, type: YogurtType): Id {
+fun unreachable(body: &YogurtBodyBuilder, type: EggType): Id {
   body.crash("unreachable", type)
 }
-fun type(body: &YogurtBodyBuilder, type: YogurtType): Id {
-  body.push(YogurtOp.type(type), YogurtType.type)
+fun type(body: &YogurtBodyBuilder, type: EggType): Id {
+  body.push(YogurtOp.type(type), type_type)
 }
-fun nothing(body: &YogurtBodyBuilder): Id {
-  body.struct_(type_nothing.compile(), map[String, Id]())
-}
+fun nothing(body: &YogurtBodyBuilder): Id { body.struct_(map[String, Id]()) }

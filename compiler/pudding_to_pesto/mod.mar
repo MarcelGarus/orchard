@@ -18,8 +18,10 @@ fun to_pesto(
   case int(int) builder.int(int)
   case string(string) builder.string(string)
   case array(items) {
-    var item_type = expr.type.array.unwrap()
-    var buffer = builder.new_buffer(item_type.to_pesto(), builder.int(items.len))
+    var item_type = expr.type.kind().array.unwrap()
+    var buffer = builder.new_buffer(
+      item_type.to_pesto(), builder.int(items.len)
+    )
     for item in items.iter().enumerate() do
       builder.store_buffer_item(
         buffer, builder.int(item.index), mapping.get(item.item)
@@ -72,9 +74,7 @@ fun to_pesto(
     var closure_ptr = mapping.get(lambda.closure)
     var lambda_body_fun_ptr = builder.function_ptr(lambda.function)
     var free_fun_ptr = builder.function_ptr(
-      compile_closure_free_fun(
-        fun_.dag.type_of(lambda.closure).closure.unwrap().*, pesto
-      )
+      compile_drop_fun(fun_.dag.type_of(lambda.closure), pesto)
     )
     builder.struct_(map(
       "closure" -> closure_ptr,
@@ -122,9 +122,7 @@ fun to_pesto(
         case box return builder.new(mapping.get(call.args.get(0)))
         case unbox {
           var box = call.args.get(0)
-          var inner_type =
-            fun_.dag.type_of(box).assert_no_closure()
-              .kind().box.unwrap().compile()
+          var inner_type = fun_.dag.type_of(box).kind().box.unwrap()
           var inner = builder.load(mapping.get(box), inner_type.to_pesto())
           builder.drop(mapping.get(box), fun_.dag.type_of(box), pesto)
           return inner
@@ -132,9 +130,10 @@ fun to_pesto(
         case generate_array {
           var len       = call.args.get(0)
           var generator = call.args.get(1)
-          var item_type = fun_.dag.type_of(generator).lambda.unwrap().return_type
+          var item_type =
+            fun_.dag.type_of(generator).kind().lambda.unwrap().return_type
           return builder.call(
-            compile_generate_array(item_type.*, pesto),
+            compile_generate_array(item_type, pesto),
             builder.struct_(map(
               "len" -> mapping.get(len),
               "generator" -> mapping.get(generator),
@@ -144,9 +143,7 @@ fun to_pesto(
         }
         case array_len {
           var array = call.args.get(0)
-          var item_type =
-            fun_.dag.type_of(array).assert_no_closure()
-              .kind().array.unwrap().compile()
+          var item_type = fun_.dag.type_of(array).kind().array.unwrap()
           return builder.call(
             compile_array_len(item_type, pesto),
             builder.struct_(map("array" -> mapping.get(array))),
@@ -156,9 +153,7 @@ fun to_pesto(
         case array_get {
           var array = call.args.get(0)
           var index = call.args.get(1)
-          var item_type =
-            fun_.dag.type_of(array).assert_no_closure().kind()
-              .array.unwrap().compile()
+          var item_type = fun_.dag.type_of(array).kind().array.unwrap()
           return builder.call(
             compile_array_get(expr.type, pesto),
             builder.struct_(map(
@@ -185,9 +180,7 @@ fun to_pesto(
         case array_slice {
           var array = call.args.get(0)
           var range = call.args.get(1)
-          var item_type =
-            fun_.dag.type_of(array).assert_no_closure().kind()
-              .array.unwrap().compile()
+          var item_type = fun_.dag.type_of(array).kind().array.unwrap()
           return builder.call(
             compile_array_slice(item_type, pesto),
             builder.struct_(map(
