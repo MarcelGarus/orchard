@@ -41,6 +41,13 @@ fun ensure_is_alive(heap: PuddingHeap, value: PuddingValue) {
   case lambda(lambda) heap.ensure_is_alive(lambda.closure)
   case type {}
 }
+fun ensure_everything_freed(heap: PuddingHeap) {
+  for value in heap.values do
+    if value.refcount != 0 then {
+      eprintln(heap)
+      panic("memory leaked")
+    }
+}
 fun dup(heap: &PuddingHeap, value: PuddingValue) {
   heap.ensure_is_alive(value)
   var data = heap.values.get_ref(value.index)
@@ -327,7 +334,13 @@ fun run(
         })))
       }
       case box some(heap.new(PuddingValueKind.box(args.get(0))))
-      case unbox some(heap.get(args.get(0)).box.unwrap())
+      case unbox {
+        var box = args.get(0)
+        var payload = heap.get(box).box.unwrap()
+        heap.dup(payload)
+        heap.drop(box)
+        some(payload)
+      }
       case generate_array {
         var len = heap.get(args.get(0)).int.unwrap()
         var lambda = heap.get(args.get(1)).lambda.unwrap()
