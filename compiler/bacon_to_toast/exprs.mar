@@ -193,6 +193,30 @@ fun parse_exprs(bacons: Slice[Bacon]): Result[Slice[ToastExpr], Error] {
   var i = 0
   loop {
     var bacon = bacons.get_maybe(i) or break
+    if bacon.parse_backwards_lambda()? is some(backwards) then {
+      var body = bacons.without_first(i + 1).parse_exprs()?
+      var lambda = ToastExpr.lambda(ToastLambda {
+        backslash = backwards.backslash,
+        params = backwards.params,
+        body = ToastExpr.body(body).put_on_heap(),
+      })
+
+      exprs.&.push(
+        if backwards.right is call(call) then {
+          var args = list[ToastExpr]()
+          for arg in call.args do args.&.push(arg)
+          args.&.push(lambda)
+          ToastExpr.call(ToastCall {
+            function = call.function, args = args.to_slice()
+          })
+        } else
+          ToastExpr.call(ToastCall {
+            function = backwards.right.put_on_heap(),
+            args = list(lambda).to_slice(),
+          })
+      )
+      break
+    }
     var expr = bacon.parse_expr()? or { i = i + 1  continue }
 
     loop {

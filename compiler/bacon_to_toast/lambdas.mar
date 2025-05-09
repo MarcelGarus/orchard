@@ -87,3 +87,40 @@ fun parse_param(parser: &LineParser): Result[Maybe[ToastParam], Error] {
 
   parsed(ToastParam { name, type })
 }
+
+struct ToastBackwardsLambda {
+  backslash: StringAndSrc,
+  params: Slice[ToastParam],
+  right: ToastExpr,
+}
+fun parse_backwards_lambda(
+  bacon: Bacon
+): Result[Maybe[ToastBackwardsLambda], Error] {
+  var parser = parser(bacon.line, bacon.src)
+
+  var backslash = parser.&.consume("\\") or
+    return no_match[ToastBackwardsLambda]()
+
+  var params = list[ToastParam]()
+  loop params.&.push(parser.&.parse_param()? or break)
+
+  var arrow = parser.&.consume("<-") or return no_match[ToastBackwardsLambda]()
+
+  var right =
+    if bacon.children.is_empty() then {
+      var right = parser.&.parse_expr(true, true)? or
+        return bad_input[ToastBackwardsLambda](error(
+          "Expected right side of the backwards lambda.", parser.src_of_rest()))
+      parser.&.ensure_is_at_end()?
+      right
+    } else {
+      parser.&.ensure_is_at_end()?
+      var children = bacon.children.parse_exprs()?
+      if children.is_empty() then
+        return bad_input[ToastBackwardsLambda](error(
+          "Expected the right side of the backwards lambda.", arrow.src))
+      ToastExpr.body(children)
+    }
+
+  parsed(ToastBackwardsLambda { backslash, params = params.to_slice(), right })
+}
