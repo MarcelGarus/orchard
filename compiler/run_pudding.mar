@@ -13,7 +13,6 @@ enum PuddingValueKind {
   array: Slice[PuddingValue],
   struct_: Map[String, PuddingValue],
   enum_: PuddingEnumValue,
-  closure: PuddingValue,
   lambda: PuddingLambdaValue,
   type: EggType,
 }
@@ -39,7 +38,6 @@ fun ensure_is_alive(heap: PuddingHeap, value: PuddingValue) {
   case array(items) for item in items do heap.ensure_is_alive(item)
   case struct_(fields) for field in fields do heap.ensure_is_alive(field.value)
   case enum_(enum_) heap.ensure_is_alive(enum_.value)
-  case closure(closure) heap.ensure_is_alive(closure)
   case lambda(lambda) heap.ensure_is_alive(lambda.closure)
   case type {}
 }
@@ -60,7 +58,6 @@ fun drop(heap: &PuddingHeap, value: PuddingValue) {
     case array(items) for item in items do heap.drop(item)
     case struct_(fields) for field in fields do heap.drop(field.value)
     case enum_(enum_) heap.drop(enum_.value)
-    case closure(closure) heap.drop(closure)
     case lambda(lambda) heap.drop(lambda.closure)
     case type {}
   }
@@ -82,8 +79,7 @@ fun write[W](writer: W, heap: PuddingHeap) {
       for field in fields do writer." {field.key}: *{field.value.index}"
     }
     case enum_(enum_) writer."| {enum_.name}: *{enum_.value.index}"
-    case closure(closure) writer."Closure *{closure.index}"
-    case lambda(lambda) writer."\\ ..."
+    case lambda(lambda) writer."\\ ... (closure *{lambda.closure.index})"
     case type(type) writer."{type}"
   }
 }
@@ -121,11 +117,6 @@ fun write[W](writer: W, value: PuddingValue, heap: PuddingHeap) {
     }
     writer."(| {enum_.name}: "
     writer.write(enum_.value, heap)
-    writer.")"
-  }
-  case closure(closure) {
-    writer."(Closure "
-    writer.write(closure, heap)
     writer.")"
   }
   case lambda(lambda) writer."(\\ ...)"
@@ -229,10 +220,6 @@ fun run(
       list(condition.value).to_slice(), dag, visible, pudding, stack, heap
     ))
   }
-  case closure(inner)
-    some(heap.new(PuddingValueKind.closure(visible.get(inner))))
-  case get_closure(closure)
-    some(heap.get(visible.get(closure)).closure.unwrap())
   case lambda(lambda)
     some(heap.new(PuddingValueKind.lambda(PuddingLambdaValue {
       function = lambda.function, closure = visible.get(lambda.closure)
