@@ -40,15 +40,20 @@ fun to_waffle(
     )
   }
   case enum_(enum_) {
-    var layout = expr.type.memory_layout_enum().variants.get(enum_.name)
+    var enum_layout = expr.type.memory_layout_enum()
+    var variant_layout = enum_layout.variants.get(enum_.name)
     var parts = list[WaffleExpr]()
-    for part in layout.parts do
-      parts.&.push(
-        switch part
-        case value mapping.get(enum_.value)
-        case padding(amount) waffle_padding(amount)
-        case tag(byte) waffle_byte(byte)
-      )
+    for part in variant_layout.parts do
+      switch part
+      case value parts.&.push(mapping.get(enum_.value))
+      case padding(amount) parts.&.push(waffle_padding(amount))
+      case tag(tag) {
+        eprintln("The tag size is {enum_layout.tag_size}")
+        for i in 0..enum_layout.tag_size do {
+          parts.&.push(waffle_byte(tag.lower_byte()))
+          tag = tag / 256
+        }
+      }
     waffle_aggregate(parts.to_slice())
   }
   case switch_(switch_) {
@@ -66,12 +71,33 @@ fun to_waffle(
     var cases = uninitialized_slice[WaffleBody](layout.tag_to_variant.size)
     for entry in layout.tag_to_variant do
       cases.&.set(
-        entry.key.to_int(),
+        entry.key,
         switch_.cases.get(entry.value)
           .to_waffle(fun_, builder.dag, mapping, pesto)
       )
 
-    waffle_switch(condition.waffle_member(layout.tag_offset, 1, 1), cases)
+    for offset_in_tag in 0..layout.tag_size do {
+      | Group groups of 256 cases into a single case.
+      var num_new_cases = cases.len + 255 / 256
+      var new_cases = uninitialized_slice[WaffleBody](num_new_cases)
+      for i in 0..num_new_cases do {
+        new_cases.&.set(
+          i,
+          builder.dag.body_builder().finish(
+            waffle_switch(
+              condition.waffle_member(layout.tag_offset + offset_in_tag, 1, 1),
+              cases.subslice({i * 256}..min(i + 1 * 256, cases.len)),
+            )
+          )
+        )
+      }
+      cases = new_cases
+    }
+    if cases.len != 1 then unreachable()
+
+    var case_body = cases.get(0)
+    for local in case_body.locals do builder.locals.&.push(local)
+    case_body.returns
   }
   case function_ptr(signature) waffle_function_ptr(signature)
   case call(call) {

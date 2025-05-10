@@ -164,34 +164,43 @@ fun memory_layout_struct(type: PestoType): StructLayout {
 }
 
 | Layouting enums  
+| 
+| payload tag
 
 struct EnumLayout {
   size: Int,
   alignment: Int,
   variants: Map[String, VariantLayout],
   tag_offset: Int,
-  tag_to_variant: Map[Byte, String],
+  tag_size: Int,
+  tag_to_variant: Map[Int, String],
 }
 struct VariantLayout { parts: Slice[VariantPart] }
-enum VariantPart { value, padding: Int, tag: Byte }
+enum VariantPart { value, padding: Int, tag: Int }
 
 fun memory_layout_enum(type: PestoType): EnumLayout {
   var variants = type.enum_.unwrap()
 
-  | Choose mapping between variants/symbols (Strings) and tags (Bytes). We just
-  | order variants by name so that the tags are chosen deterministically, even
-  | if multiple definitions of the enum use different orderings.
+  | Choose the tag size.
+  var tag_size = 0
+  loop
+    if 256 ** tag_size >= variants.size then break else tag_size = tag_size + 1
+  eprintln("We need a tag size of {tag_size} to store {variants.size} variants.")
+
+  | Choose mapping between variants/symbols (Strings) and tags. We just order
+  | variants by name so that the tags are chosen deterministically, even if
+  | multiple definitions of the enum use different orderings.
   var variant_names = list[String]()
   for variant in variants do variant_names.&.push(variant.key)
   variant_names.to_slice().&.sort()
 
-  var tag_to_variant = map[Byte, String]()
+  var tag_to_variant = map[Int, String]()
   for variant in variant_names.iter().enumerate() do
-    tag_to_variant.&.put(variant.index.lower_byte(), variant.item)
+    tag_to_variant.&.put(variant.index, variant.item)
 
-  var variant_to_tag = map[String, Byte]()
+  var variant_to_tag = map[String, Int]()
   for variant in variant_names.iter().enumerate() do
-    variant_to_tag.&.put(variant.item, variant.index.lower_byte())
+    variant_to_tag.&.put(variant.item, variant.index)
 
   | Layout the individual variants.
   var payload_layouts = map[String, MemoryLayout]()
@@ -220,10 +229,11 @@ fun memory_layout_enum(type: PestoType): EnumLayout {
     })
 
   EnumLayout {
-    size = max_payload_size + 1,
+    size = max_payload_size + tag_size,
     alignment = max_payload_alignment,
     variants = variant_layouts,
     tag_offset = max_payload_size,
+    tag_size,
     tag_to_variant,
   }
 }
