@@ -1,15 +1,29 @@
 import mod.mar
 
-| TODO: Allow other radixes?
-
-fun parse_int(parser: &LineParser): Maybe[IntAndSrc] {
+fun parse_int(parser: &LineParser): Result[Maybe[IntAndSrc], Error] {
   parser.consume_whitespace()
+  var num = parser.parse_int_helper(10) or return no_match[IntAndSrc]()
+  if parser.consume(":") is some then {
+    var radix = num
+    var actual = parser.parse_int_helper(radix.int)
+      or return bad_input[IntAndSrc](error(
+        "Expected number value", parser.src_of_rest()
+      ))
+    num = actual.int @ {radix.src ... actual.src}
+  }
+  parsed(num)
+}
+
+var digits = "0123456789abcdef"
+
+fun parse_int_helper(parser: &LineParser, radix: Int): Maybe[IntAndSrc] {
   var num = 0
   var start = parser.cursor
   loop {
+    if parser.consume("_") is some then continue
     var char = parser.current()
-    char.is_digit() or break
-    num = num * 10 + {char - #0}.to_int()
+    var digit = digits.substr(0..radix).iter().&.find(char) or break
+    num = num * radix + digit
     parser.advance()
   }
   var end = parser.cursor
