@@ -130,9 +130,48 @@ fun optimize(expr: WaffleExpr, dag: &Dag[WaffleExpr]): WaffleExpr {
       WaffleExprKind.lower_byte(arg.optimize(dag).put_on_heap())
     case byte_to_int(arg)
       WaffleExprKind.byte_to_int(arg.optimize(dag).put_on_heap())
-    case add(args) WaffleExprKind.add(args.optimize(dag).put_on_heap())
-    case sub(args) WaffleExprKind.sub(args.optimize(dag).put_on_heap())
-    case mul(args) WaffleExprKind.mul(args.optimize(dag).put_on_heap())
+    case add(args) {
+      var args = args.optimize(dag)
+      if args.kind is aggregate(parts) then {
+        if parts.len == 2 then {
+          var a = parts.get(0)
+          var b = parts.get(1)
+          if a.kind is int(a) then if b.kind is int(b) then
+            return WaffleExpr {
+              kind = WaffleExprKind.int(a + b), size = 8, alignment = 8
+            }
+        }
+      }
+      WaffleExprKind.add(args.put_on_heap())
+    }
+    case sub(args) {
+      var args = args.optimize(dag)
+      if args.kind is aggregate(parts) then {
+        if parts.len == 2 then {
+          var a = parts.get(0)
+          var b = parts.get(1)
+          if a.kind is int(a) then if b.kind is int(b) then
+            return WaffleExpr {
+              kind = WaffleExprKind.int(a - b), size = 8, alignment = 8
+            }
+        }
+      }
+      WaffleExprKind.sub(args.put_on_heap())
+    }
+    case mul(args) {
+      var args = args.optimize(dag)
+      if args.kind is aggregate(parts) then {
+        if parts.len == 2 then {
+          var a = parts.get(0)
+          var b = parts.get(1)
+          if a.kind is int(a) then if b.kind is int(b) then
+            return WaffleExpr {
+              kind = WaffleExprKind.int(a * b), size = 8, alignment = 8
+            }
+        }
+      }
+      WaffleExprKind.mul(args.put_on_heap())
+    }
     case div(args) WaffleExprKind.div(args.optimize(dag).put_on_heap())
     case mod(args) WaffleExprKind.mod(args.optimize(dag).put_on_heap())
     case compare_zero(arg)
