@@ -8,32 +8,24 @@ import compile_fun.mar
 
 fun to_egg(toasts: Map[Module, Toast], entry_module: Module): Result[Egg, Error] {
   var types = compile_all_types(toasts)?
-  var stuff = collect_all_funs(toasts, types)?
-  var funs = stuff.a
-  var visible_by_module = stuff.b
 
-  | for entry in funs do
-  |   eprintln("{entry.key}: {
-  |     switch entry.value.impl
-  |     case local "local"
-  |     case imported(sig) sig
-  |     case builtin(builtin) "{builtin}"
-  |   }")
-
-  var compiled_funs = map[String, EggFun]()
-  for entry in funs do {
-    var signature = entry.key
-    var fun_ = entry.value
-    switch fun_.impl
-    case local(fun_) {
-      var compiled = fun_.fun_.compile(
-        fun_.module, visible_by_module, funs, types
-      )?
-      compiled_funs.&.put(signature, compiled)
-    }
-    case imported {}
-    case builtin {}
+  var funs = map[String, EggFun]()
+  for toast in toasts do {
+    var module = toast.key
+    var toast = toast.value
+    for def in toast.defs do
+      if def is fun_(fun_) then {
+        var params = list[FunParam]()
+        for param in fun_.params do
+          params.&.push(FunParam {
+            name = param.name.string, type = param.type.compile(module, types)?
+          })
+        var params = params.to_slice()
+        var signature = signature(module, fun_.name.string, params)
+        var compiled = fun_.compile(module, types, toasts)?
+        funs.&.put(signature, compiled)
+      }
   }
 
-  ok[Egg, Error](Egg { funs = compiled_funs })
+  ok[Egg, Error](Egg { funs })
 }

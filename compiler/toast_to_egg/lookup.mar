@@ -13,95 +13,55 @@ fun signature(module: Module, name: String, params: Slice[FunParam]): String {
   b.to_string()
 }
 
-struct UncompiledFun {
-  name: StringAndSrc, params: Slice[FunParam], impl: UncompiledFunImpl
-}
-struct FunParam { name: String, type: EggType }
-enum UncompiledFunImpl {
-  local: LocalUncompiledFun, imported: String, builtin: EggBuiltin
-}
-struct LocalUncompiledFun { module: Module, fun_: ToastFun }
-
-fun module(fun_: UncompiledFun): Module {
-  switch fun_.impl
-  case local(fun_) fun_.module
-  case builtin builtin_module
-  case imported unreachable()
-}
-
-fun collect_all_funs(
-  toasts: Map[Module, Toast], types: Map[String, EggTypeDef]
-): Result[Tuple2[Map[String, UncompiledFun], Map[Module, Set[String]]], Error] {
-  var funs = map[String, UncompiledFun]()
-  var visible = map[Module, Set[String]]()
-
-  for entry in toasts do {
-    var module = entry.key
-    var toast = entry.value
-    var visible_in_this_module = set[String]()
-
-    for def in toast.defs do
-      | TODO: handle multiple functions with same signature
-      switch def
-      case fun_(fun_) {
-        var params = list[FunParam]()
-        for param in fun_.params do
-          params.&.push(FunParam {
-            name = param.name.string,
-            type = param.type.compile(module, types)?,
-          })
-        var params = params.to_slice()
-
-        var signature = signature(module, fun_.name.string, params)
-
-        visible_in_this_module.&.put(signature)
-        funs.&.put(signature, UncompiledFun {
-          name = fun_.name,
-          params,
-          impl = UncompiledFunImpl.local(LocalUncompiledFun { module, fun_ })
-        })
-      }
-      case import_(import_) {
-        for part in import_.parts do {
-          var imported_module = module.resolve_import(part.module) or(error)
-            return error[
-              Tuple2[Map[String, UncompiledFun], Map[Module, Set[String]]],
-              Error,
-            ](error(
-              error, import_.keyword.src
-            ))
-          for item in part.items do
-            if item is fun_(signature) then {
-              var params = list[FunParam]()
-              for param in signature.args do
-                params.&.push(FunParam {
-                  name = param.name.string,
-                  type = param.type.compile(module, types)?,
-                })
-              var params = params.to_slice()
-
-              var our_signature =
-                signature(module, signature.name.string, params)
-              var referred_signature =
-                signature(imported_module, signature.name.string, params)
-
-              visible_in_this_module.&.put(our_signature)
-              funs.&.put(our_signature, UncompiledFun {
-                name = signature.name,
-                params,
-                impl = UncompiledFunImpl.imported(referred_signature),
-              })
-            }
-        }
-      }
-      default {}
-
-    visible.&.put(module, visible_in_this_module)
+struct BuiltinTypeSignature { params: Slice[EggType], return_type: EggType }
+fun signature(builtin: EggBuiltin): BuiltinTypeSignature {
+  var params_and_return_type =
+    switch builtin
+    case lower_byte tuple(list(type_int), type_byte)
+    case byte_to_int tuple(list(type_byte), type_int)
+    case add_ints tuple(list(type_int, type_int), type_int)
+    case sub_ints tuple(list(type_int, type_int), type_int)
+    case mul_ints tuple(list(type_int, type_int), type_int)
+    case div_ints tuple(list(type_int, type_int), type_int)
+    case mod_ints tuple(list(type_int, type_int), type_int)
+    case and_ints tuple(list(type_int, type_int), type_int)
+    case or_ints tuple(list(type_int, type_int), type_int)
+    case xor_ints tuple(list(type_int, type_int), type_int)
+    case compare_ints tuple(list(type_int, type_int), type_ordering)
+    case box tuple(list(type_var_t), type_box(type_var_t))
+    case unbox tuple(list(type_box(type_var_t)), type_var_t)
+    case generate_array
+      tuple(
+        list(type_int, type_lambda(list(type_int).to_slice(), type_var_t)),
+        type_array(type_var_t),
+      )
+    case array_get tuple(list(type_array(type_var_t), type_int), type_var_t)
+    case array_set
+      tuple(
+        list(type_array(type_var_t), type_int, type_var_t),
+        type_array(type_var_t),
+      )
+    case array_slice
+      tuple(
+        list(type_array(type_var_t), type_range(type_int)),
+        type_array(type_var_t),
+      )
+    case array_len tuple(list(type_array(type_var_t)), type_int)
+    case call
+      tuple(list(type_lambda(empty_slice[EggType](), type_var_t)), type_var_t)
+    case crash tuple(list(type_string), type_never)
+    case type_of tuple(list(type_var_t), type_type)
+    case type_info tuple(list(type_type), type_type_info)
+    case static_to_dynamic tuple(list(type_var_t), type_dynamic)
+    case dynamic_to_static
+      tuple(list(type_dynamic, type_type), type_variable("arg_1"))
+  BuiltinTypeSignature {
+    params = params_and_return_type.a.to_slice(),
+    return_type = params_and_return_type.b,
   }
-  ok[Tuple2[Map[String, UncompiledFun], Map[Module, Set[String]]], Error](tuple(
-    funs, visible
-  ))
 }
+
+struct FunParam { name: String, type: EggType }
 
 | Invariant: Arguments that have the type Type also have a compile-time-known
 | value.
@@ -131,47 +91,209 @@ fun match_against(
   true
 }
 
-fun lookup(
-  funs: Map[String, UncompiledFun], visible_funs: Set[String],
-  name: String, args: Slice[FunArg], src: Src
-): Result[Tuple2[String, Substitutions], Error] {
-  var name_matches = list[Tuple2[String, UncompiledFun]]()
-  for signature in visible_funs do {
-    var fun_ = funs.get(signature)
-    fun_.name.string == name or continue
-    name_matches.&.push(tuple(signature, fun_))
-  }
+fun match_against(
+  args: Slice[FunArg], params: Slice[FunParam]
+): Result[Maybe[Substitutions], String] {
+  var constraints = constraints()
+  args.match_against(params, constraints.&) or
+    return ok[Maybe[Substitutions], String](none[Substitutions]())
+  var substitutions = constraints.check_coherency() or
+    return ok[Maybe[Substitutions], String](none[Substitutions]())
 
-  if name_matches.is_empty() then
-    return error[Tuple2[String, Substitutions], Error]({
+  | Make sure that all type variables are constrained.
+  var type_vars = set[String]()
+  for param in params do param.type.collect_type_variables(type_vars.&)
+  var all_constrained = true
+  for var_ in type_vars do
+    if not(substitutions.substitutions.contains(var_)) then
+      all_constrained = false
+  all_constrained or
+    return error[Maybe[Substitutions], String]({
       var b = string_builder().&
-      b."There is no function named {name} in scope. Visible functions:"
-      for signature in visible_funs do b."\n- {signature}"
-      error(b.to_string(), src)
+      b."Function with args"
+      for param in params do b." {param.name}: {param.type}"
+      b." matches, but not all type 
+        'variables are constrained:"
+      for var_ in type_vars do {
+        b."\n  {var_} "
+        switch substitutions.substitutions.get_maybe(var_)
+        case some(type) b."= {type}"
+        case none b."is unconstrained"
+      }
+      b.to_string()
     })
 
-  var full_matches = list[Tuple3[String, Substitutions, UncompiledFun]]()
-  for item in name_matches do {
-    var signature = item.a
-    var fun_ = item.b
+  ok[Maybe[Substitutions], String](some(substitutions))
+}
 
-    var constraints = constraints()
-    args.match_against(fun_.params, constraints.&) or continue
-    var substitutions = constraints.check_coherency() or continue
-    full_matches.&.push(tuple(signature, substitutions, fun_))
+struct MatchingCallee {
+  kind: MatchingCalleeKind,
+  substitutions: Substitutions,
+  param_types: Slice[EggType],
+  return_type: EggType,
+}
+
+enum MatchingCalleeKind { builtin: EggBuiltin, fun_: String }
+fun write[W](writer: W, kind: MatchingCalleeKind) {
+  switch kind
+  case builtin(builtin) writer.write(builtin)
+  case fun_(signature) writer.write(signature)
+}
+
+enum LookupNameMatches { local_fun: ToastFun, imported_fun: LookupImportedFun }
+struct LookupImportedFun {
+  module: Module, name: StringAndSrc, params: Slice[FunParam]
+}
+
+fun lookup(
+  name: String, args: Slice[FunArg], module: Module, src: Src,
+  toasts: Map[Module, Toast], types: Map[String, EggTypeDef],
+): Result[MatchingCallee, Error] {
+  if module == builtin_module then {
+    for builtin in egg_builtins do {
+      if "{builtin}" == name then {
+        var params = list[FunParam]()
+        for param in builtin.signature().params.iter().&.enumerate() do
+          params.&.push(FunParam {
+            name = "arg_{param.index}", type = param.item
+          })
+        var params = params.to_slice()
+        var substitutions = args.match_against(params) or(message) {
+          return error[MatchingCallee, Error](error(message, src))
+        }
+        var substitutions = substitutions or continue
+
+        var param_types = list[EggType]()
+        for param in params do
+          param_types.&.push(param.type.specialize(substitutions))
+        var param_types = param_types.to_slice()
+        var return_type =
+          builtin.signature().return_type.specialize(substitutions)
+
+        return ok[MatchingCallee, Error](MatchingCallee {
+          kind = MatchingCalleeKind.builtin(builtin),
+          substitutions,
+          param_types,
+          return_type,
+        })
+      }
+    }
+    return error[MatchingCallee, Error](error("Unknown builtin function.", src))
+  }
+
+  var toast = toasts.get(module)
+
+  var name_matches = list[LookupNameMatches]()
+  for def in toast.defs do
+    switch def
+    case fun_(fun_) {
+      if fun_.name.string == name then
+        name_matches.&.push(LookupNameMatches.local_fun(fun_))
+    }
+    case import_(import_) {
+      for part in import_.parts do {
+        var imported_module = module.resolve_import(part.module) or(error)
+          return error[MatchingCallee, Error](
+            error(error, import_.keyword.src)
+          )
+        for item in part.items do
+          if item is fun_(signature) then
+            if signature.name.string == name then {
+              var params = list[FunParam]()
+              for param in signature.args do
+                params.&.push(FunParam {
+                  name = param.name.string,
+                  type = param.type.compile(module, types)?,
+                })
+              var params = params.to_slice()
+
+              name_matches.&.push(
+                LookupNameMatches.imported_fun(LookupImportedFun {
+                  module = imported_module,
+                  name = signature.name,
+                  params,
+                })
+              )
+            }
+      }
+    }
+    default {}
+
+  if name_matches.is_empty() then
+    return error[MatchingCallee, Error](
+      error("There is no function named {name} in scope.", src)
+    )
+
+  var full_matches = list[MatchingCallee]()
+  for item in name_matches do {
+    switch item
+    case local_fun(fun_) {
+      var params = list[FunParam]()
+      for param in fun_.params do
+        params.&.push(FunParam {
+          name = param.name.string, type = param.type.compile(module, types)?
+        })
+      var params = params.to_slice()
+
+      var signature = signature(module, fun_.name.string, params)
+
+      var substitutions = args.match_against(params) or(message) {
+        return error[MatchingCallee, Error](error(message, src))
+      }
+      var substitutions = substitutions or continue
+
+      var param_types = list[EggType]()
+      for param in params do
+        param_types.&.push(param.type.specialize(substitutions))
+      var param_types = param_types.to_slice()
+      var return_type =
+        fun_.return_type.compile(module, types)?.specialize(substitutions)
+
+      full_matches.&.push(MatchingCallee {
+        kind = MatchingCalleeKind.fun_(signature),
+        substitutions,
+        param_types,
+        return_type,
+      })
+    }
+    case imported_fun(imported) {
+      var substitutions = args.match_against(imported.params) or(message) {
+        return error[MatchingCallee, Error](error(message, src))
+      }
+      var substitutions = substitutions or continue
+
+      var imported = lookup(name, args, imported.module, src, toasts, types)?
+      full_matches.&.push(imported)
+    }
   }
 
   if full_matches.is_empty() then
-    return error[Tuple2[String, Substitutions], Error]({
+    return error[MatchingCallee, Error]({
       var b = string_builder().&
       b."There is no matching function named {name} for the arg {args}. These 
         'functions have mismatched types:"
       for item in name_matches do {
-        var signature = item.a
-        b."\n- {signature}"
-        var fun_ = item.b
+        var signature_and_params =
+          switch item
+          case local_fun(fun_) {
+            var params = list[FunParam]()
+            for param in fun_.params do
+              params.&.push(FunParam {
+                name = param.name.string,
+                type = param.type.compile(module, types)?,
+              })
+            var params = params.to_slice()
+            tuple(signature(module, name, params), params)
+          }
+          case imported_fun(imported)
+            tuple(
+              signature(imported.module, imported.name.string, imported.params),
+              imported.params,
+            )
+
+        b."\n- {signature_and_params.a}"
         var constraints = constraints()
-        args.match_against(fun_.params, constraints.&) or {
+        args.match_against(signature_and_params.b, constraints.&) or {
           b."  (doesn't match types)"
           continue
         }
@@ -187,85 +309,15 @@ fun lookup(
     })
 
   if full_matches.len > 1 then
-    return error[Tuple2[String, Substitutions], Error]({
+    return error[MatchingCallee, Error]({
       var b = string_builder().&
       b."Multiple functions match {name} {args}:"
-      for match in full_matches do b."\n  {match.a} with {match.b.debug()}"
+      for match in full_matches do
+        b."\n  {match.kind} with {match.substitutions}"
       error(b.to_string(), src)
     })
 
-  var matching_fun = full_matches.get(0)
-  var signature = matching_fun.a
-  var substitutions = matching_fun.b
-  var fun_ = matching_fun.c
+  var matching_callee = full_matches.get(0)
 
-  | Make sure that all type variables are constrained.
-  var type_vars = set[String]()
-  for param in fun_.params do param.type.collect_type_variables(type_vars.&)
-  var all_constrained = true
-  for var_ in type_vars do
-    if not(substitutions.substitutions.contains(var_)) then
-      all_constrained = false
-  all_constrained or
-    return error[Tuple2[String, Substitutions], Error]({
-      var b = string_builder().&
-      b."Function {name}"
-      for param in fun_.params do b." {param.name}: {param.type}"
-      b." matches, but not all type 
-        'variables are constrained:"
-      for var_ in type_vars do {
-        b."\n  {var_} "
-        switch substitutions.substitutions.get_maybe(var_)
-        case some(type) b."= {type}"
-        case none b."is unconstrained"
-      }
-      error(b.to_string(), src)
-    })
-
-  ok[Tuple2[String, Substitutions], Error](tuple(signature, substitutions))
-}
-
-struct BuiltinSignature { params: Slice[EggType], return_type: EggType }
-fun signature(builtin: EggBuiltin): BuiltinSignature {
-  var params_and_return_type =
-    switch builtin
-    case lower_byte tuple(list(type_int), type_byte)
-    case byte_to_int tuple(list(type_byte), type_int)
-    case add_ints tuple(list(type_int, type_int), type_int)
-    case sub_ints tuple(list(type_int, type_int), type_int)
-    case mul_ints tuple(list(type_int, type_int), type_int)
-    case div_ints tuple(list(type_int, type_int), type_int)
-    case mod_ints tuple(list(type_int, type_int), type_int)
-    case and_ints tuple(list(type_int, type_int), type_int)
-    case or_ints tuple(list(type_int, type_int), type_int)
-    case xor_ints tuple(list(type_int, type_int), type_int)
-    case compare_ints tuple(list(type_int, type_int), type_ordering)
-    case box tuple(list(type_var_t), type_box(type_var_t))
-    case unbox tuple(list(type_box(type_var_t)), type_var_t)
-    case generate_array
-      tuple(list(type_int, type_var_t), type_array(type_var_t))
-    case array_get tuple(list(type_array(type_var_t), type_int), type_var_t)
-    case array_set
-      tuple(
-        list(type_array(type_var_t), type_int, type_var_t),
-        type_array(type_var_t),
-      )
-    case array_slice
-      tuple(
-        list(type_array(type_var_t), type_range(type_int)),
-        type_array(type_var_t),
-      )
-    case array_len tuple(list(type_array(type_var_t)), type_int)
-    case call
-      tuple(list(type_lambda(empty_slice[EggType](), type_var_t)), type_var_t)
-    case crash tuple(list(type_string), type_never)
-    case type_of tuple(list(type_var_t), type_type)
-    case type_info tuple(list(type_type), type_type_info)
-    case static_to_dynamic tuple(list(type_var_t), type_dynamic)
-    | TODO: link type argument and t somehow
-    case dynamic_to_static tuple(list(type_dynamic, type_type), type_var_t)
-  BuiltinSignature {
-    params = params_and_return_type.a.to_slice(),
-    return_type = params_and_return_type.b,
-  }
+  ok[MatchingCallee, Error](matching_callee)
 }
