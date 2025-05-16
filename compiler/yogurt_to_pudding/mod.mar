@@ -32,10 +32,10 @@ fun require(
 }
 
 fun to_pudding(
-  id: Id, fun_: YogurtFun, | TODO: is the DAG enough?
+  id: Id, yogurt_dag: Dag[YogurtExpr],
   dag: &Dag[PuddingExpr], rev_body: &List[Id], needed_later_on: &Set[Id],
 ) {
-  var expr = fun_.dag.get(id)
+  var expr = yogurt_dag.get(id)
   var type = expr.type
 
   if not(needed_later_on.contains(id)) then
@@ -91,7 +91,7 @@ fun to_pudding(
       var needed_by_this_branch = set[Id]()
       for id in needed_later_on do needed_by_this_branch.&.put(id)
       cases.&.put(case_.key, case_.value.to_pudding(
-        fun_, dag, needed_by_this_branch.&
+        yogurt_dag, dag, needed_by_this_branch.&
       ))
       needed_by_branches.&.put(case_.key, needed_by_this_branch)
     }
@@ -187,7 +187,7 @@ fun to_pudding(
 }
 
 fun to_pudding(
-  body: YogurtBody, fun_: YogurtFun, | TODO: is the DAG enough?
+  body: YogurtBody, yogurt_dag: Dag[YogurtExpr],
   dag: &Dag[PuddingExpr], needed_later_on: &Set[Id],
 ): PuddingBody {
   var rev_body = list[Id]()
@@ -195,7 +195,7 @@ fun to_pudding(
   rev_body.&.require(body.returns, dag, needed_later_on)
 
   for id in body.children.rev_iter() do
-    id.to_pudding(fun_, dag, rev_body.&, needed_later_on)
+    id.to_pudding(yogurt_dag, dag, rev_body.&, needed_later_on)
 
   var params = list[Id]()
   for param in body.params do {
@@ -203,7 +203,7 @@ fun to_pudding(
       rev_body.&.push(dag.put_drop(param))
     else
       needed_later_on.remove(param)
-    params.&.push(dag.put(param, PuddingOp.param $ fun_.dag.type_of(param)))
+    params.&.push(dag.put(param, PuddingOp.param $ yogurt_dag.type_of(param)))
   }
   var params = params.to_slice()
 
@@ -223,7 +223,7 @@ fun to_pudding(fun_: YogurtFun, pudding: &Pudding): PuddingFun {
   for i in 0..{fun_.dag.nodes.len} do
     dag.&.put(PuddingOp.param $ type_never) | placeholders
 
-  var body = fun_.body.to_pudding(fun_, dag.&, set[Id]().&)
+  var body = fun_.body.to_pudding(fun_.dag, dag.&, set[Id]().&)
 
   PuddingFun { dag, body }
 }
