@@ -337,9 +337,16 @@ fun copy_from_stack(builder: &FlowGroundBuilder, start: Int, size: Int) {
   if start + size > builder.stack_size then
     panic("called copy_from_stack, but {start} + {size} > {builder.stack_size}")
   var cursor = 0
-  loop if cursor + 8 > size then break else {
-    builder.push_8_from_stack(start + cursor)
-    cursor = cursor + 8
+  | If possible, copy 8 bytes at once.
+  loop {
+    var can_copy_8_at_once = 
+      cursor + 8 <= size
+      and (start + cursor).is_multiple_of(8)
+      and builder.stack_size.is_multiple_of(8)
+    if can_copy_8_at_once then {
+      builder.push_8_from_stack(start + cursor)
+      cursor = cursor + 8
+    } else break
   }
   loop if cursor == size then break else {
     builder.push_1_from_stack(start + cursor)
