@@ -1,7 +1,8 @@
+import mod.mar
+
 fun compile(
   fun_: ToastFun, module: Module,
-  visible_by_module: Map[Module, Set[String]],
-  funs: Map[String, UncompiledFun], types: Map[String, EggTypeDef],
+  types: Map[String, EggTypeDef], toasts: Map[Module, Toast],
 ): Result[EggFun, Error] {
   var visible = visible()
   var dag = dag[EggExpr]()
@@ -34,9 +35,9 @@ fun compile(
     }
   }
 
-  var returned = fun_.body.compile(body, module, visible.&, EggContext {
-    visible_by_module, funs, types
-  })?
+  var returned = fun_.body.compile(
+    body, module, visible.&, EggContext { toasts, types }
+  )?
 
   var return_type = fun_.return_type.compile(module, types)?
   dag.type_of(returned).is_assignable_to(return_type) or
@@ -84,12 +85,7 @@ fun src_of(body: EggBodyBuilder, id: Id): Src { body.get(id).src }
 
 | Compiling Functions  
 
-struct EggContext {
-  | stack: &EggStack,
-  visible_by_module: Map[Module, Set[String]],
-  funs: Map[String, UncompiledFun],
-  types: Map[String, EggTypeDef],
-}
+struct EggContext { toasts: Map[Module, Toast], types: Map[String, EggTypeDef] }
 
 fun compile(
   toast: ToastExpr, body: &EggBodyBuilder, module: Module, visible: &Visible,
@@ -101,9 +97,11 @@ fun compile(
       var message = body.push(EggOp.string("Todo").expr(type_string, src))
       body.push(
         EggOp.call(EggCall {
-          callee = EggCallee.builtin(MatchingBuiltin {
+          callee = EggCallee.builtin(EggCalledBuiltin {
             builtin = EggBuiltin.crash,
-            substitutions = Substitutions { substitutions = map[String, EggType]() },
+            substitutions = Substitutions {
+              substitutions = map[String, EggType]()
+            },
           }),
           args = list(message).to_slice(),
         }).expr(type_never, src)
@@ -290,7 +288,8 @@ fun compile(
             if type == type_type then {
               var type_value = body.get(args.get(i)).op.type or
                 return error[Id, Error](error(
-                  "Arguments of the type Type have to be known at compile-time.",
+                  "Arguments of the type Type have to be known at 
+                  'compile-time.",
                   name.src
                 ))
               FunArg { value = some(type_value), type }
@@ -301,69 +300,40 @@ fun compile(
         var arg_values = arg_values.to_slice()
 
         | Look for a matching function.
-        var signature_and_substitutions = lookup(
-          context.funs, context.visible_by_module.get(module),
-          name.string, arg_values, name.src,
+        var match = lookup(
+          name.string, arg_values, module, name.src,
+          context.toasts, context.types,
         )?
-        var signature     = signature_and_substitutions.a
-        var substitutions = signature_and_substitutions.b
-
-        var fun_ = context.funs.get(signature)
-        var return_type =
-          loop
-            switch fun_.impl
-            case local(local_fun) {
-              var return_type = local_fun.fun_.return_type
-                .compile(local_fun.module, context.types)?
-                .specialize(substitutions)
-              break(return_type)
-            }
-            case imported(new_signature) {
-              | TODO: make sure the function is exported
-              | TODO: attribute error to import
-              | TODO: update substitutions
-              signature = new_signature
-
-              for builtin in egg_builtins do
-                if signature.starts_with("{builtin_module}.{builtin}") then {
-                  var return_type =
-                    builtin.signature().return_type
-                      .specialize(substitutions)
-                  return ok[Id, Error](body.push(
-                    EggOp.call(EggCall {
-                      callee = EggCallee.builtin(MatchingBuiltin {
-                        builtin, substitutions
-                      }), args
-                    }).expr(return_type, name.src)
-                  ))
-                }
-
-              fun_ = context.funs.get_maybe(new_signature) or
-                return error[Id, Error]({
-                  var b = string_builder().&
-                  b."Function {new_signature} doesn't exist.\nThese ones exist:"
-                  for fun_ in context.funs do b."\n- {fun_.key}"
-                  error(b.to_string(), name.src)
-                })
-            }
-            case builtin(builtin) break(builtin.signature().return_type)
 
         | Cast arguments
         var cast_args = list[Id]()
-        for both in zip(args.iter(), fun_.params.iter()) do {
+        for both in zip(args.iter(), match.param_types.iter()) do {
           var arg = both.a
-          var expected_type = both.b.type.specialize(substitutions)
+          var expected_type = both.b
           cast_args.&.push(body.push_cast(arg, expected_type, name.src))
         }
         var args = cast_args.to_slice()
 
         | Call the function.
-        body.push(
-          EggOp.call(EggCall {
-            callee = EggCallee.fun_(MatchingFun { signature, substitutions }),
-            args,
-          }).expr(return_type, name.src)
-        )
+        switch match.kind
+        case fun_(signature)
+          body.push(
+            EggOp.call(EggCall {
+              callee = EggCallee.fun_(EggCalledFun {
+                signature, substitutions = match.substitutions
+              }),
+              args,
+            }).expr(match.return_type, name.src)
+          )
+        case builtin(builtin)
+          body.push(
+            EggOp.call(EggCall {
+              callee = EggCallee.builtin(EggCalledBuiltin {
+                builtin, substitutions = match.substitutions
+              }),
+              args,
+            }).expr(match.return_type, name.src)
+          )
       }
       case none { | lambda
         var lambda = call.function.compile(body, module, visible, context)?
@@ -381,8 +351,7 @@ fun compile(
           var expected_type = both.b
           body.type_of(arg).is_assignable_to(expected_type) or
             return return error[Id, Error](error(
-              "Tried to call lambda with wrong types.",
-              call.function.src(),
+              "Tried to call lambda with wrong types.", call.function.src()
             ))
           cast_args.&.push(
             body.push_cast(arg, expected_type, call.function.src())
@@ -391,9 +360,8 @@ fun compile(
         var args = cast_args.to_slice()
 
         body.push(
-          EggOp.call(EggCall { callee = EggCallee.lambda(lambda), args }).expr(
-            lambda_type.return_type, call.function.src()
-          )
+          EggOp.call(EggCall { callee = EggCallee.lambda(lambda), args })
+            .expr(lambda_type.return_type, call.function.src())
         )
       }
     }
@@ -471,36 +439,8 @@ fun compile_pattern(
 
     ok[Nothing, Error]({})
   }
-  case enum_(pattern) {
-    todo("enum patterns")
-    | var type = body.type_of(matched)
-    | var enum_variants = type.enum_ or
-    |   return error[Nothing, Error](error(
-    |     "Tried to use an enum pattern to match on {type}.",
-    |     pattern.pipe.src,
-    |   ))
-    | enum_variants.len == 1 or
-    |   return error[Nothing, Error](error(
-    |     "Tried to use an enum pattern to match on {type}. You can only match 
-    |     'on enums that contain a single variant.",
-    |     pattern.pipe.src,
-    |   ))
-    | pattern.len == 1 or
-    |   return error[Nothing, Error](error(
-    |     "Tried to use an enum pattern with multiple variants.",
-    |     pattern.pipe.src,
-    |   ))
-    | var matching_variant = pattern.iter().next().unwrap()
-    | var matched_variant = enum_variants.iter().next().unwrap()
-
-    | matching_variant.name.string == matched_variant.key
-
-    | var name = enum_.name.string
-    | var value = enum_.value.compile(body, module, visible, context)?
-    | var type = EggType.enum_(map(name -> body.type_of(value)))
-    | body.push(EggOp.enum_(EggEnum { name, value }).expr(type, enum_.pipe.src))
-    ok[Nothing, Error]({})
-  }
+  case enum_
+    error[Nothing, Error](error("Enums can't be in patterns.", pattern.src()))
   case switch_ unreachable()
   case name(name) {
     visible.define(name.string, matched)

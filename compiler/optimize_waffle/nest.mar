@@ -234,7 +234,6 @@ fun nest_locals(body: WaffleBody, dag: &Dag[WaffleExpr]): WaffleBody {
 | directly in here. In that case, this function returns none.
 fun try_nest_param(
   expr: WaffleExpr,
-  dag: Dag[WaffleExpr], | TODO: needed?
   used: &Bool,
 ): Result[WaffleExpr, Nothing] {
   var kind =
@@ -262,35 +261,34 @@ fun try_nest_param(
     case aggregate(aggregate) {
       var parts = list[WaffleExpr]()
       for part in aggregate do {
-        parts.&.push(part.try_nest_param(dag, used)?)
+        parts.&.push(part.try_nest_param(used)?)
         used.must_have_been_used()?
       }
       WaffleExprKind.aggregate(parts.to_slice())
     }
     case member(member) {
-      var of = member.of.try_nest_param(dag, used)?
+      var of = member.of.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.member(WaffleMember {
         of = of.put_on_heap(), offset = member.offset
       })
     }
     case switch_(switch_) {
-      var byte = switch_.byte.try_nest_param(dag, used)?
+      var byte = switch_.byte.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.switch_(WaffleSwitch {
         byte = byte.put_on_heap(), cases = switch_.cases
       })
     }
     case call(call) {
-      var args = call.args.try_nest_param(dag, used)?
+      var args = call.args.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.call(WaffleCall {
         function = call.function, args = args.put_on_heap()
       })
     }
     case call_indirect(call) {
-      var function_ptr =
-        call.function_ptr.try_nest_param(dag, used)?
+      var function_ptr = call.function_ptr.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.call_indirect(WaffleCallIndirect {
         function_ptr = function_ptr.put_on_heap(), args = call.args
@@ -301,58 +299,51 @@ fun try_nest_param(
       WaffleExprKind.function_ptr(signature)
     }
     case lower_byte(arg)
-      WaffleExprKind.lower_byte(arg.try_nest_param(dag, used)?.put_on_heap())
+      WaffleExprKind.lower_byte(arg.try_nest_param(used)?.put_on_heap())
     case byte_to_int(arg)
-      WaffleExprKind.byte_to_int(arg.try_nest_param(dag, used)?.put_on_heap())
-    case add(args)
-      WaffleExprKind.add(args.try_nest_param(dag, used)?.put_on_heap())
-    case sub(args)
-      WaffleExprKind.sub(args.try_nest_param(dag, used)?.put_on_heap())
-    case mul(args)
-      WaffleExprKind.mul(args.try_nest_param(dag, used)?.put_on_heap())
-    case div(args)
-      WaffleExprKind.div(args.try_nest_param(dag, used)?.put_on_heap())
-    case mod(args)
-      WaffleExprKind.mod(args.try_nest_param(dag, used)?.put_on_heap())
+      WaffleExprKind.byte_to_int(arg.try_nest_param(used)?.put_on_heap())
+    case add(args) WaffleExprKind.add(args.try_nest_param(used)?.put_on_heap())
+    case sub(args) WaffleExprKind.sub(args.try_nest_param(used)?.put_on_heap())
+    case mul(args) WaffleExprKind.mul(args.try_nest_param(used)?.put_on_heap())
+    case div(args) WaffleExprKind.div(args.try_nest_param(used)?.put_on_heap())
+    case mod(args) WaffleExprKind.mod(args.try_nest_param(used)?.put_on_heap())
     case compare_zero(arg)
-      WaffleExprKind.compare_zero(arg.try_nest_param(dag, used)?.put_on_heap())
+      WaffleExprKind.compare_zero(arg.try_nest_param(used)?.put_on_heap())
     case and_(args)
-      WaffleExprKind.and_(args.try_nest_param(dag, used)?.put_on_heap())
-    case or_(args)
-      WaffleExprKind.or_(args.try_nest_param(dag, used)?.put_on_heap())
-    case xor(args)
-      WaffleExprKind.xor(args.try_nest_param(dag, used)?.put_on_heap())
+      WaffleExprKind.and_(args.try_nest_param(used)?.put_on_heap())
+    case or_(args) WaffleExprKind.or_(args.try_nest_param(used)?.put_on_heap())
+    case xor(args) WaffleExprKind.xor(args.try_nest_param(used)?.put_on_heap())
     case malloc(size) {
-      var size = size.try_nest_param(dag, used)?
+      var size = size.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.malloc(size.put_on_heap())
     }
     case free(free) {
-      var free = free.try_nest_param(dag, used)?
+      var free = free.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.free(free.put_on_heap())
     }
     case load(ptr) {
-      var ptr = ptr.try_nest_param(dag, used)?
+      var ptr = ptr.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.load(ptr.put_on_heap())
     }
     case store(store) {
-      var ptr = store.ptr.try_nest_param(dag, used)?
+      var ptr = store.ptr.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.store(WaffleStore {
         ptr = ptr.put_on_heap(), value = store.value
       })
     }
     case store_bytes(store) {
-      var ptr = store.ptr.try_nest_param(dag, used)?
+      var ptr = store.ptr.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.store_bytes(WaffleStoreBytes {
         ptr = ptr.put_on_heap(), bytes = store.bytes
       })
     }
     case crash(args) {
-      var args = args.try_nest_param(dag, used)?
+      var args = args.try_nest_param(used)?
       used.must_have_been_used()?
       WaffleExprKind.crash(args.put_on_heap())
     }
@@ -373,14 +364,14 @@ fun nest_param(fun_: WaffleFun): WaffleFun {
     locals.&.push(local)
     if not(param_used) then {
       var new_version =
-        fun_.dag.get(local).try_nest_param(fun_.dag, param_used.&) or return fun_
+        fun_.dag.get(local).try_nest_param(param_used.&) or return fun_
       if param_used then fun_.dag.&.set(local, new_version)
     }
   }
 
   var returns = fun_.body.returns
   if not(param_used) then {
-    returns = returns.try_nest_param(fun_.dag, param_used.&) or return fun_
+    returns = returns.try_nest_param(param_used.&) or return fun_
     if not(param_used) then return fun_
   }
 
