@@ -1,21 +1,27 @@
 import mod.mar
 
-fun optimize(fun_: YogurtFun, optimized: &Map[String, YogurtFun]): YogurtFun {
+fun optimize(
+  fun_: YogurtFun, optimized: &Map[String, YogurtFun], yogurt: Yogurt
+): YogurtFun {
   var new_dag = dag[YogurtExpr]()
   var mapping = map[Id, Id]()
-  var body = fun_.body.optimize(fun_.dag, 2, new_dag.&, mapping.&, optimized)
+  var body = fun_.body.optimize(
+    fun_.dag, 2, new_dag.&, mapping.&, optimized, yogurt
+  )
   YogurtFun { dag = new_dag, body }
 }
 
 fun optimize(
   body: YogurtBody, dag: Dag[YogurtExpr], inline_depth: Int,
   new_dag: &Dag[YogurtExpr],
-  mapping: &Map[Id, Id], optimized: &Map[String, YogurtFun],
+  mapping: &Map[Id, Id], optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): YogurtBody {
   var builder = body_builder(new_dag).&
   for id in body.params do mapping.put(id, builder.param(dag.type_of(id)))
   for id in body.children do
-    mapping.put(id, id.optimize(dag, inline_depth, builder, mapping, optimized))
+    mapping.put(
+      id, id.optimize(dag, inline_depth, builder, mapping, optimized, yogurt)
+    )
   var body = builder.finish(mapping.get(body.returns))
   var body = body.tree_shake(new_dag.*)
   body
@@ -24,14 +30,14 @@ fun optimize(
 fun optimize(
   id: Id, dag: Dag[YogurtExpr], inline_depth: Int,
   builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
-  optimized: &Map[String, YogurtFun],
+  optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): Id {
-  dag.get(id).optimize(dag, inline_depth, builder, mapping, optimized)
+  dag.get(id).optimize(dag, inline_depth, builder, mapping, optimized, yogurt)
 }
 fun optimize(
   expr: YogurtExpr, dag: Dag[YogurtExpr], inline_depth: Int,
   builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
-  optimized: &Map[String, YogurtFun],
+  optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): Id {
   | stderr."Optimizing:"
   | stderr.write(expr.op, dag, 0)
@@ -39,6 +45,7 @@ fun optimize(
 
   switch expr.op
   case param unreachable()
+  case byte(byte) builder.byte(byte)
   case int(int) builder.int(int)
   case string(string) builder.string(string)
   case array(items)
@@ -68,7 +75,8 @@ fun optimize(
       mapping.put(case_.params.get(0) -> enum_.value)
       for id in case_.children do
         mapping.&.put(
-          id, id.optimize(dag, inline_depth, builder, mapping, optimized)
+          id,
+          id.optimize(dag, inline_depth, builder, mapping, optimized, yogurt),
         )
       return mapping.get(case_.returns)
     }
@@ -78,7 +86,7 @@ fun optimize(
         cases.&.put(
           case_.key,
           case_.value.optimize(
-            dag, inline_depth, builder.dag, mapping, optimized
+            dag, inline_depth, builder.dag, mapping, optimized, yogurt
           ),
         )
       cases
@@ -107,6 +115,21 @@ fun optimize(
         YogurtCallee.lambda(mapping.get(lambda))
       }
       case fun_(signature) {
+        | If all the arguments are compile-time-known, just try to run the
+        | function at compile time.
+        {
+          var args = list[YogurtComptimeValue]()
+          for arg in call.args do
+            args.&.push(builder.extract_comptime(mapping.get(arg)) or break)
+          var args = args.to_slice()
+          var all_comptime_known = args.len == call.args.len
+          if all_comptime_known then {
+            var result = run(
+              signature, args, yogurt, YogurtRunResources { exprs = 100 }.&
+            )
+            if result is ok(value) then return builder.codify(value)
+          }
+        }
         if inline_depth > 0 then {
           if optimized.get_maybe(signature) is some(called) then {
             var should_inline = called.complexity() < 10 or {
@@ -127,6 +150,7 @@ fun optimize(
                     builder,
                     inner_mapping.&,
                     optimized,
+                    yogurt,
                   ),
                 )
               return inner_mapping.get(called.body.returns)
