@@ -1,0 +1,96 @@
+import
+  "..core"
+    Int, Maybe t, < Int Int, > Int Int, generate_matrix Size (\ Int Int -> t),
+    to_byte Int, * Int Int, or Bool Bool, Bool, - Int Int, + Int Int,
+    to_byte Int
+  "..graphics"
+    Size, Texture, Color, draw Texture Position Texture, Position,
+    generate_texture Size Color, generate_texture Size
+
+IntConstraints = & min: Int max: (Maybe Int)
+
+constrain constraints: IntConstraints int: Int -> Int =
+  int .< (constraints.min)
+  % true -> constraints.min
+    false ->
+      constraints.max
+      % none -> int
+        some: max ->
+          int .> max
+          % true -> max
+            false -> int
+
+
+SizeConstraints = & min: Size max: (Maybe Size)
+
+width constraints: SizeConstraints -> IntConstraints =
+  & min: constraints.min.width
+    max:
+      constraints.max
+      % none -> | none
+        some: size -> | some: size.width
+
+height constraints: SizeConstraints -> IntConstraints =
+  & min: constraints.min.height
+    max:
+      constraints.max
+      % none -> | none
+        some: size -> | some: size.height
+
+constrain constraints: SizeConstraints size: Size -> Size =
+  & width: constraints.width .constrain (size.width)
+    height: constraints.height .constrain (size.height)
+
+
+Widget = & render: \ SizeConstraints -> Texture
+
+empty_widget a: Int -> Widget =
+  & render:
+      \ constraints: SizeConstraints -> generate_texture (constraints.min)
+
+colored color: Color child: Widget -> Widget =
+  & render:
+      \ constraints: SizeConstraints ->
+        rendered_child = (child.render) constraints
+        generate_texture (rendered_child.size) color
+        . draw (& x: 0 y: 0) rendered_child
+
+padding padding: Int child: Widget -> Widget =
+  & render:
+      \ constraints: SizeConstraints ->
+        or
+          constraints.min.width .< (padding .* 2)
+          constraints.min.height .< (padding .* 2)
+        % true -> (empty_widget 0 .render) constraints
+          false ->
+            rendered_child =
+              (child.render)
+                & min:
+                    & width: constraints.min.width .- (padding .* 2)
+                      height: constraints.min.height .- (padding .* 2)
+                  max:
+                    constraints.max
+                    % none -> | none
+                      some: max ->
+                        | some:
+                            & width: max.width .- (padding .* 2)
+                              height: max.height .- (padding .* 2)
+            generate_texture
+              & width: rendered_child.size.width .+ (2 .* padding)
+                height: rendered_child.size.height .+ (2 .* padding)
+            . draw (& x: padding y: padding) rendered_child
+
+#column children: (List Widget) -> Widget =
+#  & render:
+#      \ constraints: SizeConstraints ->
+#        pixels_per_child = constraints.min.width ./ (children.length)
+#        rendered_children =
+#          children
+#          . iterate
+#          . map
+#              \ child: Widget ->
+#                (child.render)
+#                  & min: (& width: pixels_per_child height: constraints.min.height)
+#                    max: | some: (& width: pixels_per_child height: constraints.min.height)
+#          . to_list
+
