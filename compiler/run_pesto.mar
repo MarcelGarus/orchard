@@ -23,7 +23,7 @@ fun write[W](writer: W, value: PestoValue) {
   switch value
   case byte(byte) writer."{byte}"
   case int(int) writer."{int}"
-  case ptr(ptr) writer."(Ptr {ptr.*.value})"
+  case ptr(ptr) writer."(Ptr[{ptr.refcount}] {ptr.value})"
   case struct_(fields) {
     writer."(&"
     for field in fields do writer." {field.key}: {field.value}"
@@ -31,7 +31,7 @@ fun write[W](writer: W, value: PestoValue) {
   }
   case enum_(enum_) writer."(| {enum_.name}: {enum_.value})"
   case buffer(buffer) {
-    writer."(Buffer"
+    writer."(Buffer[{buffer.refcount}]"
     for item in buffer.items do writer." {item}"
     writer.")"
   }
@@ -48,6 +48,23 @@ fun as_string(value: PestoValue): String {
   bytes.to_slice().to_string()
 }
 
+fun ensure_alive(value: PestoValue) {
+  switch value
+  case byte {}
+  case int {}
+  case ptr(ptr) {
+    if ptr.freed then panic("not alive")
+    ptr.value.ensure_alive()
+  }
+  case struct_(fields) for field in fields do field.value.ensure_alive()
+  case enum_(enum_) enum_.value.ensure_alive()
+  case buffer(buffer) {
+    if buffer.freed then panic("not alive")
+    for item in buffer.items do item.ensure_alive()
+  }
+  case function_ptr {}
+}
+
 fun run(pesto: Pesto, args: Slice[PestoValue]): PestoValue {
   var fields = map[String, PestoValue]()
   for arg in args.iter().enumerate() do fields.&.put("{arg.index}", arg.item)
@@ -59,6 +76,7 @@ fun run(
 ): PestoValue {
   for i in 0..stack.len do eprint(" ")
   eprintln("\"{function}\" {args}")
+  args.ensure_alive()
 
   var visible = map[Id, PestoValue]()
   stack.push(function)
@@ -154,7 +172,7 @@ fun run(
     }.put_on_heap())
   case load(ptr) {
     var heap_value = visible.get(ptr).ptr.unwrap().*
-    if heap_value.freed then panic(stack, "use after free")
+    if heap_value.freed then panic(stack, "load: use after free")
     if heap_value.type != expr.type then
       panic(
         stack,
@@ -183,12 +201,12 @@ fun run(
   }
   case get_buffer_len(buffer) {
     var buffer = visible.get(buffer).buffer.unwrap()
-    if buffer.freed then panic(stack, "use after free")
+    if buffer.freed then panic(stack, "get buffer len: use after free")
     PestoValue.int(buffer.items.len)
   }
   case load_buffer_item(load) {
     var buffer = visible.get(load.buffer).buffer.unwrap()
-    if buffer.freed then panic(stack, "use after free")
+    if buffer.freed then panic(stack, "load buffer item: use after free")
     if buffer.item_type != expr.type then
       panic(
         stack,
@@ -199,7 +217,7 @@ fun run(
   }
   case store_buffer_item(store) {
     var buffer = visible.get(store.buffer).buffer.unwrap()
-    if buffer.freed then panic(stack, "use after free")
+    if buffer.freed then panic(stack, "store buffer item: use after free")
     if buffer.item_type != dag.type_of(store.item) then
       panic(
         stack,
@@ -213,7 +231,7 @@ fun run(
   }
   case store_buffer_bytes(store) {
     var buffer = visible.get(store.buffer).buffer.unwrap()
-    if buffer.freed then panic(stack, "use after free")
+    if buffer.freed then panic(stack, "store buffer bytes: use after free")
     if buffer.item_type != PestoType.byte then
       panic(
         stack, "tried to store literal bytes into buffer of {buffer.item_type}"
@@ -239,11 +257,11 @@ fun run(
   case get_reference_count(ptr) {
     switch visible.get(ptr)
     case ptr(ptr) {
-      if ptr.freed then panic(stack, "use after free")
+      if ptr.freed then panic(stack, "get refcount: use after free")
       PestoValue.int(ptr.refcount)
     }
     case buffer(buffer) {
-      if buffer.freed then panic(stack, "use after free")
+      if buffer.freed then panic(stack, "get refcount: use after free")
       PestoValue.int(buffer.refcount)
     }
     default panic(stack, "getting refcount of non-ptr/buffer")
@@ -251,12 +269,12 @@ fun run(
   case increment_reference_count(ptr) {
     switch visible.get(ptr)
     case ptr(ptr) {
-      if ptr.freed then panic(stack, "use after free")
+      if ptr.freed then panic(stack, "increment refcount: use after free")
       ptr.refcount = ptr.refcount + 1
       PestoValue.int(ptr.refcount)
     }
     case buffer(buffer) {
-      if buffer.freed then panic(stack, "use after free")
+      if buffer.freed then panic(stack, "increment refcount: use after free")
       buffer.refcount = buffer.refcount + 1
       PestoValue.int(buffer.refcount)
     }
@@ -265,12 +283,12 @@ fun run(
   case decrement_reference_count(ptr) {
     switch visible.get(ptr)
     case ptr(ptr) {
-      if ptr.freed then panic(stack, "use after free")
+      if ptr.freed then panic(stack, "decrement refcount: use after free")
       ptr.refcount = ptr.refcount - 1
       PestoValue.int(ptr.refcount)
     }
     case buffer(buffer) {
-      if buffer.freed then panic(stack, "use after free")
+      if buffer.freed then panic(stack, "decrement refcount: use after free")
       buffer.refcount = buffer.refcount - 1
       PestoValue.int(buffer.refcount)
     }
