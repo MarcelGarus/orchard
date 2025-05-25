@@ -6,7 +6,7 @@ fun optimize(
   var new_dag = dag[YogurtExpr]()
   var mapping = map[Id, Id]()
   var body = fun_.body.optimize(
-    fun_.dag, 2, new_dag.&, mapping.&, optimized, yogurt
+    fun_.dag, 1, new_dag.&, mapping.&, optimized, yogurt
   )
   YogurtFun { dag = new_dag, body }
 }
@@ -95,75 +95,202 @@ fun optimize(
   case lambda(lambda)
     builder.lambda(expr.type, lambda.function, mapping.get(lambda.closure))
   case call(call) {
-    var callee =
-      switch call.callee
-      case lambda(lambda) {
-        if builder.get(lambda).op is lambda(lambda) then {
-          | return YogurtExpr {
-          |   op = YogurtOp.call(YogurtCall {
-          |     callee = YogurtCallee.fun_(lambda.function),
-          |     args = {
-          |       var args = list[Id]()
-          |       for arg in call.args do args.&.push(arg)
-          |       args.&.push(lambda.closure)
-          |       args.to_slice()
-          |     },
-          |   }),
-          |   type = expr.type,
-          | }.optimize(dag, inline_depth, builder, mapping, optimized)
-        }
-        YogurtCallee.lambda(mapping.get(lambda))
-      }
-      case fun_(signature) {
-        | If all the arguments are compile-time-known, just try to run the
-        | function at compile time.
-        {
-          var args = list[YogurtComptimeValue]()
-          for arg in call.args do
-            args.&.push(builder.extract_comptime(mapping.get(arg)) or break)
-          var args = args.to_slice()
-          var all_comptime_known = args.len == call.args.len
-          if all_comptime_known then {
-            var result = run(
-              signature, args, yogurt, YogurtRunResources { exprs = 100 }.&
-            )
-            if result is ok(value) then return builder.codify(value)
-          }
-        }
-        if inline_depth > 0 then {
-          if optimized.get_maybe(signature) is some(called) then {
-            var should_inline = called.complexity() < 10 or {
-              | TODO: Check if all the args are comptime-known.
-              false
-            }
-            if should_inline then {
-              | Inline the called function!
-              var inner_mapping = map[Id, Id]()
-              for both in zip(called.body.params.iter(), call.args.iter()) do
-                inner_mapping.&.put(both.a, mapping.get(both.b))
-              for id in called.body.children do
-                inner_mapping.&.put(
-                  id,
-                  id.optimize(
-                    called.dag,
-                    inline_depth - 1,
-                    builder,
-                    inner_mapping.&,
-                    optimized,
-                    yogurt,
-                  ),
-                )
-              return inner_mapping.get(called.body.returns)
-            }
-          }
-        }
-        YogurtCallee.fun_(signature)
-      }
-      case builtin(builtin) YogurtCallee.builtin(builtin)
-
     var args = list[Id]()
     for arg in call.args do args.&.push(mapping.get(arg))
-    builder.call(callee, args.to_slice(), expr.type)
+    var args = args.to_slice()
+
+    switch call.callee
+    case lambda(lambda) {
+      var lambda = mapping.get(lambda)
+      if builder.get(lambda).op is lambda(lambda) then {
+        var args = list[Id]()
+        for arg in call.args do args.&.push(arg)
+        args.&.push(lambda.closure)
+        var args = args.to_slice()
+
+        return optimize_function_call(
+          lambda.function, args, expr.type,
+          dag, inline_depth, builder, mapping, optimized, yogurt,
+        )
+      }
+      builder.call(YogurtCallee.lambda(lambda), args, expr.type)
+    }
+    case fun_(signature)
+      optimize_function_call(
+        signature, args, expr.type,
+        dag, inline_depth, builder, mapping, optimized, yogurt,
+      )
+    case builtin(builtin) optimize_builtin(builtin, args, expr.type, builder)
   }
   case type(type) builder.type(type)
+}
+
+fun optimize_function_call(
+  signature: String, args: Slice[Id], type: EggType,
+  dag: Dag[YogurtExpr], inline_depth: Int,
+  builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
+  optimized: &Map[String, YogurtFun], yogurt: Yogurt,
+): Id {
+  | If all the arguments are compile-time-known, try to run the function at
+  | compile time.
+  var arg_values = list[YogurtComptimeValue]()
+  for arg in args do arg_values.&.push(builder.extract_comptime(arg) or break)
+  var arg_values = arg_values.to_slice()
+  var all_comptime_known = arg_values.len == args.len
+  if all_comptime_known then {
+    var resources = YogurtRunResources { exprs = 1000 }
+    if run(signature, arg_values, yogurt, resources.&) is ok(value) then
+      return builder.codify(value)
+  }
+
+  | Possibly inline the function.
+  if inline_depth > 0 then
+    if optimized.get_maybe(signature) is some(called) then {
+      var should_inline = called.complexity() < 50
+      if should_inline then {
+        | Inline the called function!
+        var inner_mapping = map[Id, Id]()
+        for both in zip(called.body.params.iter(), args.iter()) do
+          inner_mapping.&.put(both.a, both.b)
+        for id in called.body.children do
+          inner_mapping.&.put(
+            id,
+            id.optimize(
+              called.dag, inline_depth - 1, builder,
+              inner_mapping.&, optimized, yogurt,
+            ),
+          )
+        return inner_mapping.get(called.body.returns)
+      }
+    }
+
+  builder.call(YogurtCallee.fun_(signature), args, type)
+}
+
+fun optimize_builtin(
+  builtin: YogurtBuiltin, args: Slice[Id], type: EggType,
+  builder: &YogurtBodyBuilder,
+): Id {
+  switch builtin
+  case lower_byte
+    if builder.get(args.get(0)).op is int(int) then
+      return builder.byte(int.lower_byte())
+  case byte_to_int
+    if builder.get(args.get(0)).op is byte(byte) then
+      return builder.int(byte.to_int())
+  case add_ints {
+    var a = builder.get(args.get(0))
+    var b = builder.get(args.get(1))
+    if a.op is int(a) then if a == 0 then return args.get(1)
+    if b.op is int(b) then if b == 0 then return args.get(0)
+    if a.op is int(a) then if b.op is int(b) then return builder.int(a + b)
+  }
+  case sub_ints {
+    var a = builder.get(args.get(0))
+    var b = builder.get(args.get(1))
+    if b.op is int(b) then if b == 0 then return args.get(0)
+    if a.op is int(a) then if b.op is int(b) then return builder.int(a - b)
+  }
+  case mul_ints {
+    var a = builder.get(args.get(0))
+    var b = builder.get(args.get(1))
+    if a.op is int(a) then if a == 1 then return args.get(1)
+    if b.op is int(b) then if b == 1 then return args.get(0)
+    if a.op is int(a) then if b.op is int(b) then return builder.int(a * b)
+  }
+  case div_ints {
+    var a = builder.get(args.get(0))
+    var b = builder.get(args.get(1))
+    if b.op is int(b) then if b == 1 then return args.get(0)
+    if a.op is int(a) then if b.op is int(b) then if b != 0 then
+      return builder.int(a / b)
+  }
+  case mod_ints {
+    var a = builder.get(args.get(0))
+    var b = builder.get(args.get(1))
+    if b.op is int(b) then if b == 1 then return builder.int(0)
+    if a.op is int(a) then if b.op is int(b) then if b != 0 then
+      return builder.int(a % b)
+  }
+  case and_ints {
+    var a = builder.get(args.get(0))
+    var b = builder.get(args.get(1))
+    if a.op is int(a) then if a == 0 then return args.get(0)
+    if b.op is int(b) then if b == 0 then return args.get(1)
+    if a.op is int(a) then if a == -1 then return args.get(1)
+    if b.op is int(b) then if b == -1 then return args.get(0)
+    if a.op is int(a) then if b.op is int(b) then return builder.int(a & b)
+  }
+  case or_ints {
+    var a = builder.get(args.get(0))
+    var b = builder.get(args.get(1))
+    if a.op is int(a) then if a == 0 then return args.get(1)
+    if b.op is int(b) then if b == 0 then return args.get(0)
+    if a.op is int(a) then if a == -1 then return args.get(0)
+    if b.op is int(b) then if b == -1 then return args.get(1)
+    if a.op is int(a) then if b.op is int(b) then return builder.int(or(a, b))
+  }
+  case xor_ints {
+    var a = builder.get(args.get(0))
+    var b = builder.get(args.get(1))
+    if a.op is int(a) then if b.op is int(b) then return builder.int(a ^ b)
+  }
+  case compare_ints {
+    var a = builder.get(args.get(0))
+    var b = builder.get(args.get(1))
+    if a.op is int(a) then if b.op is int(b) then {
+      var symbol =
+        switch a <=> b
+        case less "less"
+        case equal "equal"
+        case greater "greater"
+      return builder.enum_(type, symbol, builder.nothing())
+    }
+  }
+  case box {}
+  case unbox {
+    | TODO
+    | if builder.get(args.get(0)).op is call(a) then
+    |   return builder.int(a ^ b)
+  }
+  case generate_array {
+    | TODO
+  }
+  case array_get {
+    var array = builder.get(args.get(0))
+    var index = builder.get(args.get(1))
+    if array.op is array(items) then if index.op is int(index) then
+      if (0..items.len).contains(index) then return items.get(index)
+  }
+  case array_set {
+    var array = builder.get(args.get(0))
+    var index = builder.get(args.get(1))
+    var item  = args.get(2)
+    if array.op is array(items) then if index.op is int(index) then
+      if (0..items.len).contains(index) then {
+        var new_items = list[Id]()
+        for item in items do new_items.&.push(item)
+        new_items.&.set(index, item)
+        return builder.array(type, new_items.to_slice())
+      }
+  }
+  case array_slice {
+    var array = builder.get(args.get(0))
+    var range = builder.get(args.get(1))
+    if array.op is array(items) then if range.op is struct_(range) then {
+      var start = builder.get(range.get("start"))
+      var end = builder.get(range.get("end"))
+      if start.op is int(start) then if end.op is int(end) then {
+        if (0..items.len).contains(start) and (0..items.len).contains(end)
+        then return builder.array(type, items.subslice(start..end))
+      }
+    }
+  }
+  case array_len {
+    var array = builder.get(args.get(0))
+    if array.op is array(items) then return builder.int(items.len)
+  }
+  case crash {}
+
+  builder.call(YogurtCallee.builtin(builtin), args, type)
 }
