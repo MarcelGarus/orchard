@@ -1,13 +1,14 @@
 import mod.mar
 
 fun optimize(
-  fun_: YogurtFun, specializations: &Set[String],
+  fun_: YogurtFun,
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): YogurtFun {
   var new_dag = dag[YogurtExpr]()
   var mapping = map[Id, Id]()
   var body = fun_.body.optimize(
-    fun_.dag, true, new_dag.&, mapping.&, specializations, optimized, yogurt
+    fun_.dag, true, new_dag.&, mapping.&,
+    list[String]().&, set[String](), optimized, yogurt,
   )
   YogurtFun { dag = new_dag, body }
 }
@@ -15,7 +16,7 @@ fun optimize(
 fun optimize(
   body: YogurtBody, dag: Dag[YogurtExpr], inline: Bool,
   new_dag: &Dag[YogurtExpr], mapping: &Map[Id, Id],
-  specializations: &Set[String],
+  specializing: &List[String], specializing_for: Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): YogurtBody {
   var builder = body_builder(new_dag).&
@@ -24,7 +25,8 @@ fun optimize(
     mapping.put(
       id,
       id.optimize(
-        dag, inline, builder, mapping, specializations, optimized, yogurt
+        dag, inline, builder, mapping,
+        specializing, specializing_for, optimized, yogurt,
       ),
     )
   var body = builder.finish(mapping.get(body.returns))
@@ -35,17 +37,18 @@ fun optimize(
 fun optimize(
   id: Id, dag: Dag[YogurtExpr], inline: Bool,
   builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
-  specializations: &Set[String],
+  specializing: &List[String], specializing_for: Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): Id {
   dag.get(id).optimize(
-    dag, inline, builder, mapping, specializations, optimized, yogurt
+    dag, inline, builder, mapping,
+    specializing, specializing_for, optimized, yogurt,
   )
 }
 fun optimize(
   expr: YogurtExpr, dag: Dag[YogurtExpr], inline: Bool,
   builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
-  specializations: &Set[String],
+  specializing: &List[String], specializing_for: Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): Id {
   | stderr."Optimizing:"
@@ -83,7 +86,7 @@ fun optimize(
           id,
           id.optimize(
             dag, inline, builder, mapping,
-            specializations, optimized, yogurt,
+            specializing, specializing_for, optimized, yogurt,
           ),
         )
       return mapping.get(case_.returns)
@@ -95,7 +98,7 @@ fun optimize(
           case_.key,
           case_.value.optimize(
             dag, inline, builder.dag, mapping,
-            specializations, optimized, yogurt,
+            specializing, specializing_for, optimized, yogurt,
           ),
         )
       cases
@@ -114,12 +117,12 @@ fun optimize(
     case lambda(lambda)
       builder.optimized_lambda_call(
         mapping.get(lambda), args,
-        inline, specializations, optimized, yogurt,
+        inline, specializing, specializing_for, optimized, yogurt,
       )
     case fun_(signature)
       builder.optimized_fun_call(
         signature, args, expr.type,
-        inline, true, specializations, optimized, yogurt,
+        inline, true, specializing, specializing_for, optimized, yogurt,
       )
     case builtin(builtin)
       builder.optimized_builtin_call(builtin, args, expr.type)
@@ -135,7 +138,6 @@ fun optimized_member(builder: &YogurtBodyBuilder, of: Id, name: String): Id {
 
 fun optimized_lambda(
   builder: &YogurtBodyBuilder, type: EggType, function: String, closure: Id,
-
 ): Id {
   var holey_closure = closure.to_holey(builder.*)
 
@@ -194,7 +196,7 @@ fun optimized_lambda(
 
 fun optimized_lambda_call(
   builder: &YogurtBodyBuilder, lambda: Id, args: Slice[Id],
-  inline: Bool, specializations: &Set[String],
+  inline: Bool, specializing: &List[String], specializing_for: Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): Id {
   var expr = builder.get(lambda)
@@ -203,7 +205,7 @@ fun optimized_lambda_call(
     var actual_args = (args.to_list() + list(lambda.closure)).to_slice()
     return builder.optimized_fun_call(
       lambda.function, actual_args, return_type,
-      inline, true, specializations, optimized, yogurt,
+      true, true, specializing, specializing_for, optimized, yogurt,
     )
   }
   builder.call(YogurtCallee.lambda(lambda), args, return_type)
@@ -212,7 +214,8 @@ fun optimized_lambda_call(
 fun optimized_fun_call(
   builder: &YogurtBodyBuilder,
   signature: String, args: Slice[Id], type: EggType,
-  inline: Bool, specialize: Bool, specializations: &Set[String],
+  inline: Bool, specialize: Bool,
+  specializing: &List[String], specializing_for: Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): Id {
   | If all the arguments are compile-time-known, try to run the function at
@@ -242,7 +245,7 @@ fun optimized_fun_call(
             id,
             id.optimize(
               called.dag, false, builder, inner_mapping.&,
-              specializations, optimized, yogurt,
+              specializing, specializing_for, optimized, yogurt,
             ),
           )
         return inner_mapping.get(called.body.returns)
@@ -268,8 +271,8 @@ fun optimized_fun_call(
         b.to_string()
       }
 
-      if not(specializations.contains(specialized_signature)) then {
-        specializations.put(specialized_signature)
+      if not(specializing.iter().&.contains(specialized_signature)) then {
+        specializing.push(specialized_signature)
 
         var hole_types = list[EggType]()
         for arg in holey_args do
@@ -289,10 +292,13 @@ fun optimized_fun_call(
 
         var result = builder.optimized_fun_call(
           signature, reconstructed_args, type, true,
-          false, specializations, optimized, yogurt,
+          false, specializing, specializing_for, optimized, yogurt,
         )
 
-        var specialized_fun = YogurtFun { dag, body = builder.finish(result) }
+        var body = builder.finish(result)
+        var body = body.tree_shake(dag)
+
+        var specialized_fun = YogurtFun { dag, body }
         optimized.&.put(specialized_signature, specialized_fun)
       } else {
         eprintln("Not specializing {specialized_signature} coz it already exists")
