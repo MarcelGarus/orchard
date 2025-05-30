@@ -7,13 +7,13 @@ fun optimize(
   var new_dag = dag[YogurtExpr]()
   var mapping = map[Id, Id]()
   var body = fun_.body.optimize(
-    fun_.dag, 1, new_dag.&, mapping.&, specializations, optimized, yogurt
+    fun_.dag, true, new_dag.&, mapping.&, specializations, optimized, yogurt
   )
   YogurtFun { dag = new_dag, body }
 }
 
 fun optimize(
-  body: YogurtBody, dag: Dag[YogurtExpr], inline_depth: Int,
+  body: YogurtBody, dag: Dag[YogurtExpr], inline: Bool,
   new_dag: &Dag[YogurtExpr], mapping: &Map[Id, Id],
   specializations: &Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
@@ -24,7 +24,7 @@ fun optimize(
     mapping.put(
       id,
       id.optimize(
-        dag, inline_depth, builder, mapping, specializations, optimized, yogurt
+        dag, inline, builder, mapping, specializations, optimized, yogurt
       ),
     )
   var body = builder.finish(mapping.get(body.returns))
@@ -33,17 +33,17 @@ fun optimize(
 }
 
 fun optimize(
-  id: Id, dag: Dag[YogurtExpr], inline_depth: Int,
+  id: Id, dag: Dag[YogurtExpr], inline: Bool,
   builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
   specializations: &Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): Id {
   dag.get(id).optimize(
-    dag, inline_depth, builder, mapping, specializations, optimized, yogurt
+    dag, inline, builder, mapping, specializations, optimized, yogurt
   )
 }
 fun optimize(
-  expr: YogurtExpr, dag: Dag[YogurtExpr], inline_depth: Int,
+  expr: YogurtExpr, dag: Dag[YogurtExpr], inline: Bool,
   builder: &YogurtBodyBuilder, mapping: &Map[Id, Id],
   specializations: &Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
@@ -82,7 +82,7 @@ fun optimize(
         mapping.&.put(
           id,
           id.optimize(
-            dag, inline_depth, builder, mapping,
+            dag, inline, builder, mapping,
             specializations, optimized, yogurt,
           ),
         )
@@ -94,7 +94,7 @@ fun optimize(
         cases.&.put(
           case_.key,
           case_.value.optimize(
-            dag, inline_depth, builder.dag, mapping,
+            dag, inline, builder.dag, mapping,
             specializations, optimized, yogurt,
           ),
         )
@@ -114,12 +114,12 @@ fun optimize(
     case lambda(lambda)
       builder.optimized_lambda_call(
         mapping.get(lambda), args,
-        inline_depth, specializations, optimized, yogurt,
+        inline, specializations, optimized, yogurt,
       )
     case fun_(signature)
       builder.optimized_fun_call(
         signature, args, expr.type,
-        inline_depth, true, specializations, optimized, yogurt,
+        inline, true, specializations, optimized, yogurt,
       )
     case builtin(builtin)
       builder.optimized_builtin_call(builtin, args, expr.type)
@@ -194,7 +194,7 @@ fun optimized_lambda(
 
 fun optimized_lambda_call(
   builder: &YogurtBodyBuilder, lambda: Id, args: Slice[Id],
-  inline_depth: Int, specializations: &Set[String],
+  inline: Bool, specializations: &Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): Id {
   var expr = builder.get(lambda)
@@ -203,7 +203,7 @@ fun optimized_lambda_call(
     var actual_args = (args.to_list() + list(lambda.closure)).to_slice()
     return builder.optimized_fun_call(
       lambda.function, actual_args, return_type,
-      inline_depth, true, specializations, optimized, yogurt,
+      inline, true, specializations, optimized, yogurt,
     )
   }
   builder.call(YogurtCallee.lambda(lambda), args, return_type)
@@ -212,7 +212,7 @@ fun optimized_lambda_call(
 fun optimized_fun_call(
   builder: &YogurtBodyBuilder,
   signature: String, args: Slice[Id], type: EggType,
-  inline_depth: Int, consider_specializing: Bool, specializations: &Set[String],
+  inline: Bool, specialize: Bool, specializations: &Set[String],
   optimized: &Map[String, YogurtFun], yogurt: Yogurt,
 ): Id {
   | If all the arguments are compile-time-known, try to run the function at
@@ -228,7 +228,7 @@ fun optimized_fun_call(
   }
 
   | Possibly inline the function.
-  if inline_depth > 0 then {
+  if inline then {
     if optimized.get_maybe(signature) is some(called) then {
       var should_inline = called.complexity() < 50
       if should_inline then {
@@ -241,16 +241,16 @@ fun optimized_fun_call(
           inner_mapping.&.put(
             id,
             id.optimize(
-              called.dag, inline_depth - 1, builder, inner_mapping.&,
+              called.dag, false, builder, inner_mapping.&,
               specializations, optimized, yogurt,
             ),
           )
         return inner_mapping.get(called.body.returns)
-      } else if not(consider_specializing) then eprintln("Not inlinting {signature} coz too big")
-    } else if not(consider_specializing) then eprintln("Not inlining {signature} coz not ready yet")
-  } else if not(consider_specializing) then eprintln("Not inlining {signature} coz depth")
+      } else if not(specialize) then eprintln("Not inlinting {signature} coz too big")
+    } else if not(specialize) then eprintln("Not inlining {signature} coz not ready yet")
+  } else if not(specialize) then eprintln("Not inlining {signature} coz depth")
 
-  if consider_specializing then {
+  if specialize then {
     | Create a specialized version of the lambda that only accepts values for the
     | holes of the arguments instead of the arguments themselves. This specialized
     | wrapper then simply reconstructs the original arguments and calls the
@@ -288,7 +288,7 @@ fun optimized_fun_call(
         var reconstructed_args = reconstructed_args.to_slice()
 
         var result = builder.optimized_fun_call(
-          signature, reconstructed_args, type, inline_depth + 1,
+          signature, reconstructed_args, type, true,
           false, specializations, optimized, yogurt,
         )
 
