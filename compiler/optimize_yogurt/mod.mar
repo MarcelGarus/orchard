@@ -1,6 +1,7 @@
 import ../plum.mar
 import choose_order.mar
 import complexity.mar
+import recursive.mar
 import run.mar
 import specialize.mar
 import tree_shake.mar
@@ -18,7 +19,7 @@ fun optimize(yogurt: Yogurt): Yogurt {
   var yogurt = Yogurt { entry_point = yogurt.entry_point, funs = optimized }
 
   | Filter to functions that are used at all.
-  var order = yogurt.choose_optimization_order()
+  var call_graph = yogurt.choose_optimization_order()
   var funs = map[String, YogurtFun]()
   for fun_ in yogurt.funs do
     if order.iter().&.contains(fun_.key) then funs.&.put(fun_)
@@ -130,9 +131,7 @@ fun optimize(
     })
   }
   case lambda(lambda)
-    builder.optimized_lambda(
-      expr.type, lambda.function, mapping.get(lambda.closure)
-    )
+    builder.lambda(expr.type, lambda.function, mapping.get(lambda.closure))
   case call(call) {
     var args = list[Id]()
     for arg in call.args do args.&.push(mapping.get(arg))
@@ -159,64 +158,6 @@ fun optimized_member(builder: &YogurtBodyBuilder, of: Id, name: String): Id {
   if builder.get(of).op is struct_(fields)
   then fields.get(name)
   else builder.member(of, name)
-}
-
-fun optimized_lambda(
-  builder: &YogurtBodyBuilder, type: EggType, function: String, closure: Id,
-): Id {
-  var holey_closure = closure.to_holey(builder.*)
-
-  | if not(holey_closure.value.is_useful()) or true then
-    return builder.lambda(type, function, closure)
-
-  | Create a specialized version of the lambda.
-
-  | var closure_containing_only_holes = builder.box(builder.struct_({
-  |   var fields = map[String, Id]()
-  |   for hole in holey_closure.holes.iter().enumerate() do
-  |     fields.&.put("{hole.index}", hole.item)
-  |   fields
-  | }))
-
-  | var wrapper_dag = dag[YogurtExpr]()
-  | var wrapper_holes = list[Id]()
-  | var wrapper_builder = body_builder(wrapper_dag.&).&
-  | var args_in_wrapper = list[Id]()
-
-  | for arg in type.kind().lambda.unwrap().args do
-  |   args_in_wrapper.&.push(wrapper_builder.param(arg))
-  | var wrapper_holes_arg =
-  |   wrapper_builder.param(builder.get(closure_containing_only_holes).type)
-
-  | var wrapper_holes_struct = wrapper_builder.unbox(wrapper_holes_arg)
-  | var wrapper_holes = list[Id]()
-  | for hole in holey_closure.holes.iter().&.enumerate() do
-  |   wrapper_holes.&.push(
-  |     wrapper_builder.member(wrapper_holes_struct, "{hole.index}")
-  |   )
-
-  | var wrapper_closure =
-  |   wrapper_builder.fill(holey_closure.value, wrapper_holes.to_slice())
-  | var result = wrapper_builder.call(
-  |   YogurtCallee.fun_(function),
-  |   (args_in_wrapper + list(wrapper_closure)).to_slice(),
-  |   type,
-  | )
-
-  | var wrapper_body = wrapper_builder.finish(result)
-  | var specialized_fun = YogurtFun { dag = wrapper_dag, body = wrapper_body }
-
-  | eprintln("Specializing lambda {function}")
-  | eprintln("Holey: {holey_closure.value}")
-  | eprintln("Holes: {holey_closure.holes}.")
-  | | eprintln("Specialized lambda wrapper:\n")
-  | | stderr.write(specialized_fun.body, specialized_fun.dag, 1)
-  | | eprintln()
-
-  | var signature =  "{function} capturing {holey_closure.value}"
-  | optimized.&.put(signature, specialized_fun) | specialized_fun.optimize(optimized, yogurt))
-
-  | builder.lambda(type, signature, closure_containing_only_holes)
 }
 
 fun optimized_lambda_call(
@@ -256,9 +197,10 @@ fun optimized_fun_call(
   }
 
   | Possibly inline the function.
-  if inline then {
+  if inline then { |and not(call_graph.recursive_functions.contains(signature)) then {
     if optimized.get_maybe(signature) is some(called) then {
       var should_inline = called.complexity() < 50
+        and not(called.is_trivially_recursive(signature))
       if should_inline then {
         eprintln("Inlining {signature} ({args} become {called.body.params})")
         | Inline the called function!
@@ -278,7 +220,7 @@ fun optimized_fun_call(
     } else eprintln("Not inlining {signature} coz not ready yet")
   } else eprintln("Not inlining {signature} coz depth")
 
-  if specialize then {
+  if optimized.get_maybe(signature) is some(called) then {
     | Create a specialized version of the lambda that only accepts values for the
     | holes of the arguments instead of the arguments themselves. This specialized
     | wrapper then simply reconstructs the original arguments and calls the
@@ -315,10 +257,18 @@ fun optimized_fun_call(
           reconstructed_args.&.push(builder.fill(hole.value, holes))
         var reconstructed_args = reconstructed_args.to_slice()
 
-        var result = builder.optimized_fun_call(
-          signature, reconstructed_args, type, true,
-          false, specializing, specializing_for, optimized, yogurt,
-        )
+        var inner_mapping = map[Id, Id]()
+        for both in zip(called.body.params.iter(), reconstructed_args.iter()) do
+          inner_mapping.&.put(both.a, both.b)
+        for id in called.body.children do
+          inner_mapping.&.put(
+            id,
+            id.optimize(
+              called.dag, false, builder, inner_mapping.&,
+              specializing, specializing_for, optimized, yogurt,
+            ),
+          )
+        var result = inner_mapping.get(called.body.returns)
 
         var body = builder.finish(result)
         var body = body.tree_shake(dag)
