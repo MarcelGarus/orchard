@@ -1,0 +1,121 @@
+import mod.mar
+
+fun is_pure(expr: EggExpr): Bool {
+  switch expr.op
+  case param false
+  case id true
+  case byte true
+  case int true
+  case array(array) {
+    for item in array do if not(item.is_pure()) then return false
+    true
+  }
+  case struct_(struct_) {
+    for field in struct_ do if not(field.value.is_pure()) then return false
+    true
+  }
+  case member(member) member.of.is_pure()
+  case enum_(enum_) enum_.value.is_pure()
+  case switch_(switch_) {
+    if not(switch_.condition.is_pure()) then return false
+    for case_ in switch_.cases do
+      if not(case_.value.is_pure()) then return false
+    true
+  }
+  case lambda true
+  case call(call) {
+    switch call.callee
+    case lambda false
+    case fun_ false
+    case builtin(builtin) {
+      switch builtin.builtin
+      case lower_byte true
+      case byte_to_int true
+      case add_ints true
+      case sub_ints true
+      case mul_ints true
+      case div_ints false
+      case mod_ints false
+      case and_ints true
+      case or_ints true
+      case xor_ints true
+      case compare_ints true
+      case box true
+      case unbox true
+      case generate_array false
+      case array_get false
+      case array_set false
+      case array_slice false
+      case array_len true
+      case call false
+      case type_of true
+      case type_info true
+      case static_to_dynamic true
+      case dynamic_to_static false
+      case crash false
+    }
+  }
+  case loop_ false
+  case continue_ false
+  case cast(inner) inner.is_pure()
+  case type true
+}
+fun is_pure(body: EggBody): Bool {
+  for id in body.children do if not(id.get().is_pure()) then return false
+  body.returns.is_pure()
+}
+
+fun collect_referenced(expr: EggExpr, out: &Set[EggId]) {
+  switch expr.op
+  case param {}
+  case id(id) out.put(id)
+  case byte {}
+  case int {}
+  case array(items) for item in items do item.collect_referenced(out)
+  case struct_(fields)
+    for field in fields do field.value.collect_referenced(out)
+  case member(member) member.of.collect_referenced(out)
+  case enum_(enum_) enum_.value.collect_referenced(out)
+  case switch_(switch_) {
+    switch_.condition.collect_referenced(out)
+    for case_ in switch_.cases do case_.value.collect_referenced(out)
+  }
+  case lambda(lambda) lambda.collect_referenced(out)
+  case call(call) {
+    if call.callee is lambda(lambda) then lambda.collect_referenced(out)
+    for arg in call.args do arg.collect_referenced(out)
+  }
+  case loop_(loop_) {
+    for arg in loop_.args do arg.collect_referenced(out)
+    loop_.body.collect_referenced(out)
+  }
+  case continue_(args) for arg in args do arg.collect_referenced(out)
+  case cast(inner) inner.collect_referenced(out)
+  case type {}
+}
+fun collect_referenced(body: EggBody, out: &Set[EggId]) {
+  body.returns.collect_referenced(out)
+  for id in body.children do id.get().collect_referenced(out)
+}
+
+fun tree_shake(body: EggBody): EggBody {
+  | We go through the body from the bottom to the top, tracking which locals are
+  | referenced later in the body. This way, when we encounter an expression, we
+  | know immediately whether we can throw it away.
+  var referenced_later_on = set[EggId]()
+  body.returns.collect_referenced(referenced_later_on.&)
+
+  var rev_children = list[EggId]()
+  for id in body.children.rev_iter() do {
+    var expr = id.get()
+    if not(referenced_later_on.contains(id)) and expr.is_pure() then continue
+    expr.collect_referenced(referenced_later_on.&)
+    rev_children.&.push(id)
+  }
+  var children = list[EggId]()
+  for id in rev_children.to_slice().rev_iter() do children.&.push(id)
+
+  EggBody {
+    params = body.params, children = children.to_slice(), returns = body.returns
+  }
+}

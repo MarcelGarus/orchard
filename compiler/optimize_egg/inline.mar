@@ -1,0 +1,148 @@
+import mod.mar
+
+fun inline(
+  called: EggCalledFun, fun_: EggFun, args: Slice[EggExpr], type: EggType,
+  context: OptimizeEggExprContext,
+): EggExpr {
+  | If a function contains a call of itself in its body, we don't just want to
+  | inline that as we'll then possibly continue inlining itself again and again
+  | and again.
+  | Instead, these recursive functions are turned into special lambdas than can
+  | explicitly recurse.
+  var body = fun_.body.reify_rec(InlineFunContext {
+    anchor = called.signature,
+    substitutions = called.substitutions,
+    builder = egg_body_builder().&,
+    mapping = map[EggId, EggExpr]().&,
+  })
+  if body.has_continue()
+  then loop_(called.signature, args, body)
+  else lambda(body).optimized_call(args, context)
+}
+struct InlineFunContext {
+  anchor: String, substitutions: Substitutions,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggExpr],
+}
+fun reify_rec(body: EggBody, context: InlineFunContext): EggBody {
+  var context = InlineFunContext {
+    anchor = context.anchor,
+    substitutions = context.substitutions,
+    builder = egg_body_builder().&,
+    mapping = context.mapping,
+  }
+  for id in body.params do
+    context.mapping.put(
+      id,
+      context.builder.push_param(
+        id.get().type.specialize(context.substitutions)
+      ),
+    )
+  for id in body.children do
+    context.mapping.put(id, context.builder.push(id.get().reify_rec(context)))
+  context.builder.finish(body.returns.reify_rec(context))
+}
+fun reify_rec(expr: EggExpr, context: InlineFunContext): EggExpr {
+  var type = expr.type.specialize(context.substitutions)
+  var src = expr.src
+  switch expr.op
+  case param unreachable()
+  case id(id) context.mapping.get(id)
+  case byte(byte) egg_byte(byte)
+  case int(int) egg_int(int)
+  case array(items)
+    array(type, {
+      var new_items = list[EggExpr]()
+      for item in items do new_items.&.push(item.reify_rec(context))
+      new_items.to_slice()
+    })
+  case struct_(struct_)
+    struct_({
+      var fields = map[String, EggExpr]()
+      for field in struct_ do
+        fields.&.put(field.key, field.value.reify_rec(context))
+      fields
+    })
+  case member(member) member.of.reify_rec(context).member(member.name)
+  case enum_(enum_) enum_(type, enum_.name, enum_.value.reify_rec(context))
+  case switch_(switch_)
+    switch_(switch_.condition.reify_rec(context), type, {
+      var cases = map[String, EggBody]()
+      for case_ in switch_.cases do
+        cases.&.put(case_.key, case_.value.reify_rec(context))
+      cases
+    })
+  case lambda(lambda) lambda(lambda.reify_rec(context))
+  case call(call) {
+    var callee =
+      switch call.callee
+      case lambda(lambda)
+        EggCallee.lambda(lambda.reify_rec(context).put_on_heap())
+      case fun_(fun_)
+        if fun_.signature == context.anchor then {
+          var args = list[EggExpr]()
+          for arg in call.args do args.&.push(arg.reify_rec(context))
+          return continue_(args.to_slice())
+        } else EggCallee.fun_(fun_)
+      case builtin(builtin) EggCallee.builtin(builtin)
+
+    var args = list[EggExpr]()
+    for arg in call.args do args.&.push(arg.reify_rec(context))
+    var args = args.to_slice()
+
+    callee.call(args, type)
+  }
+  case loop_(loop_) {
+    var args = list[EggExpr]()
+    for arg in loop_.args do args.&.push(arg.reify_rec(context))
+    loop_(loop_.name, args.to_slice(), loop_.body.reify_rec(context))
+  }
+  case continue_(continue_args)
+    continue_({
+      var args = list[EggExpr]()
+      for arg in continue_args do args.&.push(arg.reify_rec(context))
+      args.to_slice()
+    })
+  case cast(inner) inner.reify_rec(context).cast(type)
+  case type(type) egg_type(type.specialize(context.substitutions))
+}
+
+fun has_continue(body: EggBody): Bool {
+  for id in body.children do if id.get().has_continue() then return true
+  body.returns.has_continue()
+}
+fun has_continue(expr: EggExpr): Bool {
+  switch expr.op
+  case param unreachable()
+  case id false
+  case byte false
+  case int false
+  case array(array) {
+    for item in array do if item.has_continue() then return true
+    false
+  }
+  case struct_(struct_) {
+    for field in struct_ do
+      if field.value.has_continue() then return true
+    false
+  }
+  case member(member) member.of.has_continue()
+  case enum_(enum_) enum_.value.has_continue()
+  case switch_(switch_) {
+    if switch_.condition.has_continue() then return true
+    for case_ in switch_.cases do
+      if case_.value.has_continue() then return true
+    false
+  }
+  case lambda(lambda) lambda.has_continue()
+  case call(call) {
+    for arg in call.args do if arg.has_continue() then return true
+    switch call.callee
+    case lambda(lambda) lambda.has_continue()
+    case fun_ false
+    case builtin false
+  }
+  case loop_ false
+  case continue_ true
+  case cast(inner) inner.has_continue()
+  case type false
+}

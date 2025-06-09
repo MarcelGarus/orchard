@@ -9,7 +9,9 @@ import plum.mar
 struct Yogurt { entry_point: String, funs: Map[String, YogurtFun] }
 
 struct YogurtFun { dag: Dag[YogurtExpr], body: YogurtBody }
-struct YogurtBody { params: Slice[Id], children: Slice[Id], returns: Id }
+struct YogurtBody {
+  params: Slice[Id], children: Slice[Id], returns: YogurtExpr
+}
 struct YogurtExpr { op: YogurtOp, type: EggType }
 
 enum YogurtOp {
@@ -17,21 +19,20 @@ enum YogurtOp {
   byte: Byte,
   int: Int,
   string: String,
-  array: Slice[Id],
-  struct_: Map[String, Id],
+  array: Slice[YogurtExpr],
+  struct_: Map[String, YogurtExpr],
   member: YogurtMember,
   enum_: YogurtEnum,
   switch_: YogurtSwitch,
-  lambda: YogurtLambda,
+  lambda: &YogurtBody,
   call: YogurtCall,
   type: EggType,
 }
-struct YogurtMember { of: Id, name: String }
-struct YogurtSwitch { condition: Id, cases: Map[String, YogurtBody] }
-struct YogurtEnum { name: String, value: Id }
-struct YogurtLambda { function: String, closure: Id }
-struct YogurtCall { callee: YogurtCallee, args: Slice[Id] }
-enum YogurtCallee { lambda: Id, fun_: String, builtin: YogurtBuiltin }
+struct YogurtMember { of: &YogurtExpr, name: String }
+struct YogurtSwitch { condition: &YogurtExpr, cases: Map[String, YogurtBody] }
+struct YogurtEnum { name: String, value: &YogurtExpr }
+struct YogurtCall { callee: YogurtCallee, args: Slice[YogurtExpr] }
+enum YogurtCallee { lambda: &YogurtExpr, fun_: String, builtin: YogurtBuiltin }
 
 enum YogurtBuiltin {
   | byte operations
@@ -58,9 +59,7 @@ fun signature(module: Module, name: String, params: Slice[EggType]): String {
   b.to_string()
 }
 
-fun return_type(fun_: YogurtFun): EggType {
-  fun_.dag.type_of(fun_.body.returns)
-}
+fun return_type(fun_: YogurtFun): EggType { fun_.body.returns.type }
 
 fun write[W](writer: W, yogurt: Yogurt) {
   var first = true

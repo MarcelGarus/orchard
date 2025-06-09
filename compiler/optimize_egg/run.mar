@@ -1,0 +1,350 @@
+import mod.mar
+
+struct EggComptimeValue { kind: EggComptimeValueKind, type: EggType }
+enum EggComptimeValueKind {
+  byte: Byte,
+  int: Int,
+  box: &EggComptimeValue,
+  array: Slice[EggComptimeValue],
+  struct_: Map[String, EggComptimeValue],
+  enum_: EggEnumComptimeValue,
+  lambda: EggLambdaComptimeValue,
+  type: EggType,
+}
+struct EggEnumComptimeValue { name: String, value: &EggComptimeValue }
+struct EggLambdaComptimeValue { function: String, closure: &EggComptimeValue }
+
+fun typed(kind: EggComptimeValueKind, type: EggType): EggComptimeValue {
+  EggComptimeValue { kind, type }
+}
+
+fun write[W](writer: W, value: EggComptimeValue) {
+  switch value.kind
+  case byte(byte) writer."{byte}"
+  case int(int) writer."{int}"
+  case box(inner) writer."(box {inner})"
+  case array(items) {
+    writer."["
+    var first = true
+    for item in items do {
+      if first then first = false else writer." "
+      writer."{item}"
+    }
+    writer."]"
+  }
+  case struct_(fields) {
+    writer."(&"
+    for field in fields do writer." {field.key}: {field.value}"
+    writer.")"
+  }
+  case enum_(enum_) {
+    if enum_.value.kind is struct_(fields) then if fields.is_empty() then {
+      writer."(| {enum_.name})"
+      return {}
+    }
+    writer."(| {enum_.name}: {enum_.value})"
+  }
+  case lambda(lambda) writer."(\\ ...)"
+  case type(type) writer."{type}"
+}
+
+fun to_comptime(expr: EggExpr): Result[EggComptimeValue, Nothing] {
+  var kind =
+    switch expr.op
+    case byte(byte) EggComptimeValueKind.byte(byte)
+    case int(int) EggComptimeValueKind.int(int)
+    case array(array) {
+      var items = list[EggComptimeValue]()
+      for item in array do items.&.push(item.to_comptime()?)
+      EggComptimeValueKind.array(items.to_slice())
+    }
+    case struct_(struct_) {
+      var fields = map[String, EggComptimeValue]()
+      for field in struct_ do
+        fields.&.put(field.key, field.value.to_comptime()?)
+      EggComptimeValueKind.struct_(fields)
+    }
+    case enum_(enum_)
+      EggComptimeValueKind.enum_(EggEnumComptimeValue {
+        name = enum_.name,
+        value = enum_.value.to_comptime()?.put_on_heap(),
+      })
+    | case lambda(lambda)
+    |   EggComptimeValueKind.lambda(EggLambdaComptimeValue {
+    |     body = lambda.function,
+    |     closure = lambda.closure.to_comptime(lambda.closure)?.put_on_heap(),
+    |   })
+    case type(type) EggComptimeValueKind.type(type)
+    default return error[EggComptimeValue, Nothing]({})
+  ok[EggComptimeValue, Nothing](EggComptimeValue { kind, type = expr.type })
+}
+
+fun to_expr(value: EggComptimeValue): EggExpr {
+  switch value.kind
+  case int(int) egg_int(int)
+  case byte(byte) egg_byte(byte)
+  case box(inner) box(inner.to_expr())
+  case array(array) {
+    var items = list[EggExpr]()
+    for item in array do items.&.push(item.to_expr())
+    array(value.type, items.to_slice())
+  }
+  case struct_(struct_) {
+    var fields = map[String, EggExpr]()
+    for field in struct_ do fields.&.put(field.key, field.value.to_expr())
+    struct_(fields)
+  }
+  case enum_(enum_)
+    enum_(value.type, enum_.name, enum_.value.to_expr())
+  case lambda(lambda)
+    todo("handle lambda result")
+    | egg_lambda(value.type, lambda.function, lambda.closure.to_expr()))
+  case type(type) egg_type(type)
+}
+
+struct EggRunResources { exprs: Int }
+fun use_expr(res: &EggRunResources): Result[Nothing, Nothing] {
+  if res.exprs > 0 then {
+    res.exprs = res.exprs - 1
+    ok[Nothing, Nothing]({})
+  } else
+    error[Nothing, Nothing]({})
+}
+
+struct RunEggContext { resources: &EggRunResources, egg: Egg }
+
+fun run(
+  fun_: EggCalledFun, args: Slice[EggComptimeValue], context: RunEggContext
+): Result[EggComptimeValue, Nothing] {
+  | eprint("\"{function}\"")
+  | for arg in args do eprint(" {arg}")
+  | eprintln()
+
+  var fun_ = context.egg.funs.get(fun_.signature)
+  var value = fun_.body.run(args, RunEggFunContext {
+    global = context, visible = map[EggId, EggComptimeValue]().&
+  })?
+
+  ok[EggComptimeValue, Nothing](value)
+}
+
+struct RunEggFunContext {
+  global: RunEggContext, visible: &Map[EggId, EggComptimeValue]
+}
+
+fun run(
+  body: EggBody, args: Slice[EggComptimeValue], context: RunEggFunContext
+): Result[EggComptimeValue, Nothing] {
+  for both in zip(body.params.iter(), args.iter()) do
+    context.visible.put(both.a, both.b)
+  for id in body.children do
+    context.visible.put(id, id.get().run(context)?)
+  body.returns.run(context)
+}
+
+fun run(
+  expr: EggExpr, context: RunEggFunContext
+): Result[EggComptimeValue, Nothing] {
+  context.global.resources.use_expr()?
+  | eprintln("Running: {expr.debug()}")
+
+  ok[EggComptimeValue, Nothing](
+    switch expr.op
+    case param unreachable()
+    case id(id) context.visible.get(id)
+    case byte(byte) EggComptimeValueKind.byte(byte).typed(type_byte)
+    case int(int) EggComptimeValueKind.int(int).typed(type_int)
+    case array(array) {
+      var items = list[EggComptimeValue]()
+      for item in array do items.&.push(item.run(context)?)
+      EggComptimeValueKind.array(items.to_slice()).typed(expr.type)
+    }
+    case struct_(struct_) {
+      var fields = map[String, EggComptimeValue]()
+      for field in struct_ do
+        fields.&.put(field.key, field.value.run(context)?)
+      EggComptimeValueKind.struct_(fields).typed(expr.type)
+    }
+    case member(member)
+      member.of.run(context)?.kind.struct_.unwrap().get(member.name)
+    case enum_(enum_)
+      EggComptimeValueKind.enum_(EggEnumComptimeValue {
+        name = enum_.name, value = enum_.value.run(context)?.put_on_heap()
+      }).typed(expr.type)
+    case switch_(switch_) {
+      var condition = switch_.condition.run(context)?.kind.enum_.unwrap()
+      var case_ = switch_.cases.get(condition.name)
+      case_.run(list(condition.value.*).to_slice(), context)?
+    }
+    case lambda(lambda)
+      todo("comptime lambda construction")
+      | EggComptimeValueKind.lambda(EggLambdaComptimeValue {
+      |   function = lambda.function,
+      |   closure = visible.get(lambda.closure).put_on_heap(),
+      | }).typed(expr.type)
+    case call(call) {
+      var args = list[EggComptimeValue]()
+      for arg in call.args do args.&.push(arg.run(context)?)
+      var args = args.to_slice()
+
+      switch call.callee
+      case lambda(lambda) {
+        todo("comptime lambda call")
+        | var lambda = lambda.run(context)?.kind.lambda.unwrap()
+        | var all_args = list[EggComptimeValue]()
+        | for arg in args do all_args.&.push(arg)
+        | all_args.&.push(lambda.closure.*)
+        | lambda.function.run(all_args.to_slice(), egg, res)?
+      }
+      case fun_(fun_) fun_.run(args, context.global)?
+      case builtin(builtin) {
+        switch builtin.builtin
+        case lower_byte
+          EggComptimeValueKind.byte(
+            args.get(0).kind.int.unwrap().lower_byte()
+          ).typed(expr.type)
+        case byte_to_int
+          EggComptimeValueKind.int(args.get(0).kind.byte.unwrap().to_int())
+            .typed(expr.type)
+        case add_ints
+          EggComptimeValueKind.int(
+            args.get(0).kind.int.unwrap() + args.get(1).kind.int.unwrap()
+          ).typed(expr.type)
+        case sub_ints
+          EggComptimeValueKind.int(
+            args.get(0).kind.int.unwrap() - args.get(1).kind.int.unwrap()
+          ).typed(expr.type)
+        case mul_ints
+          EggComptimeValueKind.int(
+            args.get(0).kind.int.unwrap() * args.get(1).kind.int.unwrap()
+          ).typed(expr.type)
+        case div_ints
+          EggComptimeValueKind.int(
+            args.get(0).kind.int.unwrap() / args.get(1).kind.int.unwrap()
+          ).typed(expr.type)
+        case mod_ints
+          EggComptimeValueKind.int(
+            args.get(0).kind.int.unwrap() % args.get(1).kind.int.unwrap()
+          ).typed(expr.type)
+        case and_ints
+          EggComptimeValueKind.int(
+            args.get(0).kind.int.unwrap() & args.get(1).kind.int.unwrap()
+          ).typed(expr.type)
+        case or_ints
+          EggComptimeValueKind.int(
+            or(args.get(0).kind.int.unwrap(), args.get(1).kind.int.unwrap())
+          ).typed(expr.type)
+        case xor_ints
+          EggComptimeValueKind.int(
+            args.get(0).kind.int.unwrap() ^ args.get(1).kind.int.unwrap()
+          ).typed(expr.type)
+        case compare_ints
+          EggComptimeValueKind.enum_(EggEnumComptimeValue {
+            name =
+              switch
+                args.get(0).kind.int.unwrap() <=> args.get(1).kind.int.unwrap()
+              case less "less"
+              case equal "equal"
+              case greater "greater",
+            value = EggComptimeValue {
+              kind = EggComptimeValueKind.struct_(
+                map[String, EggComptimeValue]()
+              ),
+              type = type_nothing,
+            }.put_on_heap(),
+          }).typed(expr.type)
+        case box
+          EggComptimeValueKind.box(args.get(0).put_on_heap()).typed(expr.type)
+        case unbox args.get(0).kind.box.unwrap().*
+        case generate_array {
+          todo("comptime generate array")
+          | var len = args.get(0).kind.int.unwrap()
+          | var lambda = args.get(1).kind.lambda.unwrap()
+          | var items = list[EggComptimeValue]()
+          | for index in 0..len do
+          |   items.&.push(
+          |     lambda.function.run(
+          |       list(
+          |         EggComptimeValueKind.int(index).typed(type_int),
+          |         lambda.closure.*,
+          |       ).to_slice(),
+          |       egg,
+          |       res,
+          |     )?
+          |   )
+          | EggComptimeValueKind.array(items.to_slice()).typed(expr.type)
+        }
+        case array_get {
+          var array = args.get(0).kind.array.unwrap()
+          var index = args.get(1).kind.int.unwrap()
+          array.get(index)
+        }
+        case array_set {
+          var array = args.get(0).kind.array.unwrap()
+          var index = args.get(1).kind.int.unwrap()
+          var item  = args.get(2)
+          var copy = list[EggComptimeValue]()
+          for item in array do copy.&.push(item)
+          copy.&.set(index, item)
+          EggComptimeValueKind.array(copy.to_slice()).typed(expr.type)
+        }
+        case array_slice {
+          var array = args.get(0).kind.array.unwrap()
+          var range = args.get(1).kind.struct_.unwrap()
+          var start = range.get("start").kind.int.unwrap()
+          var end   = range.get("end").kind.int.unwrap()
+          EggComptimeValueKind.array(array.subslice(start..end))
+            .typed(expr.type)
+        }
+        case array_len
+          EggComptimeValueKind.int(args.get(0).kind.array.unwrap().len)
+            .typed(expr.type)
+        case call todo("comptime call builtin")
+        case type_of todo("comptime type_of builtin")
+        case type_info todo("comptime type_info builtin")
+        case static_to_dynamic todo("comptime static_to_dynamic builtin")
+        case dynamic_to_static todo("comptime static_to_dynamic builtin")
+        case crash return error[EggComptimeValue, Nothing]({})
+      }
+    }
+    case loop_(loop_) todo("comptime loop")
+    case continue_(args) todo("comptime continue")
+    case cast(inner) {
+      inner.run(context)?.cast(expr.type)
+      | return error[EggComptimeValue, Nothing]({})
+    }
+    case type(type) EggComptimeValueKind.type(type).typed(type_type)
+  )
+}
+
+fun cast(value: EggComptimeValue, type: EggType): EggComptimeValue {
+  if value.type == type then return value
+
+  switch type.kind()
+  case box(inner_type)
+    EggComptimeValueKind.box(
+      value.kind.box.unwrap().cast(inner_type).put_on_heap()
+    ).typed(type)
+  case array(item_type) {
+    var items = list[EggComptimeValue]()
+    for item in value.kind.array.unwrap() do
+      items.&.push(item.cast(item_type))
+    EggComptimeValueKind.array(items.to_slice()).typed(type)
+  }
+  case struct_(field_types) {
+    var fields = map[String, EggComptimeValue]()
+    for field in value.kind.struct_.unwrap() do
+      fields.&.put(field.key, field.value.cast(field_types.get(field.key)))
+    EggComptimeValueKind.struct_(fields).typed(type)
+  }
+  case enum_(variant_types) {
+    var enum_ = value.kind.enum_.unwrap()
+    EggComptimeValueKind.enum_(EggEnumComptimeValue {
+      name = enum_.name,
+      value = enum_.value.cast(variant_types.get(enum_.name)).put_on_heap(),
+    }).typed(type)
+  }
+  case lambda(lambda) todo("comptime lambda cast")
+  case never unreachable()
+  default panic("cast from {value.type} to {type}")
+}

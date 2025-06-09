@@ -1,0 +1,212 @@
+import mod.mar
+
+struct EggNamespace { ids: List[EggId] }
+fun egg_namespace(): EggNamespace { EggNamespace { ids = list[EggId]() } }
+fun get_index(namespace: &EggNamespace, id: EggId): Int {
+  for existing in namespace.ids.iter().enumerate() do
+    if id == existing.item then return existing.index
+  var index = namespace.ids.len
+  namespace.ids.&.push(id)
+  index
+}
+fun get(namespace: &EggNamespace, id: EggId): String {
+  var index = namespace.get_index(id)
+  var name = ""
+  loop {
+    var letter = #a + {{index % 26}.lower_byte()}
+    index = index / 26
+    name = "{letter}{name}"
+    if index == 0 then break
+    index = index - 1
+  }
+  name
+}
+
+fun write[W](writer: W, egg: Egg) {
+  var first = true
+  for fun_ in egg.funs do {
+    if first then first = false else writer."\n"
+    writer.write(fun_.key, fun_.value)
+  }
+}
+fun write[W](writer: W, signature: String, fun_: EggFun) {
+  writer."{pretty_signature_def(signature)} =\n"
+  writer.write(fun_.body, egg_namespace().&, indentation(1))
+}
+fun write[W](writer: W, id: EggId, namespace: &EggNamespace) {
+  writer."{ansi_escape}[32;1m{namespace.get(id)}"
+  | writer.":@{id.index}"
+  writer."{ansi_escape}[0m"
+}
+fun write[W](
+  writer: W, body: EggBody, namespace: &EggNamespace, indentation: Indentation
+) {
+  for param in body.params do {
+    writer."{indentation}"
+    writer.write(param, namespace)
+    writer.": {pretty_op("param")} {pretty(param.get().type)}\n"
+  }
+  for id in body.children do {
+    writer."{indentation}"
+    writer.write(id, namespace)
+    writer." =\n"
+    writer.write(id.get(), namespace, indentation + 1)
+    writer."\n"
+  }
+  writer.write(body.returns, namespace, indentation)
+}
+fun write[W](
+  writer: W, expr: EggExpr, namespace: &EggNamespace, indentation: Indentation
+) {
+  writer."{indentation}"
+  switch expr.op
+  case param unreachable()
+  case id(id) {
+    writer.write(id, namespace)
+    writer."  {pretty(expr.type)}"
+  }
+  case byte(byte) writer."{pretty_op("byte")} {byte}  {pretty(expr.type)}"
+  case int(int) writer."{pretty_op("int")} {int}  {pretty(expr.type)}"
+  case array(array) {
+    writer."{pretty_op("array")}  {pretty(expr.type)}"
+    for item in array do {
+      writer."\n"
+      writer.write(item, namespace, indentation + 1)
+    }
+  }
+  case struct_(struct_) {
+    writer."{pretty_op("&")}  {pretty(expr.type)}"
+    for field in struct_ do {
+      writer."\n{indentation + 1}{field.key}:\n"
+      writer.write(field.value, namespace, indentation + 2)
+    }
+  }
+  case member(member) {
+    writer."{pretty_op("member")} \"{member.name}\"  {pretty(expr.type)}\n"
+    writer.write(member.of.*, namespace, indentation + 1)
+  }
+  case enum_(enum_) {
+    writer."{pretty_op("|")} {enum_.name}:  {pretty(expr.type)}\n"
+    writer.write(enum_.value.*, namespace, indentation + 2)
+  }
+  case switch_(switch_) {
+    writer."{pretty_op("switch")}  {pretty(expr.type)}\n"
+    writer.write(switch_.condition.*, namespace, indentation + 1)
+    for case_ in switch_.cases do {
+      writer."\n{indentation + 1}{case_.key}:\n"
+      writer.write(case_.value, namespace, indentation + 2)
+    }
+  }
+  case lambda(lambda) {
+    writer."{pretty_op("lambda")}  {pretty(expr.type)}\n"
+    writer.write(lambda.*, namespace, indentation + 1)
+  }
+  case call(call) {
+    switch call.callee
+    case lambda(lambda) {
+      writer."{pretty_op("call lambda")}  {pretty(expr.type)}\n"
+      writer.write(lambda.*, namespace, indentation + 1)
+    }
+    case fun_(fun_) {
+      writer."{pretty_op("call")} {pretty_signature(fun_.signature)}"
+      if fun_.substitutions.substitutions.is_not_empty() then
+        writer." with {fun_.substitutions}"
+      writer."  {pretty(expr.type)}"
+    }
+    case builtin(builtin) {
+      writer."{pretty_op("call")} {pretty_signature(builtin.builtin.format())}"
+      if builtin.substitutions.substitutions.is_not_empty() then
+        writer." with {builtin.substitutions}"
+      writer."  {pretty(expr.type)}"
+    }
+
+    for arg in call.args do {
+      writer."\n"
+      writer.write(arg, namespace, indentation + 1)
+    }
+  }
+  case loop_(loop_) {
+    writer."
+      '{pretty_op("loop")} {pretty_signature(loop_.name)}
+      '  {pretty(expr.type)}\n
+      '{indentation + 1}initial:"
+    for arg in loop_.args do {
+      writer."\n"
+      writer.write(arg, namespace, indentation + 2)
+    }
+    writer."\n{indentation + 1}body:\n"
+    writer.write(loop_.body.*, namespace, indentation + 2)
+  }
+  case continue_(args) {
+    writer."{pretty_op("recurse")}  {pretty(expr.type)}"
+    for arg in args do {
+      writer."\n"
+      writer.write(arg, namespace, indentation + 1)
+    }
+  }
+  case cast(cast) {
+    writer."{pretty_op("cast")}  {pretty(expr.type)}\n"
+    writer.write(cast.*, namespace, indentation + 1)
+  }
+  case type(type) writer."{pretty_op("type")} {type}  {pretty(expr.type)}"
+}
+fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }
+
+struct IndentedLimited[T] { value: T, indentation: Indentation, limit: Int }
+fun indented[T](value: T): IndentedLimited[T] {
+  value.indented_limited(no_indentation, 80)
+}
+fun indented_limited[T](value: T, indentation: Indentation, limit: Int): IndentedLimited[T] {
+  IndentedLimited { value, indentation, limit }
+}
+fun write[W](writer: W, type: IndentedLimited[EggType]) {
+  var indentation = type.indentation
+  var limit = type.limit
+  writer."{indentation}"
+
+  var singleline = type.value.format()
+  if indentation.amount * 2 + singleline.len < limit then {
+    writer."{singleline}"
+    return {}
+  }
+
+  switch type.value.internal_kind()
+  case variable(name) writer."{name}"
+  case byte writer."Byte"
+  case int writer."Int"
+  case never writer."Never"
+  case type writer."Type"
+  case box(inner) writer."Box\n{inner.indented_limited(indentation + 1, limit)}"
+  case array(item)
+    writer."Array\n{item.indented_limited(indentation + 1, limit)}"
+  case struct_(fields) {
+    writer."&"
+    var first = true
+    for field in fields do {
+      if first then { writer." " first = false } else writer."\n{indentation + 1}"
+      var singleline = field.value.format()
+      if indentation.amount * 2 + field.key.len + 2 + singleline.len < limit then
+        writer."{field.key}: {singleline}"
+      else
+        writer."{field.key}:\n{field.value.indented_limited(indentation + 2, limit)}"
+    }
+  }
+  case enum_(variants) {
+    writer."|"
+    var first = true
+    for variant in variants do {
+      if first then { writer." " first = false } else writer."\n{indentation + 1}"
+      var singleline = variant.value.format()
+      if indentation.amount * 2 + variant.key.len + 2 + singleline.len < limit then
+        writer."{variant.key}: {singleline}"
+      else
+        writer."{variant.key}:\n{variant.value.indented_limited(indentation + 2, limit)}"
+    }
+  }
+  case lambda(lambda) {
+    writer."\\"
+    for arg in lambda.args do writer."\n{arg.indented_limited(indentation + 1, limit)}"
+    writer."\n{indentation + 1}->\n{lambda.return_type.indented_limited(indentation + 2, limit)})"
+  }
+  case recursive(level) writer."^{level}"
+}

@@ -1,0 +1,369 @@
+import ../plum.mar
+import builtins.mar
+import choose_order.mar
+import complexity.mar
+import inline.mar
+import run.mar
+| import specialize.mar
+import tree_shake.mar
+
+fun optimize(egg: Egg, entry_point: String): Egg {
+  var funs = map[String, EggFun]()
+  for signature in egg.choose_optimization_order(entry_point) do {
+    eprintln("Optimizing {signature}")
+    | stderr.write(signature, egg.funs.get(signature))
+    | eprintln()
+
+    funs.&.put(signature, egg.funs.get(signature).optimize(funs, egg))
+
+    eprintln("Optimized")
+    stderr.write(signature, funs.get(signature))
+    eprintln()
+  }
+  var egg = Egg { funs }
+
+  | Filter to functions that are used at all.
+  var funs = map[String, EggFun]()
+  for signature in egg.choose_optimization_order(entry_point) do
+    funs.&.put(signature, egg.funs.get(signature))
+  Egg { funs }
+  | egg
+}
+
+fun optimize(fun_: EggFun, optimized: Map[String, EggFun], egg: Egg): EggFun {
+  EggFun {
+    module = fun_.module,
+    name = fun_.name,
+    body = fun_.body.optimize(OptimizeEggFunContext {
+      optimized, egg, mapping = map[EggId, EggExpr]().&
+    }).tree_shake(),
+  }
+}
+
+struct OptimizeEggFunContext {
+  optimized: Map[String, EggFun], egg: Egg, mapping: &Map[EggId, EggExpr]
+}
+
+fun optimize(body: EggBody, context: OptimizeEggFunContext): EggBody {
+  var builder = egg_body_builder().&
+  var inner_context = OptimizeEggExprContext { fun_ = context, builder }
+  for id in body.params do
+    context.mapping.put(id, builder.push_param(id.get().type))
+  for id in body.children do
+    context.mapping.put(id, builder.push(id.get().optimize(inner_context)))
+  builder.finish(body.returns.optimize(inner_context)) | .tree_shake()
+}
+
+struct OptimizeEggExprContext {
+  fun_: OptimizeEggFunContext, builder: &EggBodyBuilder
+}
+
+fun optimize(expr: EggExpr, context: OptimizeEggExprContext): EggExpr {
+  | stderr."Optimizing:"
+  | stderr.write(expr.op, 0)
+  | stderr."\n"
+
+  var type = expr.type
+  var src = expr.src
+  switch expr.op
+  case param unreachable()
+  case id(id) context.fun_.mapping.get_maybe(id) or egg_id(id, type)
+  case byte(byte) egg_byte(byte)
+  case int(int) egg_int(int)
+  case array(items)
+    array(type, {
+      var new_items = list[EggExpr]()
+      for item in items do new_items.&.push(item.optimize(context))
+      new_items.to_slice()
+    })
+  case struct_(struct_)
+    struct_({
+      var fields = map[String, EggExpr]()
+      for field in struct_ do
+        fields.&.put(field.key, field.value.optimize(context))
+      fields
+    })
+  case member(member) member.of.optimize(context).member(member.name)
+  case enum_(enum_) enum_(type, enum_.name, enum_.value.optimize(context))
+  case switch_(switch_) {
+    switch_(switch_.condition.optimize(context), type, {
+      var cases = map[String, EggBody]()
+      for case_ in switch_.cases do
+        cases.&.put(case_.key, case_.value.optimize(context.fun_))
+      cases
+    })
+    | var condition =  mapping.get(switch_.condition)
+    | if builder.get(condition).op is enum_(enum_) then {
+    |   var case_ = switch_.cases.get(enum_.name)
+    |   mapping.put(case_.params.get(0) -> enum_.value)
+    |   for id in case_.children do
+    |     mapping.&.put(
+    |       id,
+    |       id.optimize(
+    |         inline, builder, mapping,
+    |         specializing, specializing_for, optimized, egg,
+    |       ),
+    |     )
+    |   return mapping.get(case_.returns)
+    | }
+    | builder.switch_(condition, expr.type, {
+    |   var cases = map[String, EggBody]()
+    |   for case_ in switch_.cases do
+    |     cases.&.put(
+    |       case_.key,
+    |       case_.value.optimize(
+    |         inline, mapping,
+    |         specializing, specializing_for, optimized, egg,
+    |       ),
+    |     )
+    |   cases
+    | })
+  }
+  case lambda(lambda) lambda(lambda.optimize(context.fun_))
+  case call(call) {
+    var callee =
+      switch call.callee
+      case lambda(lambda)
+        EggCallee.lambda(lambda.optimize(context).put_on_heap())
+      case fun_(fun_) EggCallee.fun_(fun_)
+      case builtin(builtin) EggCallee.builtin(builtin)
+
+    var args = list[EggExpr]()
+    for arg in call.args do args.&.push(arg.optimize(context))
+    var args = args.to_slice()
+
+    switch callee
+    case lambda(lambda) lambda.optimized_call(args, context)
+    case fun_(fun_) fun_.optimized_call(args, type, context)
+    case builtin(builtin) builtin.optimized_call(args, type, context)
+  }
+  case loop_(loop_) {
+    var args = list[EggExpr]()
+    for arg in loop_.args do args.&.push(arg.optimize(context))
+    loop_(loop_.name, args.to_slice(), loop_.body.*.optimize(context.fun_))
+  }
+  case continue_(continue_args) {
+    var args = list[EggExpr]()
+    for arg in continue_args do args.&.push(arg.optimize(context))
+    continue_(args.to_slice())
+  }
+  case cast(inner) inner.optimize(context).optimized_cast(type)
+  case type(type) egg_type(type)
+}
+
+fun optimized_cast(expr: EggExpr, type: EggType): EggExpr {
+  if expr.type == type then return expr
+  if expr.op is enum_(enum_) then {
+    var variant_type = type.kind().enum_.unwrap().get(enum_.name)
+    enum_(type, enum_.name, enum_.value.optimized_cast(variant_type))
+  } else
+    expr.cast(type)
+}
+
+| fun optimized_member(builder: &EggBodyBuilder, of: EggExpr, name: String): EggExpr {
+|   if of.op is struct_(fields)
+|   then fields.get(name)
+|   else EggOp.member(EggMember { of, name })
+| }
+
+fun optimized_call(
+  lambda: EggExpr, args: Slice[EggExpr], context: OptimizeEggExprContext
+): EggExpr {
+  if lambda.op is lambda(lambda) then {
+    var mapping = map[EggId, EggExpr]().&
+    for both in zip(lambda.params.iter(), args.iter()) do
+      mapping.put(both.a, both.b)
+    var inner_context = OptimizeEggExprContext {
+      fun_ = OptimizeEggFunContext {
+        optimized = context.fun_.optimized, egg = context.fun_.egg, mapping
+      },
+      builder = context.builder,
+    }
+    for id in lambda.children do
+      mapping.put(id, context.builder.push(id.get().optimize(inner_context)))
+    return lambda.returns.optimize(inner_context)
+  }
+  lambda.call(args)
+}
+
+fun optimized_call(
+  called: EggCalledFun, args: Slice[EggExpr], type: EggType,
+  context: OptimizeEggExprContext,
+): EggExpr {
+  eprintln("Optimized call of {called.signature}")
+  
+  | Try to run the function at compile time.
+  if
+    called.call_at_comptime(args, type, EggRunResources { exprs = 1000 }, context)
+  is ok(result)
+  then return result.to_expr()
+
+  | Possibly inline the function.
+  var signature = called.signature
+  if context.fun_.optimized.get_maybe(signature) is some(fun_) then {
+    var should_inline = fun_.complexity() < 50
+    if should_inline then {
+      eprintln("Inlining {signature}")
+      return called.inline(fun_, args, type, context)
+    } else eprintln("Not inlining {signature} coz too big")
+  } else eprintln("Not inlining {signature} coz not ready yet")
+
+  | if optimized.get_maybe(signature) is some(called) then {
+  |   | Create a specialized version of the lambda that only accepts values for the
+  |   | holes of the arguments instead of the arguments themselves. This specialized
+  |   | wrapper then simply reconstructs the original arguments and calls the
+  |   | original function. Using inlining, this is still useful.
+  |   var holey_args = list[HoleyResult]()
+  |   for arg in args do holey_args.&.push(arg.to_holey(builder.*))
+  |   var holey_args = holey_args.to_slice()
+  |   var any_useful = false
+  |   for arg in holey_args do if arg.value.is_useful() then any_useful = true
+  |   if any_useful then {
+  |     var specialized_signature = {
+  |       var b = string_builder().&
+  |       b."{signature} with"
+  |       for arg in holey_args do b." {arg.value}"
+  |       b.to_string()
+  |     }
+
+  |     if not(specializing.iter().&.contains(specialized_signature)) then {
+  |       specializing.push(specialized_signature)
+
+  |       var hole_types = list[EggType]()
+  |       for arg in holey_args do
+  |         for hole in arg.holes do hole_types.&.push(builder.get(hole).type)
+
+  |       var dag = dag[EggExpr]()
+  |       var builder = body_builder(dag.&).&
+
+  |       var holes = list[Id]()
+  |       for type in hole_types do holes.&.push(builder.param(type))
+
+  |       var reconstructed_args = list[Id]()
+  |       var holes = holes.iter().&
+  |       for hole in holey_args do
+  |         reconstructed_args.&.push(builder.fill(hole.value, holes))
+  |       var reconstructed_args = reconstructed_args.to_slice()
+
+  |       var inner_mapping = map[Id, Id]()
+  |       for both in zip(called.body.params.iter(), reconstructed_args.iter()) do
+  |         inner_mapping.&.put(both.a, both.b)
+  |       for id in called.body.children do
+  |         inner_mapping.&.put(
+  |           id,
+  |           id.optimize(
+  |             called.dag, false, builder, inner_mapping.&,
+  |             specializing, specializing_for, optimized, egg,
+  |           ),
+  |         )
+  |       var result = inner_mapping.get(called.body.returns)
+
+  |       var body = builder.finish(result)
+  |       var body = body.tree_shake(dag)
+
+  |       var specialized_fun = EggFun { dag, body }
+  |       optimized.&.put(specialized_signature, specialized_fun)
+  |     } else {
+  |       eprintln("Not specializing {specialized_signature} coz it already exists")
+  |     }
+
+  |     var holes = list[Id]()
+  |     for arg in holey_args do for id in arg.holes do holes.&.push(id)
+  |     return builder.call(
+  |       EggCallee.fun_(specialized_signature), holes.to_slice(), type
+  |     )
+  |   } else {
+  |     eprintln("not specializing call to {signature}")
+  |   }
+  | }
+
+  called.call(args, type)
+}
+
+fun call_at_comptime(
+  fun_: EggCalledFun, args: Slice[EggExpr], type: EggType,
+  resources: EggRunResources, context: OptimizeEggExprContext,
+): Result[EggComptimeValue, Nothing] {
+  var arg_values = list[EggComptimeValue]()
+  for arg in args do
+    arg_values.&.push(
+      arg.to_comptime() or return error[EggComptimeValue, Nothing]({})
+    )
+  var arg_values = arg_values.to_slice()
+
+  fun_.run(
+    arg_values,
+    RunEggContext { egg = context.fun_.egg, resources = resources.& },
+  )
+}
+
+fun specialize(
+  body: EggBody, substitutions: Substitutions, mapping: &Map[EggId, EggExpr]
+): EggBody {
+  var builder = egg_body_builder().&
+  for id in body.params do
+    mapping.put(id, builder.push_param(id.get().type))
+  for id in body.children do
+    mapping.put(id, builder.push(id.get().specialize(substitutions, mapping)))
+  builder.finish(body.returns.specialize(substitutions, mapping))
+}
+fun specialize(
+  expr: EggExpr, substitutions: Substitutions, mapping: &Map[EggId, EggExpr]
+): EggExpr {
+  var type = expr.type.specialize(substitutions)
+  var src = expr.src
+  switch expr.op
+  case param unreachable()
+  case id(id) mapping.get(id)
+  case byte(byte) egg_byte(byte)
+  case int(int) egg_int(int)
+  case array(items)
+    array(type, {
+      var new_items = list[EggExpr]()
+      for item in items do
+        new_items.&.push(item.specialize(substitutions, mapping))
+      new_items.to_slice()
+    })
+  case struct_(struct_)
+    struct_({
+      var fields = map[String, EggExpr]()
+      for field in struct_ do
+        fields.&.put(field.key, field.value.specialize(substitutions, mapping))
+      fields
+    })
+  case member(member)
+    member.of.specialize(substitutions, mapping).member(member.name)
+  case enum_(enum_)
+    enum_(type, enum_.name, enum_.value.specialize(substitutions, mapping))
+  case switch_(switch_)
+    switch_(switch_.condition.specialize(substitutions, mapping), type, {
+      var cases = map[String, EggBody]()
+      for case_ in switch_.cases do
+        cases.&.put(case_.key, case_.value.specialize(substitutions, mapping))
+      cases
+    })
+  case lambda(lambda) lambda(lambda.specialize(substitutions, mapping))
+  case recursive_lambda(lambda)
+    recursive_lambda(
+      lambda.name, lambda.body.specialize(substitutions, mapping)
+    )
+  case call(call) {
+    var callee =
+      switch call.callee
+      case lambda(lambda)
+        EggCallee.lambda(
+          lambda.specialize(substitutions, mapping).put_on_heap()
+        )
+      case fun_(fun_) EggCallee.fun_(fun_)
+      case builtin(builtin) EggCallee.builtin(builtin)
+      case recursive EggCallee.recursive
+
+    var args = list[EggExpr]()
+    for arg in call.args do args.&.push(arg.specialize(substitutions, mapping))
+    var args = args.to_slice()
+
+    callee.call(args, type)
+  }
+  case cast(inner) inner.specialize(substitutions, mapping).cast(type)
+  case type(type) egg_type(type.specialize(substitutions))
+}

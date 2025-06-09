@@ -23,7 +23,7 @@ fun to_yogurt(egg: Egg, entry_signature: String): Result[Yogurt, Error] {
 
 fun compile(
   fun_: EggFun, signature: String,
-  substitutions: Substitutions, context: &YogurtContext,
+  substitutions: Substitutions, context: &YogurtFunContext,
 ): Result[String, Error] {
   var compilation = context.start_compiling({
     var b = string_builder().&
@@ -48,11 +48,17 @@ fun compile(
   ok[String, Error](compilation.done(fun_))
 }
 
+struct YogurtFunContext {
+  mapping: &Map[Id, YogurtExpr],
+  dag: &Dag[YogurtExpr],
+  egg_dag: Dag[EggExpr],
+  substitutions: Substitutions,
+  global: &YogurtGlobalContext,
+}
+
 | Assumes that mappings for the parameters exist.
 fun compile(
-  egg_body: EggBody,
-  mapping: &Map[Id, Id], dag: &Dag[YogurtExpr],
-  egg_dag: Dag[EggExpr], substitutions: Substitutions, context: &YogurtContext
+  egg_body: EggBody, context: YogurtFunContext
 ): Result[YogurtBody, Error] {
   var body = body_builder(dag).&
   for egg_id in egg_body.params do
@@ -60,171 +66,112 @@ fun compile(
       egg_id, body.param(egg_dag.type_of(egg_id).specialize(substitutions))
     )
 
-  for egg_id in egg_body.children do {
-    var yogurt_id = egg_dag.get(egg_id)
-      .compile(mapping, body, egg_dag, substitutions, context)?
-    mapping.put(egg_id, yogurt_id)
-  }
+  for egg_id in egg_body.children do
+    mapping.put(egg_id, egg_dag.get(egg_id).compile(context)?)
+
   var body = body.finish(mapping.get(egg_body.returns))
   ok[YogurtBody, Error](body)
 }
 fun compile(
-  expr: EggExpr,
-  mapping: &Map[Id, Id], body: &YogurtBodyBuilder,
-  egg_dag: Dag[EggExpr], substitutions: Substitutions, context: &YogurtContext,
-): Result[Id, Error] {
+  expr: EggExpr, context: YogurtFunContext
+): Result[YogurtExpr, Error] {
+  var substitutions = context.substitutions
   var type = expr.type.specialize(substitutions)
-  ok[Id, Error](
-    switch expr.op
-    case param unreachable()
-    case int(int) body.int(int)
-    case string(string) body.string(string)
-    case struct_(struct_) {
-      var fields = map[String, Id]()
-      for field in struct_ do fields.&.put(field.key, mapping.get(field.value))
-      body.struct_(fields)
+
+  switch expr.op
+  case param unreachable()
+  case id(id) mapping.get(id)
+  case int(int) yogurt_int(int)
+  case string(string) yogurt_string(string)
+  case struct_(struct_) {
+    var fields = map[String, YogurtExpr]()
+    for field in struct_ do
+      fields.&.put(field.key, field.value.compile(context))
+    struct_(fields)
+  }
+  case member(member) member.of.compile(context).member(member.name)
+  case enum_(enum_) enum_(type, enum_.name, enum_.value.compile(context))
+  case switch_(switch_)
+    switch_.condition.compile(context).switch_(type, {
+      var cases = map[String, YogurtBody]()
+      for case_ in switch_.cases do
+        cases.&.put(case_.key, case_.value.compile(context)?)
+      cases
+    })
+  case lambda(lambda) lambda(lambda.compile(context))
+  case call(call) {
+    var args = list[YogurtExpr]()
+    for arg in call.args do args.compile(context)
+    var args = args.to_slice()
+
+    switch call.callee
+    case lambda(lambda) lambda.compile(context).call(args)
+    case fun_(matching_fun) {
+      var signature = matching_fun.signature
+      var merged_substitutions =
+        matching_fun.substitutions.specialize(substitutions)
+      var fun_ = context.egg.funs.get(signature)
+      compile(fun_, signature, merged_substitutions, context.global)?
+        .call(args, type)
     }
-    case member(member) body.member(mapping.get(member.of), member.name)
-    case enum_(enum_) body.enum_(type, enum_.name, mapping.get(enum_.value))
-    case switch_(switch_)
-      body.switch_(mapping.get(switch_.condition), type, {
-        var cases = map[String, YogurtBody]()
-        for case_ in switch_.cases do
-          cases.&.put(
-            case_.key,
-            case_.value
-              .compile(mapping, body.dag, egg_dag, substitutions, context)?,
+    case builtin(matching_builtin) {
+      var merged_substitutions =
+        matching_builtin.substitutions.specialize(substitutions)
+      var yogurt_builtin =
+        switch matching_builtin.builtin
+        case lower_byte YogurtBuiltin.lower_byte
+        case byte_to_int YogurtBuiltin.byte_to_int
+        case add_ints YogurtBuiltin.add_ints
+        case sub_ints YogurtBuiltin.sub_ints
+        case mul_ints YogurtBuiltin.mul_ints
+        case div_ints YogurtBuiltin.div_ints
+        case mod_ints YogurtBuiltin.mod_ints
+        case and_ints YogurtBuiltin.and_ints
+        case or_ints YogurtBuiltin.or_ints
+        case xor_ints YogurtBuiltin.xor_ints
+        case compare_ints YogurtBuiltin.compare_ints
+        case box YogurtBuiltin.box
+        case unbox YogurtBuiltin.unbox
+        case generate_array YogurtBuiltin.generate_array
+        case array_get YogurtBuiltin.array_get
+        case array_set YogurtBuiltin.array_set
+        case array_slice YogurtBuiltin.array_slice
+        case array_len YogurtBuiltin.array_len
+        case call
+          return ok[YogurtExpr, Error](
+            args.get(0).call(empty_slice[YogurtExpr]())
           )
-        cases
-      })
-    case lambda(lambda) {
-      | Lambdas get compiled into stand-alone functions that explicitly receive
-      | a "closure" parameter, which is a pointer to a struct containing all
-      | captured expressions from the outer scope. That struct is guaranteed to
-      | live on the heap.
+        case crash YogurtBuiltin.crash
+        case type_of
+          return ok[YogurtExpr, Error](yogurt_type(call.args.get(0).type))
+        case type_info {
+          var type =
+            matching_builtin.substitutions.substitutions.get("arg_0")
+              .specialize(substitutions)
+          return ok[YogurtExpr, Error](type_info(type))
+        }
+        case static_to_dynamic
+          return ok[YogurtExpr, Error](
+            call.args.get(0).static_to_dynamic(context.global)
+          )
+        case dynamic_to_static {
+          var type = merged_substitutions.substitutions.get("arg_1")
+          return ok[YogurtExpr, Error](
+            call.args.get(0).dynamic_to_static(type, context.global)
+          )
+        }
 
-      var captured = expr.captured_variables(egg_dag)
-
-      | Create the closure in the current scope.
-      var struct_containing_captured = {
-        var fields = map[String, Id]()
-        for entry in captured.iter().enumerate() do
-          fields.&.put("{entry.index}", mapping.get(entry.item))
-        body.struct_(fields)
-      }
-      var closure = body.box(struct_containing_captured)
-
-      | Compile the lambda into a function.
-      var lambda_mapping = map[Id, Id]().&
-      var lambda_dag = dag[YogurtExpr]().&
-      var lambda_body = body_builder(lambda_dag).&
-
-      for egg_id in lambda.params do {
-        var type = egg_dag.type_of(egg_id).specialize(substitutions)
-        var yogurt_id = lambda_body.param(type)
-        lambda_mapping.put(egg_id, yogurt_id)
-      }
-      var inner_closure = lambda_body.param(body.type_of(closure))
-      var inner_captured = lambda_body.unbox(inner_closure)
-      for entry in captured.iter().enumerate() do {
-        var inner_id = lambda_body.member(inner_captured, "{entry.index}")
-        lambda_mapping.&.put(entry.item, inner_id)
-      }
-
-      for egg_id in lambda.children do {
-        var yogurt_id = egg_dag.get(egg_id).compile(
-          lambda_mapping, lambda_body, egg_dag, substitutions, context
-        )?
-        lambda_mapping.put(egg_id, yogurt_id)
-      }
-      var lambda_body = lambda_body.finish(lambda_mapping.get(lambda.returns))
-
-      var signature = "{expr.src.module}.lambda@{expr.src.range.start}"
-      if substitutions.substitutions.size > 0 then
-        signature = "{signature} with {substitutions}"
-
-      context.define(signature, YogurtFun {
-        dag = lambda_dag.*, body = lambda_body
-      })
-
-      body.lambda(type, signature, closure)
+      yogurt_builtin.yogurt_call(args, type)
     }
-    case call(call) {
-      var args = list[Id]()
-      for arg in call.args do args.&.push(mapping.get(arg))
-      var args = args.to_slice()
-
-      switch call.callee
-      case lambda(lambda) body.call_lambda(mapping.get(lambda), args, type)
-      case fun_(matching_fun) {
-        var signature = matching_fun.signature
-        var merged_substitutions =
-          matching_fun.substitutions.specialize(substitutions)
-        var fun_ = context.egg.funs.get(signature)
-        var signature = compile(fun_, signature, merged_substitutions, context)?
-        body.call_fun(signature, args, type)
-      }
-      case builtin(matching_builtin) {
-        var merged_substitutions =
-          matching_builtin.substitutions.specialize(substitutions)
-        var yogurt_builtin =
-          switch matching_builtin.builtin
-          case lower_byte YogurtBuiltin.lower_byte
-          case byte_to_int YogurtBuiltin.byte_to_int
-          case add_ints YogurtBuiltin.add_ints
-          case sub_ints YogurtBuiltin.sub_ints
-          case mul_ints YogurtBuiltin.mul_ints
-          case div_ints YogurtBuiltin.div_ints
-          case mod_ints YogurtBuiltin.mod_ints
-          case and_ints YogurtBuiltin.and_ints
-          case or_ints YogurtBuiltin.or_ints
-          case xor_ints YogurtBuiltin.xor_ints
-          case compare_ints YogurtBuiltin.compare_ints
-          case box YogurtBuiltin.box
-          case unbox YogurtBuiltin.unbox
-          case generate_array YogurtBuiltin.generate_array
-          case array_get YogurtBuiltin.array_get
-          case array_set YogurtBuiltin.array_set
-          case array_slice YogurtBuiltin.array_slice
-          case array_len YogurtBuiltin.array_len
-          case call
-            return ok[Id, Error](body.call_lambda(
-              args.get(0), empty_slice[Id](), type
-            ))
-          case crash YogurtBuiltin.crash
-          case type_of
-            return ok[Id, Error](body.type(body.type_of(call.args.get(0))))
-          case type_info {
-            var type =
-              matching_builtin.substitutions.substitutions.get("arg_0")
-                .specialize(substitutions)
-            return ok[Id, Error](body.type_info(type))
-          }
-          case static_to_dynamic {
-            var type = merged_substitutions.substitutions.get("t")
-            return ok[Id, Error](body.static_to_dynamic(
-              call.args.get(0), type, context
-            ))
-          }
-          case dynamic_to_static {
-            var type = merged_substitutions.substitutions.get("arg_1")
-            return ok[Id, Error](body.dynamic_to_static(
-              call.args.get(0), type, context
-            ))
-          }
-
-        body.call_builtin(yogurt_builtin, args, type)
-      }
-    }
-    case cast(id)
-      body.cast(
-        mapping.get(id),
-        egg_dag.type_of(id).specialize(substitutions),
-        expr.type.specialize(substitutions),
-        context,
-      )
-    case type(type_value) body.type(type_value.specialize(substitutions))
-  )
+  }
+  case cast(what)
+    what.compile(context).yogurt_cast(
+      what.type.specialize(substitutions),
+      expr.type.specialize(substitutions),
+      context,
+    )
+  case type(type_value) yogurt_type(type_value.specialize(substitutions))
+  .ok[YogurtExpr, Error]()
 }
 
 fun captured_variables(expr: EggExpr, dag: Dag[EggExpr]): Slice[Id] {

@@ -5,151 +5,86 @@ fun compile(
   types: Map[String, EggTypeDef], toasts: Map[Module, Toast],
 ): Result[EggFun, Error] {
   var visible = visible()
-  var dag = dag[EggExpr]()
-  var body = body_builder(dag.&).&
+  var body = egg_body_builder().&
 
   var param_types = list[EggType]()
   for param in fun_.params do {
     var type = param.type.compile(module, types)?
-    var id = body.push_param(type, param.name.src)
-    visible.&.define(param.name.string, id)
+    visible.&.define(param.name.string, body.push_param(type))
     param_types.&.push(type)
   }
   var param_types = param_types.to_slice()
 
   | Push the type variables into the body.
-  for var_ in param_types.collect_type_variables() do {
-    var id = body.push(
-      EggOp.type(type_variable(var_)).expr(type_type, invalid_src)
-    )
-    visible.&.define(var_, id)
-  }
-  for param in fun_.params do {
-    var type = param.type.compile(module, types)?
-    if type == type_type then {
-      var id = body.push(
-        EggOp.type(type_variable(param.name.string))
-          .expr(type_type, invalid_src)
-      )
+  for var_ in param_types.collect_type_variables() do
+    visible.&.define(var_, body.push(egg_type(type_variable(var_))))
+  for param in fun_.params do
+    if param.type.compile(module, types)? == type_type then {
+      var id = body.push(egg_type(type_variable(param.name.string)))
       visible.&.define(param.name.string, id)
     }
-  }
 
-  var returned = fun_.body.compile(
-    body, module, visible.&, EggContext { toasts, types }
-  )?
+  var returned = fun_.body.compile(body, module, visible.&, EggContext { toasts, types })?
+  | var last = none[EggExpr]()
+  | for expr in fun_.body.body.unwrap() do
+  |   last = some(body.push(
+  |     expr.compile(body, module, visible.&, EggContext { toasts, types })?
+  |   ))
+  | var returned = last.unwrap()
 
   var return_type = fun_.return_type.compile(module, types)?
-  dag.type_of(returned).is_assignable_to(return_type) or
+  returned.type.is_assignable_to(return_type) or
     return error[EggFun, Error](error(
       "Function returns something different than its claimed return type:\n
       'Claimed: {return_type}\n
-      'Actual:  {dag.type_of(returned)}",
+      'Actual:  {returned.type}",
       fun_.name.src,
     ))
-  var returned = body.push_cast(returned, return_type, fun_.name.src)
+  var returned = returned.cast(return_type)
 
   var body = body.finish(returned)
 
-  ok[EggFun, Error](EggFun { module, name = fun_.name, dag, body })
+  ok[EggFun, Error](EggFun { module, name = fun_.name, body })
 }
-
-| Body Builder  
-
-struct EggBodyBuilder {
-  dag: &Dag[EggExpr], params: List[Id], children: List[Id]
-}
-fun body_builder(dag: &Dag[EggExpr]): _ {
-  EggBodyBuilder { dag, params = list[Id](), children = list[Id]() }
-}
-fun finish(body: EggBodyBuilder, id: Id): EggBody {
-  EggBody {
-    params = body.params.to_slice(),
-    children = body.children.to_slice(),
-    returns = id,
-  }
-}
-fun push_param(body: &EggBodyBuilder, type: EggType, src: Src): Id {
-  var id = body.dag.&.put(EggOp.param.expr(type, src))
-  body.params.&.push(id)
-  id
-}
-fun push(body: &EggBodyBuilder, expr: EggExpr): Id {
-  var id = body.dag.&.put(expr)
-  body.children.&.push(id)
-  id
-}
-fun get(body: EggBodyBuilder, id: Id): EggExpr { body.dag.get(id) }
-fun type_of(body: EggBodyBuilder, id: Id): EggType { body.dag.type_of(id) }
-fun src_of(body: EggBodyBuilder, id: Id): Src { body.get(id).src }
-
-| Compiling Functions  
 
 struct EggContext { toasts: Map[Module, Toast], types: Map[String, EggTypeDef] }
 
 fun compile(
   toast: ToastExpr, body: &EggBodyBuilder, module: Module, visible: &Visible,
   context: EggContext,
-): Result[Id, Error] {
-  ok[Id, Error](
+): Result[EggExpr, Error] {
+  ok[EggExpr, Error](
     switch toast
-    case todo(src) {
-      var message = body.push(EggOp.string("Todo").expr(type_string, src))
-      body.push(
-        EggOp.call(EggCall {
-          callee = EggCallee.builtin(EggCalledBuiltin {
-            builtin = EggBuiltin.crash,
-            substitutions = Substitutions {
-              substitutions = map[String, EggType]()
-            },
-          }),
-          args = list(message).to_slice(),
-        }).expr(type_never, src)
-      )
-    }
-    case int(int) body.push(EggOp.int(int.int).expr(type_int, int.src))
-    case string(string)
-      body.push(EggOp.string(string.string).expr(type_string, string.src))
-    case type(type)
-      body.push(
-        EggOp.type(type.compile(module, context.types)?)
-          .expr(type_type, invalid_src)
-      )
-    case struct_(struct_) {
-      var fields = map[String, Id]()
-      var types = map[String, EggType]()
+    case todo(src) egg_crash("Todo", type_never)
+    case int(int) egg_int(int.int)
+    case string(string) egg_string(string.string)
+    case type(type) egg_type(type.compile(module, context.types)?)
+    case struct_(struct_) struct_({
+      var fields = map[String, EggExpr]()
       for field in struct_.fields do {
         var name = field.name.string
         var value = field.value.compile(body, module, visible, context)?
-        var type = body.type_of(value)
+        var type = value.type
         if fields.contains(name) then
-          return error[Id, Error](error(
+          return error[EggExpr, Error](error(
             "{name} is in the struct multiple times.",
             struct_.ampersand.src,
           ))
         fields.&.put(name, value)
-        types.&.put(name, type)
       }
-
-      body.push(
-        EggOp.struct_(fields).expr(type_struct(types), struct_.ampersand.src)
-      )
-    }
+      fields
+    })
     case enum_(enum_) {
       var name = enum_.name.string
       var value = enum_.value.compile(body, module, visible, context)?
-      body.push(
-        EggOp.enum_(EggEnum { name, value })
-          .expr(type_enum(map(name -> body.type_of(value))), enum_.pipe.src)
-      )
+      enum_(type_enum(map(name -> value.type)), name, value)
     }
     case switch_(switch_) {
       | Compile the condition.
       var condition = switch_.condition.compile(body, module, visible, context)?
-      var condition_type = body.type_of(condition)
-      var variant_types = condition_type.kind().enum_
-        or return error[Id, Error](error(
-          "Switched on non-enum: {condition_type}", switch_.percent.src
+      var variant_types = condition.type.kind().enum_
+        or return error[EggExpr, Error](error(
+          "Switched on non-enum: {condition.type}", switch_.percent.src
         ))
 
       | Make sure that no variant is handled twice, that all variants are
@@ -157,7 +92,7 @@ fun compile(
       var handled_variants = set[String]()
       for case_ in switch_.cases do {
         if handled_variants.contains(case_.symbol.string) then
-          return error[Id, Error](error(
+          return error[EggExpr, Error](error(
             "{case_.symbol.string} is handled multiple times.",
             switch_.percent.src,
           ))
@@ -165,36 +100,36 @@ fun compile(
       }
       for variant in variant_types do
         if not(handled_variants.contains(variant.key)) then
-          return error[Id, Error](error(
+          return error[EggExpr, Error](error(
             "{variant.key} is not handled.", switch_.percent.src
           ))
       for variant in handled_variants do
         if not(variant_types.contains(variant)) then
-          return error[Id, Error](error(
+          return error[EggExpr, Error](error(
             "Handling non-existent variant {variant}.", switch_.percent.src
           ))
 
       | Compile the individual cases.
-      var case_compilers = map[String, Tuple2[EggBodyBuilder, Id]]()
+      var case_compilers = map[String, Tuple2[EggBodyBuilder, EggExpr]]()
       var case_types = list[EggType]()
       for case_ in switch_.cases do {
         var symbol = case_.symbol.string
         var snapshot = visible.snapshot()
-        var case_body = body_builder(body.dag).&
+        var case_body = egg_body_builder().&
         var payload_type = variant_types.get(symbol)
         if case_.payload is some(pattern) then {
-          var payload = case_body.push_param(payload_type, pattern.src())
+          var payload = case_body.push_param(payload_type)
           pattern.compile_pattern(payload, case_body, module, visible, context)?
         } else
-          case_body.push_param(payload_type, switch_.percent.src).ignore()
+          case_body.push_param(payload_type).ignore()
 
         var returns = case_.body.compile(case_body, module, visible, context)?
         visible.restore(snapshot)
         case_compilers.&.put(symbol, tuple(case_body.*, returns))
-        case_types.&.push(case_body.type_of(returns))
+        case_types.&.push(returns.type)
       }
       var common_type = union(case_types.to_slice()) or
-        return error[Id, Error](error(
+        return error[EggExpr, Error](error(
           "Couldn't union types {case_types}", switch_.percent.src
         ))
       var common_type = common_type
@@ -203,54 +138,36 @@ fun compile(
         var symbol = compiler.key
         var returns = compiler.value.b
         var compiler = compiler.value.a
-        var actual_return = compiler.&.push_cast(
-          returns, common_type, switch_.percent.src
-        )
+        var actual_return = returns.cast(common_type)
         cases.&.put(symbol, compiler.finish(actual_return))
       }
 
-      body.push(
-        EggOp.switch_(EggSwitch { condition, cases })
-          .expr(common_type, switch_.percent.src)
-      )
+      switch_(condition, common_type, cases)
     }
     case name(name)
       visible.lookup(name.string) or
-        return error[Id, Error](error(
+        return error[EggExpr, Error](error(
           "Unknown referenced name {name.string}.", name.src
         ))
     case lambda(lambda) {
       var snapshot = visible.snapshot()
-      var lambda_body = body_builder(body.dag).&
-      var param_types = list[EggType]()
+      var lambda_body = egg_body_builder().&
       for param in lambda.params do {
         var name = param.name.string
         var type = param.type.compile(module, context.types)?
-        var src = param.name.src
-        param_types.&.push(type)
-        visible.define(name, lambda_body.push_param(type, src))
+        visible.define(name, lambda_body.push_param(type))
       }
       var returns = lambda.body.compile(lambda_body, module, visible, context)?
-      var return_type = lambda_body.type_of(returns)
       var lambda_body = lambda_body.finish(returns)
       visible.restore(snapshot)
 
-      body.push(
-        EggOp.lambda(lambda_body).expr(
-          type_lambda(param_types.to_slice(), return_type),
-          lambda.backslash.src,
-        )
-      )
+      lambda(lambda_body)
     }
     case call(call) {
-      var args = list[Id]()
+      var args = list[EggExpr]()
       for arg in call.args do
         args.&.push(arg.compile(body, module, visible, context)?)
       var args = args.to_slice()
-
-      var arg_types = list[EggType]()
-      for arg in args do arg_types.&.push(body.type_of(arg))
-      var arg_types = arg_types.to_slice()
 
       | Find the function name -- either some(String) if it's a function call
       | or none if it's a lambda call.
@@ -258,18 +175,18 @@ fun compile(
         switch call.function.*
         case name(name) {
           | Check if the call is actually a struct access.
-          if arg_types.len == 1 then
-            if arg_types.get(0).internal_kind() is struct_(fields) then
+          if args.len == 1 then
+            if args.get(0).type.internal_kind() is struct_(fields) then
               if fields.contains(name.string) then {
                 | This is a struct access!
                 var struct_ = args.get(0)
-                var field_type = body.type_of(struct_).kind()
+                var field_type = struct_.type.kind()
                   .struct_.unwrap().get(name.string)
-                return ok[Id, Error](body.push(
+                return ok[EggExpr, Error](
                   EggOp.member(EggMember {
-                    of = struct_, name = name.string
+                    of = struct_.put_on_heap(), name = name.string
                   }).expr(field_type, name.src)
-                ))
+                )
               }
 
           switch visible.lookup(name.string)
@@ -283,18 +200,22 @@ fun compile(
         | Resolve arguments of the type Type.
         var arg_values = list[FunArg]()
         for i in 0..args.len do {
-          var type = arg_types.get(i)
+          var arg = args.get(i)
           arg_values.&.push(
-            if type == type_type then {
-              var type_value = body.get(args.get(i)).op.type or
-                return error[Id, Error](error(
+            if arg.type == type_type then {
+              var type_value = loop {
+                switch arg.op
+                case type(type) break(type)
+                case id(id) arg = id.get()
+                default return error[EggExpr, Error](error(
                   "Arguments of the type Type have to be known at 
-                  'compile-time.",
+                  'compile-time. Arg is {args.get(i).debug()}",
                   name.src
                 ))
-              FunArg { value = some(type_value), type }
+              }
+              FunArg { value = some(type_value), type = type_type }
             } else
-              FunArg { value = none[EggType](), type }
+              FunArg { value = none[EggType](), type = arg.type }
           )
         }
         var arg_values = arg_values.to_slice()
@@ -306,81 +227,62 @@ fun compile(
         )?
 
         | Cast arguments
-        var cast_args = list[Id]()
-        for both in zip(args.iter(), match.param_types.iter()) do {
-          var arg = both.a
-          var expected_type = both.b
-          cast_args.&.push(body.push_cast(arg, expected_type, name.src))
-        }
+        var cast_args = list[EggExpr]()
+        for both in zip(args.iter(), match.param_types.iter()) do
+          cast_args.&.push(both.a.cast(both.b))
         var args = cast_args.to_slice()
 
         | Call the function.
         switch match.kind
         case fun_(signature)
-          body.push(
-            EggOp.call(EggCall {
-              callee = EggCallee.fun_(EggCalledFun {
-                signature, substitutions = match.substitutions
-              }),
-              args,
-            }).expr(match.return_type, name.src)
-          )
+          EggCalledFun { signature, substitutions = match.substitutions }
+            .call(args, match.return_type)
         case builtin(builtin)
-          body.push(
-            EggOp.call(EggCall {
-              callee = EggCallee.builtin(EggCalledBuiltin {
-                builtin, substitutions = match.substitutions
-              }),
-              args,
-            }).expr(match.return_type, name.src)
-          )
+          EggCalledBuiltin { builtin, substitutions = match.substitutions }
+            .call(args, match.return_type)
       }
       case none { | lambda
         var lambda = call.function.compile(body, module, visible, context)?
-        var lambda_type = body.type_of(lambda)
+        var lambda_type = lambda.type
         var lambda_type = lambda_type.kind().lambda or
-          return return error[Id, Error](error(
-            "Tried to call non-lambda: {lambda_type}",
-            call.function.src(),
+          return return error[EggExpr, Error](error(
+            "Tried to call non-lambda: {lambda_type}", call.function.src()
           ))
 
         | Cast arguments
-        var cast_args = list[Id]()
+        var cast_args = list[EggExpr]()
         for both in zip(args.iter(), lambda_type.args.iter()) do {
           var arg = both.a
           var expected_type = both.b
-          body.type_of(arg).is_assignable_to(expected_type) or
-            return return error[Id, Error](error(
+          arg.type.is_assignable_to(expected_type) or
+            return return error[EggExpr, Error](error(
               "Tried to call lambda with wrong types.", call.function.src()
             ))
-          cast_args.&.push(
-            body.push_cast(arg, expected_type, call.function.src())
-          )
+          cast_args.&.push(arg.cast(expected_type))
         }
         var args = cast_args.to_slice()
 
-        body.push(
-          EggOp.call(EggCall { callee = EggCallee.lambda(lambda), args })
-            .expr(lambda_type.return_type, call.function.src())
-        )
+        lambda.call(args)
       }
     }
     case var_(var_) {
-      var value = var_.right.compile(body, module, visible, context)?
+      var value = body.push(var_.right.compile(body, module, visible, context)?)
       var_.left.compile_pattern(value, body, module, visible, context)?
       value
     }
     case body(exprs) {
-      var last = none[Id]()
-      for expr in exprs do
+      var last = none[EggExpr]()
+      for expr in exprs do {
+        if last is some(last) then body.push(last).ignore()
         last = some(expr.compile(body, module, visible, context)?)
+      }
       last or unreachable()
     }
   )
 }
 
 fun compile_pattern(
-  pattern: ToastExpr, matched: Id,
+  pattern: ToastExpr, matched: EggExpr,
   body: &EggBodyBuilder, module: Module, visible: &Visible,
   context: EggContext,
 ): Result[Nothing, Error] {
@@ -402,10 +304,9 @@ fun compile_pattern(
       "Type literals can't be in patterns.", pattern.src()
     ))
   case struct_(pattern) {
-    var type = body.type_of(matched)
-    var struct_fields = type.kind().struct_ or
+    var struct_fields = matched.type.kind().struct_ or
       return error[Nothing, Error](error(
-        "Tried to use a struct pattern to match on {type}.",
+        "Tried to use a struct pattern to match on {matched.type}.",
         pattern.ampersand.src,
       ))
 
@@ -413,7 +314,7 @@ fun compile_pattern(
       struct_fields.contains(field.name.string) or
         return error[Nothing, Error](error(
           "Patterns refers to {field.name.string}, but that is not in the 
-          'struct {type}.",
+          'struct {matched.type}.",
           field.name.src,
         ))
     var matched_fields = set[String]()
@@ -421,15 +322,16 @@ fun compile_pattern(
     for field in struct_fields do
       matched_fields.contains(field.key) or
         return error[Nothing, Error](error(
-          "Pattern does not bind field {field.key} of {type}.",
+          "Pattern does not bind field {field.key} of {matched.type}.",
           pattern.ampersand.src,
         ))
 
+    var matched = body.push(matched)
     for field in pattern.fields do {
       var field_type = struct_fields.get(field.name.string)
       var matched_value = body.push(
         EggOp.member(EggMember {
-          of = matched, name = field.name.string
+          of = matched.put_on_heap(), name = field.name.string
         }).expr(field_type, field.name.src)
       )
       field.value.compile_pattern(
@@ -456,11 +358,4 @@ fun compile_pattern(
     ))
   case body
     error[Nothing, Error](error("Bodies can't be in patterns.", pattern.src()))
-}
-
-fun push_cast(body: &EggBodyBuilder, from: Id, to_type: EggType, src: Src): Id {
-  var from_type = body.type_of(from)
-  if from_type == to_type
-  then from
-  else body.push(EggOp.cast(from).expr(to_type, src))
 }

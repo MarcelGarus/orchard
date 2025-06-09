@@ -17,34 +17,43 @@
 |   been flattened to a series of small expressions.
 
 import ../plum.mar
+import builder.mar
+import format.mar
 import type.mar
 
 struct Egg { funs: Map[String, EggFun] }
 
-struct EggFun {
-  module: Module, name: StringAndSrc, dag: Dag[EggExpr], body: EggBody
+struct EggFun { module: Module, name: StringAndSrc, body: EggBody }
+struct EggBody {
+  params: Slice[EggId], children: Slice[EggId], returns: EggExpr
 }
-struct EggBody { params: Slice[Id], children: Slice[Id], returns: Id }
 
 struct EggExpr { op: EggOp, type: EggType, src: Src }
 enum EggOp {
   param,
+  id: EggId,
+  byte: Byte,
   int: Int,
-  string: String,
-  struct_: Map[String, Id],
+  array: Slice[EggExpr],
+  struct_: Map[String, EggExpr],
   member: EggMember,
   enum_: EggEnum,
   switch_: EggSwitch,
-  lambda: EggBody,
+  lambda: &EggBody,
   call: EggCall,
-  cast: Id,
+  loop_: EggLoop,
+  continue_: Slice[EggExpr],
+  cast: &EggExpr,
   type: EggType,
 }
-struct EggMember { of: Id, name: String }
-struct EggSwitch { condition: Id, cases: Map[String, EggBody] }
-struct EggEnum { name: String, value: Id }
-struct EggCall { callee: EggCallee, args: Slice[Id] }
-enum EggCallee { lambda: Id, fun_: EggCalledFun, builtin: EggCalledBuiltin }
+struct EggMember { of: &EggExpr, name: String }
+struct EggSwitch { condition: &EggExpr, cases: Map[String, EggBody] }
+struct EggEnum { name: String, value: &EggExpr }
+struct EggLoop { name: String, body: &EggBody, args: Slice[EggExpr] }
+struct EggCall { callee: EggCallee, args: Slice[EggExpr] }
+enum EggCallee {
+  lambda: &EggExpr, fun_: EggCalledFun, builtin: EggCalledBuiltin
+}
 struct EggCalledFun { signature: String, substitutions: Substitutions }
 struct EggCalledBuiltin { builtin: EggBuiltin, substitutions: Substitutions }
 
@@ -88,129 +97,23 @@ fun expr(op: EggOp, type: EggType, src: Src): EggExpr {
   EggExpr { op, type, src }
 }
 
+| For simplicity, there's a global store of all Egg expressions.
+
+var egg_exprs = list[EggExpr]().&
+struct EggId { index: Int }
+
+fun create(expr: EggExpr): EggId {
+  var id = EggId { index = egg_exprs.len }
+  egg_exprs.push(expr)
+  id
+}
+fun get(id: EggId): EggExpr { egg_exprs.get(id.index) }
+fun hash[H](hasher: H, id: EggId) { hasher.hash(id.index) }
+fun ==(a: EggId, b: EggId): Bool { a.index == b.index }
+
 fun param_types(fun_: EggFun): Slice[EggType] {
   var types = list[EggType]()
   for param in fun_.body.params do types.&.push(fun_.dag.type_of(param))
   types.to_slice()
 }
-fun return_type(fun_: EggFun): EggType { fun_.dag.type_of(fun_.body.returns) }
-
-fun write[W](writer: W, egg: Egg) {
-  var first = true
-  for fun_ in egg.funs do {
-    var signature = fun_.key
-    var fun_ = fun_.value
-    if first then first = false else writer."\n"
-    writer."{signature} = "
-    writer.write(fun_.body, fun_.dag, 1)
-  }
-}
-fun write[W](writer: W, body: EggBody, dag: Dag[EggExpr], indentation: Int) {
-  for param in body.params do writer." {param}"
-  writer."\n"
-  for id in body.children do {
-    for i in 0..indentation do writer."  "
-    writer."{id}: {dag.type_of(id)} = "
-    writer.write(dag.get(id), dag, indentation)
-    writer."\n"
-  }
-  for i in 0..indentation do writer."  "
-  writer."{body.returns}"
-}
-fun write[W](writer: W, expr: EggExpr, dag: Dag[EggExpr], indentation: Int) {
-  switch expr.op
-  case param(param) writer."param {param}"
-  case int(int) writer."int {int}"
-  case string(string) writer."string {string.debug()}"
-  case struct_(struct_) {
-    writer."&"
-    for field in struct_ do writer." {field.key}: {field.value}"
-  }
-  case member(member) writer."{member.of}.{member.name}"
-  case enum_(enum_) writer."| {enum_.name}: {enum_.value}"
-  case switch_(switch_) {
-    writer."switch {switch_.condition}"
-    for case_ in switch_.cases do {
-      writer."\n"
-      for i in 0..indentation do writer."  "
-      writer."  {case_.key}:"
-      writer.write(case_.value, dag, indentation + 2)
-    }
-  }
-  case lambda(lambda) {
-    writer."lambda"
-    writer.write(lambda, dag, indentation + 1)
-  }
-  case call(call) {
-    writer."call {call.callee}"
-    for arg in call.args do writer." {arg}"
-  }
-  case cast(cast) writer."cast {cast}"
-  case type(type) writer."type {type}"
-}
-fun write[W](writer: W, callee: EggCallee) {
-  switch callee
-  case lambda(lambda) writer."{lambda}"
-  case fun_(fun_) writer."{fun_.signature} with {fun_.substitutions}"
-  case builtin(builtin) writer."{builtin.builtin} with {builtin.substitutions}"
-}
-fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }
-
-struct IndentedLimited[T] { value: T, indentation: Indentation, limit: Int }
-fun indented[T](value: T): IndentedLimited[T] {
-  value.indented_limited(no_indentation, 80)
-}
-fun indented_limited[T](value: T, indentation: Indentation, limit: Int): IndentedLimited[T] {
-  IndentedLimited { value, indentation, limit }
-}
-fun write[W](writer: W, type: IndentedLimited[EggType]) {
-  var indentation = type.indentation
-  var limit = type.limit
-  writer."{indentation}"
-
-  var singleline = type.value.format()
-  if indentation.amount * 2 + singleline.len < limit then {
-    writer."{singleline}"
-    return {}
-  }
-
-  switch type.value.internal_kind()
-  case variable(name) writer."{name}"
-  case byte writer."Byte"
-  case int writer."Int"
-  case never writer."Never"
-  case type writer."Type"
-  case box(inner) writer."Box\n{inner.indented_limited(indentation + 1, limit)}"
-  case array(item)
-    writer."Array\n{item.indented_limited(indentation + 1, limit)}"
-  case struct_(fields) {
-    writer."&"
-    var first = true
-    for field in fields do {
-      if first then { writer." " first = false } else writer."\n{indentation + 1}"
-      var singleline = field.value.format()
-      if indentation.amount * 2 + field.key.len + 2 + singleline.len < limit then
-        writer."{field.key}: {singleline}"
-      else
-        writer."{field.key}:\n{field.value.indented_limited(indentation + 2, limit)}"
-    }
-  }
-  case enum_(variants) {
-    writer."|"
-    var first = true
-    for variant in variants do {
-      if first then { writer." " first = false } else writer."\n{indentation + 1}"
-      var singleline = variant.value.format()
-      if indentation.amount * 2 + variant.key.len + 2 + singleline.len < limit then
-        writer."{variant.key}: {singleline}"
-      else
-        writer."{variant.key}:\n{variant.value.indented_limited(indentation + 2, limit)}"
-    }
-  }
-  case lambda(lambda) {
-    writer."\\"
-    for arg in lambda.args do writer."\n{arg.indented_limited(indentation + 1, limit)}"
-    writer."\n{indentation + 1}->\n{lambda.return_type.indented_limited(indentation + 2, limit)})"
-  }
-  case recursive(level) writer."^{level}"
-}
+fun return_type(fun_: EggFun): EggType { fun_.body.returns.type }
