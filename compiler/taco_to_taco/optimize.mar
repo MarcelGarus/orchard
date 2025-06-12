@@ -287,6 +287,9 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     var args = children.without_last()
     var body = children.last()
     if not(body.recurses()) then return body.fill(holes, args).optimize(context)
+    
+    | Find fixpoints
+    var recurses = body.find_fixpoints(holes, args, context)
   }
   | case recurse(recurse_args) {
   |   var args = list[EggExpr]()
@@ -402,26 +405,6 @@ fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
 |   if of.op is struct_(fields)
 |   then fields.get(name)
 |   else EggOp.member(EggMember { of, name })
-| }
-
-| fun optimized_call(
-|   lambda: EggExpr, args: Slice[EggExpr], context: OptimizeTacoContext
-| ): EggExpr {
-|   if lambda.op is lambda(lambda) then {
-|     var mapping = map[EggId, EggExpr]().&
-|     for both in zip(lambda.params.iter(), args.iter()) do
-|       mapping.put(both.a, both.b)
-|     var inner_context = OptimizeTacoContext {
-|       fun_ = OptimizeTacoContext {
-|         optimized = context.fun_.optimized, egg = context.fun_.egg, mapping
-|       },
-|       builder = context.builder,
-|     }
-|     for id in lambda.children do
-|       mapping.put(id, context.builder.push(id.get().optimize(inner_context)))
-|     return lambda.returns.optimize(inner_context)
-|   }
-|   lambda.call(args)
 | }
 
 | fun call_at_comptime(

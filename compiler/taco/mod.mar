@@ -111,9 +111,59 @@ enum TacoOp {              | children:
   recurse,                 | next args
 }
 
+var black_hole = Hole { id = -1, type = type_never }
+
 fun ==(a: Hole, b: Hole): Bool { a.id == b.id }
 fun hash[H](hasher: H, hole: Hole) { hasher.hash(hole.id) }
 
+fun ==(a: TacoExpr, b: TacoExpr): Bool {
+  a.type == b.type and a.op == b.op and a.children == b.children
+}
+fun ==(a: TacoOp, b: TacoOp): Bool {
+  switch a
+  case hole(a)           if b is hole(b) then a == b else false
+  case type(a)           if b is type(b) then a == b else false
+  case byte(a)           if b is byte(b) then a == b else false
+  case int(a)            if b is int(b)  then a == b else false
+  case array             b is array
+  case struct_           b is struct_
+  case enum_(a)          if b is enum_(b) then a == b else false
+  case lambda(a)         if b is lambda(b) then a == b else false
+  case box               b is box
+  case member(a)         if b is member(b) then a == b else false
+  case switch_(a)        if b is switch_(b) then a == b else false
+  case call_fun(a)       if b is call_fun(b) then a == b else false
+  case call_lambda       b is call_lambda
+  case body              b is body
+  case cast              b is cast
+  case lower_byte        b is lower_byte
+  case byte_to_int       b is byte_to_int
+  case add_ints          b is add_ints
+  case sub_ints          b is sub_ints
+  case mul_ints          b is mul_ints
+  case div_ints          b is div_ints
+  case mod_ints          b is mod_ints
+  case and_ints          b is and_ints
+  case or_ints           b is or_ints
+  case xor_ints          b is xor_ints
+  case compare_ints      b is compare_ints
+  case unbox             b is unbox
+  case generate_array    b is generate_array
+  case array_get         b is array_get
+  case array_set         b is array_set
+  case array_slice       b is array_slice
+  case array_len         b is array_len
+  case crash             b is crash
+  case type_info         b is type_info
+  case static_to_dynamic b is static_to_dynamic
+  case dynamic_to_static b is dynamic_to_static
+  case recursive(a)      if b is recursive(b) then a == b else false
+  case recurse           b is recurse
+}
+fun ==(a: TacoCalledFun, b: TacoCalledFun): Bool {
+  a.signature == b.signature and
+    a.substitutions.substitutions == b.substitutions.substitutions
+}
 
 | TODO: Think about what to do with this.
 
@@ -165,39 +215,4 @@ fun hash[H](hasher: H, hole: Hole) { hasher.hash(hole.id) }
 | fun hash[H](hasher: H, body: TacoBody) {
 |   for param in body.params do hasher.hash(param)
 |   for child in body.children do hasher.hash(child)
-| }
-
-| fun ==(a: TacoExpr, b: TacoExpr): Bool {
-|   if a.type != b.type then return false
-|   if a.src != b.src then return false
-
-|   switch a.op
-|   case param      b.op is param
-|   case id(a)      if b.op is id(b)      then a == b else false
-|   case byte(a)    if b.op is byte(b)    then a == b else false
-|   case int(a)     if b.op is int(b)     then a == b else false
-|   case array(a)   if b.op is array(b)   then a == b else false
-|   case struct_(a) if b.op is struct_(b) then a == b else false
-|   case member(a)  if b.op is member(b)  then a.name == b.name and a.of.* == b.of.* else false
-|   case enum_(a)   if b.op is enum_(b)   then a.name == b.name and a.value.* == b.value.* else false
-|   case switch_(a) if b.op is switch_(b) then a.condition.* == b.condition.* and a.cases == b.cases else false
-|   case lambda(a)  if b.op is lambda(b)  then a.* == b.* else false
-|   case call(a)    if b.op is call(b)    then a.callee == b.callee and a.args == b.args else false
-|   case recursive(a) if b.op is recursive(b) then a.name == b.name and a.args == b.args and a.body.* == b.body.* else false
-|   case recurse(a) if b.op is recurse(b) then a == b else false
-|   case cast(a)    if b.op is cast(b)    then a.* == b.* else false
-|   case type(a)    if b.op is type(b)    then a == b else false
-| }
-| fun ==(a: TacoBody, b: TacoBody): Bool {
-|   a.params == b.params or return false
-|   a.children == b.children or return false
-| }
-| fun ==(a: TacoCallee, b: TacoCallee): Bool {
-|   switch a
-|   case lambda(a)  if b is lambda(b)  then a.* == b.* else false
-|   case fun_(a)    if b is fun_(b)    then a.signature == b.signature else false
-|   case builtin(a) if b is builtin(b) then a.builtin == b.builtin else false
-| }
-| fun ==(a: TacoBuiltin, b: TacoBuiltin): Bool {
-|   a.debug().format() == b.debug().format()
 | }

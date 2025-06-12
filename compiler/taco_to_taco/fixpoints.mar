@@ -1,0 +1,90 @@
+import mod.mar
+
+fun find_recurses(expr: TacoExpr): Slice[TacoExpr] {
+  var recurses = list[TacoExpr]()
+  expr.collect_recurses(recurses.&)
+  recurses.to_slice()
+}
+fun collect_recurses(expr: TacoExpr, out: &List[TacoExpr]) {
+  if expr.op is recurse then out.push(expr)
+  if not(expr.op is recursive) then
+    for child in expr.children do child.collect_recurses(out)
+}
+
+fun find_fixpoints(
+  body: TacoExpr, params: Slice[Hole], args: Slice[TacoExpr],
+  context: OptimizeTacoContext,
+): Slice[TacoExpr] {
+  eprintln("\nFinding fixpoints")
+  var namespace = holes_namespace()
+  eprintln("Args:")
+  for arg in args do {
+    stderr.write(arg, namespace.&, no_indentation)
+    eprintln()
+  }
+
+  var recurses = body.fill(params, args).optimize(context).find_recurses()
+  var candidates = args
+  for recurse in recurses do {
+    eprintln("Recurse:")
+    for arg in recurse.children do {
+      stderr.write(arg, namespace.&, no_indentation)
+      eprintln()
+    }
+    candidates = union(candidates, recurse.children)
+  }
+
+  eprintln("Candidates:")
+  for arg in candidates do {
+    stderr.write(arg, namespace.&, no_indentation)
+    eprintln()
+  }
+  eprintln()
+  | body.find_fixpoints(params, candidates, context)
+  candidates
+}
+
+fun union(a: Slice[TacoExpr], b: Slice[TacoExpr]): Slice[TacoExpr] {
+  var all = list[TacoExpr]()
+  for both in zip(a.iter(), b.iter()) do
+    all.&.push(union(both.a, both.b))
+  all.to_slice()
+}
+fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
+  | if a.op is hole(a) then if hole.id == black_hole.id then
+  |   return taco_hole(Hole { id = black_hole.id, type = a.type })
+
+  if a.op is hole(a) then if b.op is hole(b) then
+    if a == b then return taco_hole(a)
+  if a.op is type(a) then if b.op is type(b) then
+    if a == b then return taco_type(a)
+  if a.op is int(a) then if b.op is int(b) then
+    if a == b then return taco_int(a)
+  if a.op is byte(a) then if b.op is byte(b) then
+    if a == b then return taco_byte(a)
+  if a.op is array then if b.op is array then
+    if a.children.len == b.children.len then
+      return array(a.type, union(a.children, b.children))
+  if a.op is struct_ then if b.op is struct_ then
+    return expr(TacoOp.struct_, union(a.children, b.children), a.type)
+  if a.op is enum_(a_name) then if b.op is enum_(b_name) then
+    if a_name == b_name then
+      return enum_(
+        a.type, a_name, union(a.children.get(0), b.children.get(0))
+      )
+  if a.op is lambda(a_holes) then if b.op is lambda(b_holes) then {
+    var a_body = a.children.get(0)
+    var b_body = b.children.get(0).fill({
+      var fillings = map[Hole, TacoExpr]()
+      for both in zip(a_holes.iter(), b_holes.iter()) do
+        fillings.&.put(both.a, taco_hole(both.b))
+      fillings
+    })
+    if a_body == b_body then return a
+  }
+  if a.op is box then if b.op is box then
+    return box(union(a.children.get(0), b.children.get(0)))
+
+  | taco_hole(hole(a.type))
+  taco_hole(Hole { id = black_hole.id, type = a.type })
+}
