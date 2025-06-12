@@ -1,5 +1,12 @@
 import mod.mar
 
+var next_hole = 0
+fun hole(type: EggType): Hole {
+  var hole = Hole { id = next_hole, type }
+  next_hole = next_hole + 1
+  hole
+}
+
 fun expr(op: TacoOp, children: Slice[TacoExpr], type: EggType): TacoExpr {
   TacoExpr { op, children, type }
 }
@@ -17,8 +24,15 @@ fun array(item_type: EggType, items: Slice[TacoExpr]): TacoExpr {
 fun struct_(fields: Map[String, TacoExpr]): TacoExpr {
   var field_types = map[String, EggType]()
   for field in fields do field_types.&.put(field.key, field.value.type)
-  | TODO: sort fields, add them as children
-  expr(TacoOp.struct_, type_struct(field_types))
+
+  var keys = list[String]()
+  for field in fields do keys.&.push(field.key)
+  keys.to_slice().&.sort()
+
+  var field_values = list[TacoExpr]()
+  for key in keys do field_values.&.push(fields.get(key))
+
+  expr(TacoOp.struct_, field_values.to_slice(), type_struct(field_types))
 }
 fun enum_(type: EggType, name: String, value: TacoExpr): TacoExpr {
   expr(TacoOp.enum_(name), list(value).to_slice(), type)
@@ -43,21 +57,21 @@ fun switch_(
   condition: TacoExpr,
   type: EggType, holes: Slice[Hole], cases: Map[String, TacoExpr],
 ): TacoExpr {
-  | TODO: also add cases, sorted alphabetically
-  expr(
-    TacoOp.switch_(holes),
-    list(condition).to_slice(),
-    type,
-  )
+  var keys = list[String]()
+  for case_ in cases do keys.&.push(case_.key)
+  keys.to_slice().&.sort()
+  
+  var children = list(condition)
+  for key in keys do children.&.push(cases.get(key))
+
+  expr(TacoOp.switch_(holes), children.to_slice(), type)
 }
 fun call(
   fun_: TacoCalledFun, args: Slice[TacoExpr], return_type: EggType
 ): TacoExpr {
   expr(TacoOp.call_fun(fun_), args, return_type)
 }
-fun call(
-  lambda: TacoExpr, args: Slice[TacoExpr], return_type: EggType
-): TacoExpr {
+fun call(lambda: TacoExpr, args: Slice[TacoExpr]): TacoExpr {
   expr(
     TacoOp.call_lambda,
     {
@@ -69,7 +83,7 @@ fun call(
   )
 }
 fun body(children: Slice[TacoExpr]): TacoExpr {
-  expr(TacoOp.body, children, children.last.type)
+  expr(TacoOp.body, children, children.last().type)
 }
 fun cast(inner: TacoExpr, type: EggType): TacoExpr {
   expr(TacoOp.cast, list(inner).to_slice(), type)
@@ -114,17 +128,21 @@ fun generate_array(length: TacoExpr, generator: TacoExpr): TacoExpr {
   expr(
     TacoOp.generate_array,
     list(length, generator).to_slice(),
-    type_array(generator.type.kind().lambda.return_type),
+    type_array(generator.type.kind().lambda.unwrap().return_type),
   )
 }
 fun array_get(array: TacoExpr, index: TacoExpr): TacoExpr {
-  expr(TacoOp.array_get, list(array, index).to_slice(), array.type.kind().array)
+  expr(
+    TacoOp.array_get,
+    list(array, index).to_slice(),
+    array.type.kind().array.unwrap(),
+  )
 }
 fun array_set(array: TacoExpr, index: TacoExpr, item: TacoExpr): TacoExpr {
   expr(TacoOp.array_set, list(array, index, item).to_slice(), array.type)
 }
-fun array_slice(array: TacoExpr, start: TacoExpr, end: TacoExpr): TacoExpr {
-  expr(TacoOp.array_slice, list(array, start, end).to_slice(), array.type)
+fun array_slice(array: TacoExpr, range: TacoExpr): TacoExpr {
+  expr(TacoOp.array_slice, list(array, range).to_slice(), array.type)
 }
 fun array_len(array: TacoExpr): TacoExpr {
   expr(TacoOp.array_len, list(array).to_slice(), type_int)
