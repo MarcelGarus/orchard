@@ -1,0 +1,207 @@
+| Tree of Abstract Code for Optimizations  
+|
+| A representation of code that is more suitable for optimizations.
+|
+| There's a fundamental tradeoff between debuggability and performance of code.
+| If you want to debug your code or understand its behavior, please interpret
+| the previous compiler stage (the Egg). This will give you exactly the behavior
+| you specified in your code and it contains source code locations for all
+| expressions.
+| From this compiler stage onwards, we go for performance. The compiler is free
+| to change the code however it likes as long as it maintains the observable
+| effects of the program:
+| 
+| - If the program returned a value, it should still produce the same value.
+| - If the program crashed, it should still crash.
+| 
+| Note that this specification of behavior does not include anything about
+| memory consumption, internally used functions, or whether computations occur
+| in the first place. This means, you should not rely on that. Even if a crash
+| occurs, the call stack is not guaranteed to contain the functions you'd
+| naively expect (or even a subset of them), so you can display a nice
+| backtrace. Instead, you should interpret the previous compiler stage to find
+| out why code crashed.
+| This might seem harsh, but it gives the compiler freedom to do nice
+| optimizations, including running code during compilation, inlining functions,
+| or even changing the order that functions are called in (if both crash, that
+| would change the stack trace if you could rely on it).
+| 
+| Unlike the Egg, the Taco is a strict tree, not just a DAG. Expressions are not
+| connected via IDs, but are copied into wherever they are used. Having no IDs
+| to worry about makes optimizations easier: They are just a mapping from one
+| self-contained expression to another. It does lead to duplication, which will
+| be removed in another stage.
+
+import ../plum.mar
+import builder.mar
+import format.mar
+
+struct Taco { entry_point: TacoCalledFun, funs: Map[String, TacoFun] }
+struct TacoCalledFun { signature: String, substitutions: Substitutions }
+
+struct TacoFun { args: Slice[Hole], body: TacoExpr }
+struct TacoExpr { op: TacoOp, children: Slice[TacoExpr], type: EggType }
+struct Hole { id: Int, type: EggType }
+enum TacoOp {              | children:
+  | A hole in an expression means that some concrete value will need to be
+  | filled in here, provided by the outer environment. This hole is introduced
+  | by i.e. function arguments or switch bindings.
+  hole: Hole,              | -
+
+  | Expressions for the basic data structures.
+  type: EggType,           | -
+  byte: Byte,              | -
+  int: Int,                | -
+  array,                   | items
+  struct_,                 | fields in alphabetical order
+  enum_: String,           | value
+  lambda: Slice[Hole],     | expr
+  box,                     | expr to box
+
+  | Expressions for navigating the data structures.
+  member: String,          | of (receiver of which we get the member)
+  switch_: Slice[Hole],    | condition, cases in alphabetical order
+  call_fun: TacoCalledFun, | args
+  call_lambda,             | lambda, args
+  
+  | Signifies that a bunch of expressions should be executed, but evaluates only
+  | to the last one. As the taco doesn't have any form of IDs to refer to other
+  | expressions, all expressions except the last one are only kept around
+  | because they may panic and that is observable behavior.
+  body,                    | exprs
+
+  | Type-casts an expression to a compatible type.
+  cast,                    | expr
+
+  | Byte-related builtins.
+  lower_byte,              | int
+  byte_to_int,             | byte
+
+  | Int-related builtins.
+  add_ints,                | two ints
+  sub_ints,                | two ints
+  mul_ints,                | two ints
+  div_ints,                | two ints
+  mod_ints,                | two ints
+  and_ints,                | two ints
+  or_ints,                 | two ints
+  xor_ints,                | two ints
+  compare_ints,            | two ints
+
+  | Boxing-related builtins (the box builtin is already covered above).
+  unbox,                   | box
+
+  | Array-related builtins.
+  generate_array,          | length, generator
+  array_get,               | array, index
+  array_set,               | array, index, item
+  array_slice,             | array, start, end
+  array_len,               | array
+
+  | Crashes the VM.
+  crash,                   | -
+
+  | Type-stuff.
+  type_info,               | type
+  static_to_dynamic,       | expr
+  dynamic_to_static,       | dynamic expr
+
+  | recursive: TacoRecursive,
+  | recurse: Slice[TacoExpr],
+}
+| struct TacoRecursive { name: String, body: &TacoBody, args: Slice[TacoExpr] }
+
+
+| TODO: Think about what to do with this.
+
+| fun hash[H](hasher: H, expr: TacoExpr) {
+|   hasher.hash(expr.op.debug().format())
+|   switch expr.op
+|   case param {}
+|   case id(id) hasher.hash(id)
+|   case byte(byte) hasher.hash(byte)
+|   case int(int) hasher.hash(int)
+|   case array(items) for item in items do hasher.hash(item)
+|   case struct_(fields)
+|     for field in fields do {
+|       hasher.hash(field.key)
+|       hasher.hash(field.value)
+|     }
+|   case member(member) {
+|     hasher.hash(member.of.*)
+|     hasher.hash(member.name)
+|   }
+|   case enum_(enum_) {
+|     hasher.hash(enum_.name)
+|     hasher.hash(enum_.value.*)
+|   }
+|   case switch_(switch_) {
+|     hasher.hash(switch_.condition.*)
+|     var num = 0
+|     for case_ in switch_.cases do {
+|       num = num ^ case_.key.hash() + case_.value.hash()
+|     }
+|     hasher.hash(num)
+|   }
+|   case lambda(lambda) hasher.hash(lambda.*)
+|   case call(call) {
+|     switch call.callee
+|     case lambda(lambda) hasher.hash(lambda.*)
+|     case fun_(fun_) hasher.hash(fun_.signature)
+|     case builtin(builtin) hasher.hash(builtin.debug().format())
+|     for arg in call.args do hasher.hash(arg)
+|   }
+|   case recursive(recursive) {
+|     for arg in recursive.args do hasher.hash(arg)
+|     hasher.hash(recursive.body.*)
+|   }
+|   case recurse(args) for arg in args do hasher.hash(arg)
+|   case cast(inner) hasher.hash(inner.*)
+|   case type(type) hasher.hash(type)
+| }
+| fun hash[H](hasher: H, body: TacoBody) {
+|   for param in body.params do hasher.hash(param)
+|   for child in body.children do hasher.hash(child)
+| }
+
+| fun ==(a: TacoExpr, b: TacoExpr): Bool {
+|   if a.type != b.type then return false
+|   if a.src != b.src then return false
+
+|   switch a.op
+|   case param      b.op is param
+|   case id(a)      if b.op is id(b)      then a == b else false
+|   case byte(a)    if b.op is byte(b)    then a == b else false
+|   case int(a)     if b.op is int(b)     then a == b else false
+|   case array(a)   if b.op is array(b)   then a == b else false
+|   case struct_(a) if b.op is struct_(b) then a == b else false
+|   case member(a)  if b.op is member(b)  then a.name == b.name and a.of.* == b.of.* else false
+|   case enum_(a)   if b.op is enum_(b)   then a.name == b.name and a.value.* == b.value.* else false
+|   case switch_(a) if b.op is switch_(b) then a.condition.* == b.condition.* and a.cases == b.cases else false
+|   case lambda(a)  if b.op is lambda(b)  then a.* == b.* else false
+|   case call(a)    if b.op is call(b)    then a.callee == b.callee and a.args == b.args else false
+|   case recursive(a) if b.op is recursive(b) then a.name == b.name and a.args == b.args and a.body.* == b.body.* else false
+|   case recurse(a) if b.op is recurse(b) then a == b else false
+|   case cast(a)    if b.op is cast(b)    then a.* == b.* else false
+|   case type(a)    if b.op is type(b)    then a == b else false
+| }
+| fun ==(a: TacoBody, b: TacoBody): Bool {
+|   a.params == b.params or return false
+|   a.children == b.children or return false
+| }
+| fun ==(a: TacoCallee, b: TacoCallee): Bool {
+|   switch a
+|   case lambda(a)  if b is lambda(b)  then a.* == b.* else false
+|   case fun_(a)    if b is fun_(b)    then a.signature == b.signature else false
+|   case builtin(a) if b is builtin(b) then a.builtin == b.builtin else false
+| }
+| fun ==(a: TacoBuiltin, b: TacoBuiltin): Bool {
+|   a.debug().format() == b.debug().format()
+| }
+
+fun param_types(fun_: TacoFun): Slice[EggType] {
+  var types = list[EggType]()
+  for param in fun_.body.params do types.&.push(fun_.dag.type_of(param))
+  types.to_slice()
+}
+fun return_type(fun_: TacoFun): EggType { fun_.body.returns.type }

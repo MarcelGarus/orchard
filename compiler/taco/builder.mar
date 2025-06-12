@@ -1,0 +1,158 @@
+import mod.mar
+
+fun expr(op: TacoOp, children: Slice[TacoExpr], type: EggType): TacoExpr {
+  TacoExpr { op, children, type }
+}
+fun expr(op: TacoOp, type: EggType): TacoExpr {
+  op.expr(empty_slice[TacoExpr](), type)
+}
+
+fun taco_hole(hole: Hole): TacoExpr { expr(TacoOp.hole(hole), hole.type) }
+fun taco_type(type: EggType): TacoExpr { expr(TacoOp.type(type), type_type) }
+fun taco_byte(byte: Byte): TacoExpr { expr(TacoOp.byte(byte), type_byte) }
+fun taco_int(int: Int): TacoExpr { expr(TacoOp.int(int), type_int) }
+fun array(item_type: EggType, items: Slice[TacoExpr]): TacoExpr {
+  expr(TacoOp.array, items, type_array(item_type))
+}
+fun struct_(fields: Map[String, TacoExpr]): TacoExpr {
+  var field_types = map[String, EggType]()
+  for field in fields do field_types.&.put(field.key, field.value.type)
+  | TODO: sort fields, add them as children
+  expr(TacoOp.struct_, type_struct(field_types))
+}
+fun enum_(type: EggType, name: String, value: TacoExpr): TacoExpr {
+  expr(TacoOp.enum_(name), list(value).to_slice(), type)
+}
+fun lambda(params: Slice[Hole], body: TacoExpr): TacoExpr {
+  var param_types = list[EggType]()
+  for param in params do param_types.&.push(param.type)
+  var type = type_lambda(param_types.to_slice(), body.type)
+  expr(TacoOp.lambda(params), list(body).to_slice(), type)
+}
+fun box(inner: TacoExpr): TacoExpr {
+  expr(TacoOp.box, list(inner).to_slice(), type_box(inner.type))
+}
+fun member(of: TacoExpr, name: String): TacoExpr {
+  expr(
+    TacoOp.member(name),
+    list(of).to_slice(),
+    of.type.kind().struct_.unwrap().get(name),
+  )
+}
+fun switch_(
+  condition: TacoExpr,
+  type: EggType, holes: Slice[Hole], cases: Map[String, TacoExpr],
+): TacoExpr {
+  | TODO: also add cases, sorted alphabetically
+  expr(
+    TacoOp.switch_(holes),
+    list(condition).to_slice(),
+    type,
+  )
+}
+fun call(
+  fun_: TacoCalledFun, args: Slice[TacoExpr], return_type: EggType
+): TacoExpr {
+  expr(TacoOp.call_fun(fun_), args, return_type)
+}
+fun call(
+  lambda: TacoExpr, args: Slice[TacoExpr], return_type: EggType
+): TacoExpr {
+  expr(
+    TacoOp.call_lambda,
+    {
+      var children = list(lambda)
+      for arg in args do children.&.push(arg)
+      children.to_slice()
+    },
+    lambda.type.kind().lambda.unwrap().return_type,
+  )
+}
+fun body(children: Slice[TacoExpr]): TacoExpr {
+  expr(TacoOp.body, children, children.last.type)
+}
+fun cast(inner: TacoExpr, type: EggType): TacoExpr {
+  expr(TacoOp.cast, list(inner).to_slice(), type)
+}
+fun lower_byte(int: TacoExpr): TacoExpr {
+  expr(TacoOp.lower_byte, list(int).to_slice(), type_byte)
+}
+fun byte_to_int(byte: TacoExpr): TacoExpr {
+  expr(TacoOp.byte_to_int, list(byte).to_slice(), type_int)
+}
+fun add(a: TacoExpr, b: TacoExpr): TacoExpr {
+  expr(TacoOp.add_ints, list(a, b).to_slice(), type_int)
+}
+fun subtract(a: TacoExpr, b: TacoExpr): TacoExpr {
+  expr(TacoOp.sub_ints, list(a, b).to_slice(), type_int)
+}
+fun multiply(a: TacoExpr, b: TacoExpr): TacoExpr {
+  expr(TacoOp.mul_ints, list(a, b).to_slice(), type_int)
+}
+fun divide(a: TacoExpr, b: TacoExpr): TacoExpr {
+  expr(TacoOp.div_ints, list(a, b).to_slice(), type_int)
+}
+fun modulo(a: TacoExpr, b: TacoExpr): TacoExpr {
+  expr(TacoOp.mod_ints, list(a, b).to_slice(), type_int)
+}
+fun and_(a: TacoExpr, b: TacoExpr): TacoExpr {
+  expr(TacoOp.and_ints, list(a, b).to_slice(), type_int)
+}
+fun or_(a: TacoExpr, b: TacoExpr): TacoExpr {
+  expr(TacoOp.or_ints, list(a, b).to_slice(), type_int)
+}
+fun xor(a: TacoExpr, b: TacoExpr): TacoExpr {
+  expr(TacoOp.xor_ints, list(a, b).to_slice(), type_int)
+}
+fun compare(a: TacoExpr, b: TacoExpr): TacoExpr {
+  expr(TacoOp.compare_ints, list(a, b).to_slice(), type_ordering)
+}
+fun unbox(box: TacoExpr): TacoExpr {
+  expr(TacoOp.unbox, list(box).to_slice(), box.type.kind().box.unwrap())
+}
+fun generate_array(length: TacoExpr, generator: TacoExpr): TacoExpr {
+  expr(
+    TacoOp.generate_array,
+    list(length, generator).to_slice(),
+    type_array(generator.type.kind().lambda.return_type),
+  )
+}
+fun array_get(array: TacoExpr, index: TacoExpr): TacoExpr {
+  expr(TacoOp.array_get, list(array, index).to_slice(), array.type.kind().array)
+}
+fun array_set(array: TacoExpr, index: TacoExpr, item: TacoExpr): TacoExpr {
+  expr(TacoOp.array_set, list(array, index, item).to_slice(), array.type)
+}
+fun array_slice(array: TacoExpr, start: TacoExpr, end: TacoExpr): TacoExpr {
+  expr(TacoOp.array_slice, list(array, start, end).to_slice(), array.type)
+}
+fun array_len(array: TacoExpr): TacoExpr {
+  expr(TacoOp.array_len, list(array).to_slice(), type_int)
+}
+fun taco_crash(type: EggType): TacoExpr { expr(TacoOp.crash, type) }
+fun type_info(type: TacoExpr): TacoExpr {
+  expr(TacoOp.type_info, list(type).to_slice(), type_type)
+}
+fun static_to_dynamic(static: TacoExpr): TacoExpr {
+  expr(TacoOp.static_to_dynamic, list(static).to_slice(), type_dynamic)
+}
+fun dynamic_to_static(dynamic: TacoExpr, type: EggType): TacoExpr {
+  expr(TacoOp.dynamic_to_static, list(dynamic).to_slice(), type)
+}
+
+| fun recursive(name: String, args: Slice[TacoExpr], body: TacoBody): TacoExpr {
+|   TacoOp.recursive(TacoRecursive { name, args, body = body.put_on_heap() })
+|     .expr(body.returns.type)
+| }
+| fun recurse(args: Slice[TacoExpr], type: EggType): TacoExpr {
+|   TacoOp.recurse(args).expr(type)
+| }
+
+fun taco_string(string: String): TacoExpr {
+  var bytes = list[TacoExpr]()
+  for byte in string.bytes() do bytes.&.push(taco_byte(byte))
+  struct_(map("utf8_bytes" -> array(type_byte, bytes.to_slice())))
+}
+var taco_nothing = struct_(map[String, TacoExpr]())
+var taco_true = enum_(type_bool, "true", taco_nothing)
+var taco_false = enum_(type_bool, "false", taco_nothing)

@@ -1,11 +1,4 @@
-import ../plum.mar
-import builtins.mar
-import choose_order.mar
-import complexity.mar
-import inline.mar
-import run.mar
-| import specialize.mar
-import tree_shake.mar
+import mod.mar
 
 fun optimize(egg: Egg, entry_point: String): Egg {
   var funs = map[String, EggFun]()
@@ -22,12 +15,79 @@ fun optimize(egg: Egg, entry_point: String): Egg {
   }
   var egg = Egg { funs }
 
+  | Monomorphize functions.
+  | var egg = egg.monomorphize(entry_point, no_substitutions)
+
   | Filter to functions that are used at all.
   var funs = map[String, EggFun]()
   for signature in egg.choose_optimization_order(entry_point) do
     funs.&.put(signature, egg.funs.get(signature))
   Egg { funs }
   | egg
+}
+
+fun choose_optimization_order(egg: Egg, entry_point: String): Slice[String] {
+  var order = list[String]()
+  var stack = list[String]()
+  entry_point.choose_optimization_order(egg, order.&, stack.&)
+  order.to_slice()
+}
+fun choose_optimization_order(
+  signature: String, egg: Egg, out: &List[String], stack: &List[String]
+) {
+  if out.iter().&.contains(signature) then return {}
+  if stack.iter().&.contains(signature) then return {}
+  stack.push(signature)
+  var fun_ = egg.funs.get(signature)
+  fun_.body.choose_optimization_order(egg, out, stack)
+  out.push(signature)
+  stack.pop().ignore()
+}
+fun choose_optimization_order(
+  body: EggBody, egg: Egg, out: &List[String], stack: &List[String]
+) {
+  for id in body.children do
+    id.get().choose_optimization_order(egg, out, stack)
+  body.returns.choose_optimization_order(egg, out, stack)
+}
+fun choose_optimization_order(
+  expr: EggExpr, egg: Egg, out: &List[String], stack: &List[String]
+) {
+  switch expr.op
+  case param {}
+  case id {}
+  case byte {}
+  case int {}
+  case array(array)
+    for item in array do item.choose_optimization_order(egg, out, stack)
+  case struct_(struct_)
+    for field in struct_ do
+      field.value.choose_optimization_order(egg, out, stack)
+  case member(member) member.of.choose_optimization_order(egg, out, stack)
+  case enum_(enum_) enum_.value.choose_optimization_order(egg, out, stack)
+  case switch_(switch_) {
+    switch_.condition.choose_optimization_order(egg, out, stack)
+    for case_ in switch_.cases do
+      case_.value.choose_optimization_order(egg, out, stack)
+  }
+  case lambda(lambda) lambda.choose_optimization_order(egg, out, stack)
+  case call(call) {
+    switch call.callee
+    case lambda(lambda) lambda.choose_optimization_order(egg, out, stack)
+    case fun_(called)
+      called.signature.choose_optimization_order(egg, out, stack)
+    case builtin {}
+
+    for arg in call.args do arg.choose_optimization_order(egg, out, stack)
+  }
+  case recursive(recursive) {
+    for arg in recursive.args do arg.choose_optimization_order(egg, out, stack)
+    recursive.body.choose_optimization_order(egg, out, stack)
+  }
+  case recurse(args)
+    for arg in args do arg.choose_optimization_order(egg, out, stack)
+  case cast(inner) inner.choose_optimization_order(egg, out, stack)
+  case type {}
 }
 
 fun optimize(fun_: EggFun, optimized: Map[String, EggFun], egg: Egg): EggFun {
@@ -137,15 +197,17 @@ fun optimize(expr: EggExpr, context: OptimizeEggExprContext): EggExpr {
     case fun_(fun_) fun_.optimized_call(args, type, context)
     case builtin(builtin) builtin.optimized_call(args, type, context)
   }
-  case loop_(loop_) {
+  case recursive(recursive) {
     var args = list[EggExpr]()
-    for arg in loop_.args do args.&.push(arg.optimize(context))
-    loop_(loop_.name, args.to_slice(), loop_.body.*.optimize(context.fun_))
+    for arg in recursive.args do args.&.push(arg.optimize(context))
+    recursive(
+      recursive.name, args.to_slice(), recursive.body.*.optimize(context.fun_)
+    )
   }
-  case continue_(continue_args) {
+  case recurse(recurse_args) {
     var args = list[EggExpr]()
-    for arg in continue_args do args.&.push(arg.optimize(context))
-    continue_(args.to_slice())
+    for arg in recurse_args do args.&.push(arg.optimize(context))
+    recurse(args.to_slice(), type)
   }
   case cast(inner) inner.optimize(context).optimized_cast(type)
   case type(type) egg_type(type)
@@ -191,7 +253,7 @@ fun optimized_call(
   context: OptimizeEggExprContext,
 ): EggExpr {
   eprintln("Optimized call of {called.signature}")
-  
+
   | Try to run the function at compile time.
   if
     called.call_at_comptime(args, type, EggRunResources { exprs = 1000 }, context)
@@ -201,7 +263,7 @@ fun optimized_call(
   | Possibly inline the function.
   var signature = called.signature
   if context.fun_.optimized.get_maybe(signature) is some(fun_) then {
-    var should_inline = fun_.complexity() < 50
+    var should_inline = fun_.complexity() < 10
     if should_inline then {
       eprintln("Inlining {signature}")
       return called.inline(fun_, args, type, context)

@@ -15,13 +15,12 @@ fun inline(
     builder = egg_body_builder().&,
     mapping = map[EggId, EggExpr]().&,
   })
-  if body.has_continue()
-  then loop_(called.signature, args, body)
+  if body.recurses()
+  then recursive(called.signature, args, body)
   else lambda(body).optimized_call(args, context)
 }
 struct InlineFunContext {
   anchor: String, substitutions: Substitutions,
-  builder: &EggBodyBuilder, mapping: &Map[EggId, EggExpr],
 }
 fun reify_rec(body: EggBody, context: InlineFunContext): EggBody {
   var context = InlineFunContext {
@@ -81,7 +80,7 @@ fun reify_rec(expr: EggExpr, context: InlineFunContext): EggExpr {
         if fun_.signature == context.anchor then {
           var args = list[EggExpr]()
           for arg in call.args do args.&.push(arg.reify_rec(context))
-          return continue_(args.to_slice())
+          return recurse(args.to_slice(), type)
         } else EggCallee.fun_(fun_)
       case builtin(builtin) EggCallee.builtin(builtin)
 
@@ -91,58 +90,60 @@ fun reify_rec(expr: EggExpr, context: InlineFunContext): EggExpr {
 
     callee.call(args, type)
   }
-  case loop_(loop_) {
+  case recursive(recursive) {
     var args = list[EggExpr]()
-    for arg in loop_.args do args.&.push(arg.reify_rec(context))
-    loop_(loop_.name, args.to_slice(), loop_.body.reify_rec(context))
+    for arg in recursive.args do args.&.push(arg.reify_rec(context))
+    recursive(
+      recursive.name, args.to_slice(), recursive.body.reify_rec(context)
+    )
   }
-  case continue_(continue_args)
-    continue_({
+  case recurse(recurse_args)
+    recurse({
       var args = list[EggExpr]()
-      for arg in continue_args do args.&.push(arg.reify_rec(context))
+      for arg in recurse_args do args.&.push(arg.reify_rec(context))
       args.to_slice()
-    })
+    }, type)
   case cast(inner) inner.reify_rec(context).cast(type)
   case type(type) egg_type(type.specialize(context.substitutions))
 }
 
-fun has_continue(body: EggBody): Bool {
-  for id in body.children do if id.get().has_continue() then return true
-  body.returns.has_continue()
+fun recurses(body: EggBody): Bool {
+  for id in body.children do if id.get().recurses() then return true
+  body.returns.recurses()
 }
-fun has_continue(expr: EggExpr): Bool {
+fun recurses(expr: EggExpr): Bool {
   switch expr.op
   case param unreachable()
   case id false
   case byte false
   case int false
   case array(array) {
-    for item in array do if item.has_continue() then return true
+    for item in array do if item.recurses() then return true
     false
   }
   case struct_(struct_) {
     for field in struct_ do
-      if field.value.has_continue() then return true
+      if field.value.recurses() then return true
     false
   }
-  case member(member) member.of.has_continue()
-  case enum_(enum_) enum_.value.has_continue()
+  case member(member) member.of.recurses()
+  case enum_(enum_) enum_.value.recurses()
   case switch_(switch_) {
-    if switch_.condition.has_continue() then return true
+    if switch_.condition.recurses() then return true
     for case_ in switch_.cases do
-      if case_.value.has_continue() then return true
+      if case_.value.recurses() then return true
     false
   }
-  case lambda(lambda) lambda.has_continue()
+  case lambda(lambda) lambda.recurses()
   case call(call) {
-    for arg in call.args do if arg.has_continue() then return true
+    for arg in call.args do if arg.recurses() then return true
     switch call.callee
-    case lambda(lambda) lambda.has_continue()
+    case lambda(lambda) lambda.recurses()
     case fun_ false
     case builtin false
   }
-  case loop_ false
-  case continue_ true
-  case cast(inner) inner.has_continue()
+  case recursive false | recurses internally, but not to the outer root expr
+  case recurse true
+  case cast(inner) inner.recurses()
   case type false
 }

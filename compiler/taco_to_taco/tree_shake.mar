@@ -55,8 +55,8 @@ fun is_pure(expr: EggExpr): Bool {
       case crash false
     }
   }
-  case loop_ false
-  case continue_ false
+  case recursive false
+  case recurse false
   case cast(inner) inner.is_pure()
   case type true
 }
@@ -85,11 +85,11 @@ fun collect_referenced(expr: EggExpr, out: &Set[EggId]) {
     if call.callee is lambda(lambda) then lambda.collect_referenced(out)
     for arg in call.args do arg.collect_referenced(out)
   }
-  case loop_(loop_) {
-    for arg in loop_.args do arg.collect_referenced(out)
-    loop_.body.collect_referenced(out)
+  case recursive(recursive) {
+    for arg in recursive.args do arg.collect_referenced(out)
+    recursive.body.collect_referenced(out)
   }
-  case continue_(args) for arg in args do arg.collect_referenced(out)
+  case recurse(args) for arg in args do arg.collect_referenced(out)
   case cast(inner) inner.collect_referenced(out)
   case type {}
 }
@@ -100,8 +100,8 @@ fun collect_referenced(body: EggBody, out: &Set[EggId]) {
 
 fun tree_shake(body: EggBody): EggBody {
   | We go through the body from the bottom to the top, tracking which locals are
-  | referenced later in the body. This way, when we encounter an expression, we
-  | know immediately whether we can throw it away.
+  | referenced in the body. This way, when we encounter an expression, we know
+  | immediately whether it is used later on or whether we can throw it away.
   var referenced_later_on = set[EggId]()
   body.returns.collect_referenced(referenced_later_on.&)
 

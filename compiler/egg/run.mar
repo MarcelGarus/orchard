@@ -1,0 +1,200 @@
+import mod.mar
+
+enum EggValue {
+  type: EggType,
+  byte: Byte,
+  int: Int,
+  array: Slice[EggValue],
+  struct_: Map[String, EggValue],
+  enum_: EggEnumValue,
+  lambda: EggLambdaValue,
+  box: &EggValue,
+}
+struct EggEnumValue { name: String, value: &EggValue }
+struct EggLambdaValue { function: String, closure: &EggValue }
+
+fun write[W](writer: W, value: EggValue) {
+  switch value
+  case type(type) writer."{type}"
+  case byte(byte) writer."{byte}"
+  case int(int) writer."{int}"
+  case array(items) {
+    writer."["
+    var first = true
+    for item in items do {
+      if first then first = false else writer." "
+      writer."{item}"
+    }
+    writer."]"
+  }
+  case struct_(fields) {
+    writer."(&"
+    for field in fields do writer." {field.key}: {field.value}"
+    writer.")"
+  }
+  case enum_(enum_) {
+    if enum_.value.* is struct_(fields) then if fields.is_empty() then {
+      writer."(| {enum_.name})"
+      return {}
+    }
+    writer."(| {enum_.name}: {enum_.value})"
+  }
+  case lambda(lambda) writer."(\\ ...)"
+  case box(inner) writer."(box {inner})"
+}
+
+fun run(egg: Egg, args: Slice[EggValue]): EggValue {
+  egg.entry_point.run(args, egg, list[String]().&)
+}
+
+fun run(
+  function: String, args: Slice[EggValue], egg: Egg, stack: &List[String]
+): EggValue {
+  for i in 0..stack.len do eprint(" ")
+  eprint("\"{function}\"")
+  for arg in args do eprint(" {arg}")
+  eprintln()
+
+  stack.push(function)
+  var visible = map[Id, EggValue]()
+  var fun_ = egg.funs.get(function)
+  var value = fun_.body.run(args, fun_.dag, visible.&, egg, stack)
+  stack.pop()
+
+  for i in 0..stack.len do eprint(" ")
+  eprintln("-> {value}")
+
+  value
+}
+
+fun run(
+  body: EggBody, args: Slice[EggValue], dag: Dag[EggExpr],
+  visible: &Map[Id, EggValue], egg: Egg, stack: &List[String],
+): EggValue {
+  for both in zip(body.params.iter(), args.iter()) do
+    visible.put(both.a, both.b)
+  for id in body.children do
+    visible.put(id, dag.get(id).run(dag, visible, egg, stack))
+  visible.get(body.returns)
+}
+
+fun run(
+  expr: EggExpr, dag: Dag[EggExpr],
+  visible: &Map[Id, EggValue], egg: Egg, stack: &List[String],
+): EggValue {
+  | eprintln("Running: {expr.debug()}")
+
+  switch expr.op
+  case param unreachable()
+  case id(id) visible.get(id)
+  case type(type) EggValue.type(type)
+  case byte(byte) EggValue.byte(byte)
+  case int(int) EggValue.int(int)
+  case string(string) {
+    var bytes = list[EggValue]()
+    for byte in string.bytes() do bytes.&.push(EggValue.byte(byte))
+    EggValue.struct_(map(
+      "utf8_bytes" -> EggValue.array(bytes.to_slice())
+    ))
+  }
+  case array(array) {
+    var items = list[EggValue]()
+    for item in array do items.&.push(visible.get(item))
+    EggValue.array(items.to_slice())
+  }
+  case struct_(struct_) {
+    var fields = map[String, EggValue]()
+    for field in struct_ do fields.&.put(field.key, visible.get(field.value))
+    EggValue.struct_(fields)
+  }
+  case member(member) visible.get(member.of).struct_.unwrap().get(member.name)
+  case enum_(enum_)
+    EggValue.enum_(EggEnumValue {
+      name = enum_.name, value = visible.get(enum_.value).put_on_heap()
+    })
+  case switch_(switch_) {
+    var condition = visible.get(switch_.condition).enum_.unwrap()
+    var case_ = switch_.cases.get(condition.name)
+    case_.run(list(condition.value.*).to_slice(), dag, visible, egg, stack)
+  }
+  case lambda(lambda)
+    EggValue.lambda(EggLambdaValue {
+      function = lambda.function,
+      closure = visible.get(lambda.closure).put_on_heap(),
+    })
+  case call(call) {
+    var args = list[EggValue]()
+    for arg in call.args do args.&.push(visible.get(arg))
+    var args = args.to_slice()
+
+    switch call.callee
+    case lambda(lambda) {
+      var lambda = visible.get(lambda).lambda.unwrap()
+      var all_args = list[EggValue]()
+      for arg in args do all_args.&.push(arg)
+      all_args.&.push(lambda.closure.*)
+      lambda.function.run(all_args.to_slice(), egg, stack)
+    }
+    case fun_(signature) signature.run(args, egg, stack)
+    case builtin(builtin) {
+      switch builtin
+      case lower_byte EggValue.byte(args.get(0).int.unwrap().lower_byte())
+      case byte_to_int EggValue.int(args.get(0).byte.unwrap().to_int())
+      case add_ints EggValue.int(args.get(0).int.unwrap() + args.get(1).int.unwrap())
+      case sub_ints EggValue.int(args.get(0).int.unwrap() - args.get(1).int.unwrap())
+      case mul_ints EggValue.int(args.get(0).int.unwrap() * args.get(1).int.unwrap())
+      case div_ints EggValue.int(args.get(0).int.unwrap() / args.get(1).int.unwrap())
+      case mod_ints EggValue.int(args.get(0).int.unwrap() % args.get(1).int.unwrap())
+      case and_ints EggValue.int(args.get(0).int.unwrap() & args.get(1).int.unwrap())
+      case or_ints EggValue.int(or(args.get(0).int.unwrap(), args.get(1).int.unwrap()))
+      case xor_ints EggValue.int(args.get(0).int.unwrap() ^ args.get(1).int.unwrap())
+      case compare_ints EggValue.enum_(EggEnumValue {
+        name =
+          switch args.get(0).int.unwrap() <=> args.get(1).int.unwrap()
+          case less "less"
+          case equal "equal"
+          case greater "greater",
+        value = EggValue.struct_(map[String, EggValue]()).put_on_heap(),
+      })
+      case box EggValue.box(args.get(0).put_on_heap())
+      case unbox args.get(0).box.unwrap().*
+      case generate_array {
+        var len = args.get(0).int.unwrap()
+        var lambda = args.get(1).lambda.unwrap()
+        var items = list[EggValue]()
+        for index in 0..len do
+          items.&.push(
+            lambda.function.run(
+              list(EggValue.int(index), lambda.closure.*).to_slice(),
+              egg,
+              stack,
+            )
+          )
+        EggValue.array(items.to_slice())
+      }
+      case array_get {
+        var array = args.get(0).array.unwrap()
+        var index = args.get(1).int.unwrap()
+        array.get(index)
+      }
+      case array_set {
+        var array = args.get(0).array.unwrap()
+        var index = args.get(1).int.unwrap()
+        var item  = args.get(2)
+        var copy = list[EggValue]()
+        for item in array do copy.&.push(item)
+        copy.&.set(index, item)
+        EggValue.array(copy.to_slice())
+      }
+      case array_slice {
+        var array = args.get(0).array.unwrap()
+        var range = args.get(1).struct_.unwrap()
+        var start = range.get("start").int.unwrap()
+        var end   = range.get("end").int.unwrap()
+        EggValue.array(array.subslice(start..end))
+      }
+      case array_len EggValue.int(args.get(0).array.unwrap().len)
+      case crash panic("Plum code crashed: {args.get(0)}")
+    }
+  }
+}

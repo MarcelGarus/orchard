@@ -1,12 +1,13 @@
 | Converting Toast To Egg  
 
 import ../plum.mar
-import visible.mar
-import types/mod.mar
 import lookup.mar
-import compile_fun.mar
+import types/mod.mar
+import visible.mar
 
-fun to_egg(toasts: Map[Module, Toast], entry_module: Module): Result[Egg, Error] {
+fun to_egg(
+  toasts: Map[Module, Toast], entry_module: Module
+): Result[Egg, Error] {
   var types = compile_all_types(toasts)?
 
   var funs = map[String, EggFun]()
@@ -28,4 +29,375 @@ fun to_egg(toasts: Map[Module, Toast], entry_module: Module): Result[Egg, Error]
   }
 
   ok[Egg, Error](Egg { funs })
+}
+
+fun compile(
+  fun_: ToastFun, module: Module,
+  types: Map[String, EggTypeDef], toasts: Map[Module, Toast],
+): Result[EggFun, Error] {
+  var visible = visible()
+  var dag = dag[EggExpr]()
+  var builder = dag.&.body_builder().&
+
+  var param_types = list[EggType]()
+  for param in fun_.params do {
+    var type = param.type.compile(module, types)?
+    visible.&.define(
+      param.name.string, builder.push_param(type, param.name.src)
+    )
+    param_types.&.push(type)
+  }
+  var param_types = param_types.to_slice()
+
+  | Push the type variables into the body.
+  for var_ in param_types.collect_type_variables() do
+    visible.&.define(
+      var_, builder.push(egg_type(type_variable(var_), invalid_src))
+    )
+  for param in fun_.params do
+    if param.type.compile(module, types)? == type_type then {
+      var id = builder.push(
+        egg_type(type_variable(param.name.string), param.name.src)
+      )
+      visible.&.define(param.name.string, id)
+    }
+
+  var returned = fun_.body.compile(builder, module, visible.&, EggContext { toasts, types })?
+  | TODO: What's up with this?
+  | var last = none[EggExpr]()
+  | for expr in fun_.body.body.unwrap() do
+  |   last = some(builder.push(
+  |     expr.compile(builder, module, visible.&, EggContext { toasts, types })?
+  |   ))
+  | var returned = last.unwrap()
+
+  var return_type = fun_.return_type.compile(module, types)?
+  returned.type.is_assignable_to(return_type) or
+    return error[EggFun, Error](error(
+      "Function returns something different than its claimed return type:\n
+      'Claimed: {return_type}\n
+      'Actual:  {returned.type}",
+      fun_.name.src,
+    ))
+  var returned = returned.cast(return_type, fun_.name.src)
+
+  var body = builder.finish(returned)
+
+  ok[EggFun, Error](EggFun { module, name = fun_.name, dag, body })
+}
+
+struct EggContext { toasts: Map[Module, Toast], types: Map[String, EggTypeDef] }
+
+fun compile(
+  toast: ToastExpr, builder: &EggBodyBuilder, module: Module, visible: &Visible,
+  context: EggContext,
+): Result[EggExpr, Error] {
+  ok[EggExpr, Error](
+    switch toast
+    case todo(src) egg_crash("Todo", type_never, src)
+    case int(int) egg_int(int.int, int.src)
+    case string(string) egg_string(string.string, string.src)
+    case type(type) egg_type(type.compile(module, context.types)?, toast.src())
+    case struct_(struct_) struct_({
+      var fields = map[String, EggExpr]()
+      for field in struct_.fields do {
+        var name = field.name.string
+        var value = field.value.compile(builder, module, visible, context)?
+        var type = value.type
+        if fields.contains(name) then
+          return error[EggExpr, Error](error(
+            "{name} is in the struct multiple times.",
+            struct_.ampersand.src,
+          ))
+        fields.&.put(name, value)
+      }
+      fields
+    }, struct_.ampersand.src)
+    case enum_(enum_) {
+      var name = enum_.name.string
+      var value = enum_.value.compile(builder, module, visible, context)?
+      enum_(type_enum(map(name -> value.type)), name, value, enum_.pipe.src)
+    }
+    case switch_(switch_) {
+      | Compile the condition.
+      var condition = switch_.condition.compile(builder, module, visible, context)?
+      var variant_types = condition.type.kind().enum_
+        or return error[EggExpr, Error](error(
+          "Switched on non-enum: {condition.type}", switch_.percent.src
+        ))
+
+      | Make sure that no variant is handled twice, that all variants are
+      | handled, and that no extra variants are handled.
+      var handled_variants = set[String]()
+      for case_ in switch_.cases do {
+        if handled_variants.contains(case_.symbol.string) then
+          return error[EggExpr, Error](error(
+            "{case_.symbol.string} is handled multiple times.",
+            switch_.percent.src,
+          ))
+        handled_variants.&.put(case_.symbol.string)
+      }
+      for variant in variant_types do
+        if not(handled_variants.contains(variant.key)) then
+          return error[EggExpr, Error](error(
+            "{variant.key} is not handled.", switch_.percent.src
+          ))
+      for variant in handled_variants do
+        if not(variant_types.contains(variant)) then
+          return error[EggExpr, Error](error(
+            "Handling non-existent variant {variant}.", switch_.percent.src
+          ))
+
+      | Compile the individual cases.
+      var case_compilers = map[String, Tuple2[EggBodyBuilder, EggExpr]]()
+      var case_types = list[EggType]()
+      for case_ in switch_.cases do {
+        var symbol = case_.symbol.string
+        var snapshot = visible.snapshot()
+        var case_builder = builder.dag.body_builder().&
+        var payload_type = variant_types.get(symbol)
+        if case_.payload is some(pattern) then {
+          var payload = case_builder.push_param(payload_type, pattern.src())
+          pattern.compile_pattern(
+            payload, case_builder, module, visible, context
+          )?
+        } else
+          case_builder.push_param(payload_type, invalid_src).ignore()
+
+        var returns = case_.body.compile(
+          case_builder, module, visible, context
+        )?
+        visible.restore(snapshot)
+        case_compilers.&.put(symbol, tuple(case_builder.*, returns))
+        case_types.&.push(returns.type)
+      }
+      var common_type = union(case_types.to_slice()) or
+        return error[EggExpr, Error](error(
+          "Couldn't union types {case_types}", switch_.percent.src
+        ))
+      var common_type = common_type
+      var cases = map[String, EggBody]()
+      for compiler in case_compilers do {
+        var symbol = compiler.key
+        var returns = compiler.value.b
+        var compiler = compiler.value.a
+        var actual_return = returns.cast(common_type, switch_.percent.src)
+        cases.&.put(symbol, compiler.finish(actual_return))
+      }
+
+      switch_(condition, common_type, cases, switch_.percent.src)
+    }
+    case name(name)
+      visible.lookup(name.string) or
+        return error[EggExpr, Error](error(
+          "Unknown referenced name {name.string}.", name.src
+        ))
+    case lambda(lambda) {
+      var snapshot = visible.snapshot()
+      var lambda_builder = builder.dag.body_builder().&
+      for param in lambda.params do {
+        var name = param.name.string
+        var type = param.type.compile(module, context.types)?
+        visible.define(name, lambda_builder.push_param(type, param.name.src))
+      }
+      var returns = lambda.body.compile(
+        lambda_builder, module, visible, context
+      )?
+      var lambda_body = lambda_builder.finish(returns)
+      visible.restore(snapshot)
+
+      lambda(builder.dag.*, lambda_body, lambda.backslash.src)
+    }
+    case call(call) {
+      var args = list[EggExpr]()
+      for arg in call.args do
+        args.&.push(arg.compile(builder, module, visible, context)?)
+      var args = args.to_slice()
+
+      | Find the function name -- either some(String) if it's a function call
+      | or none if it's a lambda call.
+      var function_name =
+        switch call.function.*
+        case name(name) {
+          | Check if the call is actually a struct access.
+          if args.len == 1 then
+            if args.get(0).type.internal_kind() is struct_(fields) then
+              if fields.contains(name.string) then {
+                | This is a struct access!
+                var struct_ = args.get(0)
+                var field_type = struct_.type.kind()
+                  .struct_.unwrap().get(name.string)
+                return ok[EggExpr, Error](
+                  EggOp.member(EggMember {
+                    of = struct_.put_on_heap(), name = name.string
+                  }).expr(field_type, name.src)
+                )
+              }
+
+          switch visible.lookup(name.string)
+          case some none[StringAndSrc]()
+          case none some(name)
+        }
+        default none[StringAndSrc]()
+
+      switch function_name
+      case some(name) { | top-level function
+        | Resolve arguments of the type Type.
+        var arg_values = list[FunArg]()
+        for i in 0..args.len do {
+          var arg = args.get(i)
+          arg_values.&.push(
+            if arg.type == type_type then {
+              var type_value = loop {
+                switch arg.op
+                case type(type) break(type)
+                case id(id) arg = builder.dag.get(id)
+                default return error[EggExpr, Error](error(
+                  "Arguments of the type Type have to be known at 
+                  'compile-time. Arg is {args.get(i).debug()}",
+                  name.src
+                ))
+              }
+              FunArg { value = some(type_value), type = type_type }
+            } else
+              FunArg { value = none[EggType](), type = arg.type }
+          )
+        }
+        var arg_values = arg_values.to_slice()
+
+        | Look for a matching function.
+        var match = lookup(
+          name.string, arg_values, module, name.src,
+          context.toasts, context.types,
+        )?
+
+        | Cast arguments
+        var cast_args = list[EggExpr]()
+        for both in zip(args.iter(), match.param_types.iter()) do
+          cast_args.&.push(both.a.cast(both.b, call.function.src()))
+        var args = cast_args.to_slice()
+
+        | Call the function.
+        switch match.kind
+        case fun_(signature)
+          EggCalledFun { signature, substitutions = match.substitutions }
+            .call(args, match.return_type, call.function.src())
+        case builtin(builtin)
+          EggCalledBuiltin { builtin, substitutions = match.substitutions }
+            .call(args, match.return_type, call.function.src())
+      }
+      case none { | lambda
+        var lambda = call.function.compile(builder, module, visible, context)?
+        var lambda_type = lambda.type
+        var lambda_type = lambda_type.kind().lambda or
+          return return error[EggExpr, Error](error(
+            "Tried to call non-lambda: {lambda_type}", call.function.src()
+          ))
+
+        | Cast arguments
+        var cast_args = list[EggExpr]()
+        for both in zip(args.iter(), lambda_type.args.iter()) do {
+          var arg = both.a
+          var expected_type = both.b
+          arg.type.is_assignable_to(expected_type) or
+            return return error[EggExpr, Error](error(
+              "Tried to call lambda with wrong types.", call.function.src()
+            ))
+          cast_args.&.push(arg.cast(expected_type, call.function.src()))
+        }
+        var args = cast_args.to_slice()
+
+        lambda.call(args, call.function.src())
+      }
+    }
+    case var_(var_) {
+      var value = builder.push(var_.right.compile(builder, module, visible, context)?)
+      var_.left.compile_pattern(value, builder, module, visible, context)?
+      value
+    }
+    case body(exprs) {
+      var last = none[EggExpr]()
+      for expr in exprs do {
+        if last is some(last) then builder.push(last).ignore()
+        last = some(expr.compile(builder, module, visible, context)?)
+      }
+      last or unreachable()
+    }
+  )
+}
+
+fun compile_pattern(
+  pattern: ToastExpr, matched: EggExpr,
+  body: &EggBodyBuilder, module: Module, visible: &Visible,
+  context: EggContext,
+): Result[Nothing, Error] {
+  switch pattern
+  case todo error[Nothing, Error](error("Todo in pattern.", pattern.src()))
+  case int
+    error[Nothing, Error](error(
+      "Int literals can't be in patterns.", pattern.src()
+    ))
+  case string
+    error[Nothing, Error](error(
+      "String literals can't be in patterns.", pattern.src()
+    ))
+  case type
+    error[Nothing, Error](error(
+      "Type literals can't be in patterns.", pattern.src()
+    ))
+  case struct_(pattern) {
+    var struct_fields = matched.type.kind().struct_ or
+      return error[Nothing, Error](error(
+        "Tried to use a struct pattern to match on {matched.type}.",
+        pattern.ampersand.src,
+      ))
+
+    for field in pattern.fields do
+      struct_fields.contains(field.name.string) or
+        return error[Nothing, Error](error(
+          "Patterns refers to {field.name.string}, but that is not in the 
+          'struct {matched.type}.",
+          field.name.src,
+        ))
+    var matched_fields = set[String]()
+    for field in pattern.fields do matched_fields.&.put(field.name.string)
+    for field in struct_fields do
+      matched_fields.contains(field.key) or
+        return error[Nothing, Error](error(
+          "Pattern does not bind field {field.key} of {matched.type}.",
+          pattern.ampersand.src,
+        ))
+
+    var matched = body.push(matched)
+    for field in pattern.fields do {
+      var field_type = struct_fields.get(field.name.string)
+      var matched_value = body.push(
+        EggOp.member(EggMember {
+          of = matched.put_on_heap(), name = field.name.string
+        }).expr(field_type, field.name.src)
+      )
+      field.value.compile_pattern(
+        matched_value, body, module, visible, context
+      )?
+    }
+
+    ok[Nothing, Error]({})
+  }
+  case enum_
+    error[Nothing, Error](error("Enums can't be in patterns.", pattern.src()))
+  case switch_ unreachable()
+  case name(name) {
+    visible.define(name.string, matched)
+    ok[Nothing, Error]({})
+  }
+  case lambda
+    error[Nothing, Error](error("Lambdas can't be in patterns.", pattern.src()))
+  case call
+    error[Nothing, Error](error("Calls can't be in patterns.", pattern.src()))
+  case var_
+    error[Nothing, Error](error(
+      "Variable declarations can't be in patterns.", pattern.src()
+    ))
+  case body
+    error[Nothing, Error](error("Bodies can't be in patterns.", pattern.src()))
 }

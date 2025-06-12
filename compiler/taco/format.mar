@@ -1,0 +1,132 @@
+import mod.mar
+
+fun write[W](writer: W, egg: Taco) {
+  var first = true
+  for fun_ in egg.funs do {
+    if first then first = false else writer."\n"
+    writer.write(fun_.key, fun_.value)
+  }
+}
+fun write[W](writer: W, signature: String, fun_: TacoFun) {
+  writer."{pretty_signature_def(signature)} =\n"
+  writer.write(fun_.expr, indentation(1))
+}
+| fun write[W](
+|   writer: W, body: TacoBody, indentation: Indentation
+| ) {
+|   for param in body.params do {
+|     writer."{indentation}"
+|     writer.write(param, namespace)
+|     writer.": {pretty_op("param")} {pretty(param.get().type)}\n"
+|   }
+|   for id in body.children do {
+|     writer."{indentation}"
+|     writer.write(id, namespace)
+|     writer." =\n"
+|     writer.write(id.get(), namespace, indentation + 1)
+|     writer."\n"
+|   }
+|   writer.write(body.returns, namespace, indentation)
+| }
+fun write[W](
+  writer: W, expr: TacoExpr, indentation: Indentation
+) {
+  writer."{indentation}"
+
+  writer."{expr.op.debug()}"
+  | switch expr.op
+  | case param unreachable()
+  | case id(id) {
+  |   writer.write(id, namespace)
+  |   writer."  {pretty(expr.type)}"
+  | }
+  | case byte(byte) writer."{pretty_op("byte")} {byte}  {pretty(expr.type)}"
+  | case int(int) writer."{pretty_op("int")} {int}  {pretty(expr.type)}"
+  | case array(array) {
+  |   writer."{pretty_op("array")}  {pretty(expr.type)}"
+  |   for item in array do {
+  |     writer."\n"
+  |     writer.write(item, namespace, indentation + 1)
+  |   }
+  | }
+  | case struct_(struct_) {
+  |   writer."{pretty_op("&")}  {pretty(expr.type)}"
+  |   for field in struct_ do {
+  |     writer."\n{indentation + 1}{field.key}:\n"
+  |     writer.write(field.value, namespace, indentation + 2)
+  |   }
+  | }
+  | case member(member) {
+  |   writer."{pretty_op("member")} \"{member.name}\"  {pretty(expr.type)}\n"
+  |   writer.write(member.of.*, namespace, indentation + 1)
+  | }
+  | case enum_(enum_) {
+  |   writer."{pretty_op("|")} {enum_.name}:  {pretty(expr.type)}\n"
+  |   writer.write(enum_.value.*, namespace, indentation + 2)
+  | }
+  | case switch_(switch_) {
+  |   writer."{pretty_op("switch")}  {pretty(expr.type)}\n"
+  |   writer.write(switch_.condition.*, namespace, indentation + 1)
+  |   for case_ in switch_.cases do {
+  |     writer."\n{indentation + 1}{case_.key}:\n"
+  |     writer.write(case_.value, namespace, indentation + 2)
+  |   }
+  | }
+  | case lambda(lambda) {
+  |   writer."{pretty_op("lambda")}  {pretty(expr.type)}\n"
+  |   writer.write(lambda.*, namespace, indentation + 1)
+  | }
+  | case call(call) {
+  |   switch call.callee
+  |   case lambda(lambda) {
+  |     writer."{pretty_op("call lambda")}  {pretty(expr.type)}\n"
+  |     writer.write(lambda.*, namespace, indentation + 1)
+  |   }
+  |   case fun_(fun_) {
+  |     writer."{pretty_op("call")} {pretty_signature(fun_.signature)}"
+  |     if fun_.substitutions.substitutions.is_not_empty() then
+  |       writer." with {fun_.substitutions}"
+  |     writer."  {pretty(expr.type)}"
+  |   }
+  |   case builtin(builtin) {
+  |     writer."{pretty_op("call")} {pretty_signature(builtin.builtin.format())}"
+  |     if builtin.substitutions.substitutions.is_not_empty() then
+  |       writer." with {builtin.substitutions}"
+  |     writer."  {pretty(expr.type)}"
+  |   }
+
+  |   for arg in call.args do {
+  |     writer."\n"
+  |     writer.write(arg, namespace, indentation + 1)
+  |   }
+  | }
+  | case recursive(recursive) {
+  |   writer."
+  |     '{pretty_op("recursive")} {pretty_signature(recursive.name)}
+  |     '  {pretty(expr.type)}\n
+  |     '{indentation + 1}initial:"
+  |   for arg in recursive.args do {
+  |     writer."\n"
+  |     writer.write(arg, namespace, indentation + 2)
+  |   }
+  |   writer."\n{indentation + 1}body:\n"
+  |   writer.write(recursive.body.*, namespace, indentation + 2)
+  | }
+  | case recurse(args) {
+  |   writer."{pretty_op("recurse")}  {pretty(expr.type)}"
+  |   for arg in args do {
+  |     writer."\n"
+  |     writer.write(arg, namespace, indentation + 1)
+  |   }
+  | }
+  | case cast(cast) {
+  |   writer."{pretty_op("cast")}  {pretty(expr.type)}\n"
+  |   writer.write(cast.*, namespace, indentation + 1)
+  | }
+  | case type(type) writer."{pretty_op("type")} {type}  {pretty(expr.type)}"
+
+  for child in children do {
+    writer."\n"
+    writer.write(arg, namespace, indentation + 1)
+  }
+}

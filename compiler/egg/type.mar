@@ -657,3 +657,63 @@ fun type_lambda_without_canonicalizing(args: Slice[EggType], return_type: EggTyp
 fun type_recursive(level: Int): EggType {
   EggType { string = "(^{level})" }
 }
+
+
+struct IndentedLimited[T] { value: T, indentation: Indentation, limit: Int }
+fun indented[T](value: T): IndentedLimited[T] {
+  value.indented_limited(no_indentation, 80)
+}
+fun indented_limited[T](value: T, indentation: Indentation, limit: Int): IndentedLimited[T] {
+  IndentedLimited { value, indentation, limit }
+}
+fun write[W](writer: W, type: IndentedLimited[EggType]) {
+  var indentation = type.indentation
+  var limit = type.limit
+  writer."{indentation}"
+
+  var singleline = type.value.format()
+  if indentation.amount * 2 + singleline.len < limit then {
+    writer."{singleline}"
+    return {}
+  }
+
+  switch type.value.internal_kind()
+  case variable(name) writer."{name}"
+  case byte writer."Byte"
+  case int writer."Int"
+  case never writer."Never"
+  case type writer."Type"
+  case box(inner) writer."Box\n{inner.indented_limited(indentation + 1, limit)}"
+  case array(item)
+    writer."Array\n{item.indented_limited(indentation + 1, limit)}"
+  case struct_(fields) {
+    writer."&"
+    var first = true
+    for field in fields do {
+      if first then { writer." " first = false } else writer."\n{indentation + 1}"
+      var singleline = field.value.format()
+      if indentation.amount * 2 + field.key.len + 2 + singleline.len < limit then
+        writer."{field.key}: {singleline}"
+      else
+        writer."{field.key}:\n{field.value.indented_limited(indentation + 2, limit)}"
+    }
+  }
+  case enum_(variants) {
+    writer."|"
+    var first = true
+    for variant in variants do {
+      if first then { writer." " first = false } else writer."\n{indentation + 1}"
+      var singleline = variant.value.format()
+      if indentation.amount * 2 + variant.key.len + 2 + singleline.len < limit then
+        writer."{variant.key}: {singleline}"
+      else
+        writer."{variant.key}:\n{variant.value.indented_limited(indentation + 2, limit)}"
+    }
+  }
+  case lambda(lambda) {
+    writer."\\"
+    for arg in lambda.args do writer."\n{arg.indented_limited(indentation + 1, limit)}"
+    writer."\n{indentation + 1}->\n{lambda.return_type.indented_limited(indentation + 2, limit)})"
+  }
+  case recursive(level) writer."^{level}"
+}

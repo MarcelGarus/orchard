@@ -1,62 +1,60 @@
 | Expression-Guided Graph  
 |
-| A representation of code that is simplified and more suitable for
-| type-checking.
+| A representation of code where we have used names to establish the connections
+| between types, expressions, and functions.
+| 
+| Every Egg expression has a type. Function calls are resolved to specific
+| functions based on the parameter types (aka function overloading) and we have
+| figured out how types need to be substituted for things to work out.
+| Speaking of types: Types no longer contain user-given names. Instead, we have
+| inlined type definitions so that types are completely structural. For example,
+| rather than (LinkedList Int), the Egg uses this type:
 |
-| Types:
-|   Names of types are resolved. Usages of type definitions (which are more like
-|   aliases anyway) have been resolved so that types have no names anymore –
-|   they are completely structural.
-|   For example, rather than (LinkedList Int), this stage uses
-|   (| empty more: (& item: Int rest: ^2)) as the type.
-|
-| Functions:
-|   Names of locals and types are resolved. Every expression in the function has
-|   a type. Function calls are resolved to specific functions, so overloading
-|   resolution has already happened. Nested expressions in function bodies have
-|   been flattened to a series of small expressions.
+| (| empty: (&) more: (& item: (Int) rest: (^2)))
 
 import ../plum.mar
 import builder.mar
-import format.mar
+import run.mar
 import type.mar
 
 struct Egg { funs: Map[String, EggFun] }
 
-struct EggFun { module: Module, name: StringAndSrc, body: EggBody }
-struct EggBody {
-  params: Slice[EggId], children: Slice[EggId], returns: EggExpr
+struct EggFun {
+  module: Module, name: StringAndSrc, dag: Dag[EggExpr], body: EggBody
 }
+struct EggBody { params: Slice[Id], children: Slice[Id], returns: EggExpr }
 
 struct EggExpr { op: EggOp, type: EggType, src: Src }
 enum EggOp {
   param,
-  id: EggId,
-  byte: Byte,
-  int: Int,
-  array: Slice[EggExpr],
-  struct_: Map[String, EggExpr],
-  member: EggMember,
-  enum_: EggEnum,
-  switch_: EggSwitch,
-  lambda: &EggBody,
-  call: EggCall,
-  loop_: EggLoop,
-  continue_: Slice[EggExpr],
-  cast: &EggExpr,
+  id: Id, | refers to another (already computed) expression that is in scope
+
+  | Constructing values.
   type: EggType,
+  int: Int,
+  string: String,
+  struct_: Map[String, EggExpr],
+  enum_: EggEnum,
+  lambda: &EggBody,
+
+  | Working with values.
+  member: EggMember,
+  switch_: EggSwitch,
+  call: EggCall,
+
+  cast: &EggExpr,
 }
+struct EggEnum { name: String, value: &EggExpr }
 struct EggMember { of: &EggExpr, name: String }
 struct EggSwitch { condition: &EggExpr, cases: Map[String, EggBody] }
-struct EggEnum { name: String, value: &EggExpr }
-struct EggLoop { name: String, body: &EggBody, args: Slice[EggExpr] }
 struct EggCall { callee: EggCallee, args: Slice[EggExpr] }
 enum EggCallee {
-  lambda: &EggExpr, fun_: EggCalledFun, builtin: EggCalledBuiltin
+  fun_: EggCalledFun, builtin: EggCalledBuiltin, lambda: &EggExpr
 }
 struct EggCalledFun { signature: String, substitutions: Substitutions }
 struct EggCalledBuiltin { builtin: EggBuiltin, substitutions: Substitutions }
 
+| Plum code can import these functions from the "builtins" module.
 enum EggBuiltin {
   | byte operations
   lower_byte, byte_to_int,
@@ -76,8 +74,7 @@ enum EggBuiltin {
   | dynamic typing operations
   static_to_dynamic, dynamic_to_static,
 }
-
-var egg_builtins =
+var egg_builtins = | Keep in sync with the builtins above!
   list(
     EggBuiltin.lower_byte, EggBuiltin.byte_to_int,
     EggBuiltin.add_ints, EggBuiltin.sub_ints, EggBuiltin.mul_ints,
@@ -93,27 +90,107 @@ var egg_builtins =
     EggBuiltin.static_to_dynamic, EggBuiltin.dynamic_to_static,
   ).to_slice()
 
-fun expr(op: EggOp, type: EggType, src: Src): EggExpr {
-  EggExpr { op, type, src }
+
+fun signature(module: Module, name: String, params: Slice[EggType]): String {
+  var b = string_builder().&
+  b."{module}.{name}"
+  for param in params do b." {param}"
+  b.to_string()
 }
 
-| For simplicity, there's a global store of all Egg expressions.
-
-var egg_exprs = list[EggExpr]().&
-struct EggId { index: Int }
-
-fun create(expr: EggExpr): EggId {
-  var id = EggId { index = egg_exprs.len }
-  egg_exprs.push(expr)
-  id
-}
-fun get(id: EggId): EggExpr { egg_exprs.get(id.index) }
-fun hash[H](hasher: H, id: EggId) { hasher.hash(id.index) }
-fun ==(a: EggId, b: EggId): Bool { a.index == b.index }
-
-fun param_types(fun_: EggFun): Slice[EggType] {
-  var types = list[EggType]()
-  for param in fun_.body.params do types.&.push(fun_.dag.type_of(param))
-  types.to_slice()
-}
 fun return_type(fun_: EggFun): EggType { fun_.body.returns.type }
+
+fun write[W](writer: W, yogurt: Egg) {
+  var first = true
+  for fun_ in yogurt.funs do {
+    if first then first = false else writer."\n"
+    writer.write(fun_.key, fun_.value)
+  }
+}
+fun write[W](writer: W, signature: String, fun_: EggFun) {
+  writer."{pretty_signature_def(signature)}\n"
+  writer.write(fun_.body, fun_.dag, indentation(1))
+}
+fun write[W](
+  writer: W, body: EggBody, dag: Dag[EggExpr], indentation: Indentation
+) {
+  for param in body.params do {
+    writer."
+      '{indentation}{pretty(param)}: {pretty_op("param")}
+      ' {pretty(dag.get(param).type)}\n"
+  }
+  for id in body.children do {
+    var expr = dag.get(id)
+    writer."{indentation}{pretty(id)} =\n"
+    writer.write(expr, dag, indentation + 1)
+    writer."\n"
+  }
+  writer.write(body.returns, dag, indentation)
+}
+fun write[W](
+  writer: W, expr: EggExpr, dag: Dag[EggExpr], indentation: Indentation
+) {
+  writer."{indentation}"
+  var type = expr.type
+  switch expr.op
+  case param(param) unreachable()
+  case id(id) writer."{pretty_op("id")} {pretty(id)}  {pretty(type)}"
+  case type(type) writer."{pretty_op("type")} {type}  {pretty(type_type)}"
+  case int(int) writer."{pretty_op("int")} {int}  {pretty(type)}"
+  case string(string)
+    writer."{pretty_op("string")} {string.debug()}  {pretty(type)}"
+  case struct_(struct_) {
+    writer."{pretty_op("&")}  {pretty(type)}"
+    for field in struct_ do {
+      writer."\n{indentation + 1}{field.key}:\n"
+      writer.write(field.value, dag, indentation + 2)
+    }
+  }
+  case enum_(enum_) {
+    writer."{pretty_op("|")} {enum_.name}  {pretty(type)}\n"
+    writer.write(enum_.value.*, dag, indentation + 2)
+  }
+  case lambda(body) {
+    writer."{pretty_op("lambda")}  {pretty(type)}\n"
+    writer.write(body.*, dag, indentation + 1)
+  }
+  case member(member) {
+    writer."{pretty_op("member")} {member.name}  {pretty(type)}\n"
+    writer.write(member.of.*, dag, indentation + 1)
+  }
+  case switch_(switch_) {
+    writer."{pretty_op("switch")}  {pretty(type)}\n"
+    writer.write(switch_.condition.*, dag, indentation + 1)
+    for case_ in switch_.cases do {
+      writer."\n{indentation + 1}{case_.key}:\n"
+      writer.write(case_.value, dag, indentation + 2)
+    }
+  }
+  case call(call) {
+    switch call.callee
+    case fun_(fun_) {
+      writer."{pretty_op("call")} {pretty_signature(fun_.signature)}"
+      if fun_.substitutions.substitutions.is_not_empty() then
+        writer." with {fun_.substitutions}"
+    }
+    case builtin(builtin) {
+      writer."{pretty_op("call")} {pretty_signature(builtin.builtin.format())}"
+      if builtin.substitutions.substitutions.is_not_empty() then
+        writer." with {builtin.substitutions}"
+    }
+    case lambda(lambda) {
+      writer."{pretty_op("call lambda")}"
+      writer.write(lambda.*, dag, indentation + 1)
+    }
+    writer."  {pretty(type)}"
+    for arg in call.args do {
+      writer."\n"
+      writer.write(arg, dag, indentation + 1)
+    }
+  }
+  case cast(inner) {
+    writer."cast  {pretty(type)}\n"
+    writer.write(inner.*, dag, indentation + 1)
+  }
+}
+fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }
