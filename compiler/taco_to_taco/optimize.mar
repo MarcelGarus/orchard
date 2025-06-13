@@ -289,7 +289,23 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if not(body.recurses()) then return body.fill(holes, args).optimize(context)
     
     | Find fixpoints
-    var recurses = body.find_fixpoints(holes, args, context)
+    var fixpoints = body.find_fixpoints(holes, args, context)
+    var new_args = args.values_for_black_holes(fixpoints)
+    var new_holes = list[Hole]()
+    for arg in new_args do new_holes.&.push(hole(arg.type))
+    var new_holes = new_holes.to_slice()
+    var expr = recursive(
+      new_holes,
+      new_args,
+      body
+        .fill(holes, fixpoints.fill_black_holes(new_holes))
+        .replace_recurses(fixpoints)
+        .optimize(context),
+    )
+    eprintln("Optimized recursive:")
+    stderr.write(expr, holes_namespace().&, indentation(0))
+    eprintln()
+    return expr
   }
   | case recurse(recurse_args) {
   |   var args = list[EggExpr]()

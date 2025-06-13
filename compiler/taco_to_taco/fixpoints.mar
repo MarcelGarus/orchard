@@ -1,4 +1,115 @@
+| What the heck are fixpoints?  
+| 
+| Hi, future me! If you're confused (again): I want to optimize recursive
+| functions, but inlining them naively results in compiler hangs. So, I
+| introduced recursive expressions in the Taco: Expressions that can contain a
+| recurse expression to "jump back out" and evaluate again. Consider this code:
+| 
+| sum iterator: (Iterator Int) -> Int =
+|   iterator .fold 0 \ a: Int b: Int -> a .+ b
+|
+| fold iterator: (Iterator a) initial_state: s folder: (\ s a -> s) -> s =
+|   iterator.next
+|   % empty -> initial_state
+|     more: (& item rest) -> rest .fold (folder initial_state item) folder
+| 
+| The sum function uses fold, but we want to create a specialized version of the
+| fold function tailor-made to its usage in sum. Inline it! However, it's
+| recursive and we don't want to inline it again and again and again. So, I
+| create a recursive expression:
+| 
+| The Taco contains recursive expressions so that recursive functions can be
+| inlined and analyzed and optimized within the concrete context they are used
+| in. Take this recursive expression, which may be the result of summing up an
+| (Iterator Int):
+|
+| sum a =
+|   recursive b c d        (Int)
+|     hole a               (\ -> (| empty: (&) more: (& item: (Int) rest: (^3))))
+|     int 0                (Int)
+|     lambda e f           (\ (Int) (Int) -> (Int))
+|       add                (Int)
+|         hole e           (Int)
+|         hole f           (Int)
+|     switch               (Int)
+|       call lambda        (| empty: (&) more: (& item: (Int) rest: (\ -> (^3))))
+|         hole b           (\ -> (| empty: (&) more: (& item: (Int) rest: (^3))))
+|       empty m:
+|         hole c           (Int)
+|       more g:
+|         recurse          (Int)
+|           member rest    (\ -> (| empty: (&) more: (& item: (Int) rest: (^3))))
+|             hole g       (& item: (Int) rest: (\ -> (| empty: (&) more: (^3))))
+|           call lambda    (Int)
+|             hole d       (\ (Int) (Int) -> (Int))
+|             hole c       (Int)
+|             member item  (Int)
+|               hole g     (& item: (Int) rest: (\ -> (| empty: (&) more: (^3))))
+|           hole d         (\ (Int) (Int) -> (Int))
+| 
+| This recursive expression varies over three holes (b, c, d), so it contains
+| three initial values for these as well the body. The recurse expression then
+| provides new values for those holes. You might notice that the third hole is
+| always the lambda adding two numbers. That's a fixpoint!
+
 import mod.mar
+
+fun find_fixpoints(
+  body: TacoExpr, params: Slice[Hole], args: Slice[TacoExpr],
+  context: OptimizeTacoContext,
+): Slice[TacoExpr] {
+  | eprintln("\nFinding fixpoints")
+  | var namespace = holes_namespace()
+  | eprintln("Initial args:")
+  | for arg in args do {
+  |   stderr.write(arg, namespace.&, indentation(1))
+  |   eprintln()
+  | }
+
+  var candidate = args
+  loop {
+    | eprintln("Analyzing recursions")
+    var recurses =
+      body.fill(params, candidate.unblacken())
+        .optimize(context)
+        .find_recurses()
+    var new = candidate
+    for recurse in recurses do {
+      | eprintln("  Recursion:")
+      | for arg in recurse.children do {
+      |   stderr.write(arg, namespace.&, indentation(2))
+      |   eprintln()
+      | }
+      new = union(new, recurse.children) | TODO: Make children self-contained
+    }
+    if new == candidate then break
+    candidate = new
+    | eprintln("New candidate:")
+    | for arg in new do {
+    |   stderr.write(arg, namespace.&, indentation(1))
+    |   eprintln()
+    | }
+    | eprintln()
+  }
+  | eprintln("Fixpoints:")
+  | for arg in candidate do {
+  |   stderr.write(arg, namespace.&, indentation(1))
+  |   eprintln()
+  | }
+  | eprintln()
+  candidate
+}
+
+fun unblacken(exprs: Slice[TacoExpr]): Slice[TacoExpr] {
+  var new = list[TacoExpr]()
+  for old in exprs do new.&.push(old.unblacken())
+  new.to_slice()
+}
+fun unblacken(expr: TacoExpr): TacoExpr {
+  if expr.op is hole(hole) then if hole.is_black() then
+    return taco_hole(hole(expr.type))
+  expr(expr.op, expr.children.unblacken(), expr.type)
+}
 
 fun find_recurses(expr: TacoExpr): Slice[TacoExpr] {
   var recurses = list[TacoExpr]()
@@ -7,52 +118,20 @@ fun find_recurses(expr: TacoExpr): Slice[TacoExpr] {
 }
 fun collect_recurses(expr: TacoExpr, out: &List[TacoExpr]) {
   if expr.op is recurse then out.push(expr)
-  if not(expr.op is recursive) then
+  if expr.op is recursive then
+    for child in expr.children.without_last() do child.collect_recurses(out)
+  else
     for child in expr.children do child.collect_recurses(out)
-}
-
-fun find_fixpoints(
-  body: TacoExpr, params: Slice[Hole], args: Slice[TacoExpr],
-  context: OptimizeTacoContext,
-): Slice[TacoExpr] {
-  eprintln("\nFinding fixpoints")
-  var namespace = holes_namespace()
-  eprintln("Args:")
-  for arg in args do {
-    stderr.write(arg, namespace.&, no_indentation)
-    eprintln()
-  }
-
-  var recurses = body.fill(params, args).optimize(context).find_recurses()
-  var candidates = args
-  for recurse in recurses do {
-    eprintln("Recurse:")
-    for arg in recurse.children do {
-      stderr.write(arg, namespace.&, no_indentation)
-      eprintln()
-    }
-    candidates = union(candidates, recurse.children)
-  }
-
-  eprintln("Candidates:")
-  for arg in candidates do {
-    stderr.write(arg, namespace.&, no_indentation)
-    eprintln()
-  }
-  eprintln()
-  | body.find_fixpoints(params, candidates, context)
-  candidates
 }
 
 fun union(a: Slice[TacoExpr], b: Slice[TacoExpr]): Slice[TacoExpr] {
   var all = list[TacoExpr]()
-  for both in zip(a.iter(), b.iter()) do
-    all.&.push(union(both.a, both.b))
+  for both in zip(a.iter(), b.iter()) do all.&.push(union(both.a, both.b))
   all.to_slice()
 }
 fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
-  | if a.op is hole(a) then if hole.id == black_hole.id then
-  |   return taco_hole(Hole { id = black_hole.id, type = a.type })
+  if a.op is hole(hole) then if hole.is_black() then return a
+  if b.op is hole(hole) then if hole.is_black() then return b
 
   if a.op is hole(a) then if b.op is hole(b) then
     if a == b then return taco_hole(a)
@@ -85,6 +164,67 @@ fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
   if a.op is box then if b.op is box then
     return box(union(a.children.get(0), b.children.get(0)))
 
-  | taco_hole(hole(a.type))
-  taco_hole(Hole { id = black_hole.id, type = a.type })
+  taco_hole(black_hole(a.type))
+}
+
+fun values_for_black_holes(
+  exprs: Slice[TacoExpr], fixpoints: Slice[TacoExpr]
+): Slice[TacoExpr] {
+  var out = list[TacoExpr]()
+  exprs.values_for_black_holes(fixpoints, out.&)
+  out.to_slice()
+}
+fun values_for_black_holes(
+  exprs: Slice[TacoExpr], fixpoints: Slice[TacoExpr], out: &List[TacoExpr]
+) {
+  for both in zip(exprs.iter(), fixpoints.iter()) do
+    both.a.values_for_black_holes(both.b, out)
+}
+fun values_for_black_holes(
+  expr: TacoExpr, fixpoint: TacoExpr, out: &List[TacoExpr]
+) {
+  if fixpoint.op is hole(hole) then if hole.is_black() then
+    return out.&.push(expr)
+  expr.children.values_for_black_holes(fixpoint.children, out)
+}
+
+fun fill_black_holes(
+  fixpoints: Slice[TacoExpr], fillings: Slice[Hole]
+): Slice[TacoExpr] {
+  fixpoints.fill_black_holes(fillings.iter().&)
+}
+fun fill_black_holes[I](
+  fixpoints: Slice[TacoExpr], fillings: &Iter[Hole, I]
+): Slice[TacoExpr] {
+  var new = list[TacoExpr]()
+  for old in fixpoints do new.&.push(old.fill_black_holes(fillings))
+  new.to_slice()
+}
+fun fill_black_holes[I](
+  fixpoint: TacoExpr, fillings: &Iter[Hole, I]
+): TacoExpr {
+  if fixpoint.op is hole(hole) then if hole.is_black() then
+    return taco_hole(fillings.next().unwrap())
+  expr(fixpoint.op, fixpoint.children.fill_black_holes(fillings), fixpoint.type)
+}
+
+fun replace_recurses(expr: TacoExpr, fixpoints: Slice[TacoExpr]): TacoExpr {
+  if expr.op is recurse then
+    return recurse(expr.children.values_for_black_holes(fixpoints), expr.type)
+  if expr.op is recursive then {
+    var args = expr.children.without_last()
+    var body = expr.children.last()
+    var children = list[TacoExpr]()
+    for arg in args do children.&.push(arg.replace_recurses(fixpoints))
+    children.&.push(body)
+    expr(expr.op, children.to_slice(), expr.type)
+  } else
+    expr(expr.op, expr.children.replace_recurses(fixpoints), expr.type)
+}
+fun replace_recurses(
+  exprs: Slice[TacoExpr], fixpoints: Slice[TacoExpr]
+): Slice[TacoExpr] {
+  var new = list[TacoExpr]()
+  for old in exprs do new.&.push(old.replace_recurses(fixpoints))
+  new.to_slice()
 }
