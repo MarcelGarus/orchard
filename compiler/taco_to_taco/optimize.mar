@@ -65,6 +65,20 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   var type = expr.type
   var children = expr.children
   switch expr.op
+  case member(name) {
+    var struct_ = children.get(0)
+    if struct_.op is struct_ then {
+      var keys = list[String]()
+      for field in struct_.type.kind().struct_.unwrap() do
+        keys.&.push(field.key)
+      keys.to_slice().&.sort()
+
+      var index = 0
+      loop if keys.get(index) == name then break else index = index + 1
+
+      return struct_.children.get(index)
+    }
+  }
   case switch_(case_holes) {
     var condition = children.first()
     var cases = children.without_first()
@@ -82,24 +96,6 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
         .optimize(context)
     }
   }
-  | case lambda(lambda) lambda(lambda.optimize(context.fun_))
-  | case call(call) {
-  |   var callee =
-  |     switch call.callee
-  |     case lambda(lambda)
-  |       EggCallee.lambda(lambda.optimize(context).put_on_heap())
-  |     case fun_(fun_) EggCallee.fun_(fun_)
-  |     case builtin(builtin) EggCallee.builtin(builtin)
-
-  |   var args = list[EggExpr]()
-  |   for arg in call.args do args.&.push(arg.optimize(context))
-  |   var args = args.to_slice()
-
-  |   switch callee
-  |   case lambda(lambda) lambda.optimized_call(args, context)
-  |   case fun_(fun_) fun_.optimized_call(args, type, context)
-  |   case builtin(builtin) builtin.optimized_call(args, type, context)
-  | }
   case call_fun(fun_) {
     var signature = fun_.signature
     var substitutions = fun_.substitutions
@@ -361,11 +357,20 @@ fun fill(expr: TacoExpr, fillings: Map[Hole, TacoExpr]): TacoExpr {
 }
 
 fun specialize(expr: TacoExpr, substitutions: Substitutions): TacoExpr {
-  if expr.op is type(type) then return taco_type(type.specialize(substitutions))
+  var op =
+    switch expr.op
+    case type(type) TacoOp.type(type.specialize(substitutions))
+    case lambda(holes) TacoOp.lambda(holes.specialize(substitutions))
+    case switch_(holes) TacoOp.switch_(holes.specialize(substitutions))
+    default expr.op
 
   var children = list[TacoExpr]()
   for child in expr.children do children.&.push(child.specialize(substitutions))
-  expr(expr.op, children.to_slice(), expr.type.specialize(substitutions))
+  var children = children.to_slice()
+
+  var type = expr.type.specialize(substitutions)
+
+  expr(op, children, type)
 }
 
 fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {

@@ -1,16 +1,16 @@
 import mod.mar
 
-fun monomorphize(
-  egg: Egg, entry_point: String, substitutions: Substitutions
-): Egg {
-  var funs = map[String, EggFun]()
-  EggCalledFun { signature = entry_point, substitutions }
-    .monomorphize(egg, funs.&)
-  Egg { funs }
+fun monomorphize(taco: Taco): Taco {
+  var funs = map[String, TacoFun]()
+  var signature = taco.entry_point.monomorphize(taco, funs.&)
+  Taco {
+    funs,
+    entry_point = TacoCalledFun { signature, substitutions = no_substitutions },
+  }
 }
 
 fun monomorphize(
-  called: EggCalledFun, egg: Egg, out: &Map[String, EggFun]
+  called: TacoCalledFun, taco: Taco, out: &Map[String, TacoFun]
 ): String {
   eprintln("Monomorphizing {called.signature} with {called.substitutions}")
 
@@ -19,124 +19,47 @@ fun monomorphize(
     signature = "{signature} with {called.substitutions}"
   if out.contains(signature) then return signature
 
-  out.put(signature, uninitialized[EggFun]().*) | placeholder
+  out.put(signature, uninitialized[TacoFun]().*) | placeholder
 
-  var fun_ = egg.funs.get(called.signature)
-  var fun_ = EggFun {
-    module = fun_.module,
-    name = fun_.name,
-    body = fun_.body.monomorphize(
-      called.substitutions, map[EggId, EggExpr]().&, egg, out
-    ),
+  var fun_ = taco.funs.get(called.signature)
+  var fun_ = TacoFun {
+    params = fun_.params.specialize(called.substitutions),
+    body = fun_.body.monomorphize(called.substitutions, taco, out),
   }
 
   out.put(signature, fun_)
+  signature
+}
+
+fun specialize(holes: Slice[Hole], substitutions: Substitutions): Slice[Hole] {
+  var new = list[Hole]()
+  for old in holes do
+    new.&.push(Hole { id = old.id, type = old.type.specialize(substitutions) })
+  new.to_slice()
 }
 
 fun monomorphize(
-  body: EggBody, substitutions: Substitutions,
-  mapping: &Map[EggId, EggExpr],
-  egg: Egg, out: &Map[String, EggFun],
-): EggBody {
-  var builder = egg_body_builder().&
-  for id in body.params do
-    mapping.put(id, builder.push_param(id.get().type.specialize(substitutions)))
-  for id in body.children do
-    mapping.put(id, builder.push(id.get().monomorphize(substitutions, builder, mapping, egg, out)))
-  builder.finish(body.returns.monomorphize(substitutions, builder, mapping, egg, out))
-}
-fun monomorphize(
-  expr: EggExpr, substitutions: Substitutions,
-  builder: &EggBodyBuilder, mapping: &Map[EggId, EggExpr],
-  egg: Egg, out: &Map[String, EggFun],
-): EggExpr {
+  expr: TacoExpr, substitutions: Substitutions,
+  taco: Taco, out: &Map[String, TacoFun],
+): TacoExpr {
+  var op =
+    switch expr.op
+    case type(type) TacoOp.type(type.specialize(substitutions))
+    case lambda(holes) TacoOp.lambda(holes.specialize(substitutions))
+    case switch_(holes) TacoOp.switch_(holes.specialize(substitutions))
+    case call_fun(fun_)
+      TacoOp.call_fun(TacoCalledFun {
+        signature = fun_.monomorphize(taco, out),
+        substitutions = no_substitutions,
+      })
+    default expr.op
+
+  var children = list[TacoExpr]()
+  for child in expr.children do
+    children.&.push(child.monomorphize(substitutions, taco, out))
+  var children = children.to_slice()
+
   var type = expr.type.specialize(substitutions)
-  var src = expr.src
-  switch expr.op
-  case param unreachable()
-  case id(id) mapping.get(id)
-  case byte(byte) egg_byte(byte)
-  case int(int) egg_int(int)
-  case array(items)
-    array(type, {
-      var new_items = list[EggExpr]()
-      for item in items do
-        new_items.&.push(
-          item.monomorphize(substitutions, builder, mapping, egg, out)
-        )
-      new_items.to_slice()
-    })
-  case struct_(struct_)
-    struct_({
-      var fields = map[String, EggExpr]()
-      for field in struct_ do
-        fields.&.put(
-          field.key,
-          field.value.monomorphize(substitutions, builder, mapping, egg, out),
-        )
-      fields
-    })
-  case member(member)
-    member.of.monomorphize(substitutions, builder, mapping, egg, out)
-      .member(member.name)
-  case enum_(enum_)
-    enum_(
-      type,
-      enum_.name,
-      enum_.value.monomorphize(substitutions, builder, mapping, egg, out),
-    )
-  case switch_(switch_)
-    switch_(
-      switch_.condition.monomorphize(substitutions, builder, mapping, egg, out),
-      type,
-      {
-        var cases = map[String, EggBody]()
-        for case_ in switch_.cases do
-          cases.&.put(
-            case_.key,
-            case_.value.monomorphize(substitutions, mapping, egg, out),
-          )
-        cases
-      }
-    )
-  case lambda(lambda)
-    lambda(lambda.monomorphize(substitutions, mapping, egg, out))
-  case call(call) {
-    var callee =
-      switch call.callee
-      case lambda(lambda)
-        EggCallee.lambda(
-          lambda.monomorphize(substitutions, builder, mapping, egg, out)
-            .put_on_heap()
-        )
-      case fun_(fun_) EggCallee.fun_(fun_)
-      case builtin(builtin) EggCallee.builtin(builtin)
 
-    var args = list[EggExpr]()
-    for arg in call.args do
-      args.&.push(arg.monomorphize(substitutions, builder, mapping, egg, out))
-    var args = args.to_slice()
-
-    callee.call(args, type)
-  }
-  case recursive(recursive) {
-    var args = list[EggExpr]()
-    for arg in recursive.args do
-      args.&.push(arg.monomorphize(substitutions, builder, mapping, egg, out))
-    recursive(
-      recursive.name,
-      args.to_slice(),
-      recursive.body.monomorphize(substitutions, mapping, egg, out),
-    )
-  }
-  case recurse(recurse_args)
-    recurse({
-      var args = list[EggExpr]()
-      for arg in recurse_args do
-        args.&.push(arg.monomorphize(substitutions, builder, mapping, egg, out))
-      args.to_slice()
-    }, type)
-  case cast(inner)
-    inner.monomorphize(substitutions, builder, mapping, egg, out).cast(type)
-  case type(type) egg_type(type.specialize(context.substitutions))
+  expr(op, children, type)
 }

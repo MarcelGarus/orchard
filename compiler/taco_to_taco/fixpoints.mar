@@ -58,8 +58,8 @@ fun find_fixpoints(
   body: TacoExpr, params: Slice[Hole], args: Slice[TacoExpr],
   context: OptimizeTacoContext,
 ): Slice[TacoExpr] {
-  | eprintln("\nFinding fixpoints")
-  | var namespace = holes_namespace()
+  eprintln("Finding fixpoints")
+  var namespace = holes_namespace()
   | eprintln("Initial args:")
   | for arg in args do {
   |   stderr.write(arg, namespace.&, indentation(1))
@@ -80,6 +80,15 @@ fun find_fixpoints(
       |   stderr.write(arg, namespace.&, indentation(2))
       |   eprintln()
       | }
+      for both in zip(new.iter(), recurse.children.iter()) do {
+        eprintln("Unioning")
+        stderr.write(both.a, namespace.&, indentation(1))
+        eprintln()
+        stderr.write(both.b, namespace.&, indentation(1))
+        eprintln()
+        stderr.write(union(both.a, both.b), namespace.&, indentation(1))
+        eprintln()
+      }
       new = union(new, recurse.children) | TODO: Make children self-contained
     }
     if new == candidate then break
@@ -132,6 +141,9 @@ fun union(a: Slice[TacoExpr], b: Slice[TacoExpr]): Slice[TacoExpr] {
 fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
   if a.op is hole(hole) then if hole.is_black() then return a
   if b.op is hole(hole) then if hole.is_black() then return b
+
+  | if a.op is recursive then return union(a.wrap_around(), b)
+  | if b.op is recursive then return union(a, b.wrap_around())
 
   if a.op is hole(a) then if b.op is hole(b) then
     if a == b then return taco_hole(a)
@@ -227,4 +239,19 @@ fun replace_recurses(
   var new = list[TacoExpr]()
   for old in exprs do new.&.push(old.replace_recurses(fixpoints))
   new.to_slice()
+}
+
+fun wrap_around(expr: TacoExpr): TacoExpr {
+  if not(expr.op is recursive) then panic("can only wrap recursives")
+  var holes = expr.op.recursive.unwrap()
+  var args = expr.children.without_last()
+  var body = expr.children.last()
+  body.fill(holes, args).replace_recurses(holes, body)
+}
+fun replace_recurses(expr: TacoExpr, holes: Slice[Hole], body: TacoExpr): TacoExpr {
+  if expr.op is recurse then
+    return recursive(holes, expr.children, body) | TODO: what if an arg recurses?
+  var children = list[TacoExpr]()
+  for child in expr.children do children.&.push(child.replace_recurses(holes, body))
+  expr(expr.op, children.to_slice(), expr.type)
 }
