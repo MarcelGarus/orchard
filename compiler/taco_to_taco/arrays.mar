@@ -1,0 +1,261 @@
+import mod.mar
+
+fun desugar_arrays(taco: Taco): Taco {
+  var funs = map[String, TacoFun]()
+  for fun_ in taco.funs do funs.&.put(fun_.key, fun_.value.desugar_arrays())
+  Taco { funs, entry_point = taco.entry_point }
+}
+
+fun desugar_arrays(fun_: TacoFun): TacoFun {
+  TacoFun { params = fun_.params, body = fun_.body.desugar_arrays() }
+}
+
+fun desugar_arrays(expr: TacoExpr): TacoExpr {
+  var children = list[TacoExpr]()
+  for child in expr.children do children.&.push(child.desugar_arrays())
+  var children = children.to_slice()
+
+  switch expr.op
+  case array {
+    var item_type = expr.type.kind().array.unwrap()
+    var buffer_type = EggType { string = "(Buffer {item_type})" }
+
+    var buffer = create_buffer(taco_int(children.len), item_type)
+    for child in children.iter().enumerate() do
+      buffer = buffer_set(buffer, taco_int(child.index), child.item)
+    return array_from_buffer(buffer, taco_int(0), taco_int(children.len))
+  }
+  case generate_array {
+    var len = children.get(0)
+    var generator = children.get(1)
+
+    var item_type = expr.type.kind().array.unwrap()
+    var buffer_type = EggType { string = "(Buffer {item_type})" }
+
+    var buffer = hole(buffer_type)
+    var index = hole(type_int)
+    return array_from_buffer(
+      recursive(
+        list(buffer, index).to_slice(),
+        list(create_buffer(len, item_type), taco_int(0)).to_slice(),
+        switch_on_ordering(
+          compare(taco_hole(index), len),
+          recurse(
+            list(
+              buffer_set(
+                taco_hole(buffer),
+                taco_hole(index),
+                call(generator, list(taco_hole(index)).to_slice()),
+              ),
+              add(taco_hole(index), taco_int(1)),
+            ).to_slice(),
+            buffer_type,
+          ),
+          taco_hole(buffer),
+          taco_unreachable(buffer.type),
+        ),
+      ),
+      taco_int(0),
+      len,
+    )
+  }
+  case array_get {
+    var array = children.get(0)
+    var index = children.get(1)
+
+    var item_type = array.type.kind().array.unwrap()
+
+    var array_len = end_of_array(array).subtract(start_of_array(array))
+
+    return if_(
+      compare(index, taco_int(0)).is_less(),
+      taco_crash(item_type),
+      if_(
+        compare(index, array_len).is_greater_equal(),
+        taco_crash(item_type),
+        buffer_get(buffer_of_array(array), start_of_array(array).add(index)),
+      ),
+    )
+  }
+  case array_set {} | TODO
+  case array_slice {
+    var array = children.get(0)
+    var range = children.get(1)
+
+    var start = range.member("start")
+    var end = range.member("end")
+    var array_len = end_of_array(array).subtract(start_of_array(array))
+
+    return if_(
+      compare(start, taco_int(0)).is_less(),
+      taco_crash(array.type),
+      if_(
+        compare(start, array_len).is_greater_equal(),
+        taco_crash(array.type),
+        if_(
+          compare(start.add(end), array_len).is_greater_equal(),
+          taco_crash(array.type),
+          array_from_buffer(
+            buffer_of_array(array),
+            start_of_array(array).add(start),
+            end_of_array(array).add(end),
+          ),
+        ),
+      ),
+    )
+  }
+  case array_len {
+    var array = children.get(0)
+    return end_of_array(array).subtract(start_of_array(array))
+  }
+  default {}
+
+  expr(expr.op, children, expr.type)
+}
+
+
+
+
+
+
+
+fun compile_array_set(item_type: EggType, pesto: &Pesto): String {
+  var signature = "set (Array {item_type})"
+  if pesto.funs.contains(signature) then return signature
+  pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
+
+  var dag = dag[PestoExpr]()
+  var builder = body_builder(dag.&, PestoType.struct_(map(
+    "array" -> pesto_array_type,
+    "index" -> PestoType.int,
+    "item" -> item_type.to_pesto(),
+  ))).&
+  var args = builder.param
+  var array = builder.member(args, "array")
+  var index = builder.member(args, "index")
+  var item = builder.member(args, "item")
+  var buffer = builder.member(array, "buffer")
+  var start = builder.member(array, "start")
+  var len = builder.member(array, "len")
+
+  | Check that the index is within bounds.
+  builder.switch_(builder.compare_ints(index, builder.int(0)), map(
+    "less" ->
+      body_builder(dag.&, pesto_nothing.type)
+        .finish_with_crash("Index out of bounds."),
+    "equal" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
+    "greater" ->
+      body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
+  ))
+  builder.switch_(builder.compare_ints(index, len), map(
+    "less" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
+    "equal" ->
+      body_builder(dag.&, pesto_nothing.type)
+        .finish_with_crash("Index out of bounds."),
+    "greater" ->
+      body_builder(dag.&, pesto_nothing.type)
+        .finish_with_crash("Index out of bounds."),
+  ))
+
+  | If the buffer's reference count is 1, we have exclusive ownership and can
+  | mutate the buffer in place. Otherwise, we copy the part of the buffer that
+  | this array points to, and then we set the item in that copy.
+  var refcount = builder.get_reference_count(buffer)
+  var array_with_refcount_1 =
+    builder.switch_(builder.compare_ints(refcount, builder.int(1)), map(
+      | TODO: change this to crash/diverge so that the switch branches are
+      | compatible
+      "less" -> | can't happen
+        body_builder(dag.&, pesto_nothing.type).finish_with_crash(""),
+      "equal" ->
+        body_builder(dag.&, pesto_nothing.type).finish(array),
+      "greater" -> {
+        var builder = body_builder(dag.&, pesto_nothing.type).&
+        var buffer_copy = builder.new_buffer(item_type.to_pesto(), len)
+        builder.call(
+          compile_copy_buffer_fun(item_type, pesto),
+          builder.struct_(map(
+            "from_buffer" -> buffer,
+            "from_cursor" -> start,
+            "to_buffer" -> buffer_copy,
+            "to_cursor" -> builder.int(0),
+            "len" -> len,
+          )),
+          pesto_nothing.type,
+        )
+        builder.drop_buffer(buffer, item_type, pesto)
+        var array = builder.struct_(map(
+          "buffer" -> buffer_copy,
+          "start" -> builder.int(0),
+          "len" -> len,
+        ))
+        builder.finish(array)
+      },
+    ))
+
+  var buffer = builder.member(array_with_refcount_1, "buffer")
+  var start = builder.member(array_with_refcount_1, "start")
+  var offset = builder.add_ints(start, index)
+  var previous = builder.load_buffer_item(buffer, item_type.to_pesto(), offset)
+  builder.drop(previous, item_type, pesto)
+  builder.store_buffer_item(buffer, offset, item)
+
+  var body = builder.finish(array_with_refcount_1)
+  var fun_ = PestoFun { dag, body }
+
+  pesto.funs.&.put(signature, fun_)
+  signature
+}
+fun compile_copy_buffer_fun(item_type: EggType, pesto: &Pesto): String {
+  var signature = "copy between buffers of {item_type}"
+  if pesto.funs.contains(signature) then return signature
+  pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
+
+  var dag = dag[PestoExpr]()
+  var builder = body_builder(dag.&, PestoType.struct_(map(
+    "from_buffer" -> PestoType.ptr,
+    "from_cursor" -> PestoType.int,
+    "to_buffer" -> PestoType.ptr,
+    "to_cursor" -> PestoType.int,
+    "len" -> PestoType.int,
+  ))).&
+  var args        = builder.param
+  var from_buffer = builder.member(args, "from_buffer")
+  var from_cursor = builder.member(args, "from_cursor")
+  var to_buffer   = builder.member(args, "to_buffer")
+  var to_cursor   = builder.member(args, "to_cursor")
+  var len         = builder.member(args, "len")
+
+  builder.switch_(builder.compare_ints(len, builder.int(0)), map(
+    "less" -> | can't happen
+      body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
+    "equal" ->
+      body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
+    "greater" -> {
+      var builder = body_builder(dag.&, pesto_nothing.type).&
+      var item = builder.load_buffer_item(
+        from_buffer, item_type.to_pesto(), from_cursor
+      )
+      builder.dup(item, item_type, pesto)
+      builder.store_buffer_item(to_buffer, to_cursor, item)
+      builder.call(
+        signature,
+        builder.struct_(map(
+          "from_buffer" -> from_buffer,
+          "from_cursor" -> builder.add_ints(from_cursor, builder.int(1)),
+          "to_buffer" -> to_buffer,
+          "to_cursor" -> builder.add_ints(to_cursor, builder.int(1)),
+          "len" -> builder.sub_ints(len, builder.int(1)),
+        )),
+        pesto_nothing.type,
+      )
+      builder.finish_with_nothing()
+    },
+  ))
+
+  var body = builder.finish_with_nothing()
+  var fun_ = PestoFun { dag, body }
+
+  pesto.funs.&.put(signature, fun_)
+  signature
+}

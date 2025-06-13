@@ -157,6 +157,7 @@ fun static_to_dynamic(static: TacoExpr): TacoExpr {
 fun dynamic_to_static(dynamic: TacoExpr, type: EggType): TacoExpr {
   expr(TacoOp.dynamic_to_static, list(dynamic).to_slice(), type)
 }
+fun taco_unreachable(type: EggType): TacoExpr { expr(TacoOp.unreachable, type) }
 fun recursive(
   holes: Slice[Hole], args: Slice[TacoExpr], body: TacoExpr
 ): TacoExpr {
@@ -168,12 +169,68 @@ fun recursive(
 fun recurse(args: Slice[TacoExpr], type: EggType): TacoExpr {
   expr(TacoOp.recurse, args, type)
 }
+fun create_buffer(length: TacoExpr, item_type: EggType): TacoExpr {
+  expr(
+    TacoOp.create_buffer,
+    list(length).to_slice(),
+    EggType { string = "(Buffer {item_type})" },
+  )
+}
+fun buffer_get(buffer: TacoExpr, index: TacoExpr): TacoExpr {
+  var item_type = EggType { string = buffer.type.string.without_first("(Buffer ".len).without_last(1) }
+  expr(TacoOp.buffer_get, list(buffer, index).to_slice(), item_type)
+}
+fun buffer_set(buffer: TacoExpr, index: TacoExpr, item: TacoExpr): TacoExpr {
+  expr(TacoOp.buffer_set, list(buffer, index, item).to_slice(), buffer.type)
+}
+fun buffer_len(buffer: TacoExpr): TacoExpr {
+  expr(TacoOp.buffer_len, list(buffer).to_slice(), type_int)
+}
+fun array_from_buffer(buffer: TacoExpr, start: TacoExpr, end: TacoExpr): TacoExpr {
+  var item_type = EggType { string = buffer.type.string.without_first("(Buffer ".len).without_last(1) }
+  expr(TacoOp.array_from_buffer, list(buffer, start, end).to_slice(), type_array(item_type))
+}
+fun buffer_of_array(array: TacoExpr): TacoExpr {
+  var item_type = array.type.kind().array.unwrap()
+  var buffer_type = EggType { string = "(Buffer {item_type})" }
+  expr(TacoOp.buffer_of_array, list(array).to_slice(), buffer_type)
+}
+fun start_of_array(array: TacoExpr): TacoExpr {
+  expr(TacoOp.start_of_array, list(array).to_slice(), type_int)
+}
+fun end_of_array(array: TacoExpr): TacoExpr {
+  expr(TacoOp.end_of_array, list(array).to_slice(), type_int)
+}
 
+var taco_nothing = struct_(map[String, TacoExpr]())
+var taco_true = enum_(type_bool, "true", taco_nothing)
+var taco_false = enum_(type_bool, "false", taco_nothing)
 fun taco_string(string: String): TacoExpr {
   var bytes = list[TacoExpr]()
   for byte in string.bytes() do bytes.&.push(taco_byte(byte))
   struct_(map("utf8_bytes" -> array(type_byte, bytes.to_slice())))
 }
-var taco_nothing = struct_(map[String, TacoExpr]())
-var taco_true = enum_(type_bool, "true", taco_nothing)
-var taco_false = enum_(type_bool, "false", taco_nothing)
+fun if_(condition: TacoExpr, then_: TacoExpr, else_: TacoExpr): TacoExpr {
+  switch_(
+    condition,
+    then_.type,
+    list(hole(type_nothing), hole(type_nothing)).to_slice(),
+    map("true" -> then_, "false" -> else_),
+  )
+}
+fun switch_on_ordering(
+  ordering: TacoExpr, less: TacoExpr, equal: TacoExpr, greater: TacoExpr
+): TacoExpr {
+  switch_(
+    ordering,
+    less.type,
+    list(hole(type_nothing), hole(type_nothing), hole(type_nothing)).to_slice(),
+    map("less" -> less, "equal" -> equal, "greater" -> greater),
+  )
+}
+fun is_greater_equal(ordering: TacoExpr): TacoExpr {
+  switch_on_ordering(ordering, taco_false, taco_true, taco_true)
+}
+fun is_less(ordering: TacoExpr): TacoExpr {
+  switch_on_ordering(ordering, taco_true, taco_false, taco_false)
+}

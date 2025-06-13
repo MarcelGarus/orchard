@@ -237,7 +237,8 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       var items = list[TacoExpr]()
       for index in 0..len do
         items.&.push(
-          generator.call(list(taco_int(index)).to_slice()).optimize(context)
+          generator.call(list(taco_int(index)).to_slice())
+            .optimize_shallow(context)
         )
       return array(item_type, items.to_slice())
     }
@@ -298,16 +299,23 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
         .replace_recurses(fixpoints)
         .optimize(context),
     )
-    eprintln("Optimized recursive:")
-    stderr.write(expr, holes_namespace().&, indentation(0))
-    eprintln()
+    | eprintln("Optimized recursive:")
+    | stderr.write(expr, holes_namespace().&, indentation(0))
+    | eprintln()
     return expr
   }
-  | case recurse(recurse_args) {
-  |   var args = list[EggExpr]()
-  |   for arg in recurse_args do args.&.push(arg.optimize(context))
-  |   recurse(args.to_slice(), type)
-  | }
+  case buffer_of_array {
+    var array = children.get(0)
+    if array.op is array_from_buffer then return array.children.get(0)
+  }
+  case start_of_array {
+    var array = children.get(0)
+    if array.op is array_from_buffer then return array.children.get(1)
+  }
+  case end_of_array {
+    var array = children.get(0)
+    if array.op is array_from_buffer then return array.children.get(2)
+  }
   default {}
 
   expr
@@ -413,8 +421,17 @@ fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
     case type_info false
     case static_to_dynamic false
     case dynamic_to_static true
+    case unreachable true
     case recursive true
     case recurse true
+    case create_buffer false
+    case buffer_set false
+    case buffer_get false
+    case buffer_len false
+    case array_from_buffer false
+    case buffer_of_array false
+    case start_of_array false
+    case end_of_array false
 
   if can_diverge then 
     out.push(expr)

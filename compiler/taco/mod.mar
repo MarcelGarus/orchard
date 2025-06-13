@@ -109,6 +109,25 @@ enum TacoOp {              | children:
   | Inlined recursive functions become recursive expressions.
   recursive: Slice[Hole],  | initial args, body
   recurse,                 | next args
+
+  | Marks code as unreachable for later compiler stages. Code that definitely
+  | reaches this expression can be optimized away.
+  unreachable,             | -
+
+  | Buffer-related builtins. Arrays get desugared into buffers, which later
+  | correspond to low-level memory allocations. Unlike arrays, you can't get
+  | subslices of buffers. Buffer are by default created in an uninitialized
+  | state, so you need to set items before accessing them. All indexing
+  | operations are unchecked.
+  create_buffer,           | length
+  buffer_get,              | buffer, index
+  buffer_set,              | buffer, index, item
+  buffer_len,              | buffer
+
+  array_from_buffer,       | buffer, start, end
+  buffer_of_array,         | array
+  start_of_array,          | array
+  end_of_array,            | array
 }
 
 fun black_hole(type: EggType): Hole { Hole { id = -1, type } }
@@ -160,6 +179,15 @@ fun ==(a: TacoOp, b: TacoOp): Bool {
   case dynamic_to_static b is dynamic_to_static
   case recursive(a)      if b is recursive(b) then a == b else false
   case recurse           b is recurse
+  case unreachable       b is unreachable
+  case create_buffer     b is create_buffer
+  case buffer_get        b is buffer_get
+  case buffer_set        b is buffer_set
+  case buffer_len        b is buffer_len
+  case array_from_buffer b is array_from_buffer
+  case buffer_of_array   b is buffer_of_array
+  case start_of_array    b is start_of_array
+  case end_of_array      b is end_of_array
 }
 fun ==(a: TacoCalledFun, b: TacoCalledFun): Bool {
   a.signature == b.signature and
