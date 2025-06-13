@@ -162,6 +162,10 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if a.op is int(a) then if a == 0 then return b
     if b.op is int(b) then if b == 0 then return a
     if a.op is int(a) then if b.op is int(b) then return taco_int(a + b)
+    if a.op is sub_ints then if b == a.children.get(1) then
+      return body(list(b, a.children.get(0)).to_slice())
+    if b.op is sub_ints then if a == b.children.get(1) then
+      return body(list(a, b.children.get(0)).to_slice())
   }
   case sub_ints {
     var a = children.get(0)
@@ -287,34 +291,62 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     
     | Find fixpoints
     var fixpoints = body.find_fixpoints(holes, args, context)
-    var new_args = args.values_for_black_holes(fixpoints)
+    var new_args = list[TacoExpr]()
+    for arg in args.values_for_black_holes(fixpoints) do
+      new_args.&.push(arg.optimize(context))
     var new_holes = list[Hole]()
     for arg in new_args do new_holes.&.push(hole(arg.type))
     var new_holes = new_holes.to_slice()
-    var expr = recursive(
+    return recursive(
       new_holes,
-      new_args,
+      new_args.to_slice(),
       body
         .fill(holes, fixpoints.fill_black_holes(new_holes))
         .replace_recurses(fixpoints)
         .optimize(context),
     )
-    | eprintln("Optimized recursive:")
-    | stderr.write(expr, holes_namespace().&, indentation(0))
-    | eprintln()
-    return expr
+  }
+  case recurse {
+    for child in children do
+      if child.definitely_crashes() then return taco_crash(type)
+    if children.len == 1 then {
+      var child = children.get(0)
+      if child.op is switch_(holes) then {
+        var condition = child.children.first()
+        var cases = child.children.without_first()
+        var new_cases = list[TacoExpr]()
+        for case_ in cases do
+          new_cases.&.push(
+            recurse(list(case_).to_slice(), type).optimize_shallow(context)
+          )
+        return expr(
+          TacoOp.switch_(holes),
+          (list(condition) + new_cases).to_slice(),
+          type,
+        )
+      }
+    }
   }
   case buffer_of_array {
     var array = children.get(0)
-    if array.op is array_from_buffer then return array.children.get(0)
+    if array.op is array_from_buffer then
+      return body(list(
+        array.children.get(1), array.children.get(2), array.children.get(0)
+      ).to_slice()).optimize_shallow(context)
   }
   case start_of_array {
     var array = children.get(0)
-    if array.op is array_from_buffer then return array.children.get(1)
+    if array.op is array_from_buffer then
+      return body(list(
+        array.children.get(0), array.children.get(2), array.children.get(1)
+      ).to_slice()).optimize_shallow(context)
   }
   case end_of_array {
     var array = children.get(0)
-    if array.op is array_from_buffer then return array.children.get(2)
+    if array.op is array_from_buffer then
+      return body(list(
+        array.children.get(0), array.children.get(1), array.children.get(2)
+      ).to_slice()).optimize_shallow(context)
   }
   default {}
 
@@ -424,6 +456,7 @@ fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
     case unreachable true
     case recursive true
     case recurse true
+    case buffer false
     case create_buffer false
     case buffer_set false
     case buffer_get false
@@ -437,6 +470,23 @@ fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
     out.push(expr)
   else
     for child in expr.children do child.collect_impure(out)
+}
+
+fun definitely_crashes(expr: TacoExpr): Bool {
+  switch expr.op
+  case lambda false
+  case switch_ {
+    if expr.children.first().definitely_crashes() then return true
+    for case_ in expr.children.without_first() do
+      if not(case_.definitely_crashes()) then return false
+    true
+  }
+  case crash true
+  case unreachable true
+  default {
+    for child in expr.children do if child.definitely_crashes() then return true
+    false
+  }
 }
 
 | fun optimized_member(builder: &EggBodyBuilder, of: EggExpr, name: String): EggExpr {

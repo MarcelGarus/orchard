@@ -18,12 +18,9 @@ fun desugar_arrays(expr: TacoExpr): TacoExpr {
   switch expr.op
   case array {
     var item_type = expr.type.kind().array.unwrap()
-    var buffer_type = EggType { string = "(Buffer {item_type})" }
-
-    var buffer = create_buffer(taco_int(children.len), item_type)
-    for child in children.iter().enumerate() do
-      buffer = buffer_set(buffer, taco_int(child.index), child.item)
-    return array_from_buffer(buffer, taco_int(0), taco_int(children.len))
+    return array_from_buffer(
+      buffer(children, item_type), taco_int(0), taco_int(children.len)
+    )
   }
   case generate_array {
     var len = children.get(0)
@@ -93,12 +90,16 @@ fun desugar_arrays(expr: TacoExpr): TacoExpr {
         compare(start, array_len).is_greater_equal(),
         taco_crash(array.type),
         if_(
-          compare(start.add(end), array_len).is_greater_equal(),
+          compare(start, end).is_greater(),
           taco_crash(array.type),
-          array_from_buffer(
-            buffer_of_array(array),
-            start_of_array(array).add(start),
-            end_of_array(array).add(end),
+          if_(
+            compare(end, array_len).is_greater(),
+            taco_crash(array.type),
+            array_from_buffer(
+              buffer_of_array(array),
+              start_of_array(array).add(start),
+              start_of_array(array).add(end),
+            ),
           ),
         ),
       ),

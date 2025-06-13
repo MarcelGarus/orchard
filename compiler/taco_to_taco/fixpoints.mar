@@ -83,6 +83,7 @@ fun find_fixpoints(
       |   stderr.write(arg, namespace.&, indentation(2))
       |   eprintln()
       | }
+
       for both in zip(new.iter(), recurse.children.iter()) do {
         eprintln("Unioning")
         stderr.write(both.a, namespace.&, indentation(1))
@@ -142,6 +143,8 @@ fun union(a: Slice[TacoExpr], b: Slice[TacoExpr]): Slice[TacoExpr] {
   all.to_slice()
 }
 fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
+  if a == b then return a
+
   if a.op is hole(hole) then if hole.is_black() then return a
   if b.op is hole(hole) then if hole.is_black() then return b
 
@@ -152,10 +155,10 @@ fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
     if a == b then return taco_hole(a)
   if a.op is type(a) then if b.op is type(b) then
     if a == b then return taco_type(a)
-  if a.op is int(a) then if b.op is int(b) then
-    if a == b then return taco_int(a)
   if a.op is byte(a) then if b.op is byte(b) then
     if a == b then return taco_byte(a)
+  if a.op is int(a) then if b.op is int(b) then
+    if a == b then return taco_int(a)
   if a.op is array then if b.op is array then
     if a.children.len == b.children.len then
       return array(a.type, union(a.children, b.children))
@@ -186,25 +189,132 @@ fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
   taco_hole(black_hole(a.type))
 }
 
+| | Simplifies the expression given that we know that it doesn't crash.
+| fun not_crashing(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
+|   var children = list[TacoExpr]()
+|   for child in expr.children do children.&.push(child.not_crashing(context))
+|   var children = children.to_slice()
+
+|   switch expr.op
+|   case switch_(holes) {
+|     var condition = children.first()
+|     var cases = children.without_first()
+|     var new_holes = list[Hole]()
+|     var new_cases = list[TacoExpr]()
+|     for both in zip(holes.iter(), cases.iter()) do
+|       if not(both.b.definitely_crashes()) then {
+|         new_holes.&.push(both.a)
+|         new_cases.&.push(both.b.not_crashing(context))
+|       }
+|     if new_cases.len == 0 then return taco_crash(expr.type)
+|     if new_cases.len == 1 then
+|       return new_cases.get(0)
+|         .fill(map(new_holes.get(0) -> condition))
+|         .optimize(context)
+|         .not_crashing(context)
+|     return expr(
+|       TacoOp.switch_(new_holes.to_slice()),
+|       (list(condition) + new_cases).to_slice(),
+|       expr.type
+|     )
+|   }
+|   case body return expr.children.last().not_crashing(context)
+|   default {}
+
+|   expr(expr.op, children, expr.type)
+| }
+
 fun values_for_black_holes(
   exprs: Slice[TacoExpr], fixpoints: Slice[TacoExpr]
 ): Slice[TacoExpr] {
+  eprintln("values for black holes")
+  for expr in exprs do {
+    stderr.write(expr, holes_namespace().&, indentation(1))
+    eprintln()
+  }
   var out = list[TacoExpr]()
-  exprs.values_for_black_holes(fixpoints, out.&)
-  out.to_slice()
-}
-fun values_for_black_holes(
-  exprs: Slice[TacoExpr], fixpoints: Slice[TacoExpr], out: &List[TacoExpr]
-) {
   for both in zip(exprs.iter(), fixpoints.iter()) do
-    both.a.values_for_black_holes(both.b, out)
+    both.a.values_for_black_holes(both.b, out.&)
+  out.to_slice()
+
+  eprintln("values for black holes")
+  for expr in out do {
+    stderr.write(expr, holes_namespace().&, indentation(1))
+    eprintln()
+  }
+  out.to_slice()
 }
 fun values_for_black_holes(
   expr: TacoExpr, fixpoint: TacoExpr, out: &List[TacoExpr]
 ) {
-  if fixpoint.op is hole(hole) then if hole.is_black() then
-    return out.&.push(expr)
-  expr.children.values_for_black_holes(fixpoint.children, out)
+  switch fixpoint.op
+  case hole(hole)
+    if hole.is_black() then return out.push(expr)
+  case type {}
+  case byte {}
+  case int {}
+  case array {
+    for item in fixpoint.children.iter().enumerate() do
+      values_for_black_holes(
+        expr.array_get(taco_int(item.index)), item.item, out
+      )
+  }
+  case struct_ {
+    var keys = list[String]()
+    for field in fixpoint.type.kind().struct_.unwrap() do keys.&.push(field.key)
+    keys.to_slice().&.sort()
+
+    for key in keys.iter().enumerate() do
+      values_for_black_holes(
+        expr.member(key.item), fixpoint.children.get(key.index), out
+      )
+  }
+  case enum_(name) {
+    var variant_types = fixpoint.type.kind().enum_.unwrap()
+    var variant_type = variant_types.get(name)
+
+    var keys = list[String]()
+    for variant in variant_types do keys.&.push(variant.key)
+    keys.to_slice().&.sort()
+
+    var holes = list[Hole]()
+    var cases = map[String, TacoExpr]()
+    for key in keys.iter().enumerate() do {
+      var hole = hole(variant_types.get(key.item))
+      holes.&.push(hole)
+      cases.&.put(
+        key.item,
+        if key.item == name
+        then taco_hole(hole)
+        else taco_unreachable(variant_type),
+      )
+    }
+
+    values_for_black_holes(
+      switch_(expr, variant_type, holes.to_slice(), cases),
+      fixpoint.children.get(0),
+      out,
+    )
+  }
+  case lambda {}
+  case box values_for_black_holes(unbox(expr), fixpoint.children.get(0), out)
+  case array_from_buffer {
+    values_for_black_holes(buffer_of_array(expr), fixpoint.children.get(0), out)
+    values_for_black_holes(start_of_array(expr), fixpoint.children.get(1), out)
+    values_for_black_holes(end_of_array(expr), fixpoint.children.get(2), out)
+  }
+  default
+    if fixpoint.contains_black_hole() then
+      panic("Unknown fixpoint {fixpoint.debug()}")
+
+  | if fixpoint.op is hole(hole) then if hole.is_black() then
+  |   return out.&.push(expr)
+  | expr.children.values_for_black_holes(fixpoint.children, out)
+}
+fun contains_black_hole(expr: TacoExpr): Bool {
+  if expr.op is hole(hole) then if hole.is_black() then return true
+  for child in expr.children do if child.contains_black_hole() then return true
+  false
 }
 
 fun fill_black_holes(
@@ -253,12 +363,12 @@ fun wrap_around(expr: TacoExpr): TacoExpr {
   var holes = expr.op.recursive.unwrap()
   var args = expr.children.without_last()
   var body = expr.children.last()
-  body.fill(holes, args).replace_recurses(holes, body)
+  body.fill(holes, args).wrap_rec(holes, body)
 }
-fun replace_recurses(expr: TacoExpr, holes: Slice[Hole], body: TacoExpr): TacoExpr {
+fun wrap_rec(expr: TacoExpr, holes: Slice[Hole], body: TacoExpr): TacoExpr {
   if expr.op is recurse then
     return recursive(holes, expr.children, body) | TODO: what if an arg recurses?
   var children = list[TacoExpr]()
-  for child in expr.children do children.&.push(child.replace_recurses(holes, body))
+  for child in expr.children do children.&.push(child.wrap_rec(holes, body))
   expr(expr.op, children.to_slice(), expr.type)
 }
