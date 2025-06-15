@@ -233,18 +233,18 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     var box = children.get(0)
     if box.op is box then return box.children.get(0)
   }
-  case generate_array {
+  case generate_array(index_hole) {
     var len = children.get(0)
-    var generator = children.get(1)
-    var item_type = generator.type.kind().lambda.unwrap().return_type
+    var item = children.get(1)
     if len.op is int(len) then if len <= 10 then {
       var items = list[TacoExpr]()
       for index in 0..len do
         items.&.push(
-          generator.call(list(taco_int(index)).to_slice())
+          item
+            .fill(map(index_hole -> taco_int(index)))
             .optimize_shallow(context)
         )
-      return array(item_type, items.to_slice())
+      return array(item.type, items.to_slice())
     }
   }
   case array_get {
@@ -268,11 +268,10 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   }
   case array_slice {
     var array = children.get(0)
-    var range = children.get(1)
-    if array.op is array then if range.op is struct_ then {
+    var start = children.get(1)
+    var end = children.get(2)
+    if array.op is array then {
       var items = array.children
-      var end = range.children.get(0)
-      var start = range.children.get(1)
       if start.op is int(start) then if end.op is int(end) then {
         if (0..items.len).contains(start) and (0..items.len).contains(end)
         then return array(type, items.subslice(start..end))
