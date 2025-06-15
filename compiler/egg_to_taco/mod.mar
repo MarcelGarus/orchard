@@ -45,7 +45,7 @@ fun compile(
 fun compile(
   expr: EggExpr, mapping: &Map[Id, TacoExpr], dag: Dag[EggExpr]
 ): TacoExpr {
-  eprintln("Compiling {expr.op.debug()}")
+  | eprintln("Compiling {expr.op.debug()}")
   var type = expr.type
   switch expr.op
   case param unreachable()
@@ -71,17 +71,14 @@ fun compile(
     lambda(holes.to_slice(), lambda.compile(mapping, dag))
   }
   case switch_(switch_) {
-    var holes = list[Hole]()
-    var cases = map[String, TacoExpr]()
+    var cases = map[String, Tuple2[Hole, TacoExpr]]()
     for case_ in switch_.cases do {
       var binding = case_.value.params.get(0)
       var hole = hole(dag.type_of(binding))
-      holes.&.push(hole)
       mapping.&.put(binding, taco_hole(hole))
-      cases.&.put(case_.key, case_.value.compile(mapping, dag))
+      cases.&.put(case_.key, tuple(hole, case_.value.compile(mapping, dag)))
     }
-    switch_.condition.compile(mapping, dag)
-      .switch_(type, holes.to_slice(), cases)
+    switch_(switch_.condition.compile(mapping, dag), type, cases)
   }
   case call(call) {
     var args = list[TacoExpr]()
@@ -111,7 +108,12 @@ fun compile(
       case generate_array generate_array(args.get(0), args.get(1))
       case array_get array_get(args.get(0), args.get(1))
       case array_set array_set(args.get(0), args.get(1), args.get(2))
-      case array_slice array_slice(args.get(0), args.get(1))
+      case array_slice
+        array_slice(
+          args.get(0),
+          args.get(1).member("start"),
+          args.get(1).member("end"),
+        )
       case array_len array_len(args.get(0))
       case call args.get(0).call(empty_slice[TacoExpr]())
       case crash taco_crash(type)

@@ -1,0 +1,125 @@
+import mod.mar
+
+fun desugar_casts(taco: Taco): Taco {
+  var funs = map[String, TacoFun]()
+  for fun_ in taco.funs do
+    funs.&.put(fun_.key, fun_.value.desugar_casts(funs.&))
+  Taco { funs, entry_point = taco.entry_point }
+}
+
+fun desugar_casts(fun_: TacoFun, funs: &Map[String, TacoFun]): TacoFun {
+  TacoFun { params = fun_.params, body = fun_.body.desugar_casts(funs) }
+}
+
+fun desugar_casts(expr: TacoExpr, funs: &Map[String, TacoFun]): TacoExpr {
+  expr(
+    if expr.op is cast then
+      TacoOp.call_fun(TacoCalledFun {
+        signature = compile_cast_fun(
+          expr.children.get(0).type, expr.type, funs
+        ),
+        substitutions = no_substitutions,
+      })
+    else
+      expr.op,
+    expr.children.desugar_casts(funs),
+    expr.type
+  )
+}
+fun desugar_casts(
+  exprs: Slice[TacoExpr], funs: &Map[String, TacoFun]
+): Slice[TacoExpr] {
+  var new = list[TacoExpr]()
+  for old in exprs do new.&.push(old.desugar_casts(funs))
+  new.to_slice()
+}
+
+fun compile_cast_fun(
+  from: EggType, to: EggType, funs: &Map[String, TacoFun]
+): String {
+  var signature = "cast {from} to {to}"
+  if funs.contains(signature) then return signature
+  funs.put(signature, uninitialized[TacoFun]().*) | placeholder
+
+  var value = hole(from)
+  funs.put(signature, TacoFun {
+    params = list(value).to_slice(),
+    body = {
+      if from.internal_kind() is never then taco_unreachable(to)
+      else if from == to then taco_hole(value) | This cast is the identity fun!
+      else
+        switch to.kind()
+        case type unreachable()
+        case byte unreachable()
+        case int unreachable()
+        case array(to_item_type) {
+          var index = hole(type_int)
+          generate_array(
+            taco_hole(value).array_len(),
+            lambda(
+              list(index).to_slice(),
+              taco_hole(value)
+                .array_get(taco_hole(index))
+                .cast(to_item_type)
+                .desugar_casts(funs),
+            )
+          )
+        }
+        case struct_(to_field_types)
+          struct_({
+            var to_fields = map[String, TacoExpr]()
+            for field in to_field_types do
+              to_fields.&.put(
+                field.key,
+                taco_hole(value)
+                  .member(field.key)
+                  .cast(field.value)
+                  .desugar_casts(funs),
+              )
+            to_fields
+          })
+        case enum_(to_variant_types) {
+          var from_variant_types = from.kind().enum_.unwrap()
+          var cases = map[String, Tuple2[Hole, TacoExpr]]()
+          for variant in from_variant_types do {
+            var from_payload_type = variant.value
+            var to_payload_type = to_variant_types.get(variant.key)
+            var hole = hole(from_payload_type)
+            cases.&.put(
+              variant.key,
+              tuple(
+                hole, taco_hole(hole).cast(to_payload_type).desugar_casts(funs)
+              ),
+            )
+          }
+          switch_(taco_hole(value), to, cases)
+        }
+        case lambda(to_lambda_type) {
+          var from_lambda_type = from.kind().lambda.unwrap()
+
+          var outer_params = list[Hole]()
+          for param in to_lambda_type.args do
+            outer_params.&.push(hole(param))
+
+          lambda(
+            outer_params.to_slice(),
+            taco_hole(value)
+              .call({
+                var inner_params = list[TacoExpr]()
+                for param in outer_params.iter().enumerate() do
+                  inner_params.&.push(
+                    taco_hole(param.item)
+                      .cast(from_lambda_type.args.get(param.index))
+                      .desugar_casts(funs)
+                  )
+                inner_params.to_slice()
+              })
+              .cast(to_lambda_type.return_type)
+              .desugar_casts(funs),
+          )
+        }
+        default panic("casting {from} to {to} is not supported")
+    }
+  })
+  signature
+}

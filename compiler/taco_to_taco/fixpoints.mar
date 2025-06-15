@@ -58,16 +58,16 @@ fun find_fixpoints(
   body: TacoExpr, params: Slice[Hole], args: Slice[TacoExpr],
   context: OptimizeTacoContext,
 ): Slice[TacoExpr] {
-  eprintln("Finding fixpoints")
-  var namespace = holes_namespace()
-  eprintln("Initial args:")
-  for arg in args do {
-    stderr.write(arg, namespace.&, indentation(1))
-    eprintln()
-  }
-  eprintln("Body:")
-  stderr.write(body, namespace.&, indentation(1))
-  eprintln()
+  | eprintln("Finding fixpoints")
+  | var namespace = holes_namespace()
+  | eprintln("Initial args:")
+  | for arg in args do {
+  |   stderr.write(arg, namespace.&, indentation(1))
+  |   eprintln()
+  | }
+  | eprintln("Body:")
+  | stderr.write(body, namespace.&, indentation(1))
+  | eprintln()
 
   var candidate = args
   loop {
@@ -84,16 +84,16 @@ fun find_fixpoints(
       |   eprintln()
       | }
 
-      for both in zip(new.iter(), recurse.children.iter()) do {
-        eprintln("Unioning")
-        stderr.write(both.a, namespace.&, indentation(1))
-        eprintln()
-        stderr.write(both.b, namespace.&, indentation(1))
-        eprintln()
-        stderr.write(union(both.a, both.b), namespace.&, indentation(1))
-        eprintln()
-      }
-      new = union(new, recurse.children) | TODO: Make children self-contained
+      | for both in zip(new.iter(), recurse.children.iter()) do {
+      |   eprintln("Unioning")
+      |   stderr.write(both.a, namespace.&, indentation(1))
+      |   eprintln()
+      |   stderr.write(both.b, namespace.&, indentation(1))
+      |   eprintln()
+      |   stderr.write(union(both.a, both.b), namespace.&, indentation(1))
+      |   eprintln()
+      | }
+      new = union(new, recurse.children) | TODO: Make children self-contained?
     }
     if new == candidate then break
     candidate = new
@@ -181,10 +181,6 @@ fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
   }
   if a.op is box then if b.op is box then
     return box(union(a.children.get(0), b.children.get(0)))
-  if a.op is array_from_buffer then if b.op is array_from_buffer then {
-    var children = union(a.children, b.children)
-    return array_from_buffer(children.get(0), children.get(1), children.get(2))
-  }
 
   taco_hole(black_hole(a.type))
 }
@@ -227,21 +223,21 @@ fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
 fun values_for_black_holes(
   exprs: Slice[TacoExpr], fixpoints: Slice[TacoExpr]
 ): Slice[TacoExpr] {
-  eprintln("values for black holes")
-  for expr in exprs do {
-    stderr.write(expr, holes_namespace().&, indentation(1))
-    eprintln()
-  }
+  | eprintln("values for black holes")
+  | for expr in exprs do {
+  |   stderr.write(expr, holes_namespace().&, indentation(1))
+  |   eprintln()
+  | }
   var out = list[TacoExpr]()
   for both in zip(exprs.iter(), fixpoints.iter()) do
     both.a.values_for_black_holes(both.b, out.&)
   out.to_slice()
 
-  eprintln("values for black holes")
-  for expr in out do {
-    stderr.write(expr, holes_namespace().&, indentation(1))
-    eprintln()
-  }
+  | eprintln("values for black holes")
+  | for expr in out do {
+  |   stderr.write(expr, holes_namespace().&, indentation(1))
+  |   eprintln()
+  | }
   out.to_slice()
 }
 fun values_for_black_holes(
@@ -271,38 +267,32 @@ fun values_for_black_holes(
   }
   case enum_(name) {
     var variant_types = fixpoint.type.kind().enum_.unwrap()
-    var variant_type = variant_types.get(name)
+    var target_type = variant_types.get(name)
 
     var keys = list[String]()
     for variant in variant_types do keys.&.push(variant.key)
     keys.to_slice().&.sort()
 
-    var holes = list[Hole]()
-    var cases = map[String, TacoExpr]()
-    for key in keys.iter().enumerate() do {
-      var hole = hole(variant_types.get(key.item))
-      holes.&.push(hole)
+    var cases = map[String, Tuple2[Hole, TacoExpr]]()
+    for variant in variant_types do {
+      var hole = hole(variant.value)
       cases.&.put(
-        key.item,
-        if key.item == name
-        then taco_hole(hole)
-        else taco_unreachable(variant_type),
+        variant.key,
+        tuple(
+          hole,
+          if variant.key == name
+          then taco_hole(hole)
+          else taco_unreachable(target_type),
+        ),
       )
     }
 
     values_for_black_holes(
-      switch_(expr, variant_type, holes.to_slice(), cases),
-      fixpoint.children.get(0),
-      out,
+      switch_(expr, target_type, cases), fixpoint.children.get(0), out
     )
   }
   case lambda {}
   case box values_for_black_holes(unbox(expr), fixpoint.children.get(0), out)
-  case array_from_buffer {
-    values_for_black_holes(buffer_of_array(expr), fixpoint.children.get(0), out)
-    values_for_black_holes(start_of_array(expr), fixpoint.children.get(1), out)
-    values_for_black_holes(end_of_array(expr), fixpoint.children.get(2), out)
-  }
   default
     if fixpoint.contains_black_hole() then
       panic("Unknown fixpoint {fixpoint.debug()}")

@@ -1,0 +1,122 @@
+import mod.mar
+
+fun expr(op: LimeOp, type: EggType): LimeExpr { LimeExpr { op, type } }
+
+fun lime_hole(hole: Hole): LimeExpr { LimeOp.hole(hole).expr(hole.type) }
+fun lime_type(type: EggType): LimeExpr { LimeOp.type(type).expr(type_type) }
+fun lime_byte(byte: Byte): LimeExpr { LimeOp.byte(byte).expr(type_byte) }
+fun lime_int(int: Int): LimeExpr { LimeOp.int(int).expr(type_int) }
+fun array(item_type: EggType, items: Slice[LimeExpr]): LimeExpr {
+  LimeOp.array(items).expr(type_array(item_type))
+}
+fun struct_(fields: Map[String, LimeExpr]): LimeExpr {
+  var field_types = map[String, EggType]()
+  for field in fields do field_types.&.put(field.key, field.value.type)
+  LimeOp.struct_(fields).expr(type_struct(field_types))
+}
+fun enum_(type: EggType, name: String, value: LimeExpr): LimeExpr {
+  LimeOp.enum_(LimeEnum { name, value = value.put_on_heap() }).expr(type)
+}
+fun lambda(signature: String, closure: LimeExpr, type: EggType): LimeExpr {
+  LimeOp.lambda(LimeLambda { signature, closure = closure.put_on_heap() })
+    .expr(type)
+}
+fun box(inner: LimeExpr): LimeExpr {
+  LimeOp.box(inner.put_on_heap()).expr(type_box(inner.type))
+}
+fun member(of: LimeExpr, name: String): LimeExpr {
+  LimeOp.member(LimeMember { of = of.put_on_heap(), name })
+    .expr(of.type.kind().struct_.unwrap().get(name))
+}
+fun switch_(
+  condition: LimeExpr, type: EggType, cases: Map[String, LimeCase]
+): LimeExpr {
+  LimeOp.switch_(LimeSwitch {
+    condition = condition.put_on_heap(), cases
+  }).expr(type)
+}
+fun call(
+  signature: String, args: Slice[LimeExpr], return_type: EggType
+): LimeExpr {
+  LimeOp.call_fun(LimeCallFun { fun_ = signature, args }).expr(return_type)
+}
+fun call(lambda: LimeExpr, args: Slice[LimeExpr]): LimeExpr {
+  LimeOp.call_lambda(LimeCallLambda { lambda = lambda.put_on_heap(), args })
+    .expr(lambda.type.kind().lambda.unwrap().return_type)
+}
+fun body(inner: Slice[Tuple2[Hole, LimeExpr]], returns: LimeExpr): LimeExpr {
+  LimeOp.body(LimeBody { inner, returns = returns.put_on_heap() })
+    .expr(returns.type)
+}
+fun lower_byte(int: LimeExpr): LimeExpr {
+  LimeOp.lower_byte(int.put_on_heap()).expr(type_byte)
+}
+fun byte_to_int(byte: LimeExpr): LimeExpr {
+  LimeOp.byte_to_int(byte.put_on_heap()).expr(type_int)
+}
+fun add(a: LimeExpr, b: LimeExpr): LimeExpr {
+  LimeOp.add_ints(tuple(a.put_on_heap(), b.put_on_heap())).expr(type_int)
+}
+fun subtract(a: LimeExpr, b: LimeExpr): LimeExpr {
+  LimeOp.sub_ints(tuple(a.put_on_heap(), b.put_on_heap())).expr(type_int)
+}
+fun multiply(a: LimeExpr, b: LimeExpr): LimeExpr {
+  LimeOp.mul_ints(tuple(a.put_on_heap(), b.put_on_heap())).expr(type_int)
+}
+fun divide(a: LimeExpr, b: LimeExpr): LimeExpr {
+  LimeOp.div_ints(tuple(a.put_on_heap(), b.put_on_heap())).expr(type_int)
+}
+fun modulo(a: LimeExpr, b: LimeExpr): LimeExpr {
+  LimeOp.mod_ints(tuple(a.put_on_heap(), b.put_on_heap())).expr(type_int)
+}
+fun and_(a: LimeExpr, b: LimeExpr): LimeExpr {
+  LimeOp.and_ints(tuple(a.put_on_heap(), b.put_on_heap())).expr(type_int)
+}
+fun or_(a: LimeExpr, b: LimeExpr): LimeExpr {
+  LimeOp.or_ints(tuple(a.put_on_heap(), b.put_on_heap())).expr(type_int)
+}
+fun xor(a: LimeExpr, b: LimeExpr): LimeExpr {
+  LimeOp.xor_ints(tuple(a.put_on_heap(), b.put_on_heap())).expr(type_int)
+}
+fun compare(a: LimeExpr, b: LimeExpr): LimeExpr {
+  LimeOp.compare_ints(tuple(a.put_on_heap(), b.put_on_heap()))
+    .expr(type_ordering)
+}
+fun unbox(box: LimeExpr): LimeExpr {
+  LimeOp.unbox(box.put_on_heap()).expr(box.type.kind().box.unwrap())
+}
+fun lime_crash(type: EggType): LimeExpr { LimeOp.crash.expr(type) }
+fun generate_array(length: LimeExpr, index: Hole, generate: LimeExpr): LimeExpr {
+  LimeOp.generate_array(LimeGenerateArray {
+    length = length.put_on_heap(), index, generate = generate.put_on_heap()
+  }).expr(type_array(generate.type))
+}
+fun array_get(array: LimeExpr, index: LimeExpr): LimeExpr {
+  LimeOp.array_get(tuple(array.put_on_heap(), index.put_on_heap()))
+    .expr(array.type.kind().array.unwrap())
+}
+fun array_set(array: LimeExpr, index: LimeExpr, item: LimeExpr): LimeExpr {
+  LimeOp.array_set(tuple(
+    array.put_on_heap(), index.put_on_heap(), item.put_on_heap()
+  )).expr(array.type.kind().array.unwrap())
+}
+fun array_slice(array: LimeExpr, start: LimeExpr, end: LimeExpr): LimeExpr {
+  LimeOp.array_slice(tuple(
+    array.put_on_heap(), start.put_on_heap(), end.put_on_heap()
+  )).expr(array.type)
+}
+fun array_len(array: LimeExpr): LimeExpr {
+  LimeOp.unbox(array.put_on_heap()).expr(type_int)
+}
+fun recursive(
+  holes: Slice[Hole], initial: Slice[LimeExpr], body: LimeExpr
+): LimeExpr {
+  var children = list[LimeExpr]()
+  for arg in args do children.&.push(arg)
+  children.&.push(body)
+  expr(LimeOp.recursive(holes), children.to_slice(), body.type)
+}
+fun recurse(args: Slice[LimeExpr], type: EggType): LimeExpr {
+  expr(LimeOp.recurse, args, type)
+}
+fun lime_unreachable(type: EggType): LimeExpr { expr(LimeOp.unreachable, type) }
