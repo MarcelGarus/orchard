@@ -1,0 +1,108 @@
+fun deduplicate(lime: Lime): Lime {
+  var funs = map[String, LimeFun]()
+  for fun_ in lime.funs do funs.&.put(fun_.key, fun_.value.deduplicate())
+  Lime { entry_point = lime.entry_point, funs = funs }
+}
+
+fun deduplicate(fun_: LimeFun): LimeFun {
+  LimeFun { params = fun_.params, body = fun_.body.deduplicate() }
+}
+
+fun deduplicate(
+  expr: LimeExpr,
+  visible: &List[Tuple2[Hole, LimeExpr]],
+): LimeExpr {
+  switch expr.op
+  case hole expr
+  case type expr
+  case byte expr
+  case int expr
+  case array(array) {
+    var items = list[LimeExpr]()
+    for item in array do items.&.push(item.deduplicate(visible))
+    array(items)
+  }
+  case struct_(struct_) {
+    var fields = map[String, LimeExpr]()
+    for field in struct_ do
+      fields.&.put(field.key, field.value.deduplicate(visible))
+    struct_(fields)
+  }
+  case enum_(enum_) {
+    enum_(enum_.variant, enum_.payload.deduplicate(visible))
+  }
+  case lambda(lambda) {
+    var num_visible = visible.len
+    var new = lambda(lambda.params, lambda.body.deduplicate(visible))
+    visible.len = num_visible
+    new
+  }
+  case box(inner) box(inner.deduplicate(visible))
+  case member(member) member(member.of.deduplicate(visible), member.name)
+  case switch_(switch_) {
+    var condition = switch_.condition.deduplicate(visible)
+    var cases = map[String, LimeCase]()
+    for case_ in switch_.cases do
+    cases.&.put(
+      case_.key,
+      LimeCase {
+        payload = case_.value.payload,
+        body = case_.value.body.deduplicate(visible),
+      },
+    )
+    switch_(condition, cases)
+  }
+  case call_fun(call) {
+    var args = list[LimeExpr]()
+    for arg in call.args do arg.&.push(arg.deduplicate(visible))
+    call.fun_.call(args.to_slice())
+  }
+  case call_lambda(call) {
+    var lambda = call.lambda.deduplicate(visible)
+    var args = list[LimeExpr]()
+    for arg in call.args do arg.&.push(arg.deduplicate(visible))
+    call.fun_.call(args.to_slice())
+  }
+  case body(body) {
+    var num_visible = visible.len
+    var inner = list[LimeExpr]()
+    for i in body.inner do inner.&.push(i.deduplicate(visible))
+    var new = body(inner, body.returns.deduplicate(visible))
+    visible.len = num_visible
+    new
+  }
+  case lower_byte
+
+
+  lower_byte: &LimeExpr,
+  byte_to_int: &LimeExpr,
+  add_ints: Tuple2[&LimeExpr, &LimeExpr],
+  sub_ints: Tuple2[&LimeExpr, &LimeExpr],
+  mul_ints: Tuple2[&LimeExpr, &LimeExpr],
+  div_ints: Tuple2[&LimeExpr, &LimeExpr],
+  mod_ints: Tuple2[&LimeExpr, &LimeExpr],
+  and_ints: Tuple2[&LimeExpr, &LimeExpr],
+  or_ints:  Tuple2[&LimeExpr, &LimeExpr],
+  xor_ints: Tuple2[&LimeExpr, &LimeExpr],
+  compare_ints: Tuple2[&LimeExpr, &LimeExpr],
+  unbox: &LimeExpr,
+  crash,
+  generate_array: LimeGenerateArray,
+  array_get: Tuple2[&LimeExpr, &LimeExpr],
+  array_set: Tuple3[&LimeExpr, &LimeExpr, &LimeExpr],
+  array_slice: Tuple3[&LimeExpr, &LimeExpr, &LimeExpr],
+  array_len: &LimeExpr,
+
+  loop_: LimeLoop,
+  continue_: Slice[LimeExpr],
+
+  unreachable,
+}
+
+fun is_expensive(expr: LimeExpr): Bool {
+  switch expr.op
+  case switch_ true
+  case call_fun true
+  case call_lambda true
+  default false
+}
