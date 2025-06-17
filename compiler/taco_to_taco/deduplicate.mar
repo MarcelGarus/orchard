@@ -8,73 +8,77 @@ fun deduplicate(fun_: TacoFun): TacoFun {
   TacoFun {
     params = fun_.params,
     body = {
-      var lets = list[Tuple2[Hole, TacoExpr]]()
-      var inner =
-        fun_.body.deduplicate(lets.&, list[Tuple2[Hole, TacoExpr]]().&)
-      body(lets.to_slice(), inner)
+      var body = ongoing_body(fun_.params)
+      var bodies = list(body)
+      var inner = fun_.body.deduplicate(bodies.&)
+      var body = bodies.&.pop()
+      body(body.lets.to_slice(), inner)
     }
   }
 }
 
-fun deduplicate(
-  expr: TacoExpr,
-  body: &List[Tuple2[Hole, TacoExpr]],
-  visible: &List[Tuple2[Hole, TacoExpr]],
-): TacoExpr {
+struct OngoingBody {
+  defined_holes: Slice[Hole], lets: List[Tuple2[Hole, TacoExpr]]
+}
+fun ongoing_body(defined_holes: Slice[Hole]): OngoingBody {
+  OngoingBody { defined_holes, lets = list[Tuple2[Hole, TacoExpr]]() }
+}
+
+fun deduplicate(expr: TacoExpr, bodies: &List[OngoingBody]): TacoExpr {
   var expr =
     switch expr.op
     case lambda(params) {
-      var body = list[Tuple2[Hole, TacoExpr]]()
-      var snapshot = visible.len
-      var inner = expr.children.get(0).deduplicate(body.&, visible)
-      visible.len = snapshot
-      lambda(params, body(body.to_slice(), inner))
+      var body = ongoing_body(params)
+      bodies.push(body)
+      var inner = expr.children.get(0).deduplicate(bodies)
+      var body = bodies.pop()
+      lambda(params, body(body.lets.to_slice(), inner))
     }
-    case switch_ {
+    case switch_(holes) {
       var children = list[TacoExpr]()
-      children.&.push(expr.children.first().deduplicate(body, visible))
-      for child in expr.children.without_first() do {
-        var body = list[Tuple2[Hole, TacoExpr]]()
-        var snapshot = visible.len
-        var inner = child.deduplicate(body.&, visible)
-        visible.len = snapshot
-        children.&.push(body(body.to_slice(), inner))
+      children.&.push(expr.children.first().deduplicate(bodies))
+      for both in zip(holes.iter(), expr.children.without_first().iter()) do {
+        var body = ongoing_body(list(both.a).to_slice())
+        bodies.push(body)
+        var inner = both.b.deduplicate(bodies)
+        var body = bodies.pop()
+        children.&.push(body(body.lets.to_slice(), inner))
       }
       expr(expr.op, children.to_slice(), expr.type)
     }
     case generate_array(index) {
-      var length = expr.children.get(0).deduplicate(body, visible)
-      var body = list[Tuple2[Hole, TacoExpr]]()
-      var snapshot = visible.len
-      var generator = expr.children.get(1).deduplicate(body.&, visible)
-      visible.len = snapshot
-      generate_array(length, index, body(body.to_slice(), generator))
+      var length = expr.children.get(0).deduplicate(bodies)
+      var body = ongoing_body(list(index).to_slice())
+      bodies.push(body)
+      var generator = expr.children.get(1).deduplicate(bodies)
+      var body = bodies.pop()
+      generate_array(length, index, body(body.lets.to_slice(), generator))
     }
-    case recursive {
+    case recursive(args) {
       var children = list[TacoExpr]()
       for child in expr.children.without_last() do
-        children.&.push(child.deduplicate(body, visible))
-      var body = list[Tuple2[Hole, TacoExpr]]()
-      var snapshot = visible.len
-      var inner = expr.children.last().deduplicate(body.&, visible)
-      children.&.push(body(body.to_slice(), inner))
-      visible.len = snapshot
+        children.&.push(child.deduplicate(bodies))
+      var body = ongoing_body(args)
+      bodies.push(body)
+      var inner = expr.children.last().deduplicate(bodies)
+      var body = bodies.pop()
+      children.&.push(body(body.lets.to_slice(), inner))
       expr(expr.op, children.to_slice(), expr.type)
     }
     default {
       var children = list[TacoExpr]()
       for child in expr.children do
-        children.&.push(child.deduplicate(body, visible))
+        children.&.push(child.deduplicate(bodies))
       expr(expr.op, children.to_slice(), expr.type)
     }
 
-  for visible in visible do
-    if visible.b == expr then return taco_hole(visible.a)
+  for body in bodies do
+    for visible in body.lets do
+      if visible.b == expr then return taco_hole(visible.a)
 
   if expr.is_expensive() then {
     var hole = hole(expr.type)
-    body.push(tuple(hole, expr))
-    visible.push(tuple(hole, expr))
+    bodies.get_ref(bodies.len - 1).lets.&.push(tuple(hole, expr))
     taco_hole(hole)
   } else
     expr
