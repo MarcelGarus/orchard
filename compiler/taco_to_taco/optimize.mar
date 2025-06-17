@@ -128,14 +128,11 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if lambda.op is lambda(params) then
       return lambda.children.get(0).fill(params, args)
   }
-  case body {
-    var ignored = children.without_last()
-    var result  = children.last()
-    var children = list[TacoExpr]()
-    for child in ignored do child.collect_impure(children.&)
-    if children.is_empty() then return result
-    children.&.push(result)
-    return body(children.to_slice())
+  case both {
+    var new_children = list[TacoExpr]()
+    children.get(0).collect_impure(new_children.&)
+    new_children.&.push(children.get(1))
+    return body(new_children.to_slice())
   }
   case let_body panic("optimizing let body")
   case cast {
@@ -392,52 +389,59 @@ fun specialize(expr: TacoExpr, substitutions: Substitutions): TacoExpr {
   expr(op, children, type)
 }
 
-fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
-  | Default behavior: Collect child expressions.
-  var can_diverge =
-    switch expr.op
-    case hole false
-    case type false
-    case byte false
-    case int false
-    case array false
-    case struct_ false
-    case enum_ false
-    case lambda false
-    case box false
-    case member false
-    case switch_ true
-    case call_fun true
-    case call_lambda true
-    case body false
-    case let_body false
-    case cast false
-    case lower_byte false
-    case byte_to_int false
-    case add_ints false
-    case sub_ints false
-    case mul_ints false
-    case div_ints true
-    case mod_ints true
-    case and_ints false
-    case or_ints false
-    case xor_ints false
-    case compare_ints false
-    case unbox false
-    case generate_array true
-    case array_get true
-    case array_set true
-    case array_slice true
-    case array_len false
-    case crash true
-    case type_info false
-    case static_to_dynamic false
-    case dynamic_to_static true
-    case recursive true
-    case recurse true
-    case unreachable true
+fun can_diverge(op: TacoOp): Bool {
+  switch op
+  case hole false
+  case type false
+  case byte false
+  case int false
+  case array false
+  case struct_ false
+  case enum_ false
+  case lambda false
+  case box false
+  case member false
+  case switch_ true
+  case call_fun true
+  case call_lambda true
+  case both true
+  case let_body false
+  case cast false
+  case lower_byte false
+  case byte_to_int false
+  case add_ints false
+  case sub_ints false
+  case mul_ints false
+  case div_ints true
+  case mod_ints true
+  case and_ints false
+  case or_ints false
+  case xor_ints false
+  case compare_ints false
+  case unbox false
+  case generate_array true
+  case array_get true
+  case array_set true
+  case array_slice true
+  case array_len false
+  case crash true
+  case type_info false
+  case static_to_dynamic false
+  case dynamic_to_static true
+  case recursive true
+  case recurse true
+  case unreachable true
+}
 
-  if can_diverge then 
+fun can_diverge(expr: TacoExpr): Bool {
+  expr.op.can_diverge() or {
+    for child in expr.children do if child.can_diverge() then return true
+    false
+  }
+}
+
+fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
+  if expr.op.can_diverge() then 
     out.push(expr)
   else
     for child in expr.children do child.collect_impure(out)

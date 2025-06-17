@@ -43,6 +43,8 @@ struct TacoFun { params: Slice[Hole], body: TacoExpr }
 struct TacoExpr { op: TacoOp, children: Slice[TacoExpr], type: EggType }
 struct Hole { id: Int, type: EggType }
 enum TacoOp {              | children:
+  | TODO: body
+
   | A hole in an expression means that some concrete value will need to be
   | filled in here, provided by the outer environment. This hole is introduced
   | by i.e. function arguments or switch bindings.
@@ -64,17 +66,13 @@ enum TacoOp {              | children:
   call_fun: TacoCalledFun, | args
   call_lambda,             | lambda, args
 
-  | Signifies that a bunch of expressions should be executed, but evaluates only
-  | to the last one. As the taco doesn't have any form of IDs to refer to other
-  | expressions, all expressions except the last one are only kept around
-  | because they may panic and that is observable behavior.
-  body,                    | exprs | TODO: remove in favor of "both"
+  | Has two children. Executes, but ignores the first one, and evaluates to the
+  | second one. This is only useful if the first expression may panic.
+  both,                    | ignored, result
 
   | A body where each of the expressions (except the last one) are also used to
   | fill a hole in the later scope. This essentially makes them into variables.
   let_body: Slice[Hole],   | exprs | TODO: remove in favor of "let"
-
-  | TODO: add a body abstraction
 
   | Type-casts an expression to a compatible type.
   cast,                    | expr
@@ -145,7 +143,7 @@ fun ==(a: TacoOp, b: TacoOp): Bool {
   case switch_(a)        if b is switch_(b) then a == b else false
   case call_fun(a)       if b is call_fun(b) then a == b else false
   case call_lambda       b is call_lambda
-  case body              b is body
+  case both              b is both
   case let_body(a)       if b is let_body(b) then a == b else false
   case cast              b is cast
   case lower_byte        b is lower_byte
