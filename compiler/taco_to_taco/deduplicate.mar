@@ -13,6 +13,7 @@ fun deduplicate(fun_: TacoFun): TacoFun {
       var inner = fun_.body.deduplicate(bodies.&)
       var body = bodies.&.pop()
       body(body.lets.to_slice(), inner)
+        .inline_lets_only_used_once_in_same_body()
     }
   }
 }
@@ -102,4 +103,84 @@ fun is_expensive(expr: TacoExpr): Bool {
   case body false
   case let_body false
   default true
+}
+
+fun count_hole_references(expr: TacoExpr): Map[Hole, Int] {
+  var counts = map[Hole, Int]()
+  expr.count_hole_references(counts.&)
+  counts
+}
+fun count_hole_references(expr: TacoExpr, out: &Map[Hole, Int]) {
+  if expr.op is hole(hole) then {
+    var count = out.get_ref_or_put_default(hole, 0)
+    count.* = count.* + 1
+  }
+  for child in expr.children do child.count_hole_references(out)
+}
+
+fun inline_lets_only_used_once_in_same_body(expr: TacoExpr): TacoExpr {
+  var hole_counts = expr.count_hole_references()
+  expr.inline_lets_only_used_once_in_same_body(hole_counts)
+}
+fun inline_lets_only_used_once_in_same_body(
+  expr: TacoExpr, hole_counts: Map[Hole, Int]
+): TacoExpr {
+  var children = list[TacoExpr]()
+  for child in expr.children do
+    children.&.push(child.inline_lets_only_used_once_in_same_body(hole_counts))
+  var children = children.to_slice()
+
+  if expr.op is let_body(holes) then {
+    var rev_holes = list[Hole]()
+    var rev_children = list(children.last())
+    for both in zip(holes.rev_iter(), children.without_last().rev_iter()) do {
+      var hole = both.a
+      var expr = both.b
+      if hole_counts.get(hole) == 1 then {
+        | Inline the hole definition if it's used in the same body.
+        var used = false
+        var new_rev_children = list[TacoExpr]()
+        for child in rev_children do
+          new_rev_children.&.push(
+            child.inline_hole_if_in_same_body(hole, expr, used.&)
+          )
+        if used then rev_children = new_rev_children
+      } else {
+        rev_holes.&.push(hole)
+        rev_children.&.push(expr)
+      }
+    }
+    var holes = list[Hole]()
+    var children = list[TacoExpr]()
+    for hole in rev_holes.to_slice().rev_iter() do holes.&.push(hole)
+    for child in rev_children.to_slice().rev_iter() do children.&.push(child)
+    expr(TacoOp.let_body(holes.to_slice()), children.to_slice(), expr.type)
+  } else
+    expr(expr.op, children, expr.type)
+}
+| fun inline_hole_if_in_same_body(expr: TacoExpr, hole: Hole, def: TacoExpr): Maybe[TacoExpr] {
+|   var used = false
+|   var expr = expr.inline_hole_if_in_same_body(hole, def, used.&)
+|   if used then some(expr) else none[TacoExpr]()
+| }
+fun inline_hole_if_in_same_body(
+  expr: TacoExpr, hole: Hole, def: TacoExpr, used: &Bool
+): TacoExpr {
+  switch expr.op
+  case hole(h)
+    if h == hole then {
+      used.* = true
+      def
+    } else
+      expr
+  case lambda expr
+  case switch_ expr
+  case generate_array expr
+  case recursive expr
+  default {
+    var children = list[TacoExpr]()
+    for child in expr.children do
+      children.&.push(child.inline_hole_if_in_same_body(hole, def, used))
+    expr(expr.op, children.to_slice(), expr.type)
+  }
 }
