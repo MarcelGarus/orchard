@@ -1,0 +1,221 @@
+!import grass.grass
+
+
+# ptr length
+# -> ptr length 00
+# -> ptr length 01
+
+TODO
+
+# Allocates memory and also makes sure that allocating worked.
+@safe_malloc_word_aligned  # length
+malloc_word_aligned        # ptr
+push_word_from_stack _0    # ptr ptr
+compare_zero               # ptr worked?
+jump_table ^unreachable ^word_malloc_worked ^word_malloc_worked
+@word_malloc_worked  # ptr
+return
+
+# Allocates memory and also makes sure that allocating worked.
+@safe_malloc_byte_aligned  # length
+malloc_byte_aligned        # ptr
+push_byte_from_stack _0    # ptr ptr
+compare_zero               # ptr worked?
+jump_table ^unreachable ^byte_malloc_worked ^byte_malloc_worked
+@byte_malloc_worked  # ptr
+return
+
+@memcopy
+TODO
+
+# Initializes a parser.
+@make_parser                    # ptr length
+push_word 24                    # ptr length 24
+call ^safe_malloc_word_aligned  # ptr length parser
+push_word_from_stack 0          # ptr length parser parser
+push_word_from_stack _24        # ptr length parser parser ptr
+store_word                      # ptr length parser
+push_word_from_stack 0          # ptr length parser parser
+push_word 8                     # ptr length parser parser 8
+add                             # ptr length parser parser+8
+push_word_from_stack _16        # ptr length parser parser+8 length
+store_word                      # ptr length parser
+push_word_from_stack 0          # ptr length parser parser
+push_word 16                    # ptr length parser parser 16
+add                             # ptr length parser parser+16
+push_word 0                     # ptr length parser parser+16 0
+store_word                      # ptr length parser
+pop_below_top _8 10             # parser
+
+# Initializes an output.
+@make_output                    #
+push_word _24                   # 24
+call ^safe_malloc_word_aligned  # output
+push_word_from_stack _0         # output output
+push_word _16                   # output output 16
+call ^safe_malloc_byte_aligned  # output output buffer
+store_word                      # output
+push_word_from_stack _0         # output output
+push_word _8                    # output output 8
+add                             # output output+8
+push_word _16                   # output output+8 0
+store_word                      # output
+push_word_from_stack _0         # output output
+push_word _16                   # output output 16
+add                             # output output+16
+push_word _0                    # output output+16 0
+store_word                      # output
+return
+
+@emit                     # output byte
+push_padding 07           # output byte ..
+push_word                 # output byte .. output
+push_word _8              # output byte .. output 8
+add                       # output byte .. output+8
+load_word                 # output byte .. capacity
+push_word_from_stack _16  # output byte .. capacity output
+push_word _16             # output byte .. capacity output 16
+add                       # output byte .. capacity output+16
+load_word                 # output byte .. capacity len
+sub                       # output byte .. capacity-len
+compare_zero              # output byte .. full?
+jump_table ^make_bigger ^emit_unchecked ^unreachable
+@make_bigger  # output byte ..
+TODO
+@emit_unchecked           # output byte ..
+push_word_from_stack _8   # output byte .. output
+load_word                 # output byte .. buffer
+push_word_from_stack _16  # output byte .. buffer output
+push_word _16             # output byte .. buffer output 16
+add                       # output byte .. buffer output+16
+load_word                 # output byte .. buffer cursor
+add                       # output byte .. buffer+cursor
+push_byte_from_stack _15  # output byte .. buffer+cursor byte
+store_byte                # output byte ..
+pop 08                    # output
+push_word _16             # output 16
+add                       # output+16
+push_word_from_stack _0   # output+16 output+16
+load_word                 # output+16 cursor
+push_word _1              # output+16 cursor 1
+add                       # output+16 cursor+1
+store_word                #
+
+
+
+
+compare_zero  # output output buffer alloced?
+jump_table ^unreachable make_output.alloc_
+todo
+
+
+
+@parse                   # parser output
+push_word_from_stack _8  # parser output parser
+call ^advance            # parser output char
+push_padding 07          # parser output char ..
+push_byte_from_stack _7  # parser output char .. char
+byte_to_int              # parser output char .. char
+compare_zero             # parser output char .. at_end?
+jump_table 03 ^done_parsing ^not_at_end ^not_at_end
+@not_at_end              # parser output char ..
+push_byte_from_stack 07  # parser output char .. char
+byte_to_int              # parser output char .. char
+push_byte space          # parser output char .. char space
+byte_to_int              # parser output char .. char space
+sub                      # parser output char .. char-space
+compare_zero             # parser output char .. is_space?
+jump_table 03 ^parse ^not_space ^not_space
+@not_space               # parser output char ..
+push_byte_from_stack 07  # parser output char .. char
+byte_to_int              # parser output char .. char
+push_byte newline        # parser output char .. char newline
+byte_to_int              # parser output char .. char newline
+sub                      # parser output char .. char-newline
+compare_zero             # parser output char .. newline?
+jump_table 03 ^parse ^not_space_or_newline ^not_space_or_newline
+@not_space_or_newline    # parser output char ..
+push_byte_from_stack 07  # parser output char .. char
+byte_to_int              # parser output char .. char
+push_byte octothorpe     # parser output char .. char octothorpe
+byte_to_int              # parser output char .. char octothorpe
+sub                      # parser output char .. char-octothorpe
+compare_zero             # parser output char .. comment?
+jump_table 03 ^consume_comment ^not_whitespace ^not_whitespace
+@consume_comment         # parser output char ..
+pop 08                   # parser output
+push_word_from_stack _8  # parser output parser
+call ^advance            # parser output char
+push_padding 07          # parser output char ..
+push_byte_from_stack 07  # parser output char .. char
+byte_to_int              # parser output char .. char
+push_byte newline        # parser output char .. char newline
+byte_to_int              # parser output char .. char newline
+sub                      # parser output char .. char-newline
+compare_zero             # parser output char .. newline?
+jump_table ^parse ^check_if_at_end ^check_if_at_end
+@check_if_at_end         # parser output char ..
+push_byte_from_stack 07  # parser output char .. char
+byte_to_int              # parser output char .. char
+compare_zero             # parser output char .. at_end?
+jump_table ^done_parsing ^consume_comment ^consume_comment
+@not_whitespace           # parser output char ..
+pop 07                    # parser output char
+call ^hex_to_num          # parser output first_digit
+push_word _16             # parser output first_digit 16
+mul                       # parser output first_digit*16
+push_word_from_stack _16  # parser output first_digit*16 parser
+call ^advance             # parser output first_digit*16 char
+call ^hex_to_num          # parser output first_digit*16 char
+add                       # parser output byte
+push_padding 07           # parser output byte ..
+push_word_from_stack _16  # parser output byte .. output
+push_byte_from_stack _15  # parser output byte .. output byte
+call ^emit                # parser output byte ..
+pop 08                    # parser output
+jump ^parse
+@done_parsing  # parser output char ..
+
+
+@advance                # parser
+push_word_from_stack _0 # parser parser
+push_word _8            # parser parser 8
+add                     # parser parser+8
+load_word               # parser length
+push_word_from_stack _8 # parser length parser
+push_word _16           # parser length parser 16
+add                     # parser length parser+16
+load_word               # parser length cursor
+sub                     # parser length-cursor
+compare_zero            # parser at_end?
+jump_table 03 ^advance.return_0 ^advance.get_char ^unreachable
+@advance.get_char        # parser
+push_word_from_stack _0  # parser parser
+load_word                # parser ptr
+push_word_from_stack _8  # parser ptr parser
+push_word _16            # parser ptr parser 16
+add                      # parser ptr parser+16
+load_word                # parser ptr cursor
+push_word_from_stack _16 # parser ptr cursor parser
+push_word _16            # parser ptr cursor parser 16
+add                      # parser ptr cursor parser+16
+push_word_from_stack _8  # parser ptr cursor parser+16 cursor
+push_word _1             # parser ptr cursor parser+16 cursor 1
+add                      # parser ptr cursor parser+16 cursor+1
+store_word               # parser ptr cursor
+add                      # parser ptr+cursor
+load_byte                # parser char
+pop_below_top _1 08      # char
+return
+@advance.return_0 # parser
+pop 08            #
+push_byte 00      # 00
+return
+
+@hex_to_num   # char
+
+
+@emit   # output byte
+
+@unreachable
+todo
