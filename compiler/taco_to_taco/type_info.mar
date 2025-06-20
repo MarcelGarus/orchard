@@ -1,23 +1,21 @@
 import mod.mar
 
 fun desugar_type_info(taco: Taco): Taco {
-  var funs = map[String, TacoFun]()
+  var funs = map[String, TacoBody]()
   for fun_ in taco.funs do
-    funs.&.put(fun_.key, fun_.value.desugar_type_info())
+    funs.&.put(fun_.key, fun_.value.map(DesugarTypeInfo { funs = funs.& }))
   Taco { funs, entry_point = taco.entry_point }
 }
 
-fun desugar_type_info(fun_: TacoFun): TacoFun {
-  TacoFun { params = fun_.params, body = fun_.body.desugar_type_info() }
+struct DesugarTypeInfo { funs: &Map[String, TacoBody] }
+fun map(expr: TacoExpr, desugar: DesugarTypeInfo): TacoExpr {
+  var expr = expr.map_children(desugar)
+  if expr.op is type_info(type) then
+    return type_info_expr(type.op.type.unwrap())
+  expr
 }
-
-fun desugar_type_info(expr: TacoExpr): TacoExpr {
-  if expr.op is type_info then
-    return type_info_expr(expr.children.get(0).op.type.unwrap())
-  
-  var children = list[TacoExpr]()
-  for child in expr.children do children.&.push(child.desugar_type_info())
-  expr(expr.op, children.to_slice(), expr.type)
+fun map(body: TacoBody, desugar: DesugarTypeInfo): TacoBody {
+  TacoBody { params = body.params, body = body.expr.map(desugar) }
 }
 
 fun type_info_expr(type: EggType): TacoExpr {

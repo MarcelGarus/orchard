@@ -1,48 +1,25 @@
 import mod.mar
 
+| Create new hole identities for the holes that expressions introduce.
 fun new_holes(expr: TacoExpr): TacoExpr {
-  expr.new_holes(map[Hole, Hole]().&)
+  expr.map(NewHoles { mapping = map[Hole, Hole]().& })
 }
-fun new_holes(expr: TacoExpr, mapping: &Map[Hole, Hole]): TacoExpr {
-  | Create new hole identities for the holes that expressions introduce.
-  var new_op =
-    switch expr.op
-    case hole(old)
-      if mapping.get_maybe(old) is some(new) then
-        some(TacoOp.hole(new))
-      else
-        none[TacoOp]()
-    case lambda(params) {
-      var new_params = list[Hole]()
-      for old in params do {
-        var new = hole(old.type)
-        mapping.&.put(old, new)
-        new_params.&.push(new)
-      }
-      some(TacoOp.lambda(new_params.to_slice()))
-    }
-    case switch_(holes) {
-      var new_holes = list[Hole]()
-      for old in holes do {
-        var new = hole(old.type)
-        mapping.&.put(old, new)
-        new_holes.&.push(new)
-      }
-      some(TacoOp.switch_(new_holes.to_slice()))
-    }
-    case recursive(holes) {
-      var new_holes = list[Hole]()
-      for old in holes do {
-        var new = hole(old.type)
-        mapping.&.put(old, new)
-        new_holes.&.push(new)
-      }
-      some(TacoOp.recursive(new_holes.to_slice()))
-    }
-    default none[TacoOp]()
-
-  var children = list[TacoExpr]()
-  for child in expr.children do
-    children.&.push(child.new_holes(mapping))
-  expr(new_op or expr.op, children.to_slice(), expr.type)
+fun new_holes(body: TacoBody): TacoBody {
+  body.map(NewHoles { mapping = map[Hole, Hole]().& })
+}
+struct NewHoles { mapping: &Map[Hole, Hole] }
+fun map(expr: TacoExpr, new_holes: NewHoles): TacoExpr {
+  if expr.op is hole(hole) then
+    if new_holes.mapping.get_maybe(hole) is some(mapped) then
+      return taco_hole(mapped)
+  expr.map_children(new_holes)
+}
+fun map(body: TacoBody, new_holes: NewHoles): TacoBody {
+  var params = list[Hole]()
+  for old in body.params do {
+    var new = hole(old.type)
+    new_holes.mapping.&.put(old, new)
+    params.&.push(new)
+  }
+  TacoBody { params = params.to_slice(), expr = body.expr.map(new_holes) }
 }

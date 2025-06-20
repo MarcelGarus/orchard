@@ -36,88 +36,96 @@ import ../plum.mar
 import builder.mar
 import format.mar
 
-struct Taco { entry_point: TacoCalledFun, funs: Map[String, TacoFun] }
+struct Taco { entry_point: TacoCalledFun, funs: Map[String, TacoBody] }
 struct TacoCalledFun { signature: String, substitutions: Substitutions }
 
-struct TacoFun { params: Slice[Hole], body: TacoExpr }
-struct TacoExpr { op: TacoOp, children: Slice[TacoExpr], type: EggType }
+struct TacoBody { params: Slice[Hole], expr: TacoExpr }
+struct TacoExpr { op: TacoOp, type: EggType }
 struct Hole { id: Int, type: EggType }
-enum TacoOp {              | children:
-  | TODO: body
-
+enum TacoOp {
   | A hole in an expression means that some concrete value will need to be
   | filled in here, provided by the outer environment. This hole is introduced
   | by i.e. function arguments or switch bindings.
-  hole: Hole,              | -
+  hole: Hole,
 
   | Expressions for the basic data structures.
-  type: EggType,           | -
-  byte: Byte,              | -
-  int: Int,                | -
-  array,                   | items
-  struct_,                 | fields in alphabetical order
-  enum_: String,           | value
-  lambda: Slice[Hole],     | expr
-  box,                     | expr to box
+  type: EggType,
+  byte: Byte,
+  int: Int,
+  array: Slice[TacoExpr],
+  struct_: Map[String, TacoExpr],
+  enum_: TacoEnum,
+  lambda: &TacoBody,
+  box: &TacoExpr,
 
   | Expressions for navigating the data structures.
-  member: String,          | of (receiver of which we get the member)
-  switch_: Slice[Hole],    | condition, cases in alphabetical order
-  call_fun: TacoCalledFun, | args
-  call_lambda,             | lambda, args
+  member: TacoMember,
+  switch_: TacoSwitch,
+  call_fun: TacoCallFun,
+  call_lambda: TacoCallLambda,
 
   | Has two children. Executes, but ignores the first one, and evaluates to the
   | second one. This is only useful if the first expression may panic.
-  both,                    | ignored, result
+  both: TacoBoth,
 
   | A body where each of the expressions (except the last one) are also used to
   | fill a hole in the later scope. This essentially makes them into variables.
-  let: Hole,               | definition, expr
+  let: TacoLet,
 
   | Type-casts an expression to a compatible type.
-  cast,                    | expr
+  cast: &TacoExpr,
 
   | Byte-related builtins.
-  lower_byte,              | int
-  byte_to_int,             | byte
+  lower_byte: &TacoExpr,
+  byte_to_int: &TacoExpr,
 
   | Int-related builtins.
-  add_ints,                | two ints
-  sub_ints,                | two ints
-  mul_ints,                | two ints
-  div_ints,                | two ints
-  mod_ints,                | two ints
-  and_ints,                | two ints
-  or_ints,                 | two ints
-  xor_ints,                | two ints
-  compare_ints,            | two ints
+  add_ints: Tuple2[&TacoExpr, &TacoExpr],
+  sub_ints: Tuple2[&TacoExpr, &TacoExpr],
+  mul_ints: Tuple2[&TacoExpr, &TacoExpr],
+  div_ints: Tuple2[&TacoExpr, &TacoExpr],
+  mod_ints: Tuple2[&TacoExpr, &TacoExpr],
+  and_ints: Tuple2[&TacoExpr, &TacoExpr],
+  or_ints: Tuple2[&TacoExpr, &TacoExpr],
+  xor_ints: Tuple2[&TacoExpr, &TacoExpr],
+  compare_ints: Tuple2[&TacoExpr, &TacoExpr],
 
   | Boxing-related builtins (the box builtin is already covered above).
-  unbox,                   | box
+  unbox: &TacoExpr,
 
   | Array-related builtins.
-  generate_array: Hole,    | length, generator
-  array_get,               | array, index
-  array_set,               | array, index, item
-  array_slice,             | array, start, end
-  array_len,               | array
+  generate_array: TacoGenerateArray,
+  array_get: Tuple2[&TacoExpr, &TacoExpr], | array, index
+  array_set: Tuple3[&TacoExpr, &TacoExpr, &TacoExpr], | array, index, item
+  array_slice: Tuple3[&TacoExpr, &TacoExpr, &TacoExpr], | array, start, end
+  array_len: &TacoExpr,
 
   | Crashes the VM.
-  crash,                   | -
+  crash,
 
   | Type-stuff.
-  type_info,               | type
-  static_to_dynamic,       | expr
-  dynamic_to_static,       | dynamic expr
+  type_info: &TacoExpr,
+  static_to_dynamic: &TacoExpr,
+  dynamic_to_static: &TacoExpr,
 
   | Inlined recursive functions become recursive expressions.
-  recursive: Slice[Hole],  | initial args, body
-  recurse,                 | next args
+  recursive: TacoRecursive,
+  recurse: Slice[TacoExpr],
 
-  | Marks code as unreachable for later compiler stages. Code that definitely
-  | reaches this expression can be optimized away.
-  unreachable,             | -
+  | Marks code as unreachable. Code that definitely reaches this expression can
+  | be optimized away. Note that this is different from crashing.
+  unreachable,
 }
+struct TacoEnum { variant: String, payload: &TacoExpr }
+struct TacoMember { of: &TacoExpr, name: String }
+struct TacoSwitch { condition: &TacoExpr, cases: Map[String, TacoBody] }
+struct TacoCallFun { fun_: TacoCalledFun, args: Slice[TacoExpr] }
+struct TacoCallLambda { lambda: &TacoExpr, args: Slice[TacoExpr] }
+struct TacoBoth { ignored: &TacoExpr, result: &TacoExpr }
+struct TacoLet { def: &TacoExpr, result: &TacoBody }
+struct TacoGenerateArray { length: &TacoExpr, generator: &TacoBody }
+struct TacoRecursive { initial: Slice[TacoExpr], body: &TacoBody }
+
 
 fun black_hole(type: EggType): Hole { Hole { id = -1, type } }
 fun is_black(hole: Hole): Bool { hole.id == -1 }
@@ -126,54 +134,302 @@ fun ==(a: Hole, b: Hole): Bool { a.id == b.id }
 fun hash[H](hasher: H, hole: Hole) { hasher.hash(hole.id) }
 
 fun ==(a: TacoExpr, b: TacoExpr): Bool {
-  a.type == b.type and a.op == b.op and a.children == b.children
+  a.type == b.type and a.op == b.op
 }
 fun ==(a: TacoOp, b: TacoOp): Bool {
   switch a
-  case hole(a)           if b is hole(b) then a == b else false
-  case type(a)           if b is type(b) then a == b else false
-  case byte(a)           if b is byte(b) then a == b else false
-  case int(a)            if b is int(b)  then a == b else false
-  case array             b is array
-  case struct_           b is struct_
-  case enum_(a)          if b is enum_(b) then a == b else false
-  case lambda(a)         if b is lambda(b) then a == b else false
-  case box               b is box
-  case member(a)         if b is member(b) then a == b else false
-  case switch_(a)        if b is switch_(b) then a == b else false
-  case call_fun(a)       if b is call_fun(b) then a == b else false
-  case call_lambda       b is call_lambda
-  case both              b is both
-  case let(a)            if b is let(b) then a == b else false
-  case cast              b is cast
-  case lower_byte        b is lower_byte
-  case byte_to_int       b is byte_to_int
-  case add_ints          b is add_ints
-  case sub_ints          b is sub_ints
-  case mul_ints          b is mul_ints
-  case div_ints          b is div_ints
-  case mod_ints          b is mod_ints
-  case and_ints          b is and_ints
-  case or_ints           b is or_ints
-  case xor_ints          b is xor_ints
-  case compare_ints      b is compare_ints
-  case unbox             b is unbox
-  case generate_array    b is generate_array
-  case array_get         b is array_get
-  case array_set         b is array_set
-  case array_slice       b is array_slice
-  case array_len         b is array_len
-  case crash             b is crash
-  case type_info         b is type_info
-  case static_to_dynamic b is static_to_dynamic
-  case dynamic_to_static b is dynamic_to_static
-  case recursive(a)      if b is recursive(b) then a == b else false
-  case recurse           b is recurse
-  case unreachable       b is unreachable
+  case hole(a)           if b is hole(b)           then a == b else false
+  case type(a)           if b is type(b)           then a == b else false
+  case byte(a)           if b is byte(b)           then a == b else false
+  case int(a)            if b is int(b)            then a == b else false
+  case array(a)          if b is array(b)          then a == b else false
+  case struct_(a)        if b is struct_(b)        then a == b else false
+  case enum_(a)          if b is enum_(b)          then a == b else false
+  case lambda(a)         if b is lambda(b)         then a.* == b.* else false
+  case box(a)            if b is box(b)            then a.* == b.* else false
+  case member(a)         if b is member(b)         then a == b else false
+  case switch_(a)        if b is switch_(b)        then a == b else false
+  case call_fun(a)       if b is call_fun(b)       then a == b else false
+  case call_lambda(a)    if b is call_lambda(b)    then a == b else false
+  case both(a)           if b is both(b)           then a == b else false
+  case let(a)            if b is let(b)            then a == b else false
+  case cast(a)           if b is cast(b)           then a.* == b.* else false
+  case lower_byte(a)     if b is lower_byte(b)     then a.* == b.* else false
+  case byte_to_int(a)    if b is byte_to_int(b)    then a.* == b.* else false
+  case add_ints(a)       if b is add_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case sub_ints(a)       if b is sub_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case mul_ints(a)       if b is mul_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case div_ints(a)       if b is div_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case mod_ints(a)       if b is mod_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case and_ints(a)       if b is and_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case or_ints(a)        if b is or_ints(b)        then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case xor_ints(a)       if b is xor_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case compare_ints(a)   if b is compare_ints(b)   then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case unbox(a)          if b is unbox(b)          then a.* == b.* else false
+  case generate_array(a) if b is generate_array(b) then a == b else false
+  case array_get(a)      if b is array_get(b)      then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case array_set(a)      if b is array_set(b)      then a.a.* == b.a.* and a.b.* == b.b.* and a.c.* == b.c.* else false
+  case array_slice(a)    if b is array_slice(b)    then a.a.* == b.a.* and a.b.* == b.b.* and a.c.* == b.c.* else false
+  case array_len(a)      if b is array_len(b)      then a.* == b.* else false
+  case crash(a)          b is crash
+  case type_info(a)      if b is type_info(b)      then a.* == b.* else false
+  case static_to_dynamic(a) if b is static_to_dynamic(b) then a.* == b.* else false
+  case dynamic_to_static(a) if b is dynamic_to_static(b) then a.* == b.* else false
+  case recursive(a)      if b is recursive(b)      then a == b else false
+  case recurse(a)        if b is recurse(b)        then a == b else false
+  case unreachable(a)    b is unreachable
+}
+fun ==(a: TacoEnum, b: TacoEnum): Bool {
+  a.variant == b.variant and a.payload.* == b.payload.*
+}
+fun ==(a: TacoMember, b: TacoMember): Bool {
+  a.of.* == b.of.* and a.name == b.name
+}
+fun ==(a: TacoSwitch, b: TacoSwitch): Bool {
+  a.condition.* == b.condition.* and a.cases == b.cases
+}
+fun ==(a: TacoCallFun, b: TacoCallFun): Bool {
+  a.fun_ == b.fun_ and a.args == b.args
 }
 fun ==(a: TacoCalledFun, b: TacoCalledFun): Bool {
   a.signature == b.signature and
     a.substitutions.substitutions == b.substitutions.substitutions
+}
+fun ==(a: TacoCallLambda, b: TacoCallLambda): Bool {
+  a.lambda.* == b.lambda.* and a.args == b.args
+}
+fun ==(a: TacoBoth, b: TacoBoth): Bool {
+  a.ignored.* == b.ignored.* and a.result.* == b.result.*
+}
+fun ==(a: TacoLet, b: TacoLet): Bool {
+  a.def.* == b.def.* and a.result.* == b.result.*
+}
+fun ==(a: TacoGenerateArray, b: TacoGenerateArray): Bool {
+  a.length.* == b.length.* and a.generator.* == b.generator.*
+}
+fun ==(a: TacoRecursive, b: TacoRecursive): Bool {
+  a.initial == b.initial and a.body.* == b.body.*
+}
+fun ==(a: TacoBody, b: TacoBody): Bool {
+  a.params == b.params and a.expr == b.expr
+}
+
+fun map_children[M](expr: TacoExpr, mapper: M): TacoExpr {
+  switch expr.op
+  case hole expr
+  case type expr
+  case byte expr
+  case int expr
+  case array(items) TacoOp.array(items.map(mapper)).expr(expr.type)
+  case struct_(struct_) {
+    var fields = map[String, TacoExpr]()
+    for field in struct_ do fields.&.put(field.key, field.value.map(mapper))
+    struct_(fields)
+  }
+  case enum_(enum_) enum_(expr.type, enum_.variant, enum_.payload.map(mapper))
+  case lambda(body) lambda(body.map(mapper))
+  case box(inner) box(inner.map(mapper))
+  case member(member) member(member.of.map(mapper), member.name)
+  case switch_(switch_) {
+    var condition = switch_.condition.map(mapper)
+    var cases = map[String, TacoBody]()
+    for case_ in switch_.cases do
+      cases.&.put(case_.key, case_.value.map(mapper))
+    switch_(condition, expr.type, cases)
+  }
+  case call_fun(call) call.fun_.call(call.args.map(mapper), expr.type)
+  case call_lambda(call) call.lambda.map(mapper).call(call.args.map(mapper))
+  case both(both) both(both.ignored.map(mapper), both.result.map(mapper))
+  case let(let)
+    let(
+      let.result.params.get(0), let.def.map(mapper), let.result.expr.map(mapper)
+    )
+  case cast(inner) cast(inner.map(mapper), expr.type)
+  case lower_byte(int) lower_byte(int.map(mapper))
+  case byte_to_int(byte) byte_to_int(byte.map(mapper))
+  case add_ints(args) add(args.a.map(mapper), args.b.map(mapper))
+  case sub_ints(args) subtract(args.a.map(mapper), args.b.map(mapper))
+  case mul_ints(args) multiply(args.a.map(mapper), args.b.map(mapper))
+  case div_ints(args) divide(args.a.map(mapper), args.b.map(mapper))
+  case mod_ints(args) modulo(args.a.map(mapper), args.b.map(mapper))
+  case and_ints(args) and_(args.a.map(mapper), args.b.map(mapper))
+  case or_ints(args) or_(args.a.map(mapper), args.b.map(mapper))
+  case xor_ints(args) xor(args.a.map(mapper), args.b.map(mapper))
+  case compare_ints(args) compare(args.a.map(mapper), args.b.map(mapper))
+  case unbox(box) unbox(box.map(mapper))
+  case generate_array(gen)
+    generate_array(gen.length.map(mapper), gen.generator.map(mapper))
+  case array_get(args) array_get(args.a.map(mapper), args.b.map(mapper))
+  case array_set(args)
+    array_set(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
+  case array_slice(args)
+    array_slice(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
+  case array_len(array) array_len(array.map(mapper))
+  case crash expr
+  case type_info(type) type_info(type.map(mapper))
+  case static_to_dynamic(static) static_to_dynamic(static.map(mapper))
+  case dynamic_to_static(dynamic)
+    dynamic_to_static(dynamic.map(mapper), expr.type)
+  case recursive(recursive)
+    recursive(recursive.initial.map(mapper), recursive.body.map(mapper))
+  case recurse(args) recurse(args.map(mapper), expr.type)
+  case unreachable expr
+}
+fun map[M](exprs: Slice[TacoExpr], mapper: M): Slice[TacoExpr] {
+  var new = list[TacoExpr]()
+  for old in exprs do new.&.push(old.map(mapper))
+  new.to_slice()
+}
+
+
+fun visit_children[V](expr: TacoExpr, visitor: V) {
+  switch expr.op
+  case hole {}
+  case type {}
+  case byte {}
+  case int {}
+  case array(items) for item in items do item.visit(visitor)
+  case struct_(fields) for field in fields do field.value.visit(visitor)
+  case enum_(enum_) enum_.payload.visit(visitor)
+  case lambda(body) body.visit(visitor)
+  case box(inner) inner.visit(visitor)
+  case member(member) member.of.visit(visitor)
+  case switch_(switch_) {
+    switch_.condition.visit(visitor)
+    for case_ in switch_.cases do case_.value.visit(visitor)
+  }
+  case call_fun(call) call.args.visit(visitor)
+  case call_lambda(call) {
+    call.lambda.visit(visitor)
+    call.args.visit(visitor)
+  }
+  case both(both) { both.ignored.visit(visitor)  both.result.visit(visitor) }
+  case let(let) { let.def.visit(visitor)  let.result.expr.visit(visitor) }
+  case cast(inner) inner.visit(visitor)
+  case lower_byte(int) int.visit(visitor)
+  case byte_to_int(byte) byte.visit(visitor)
+  case add_ints(args) args.visit(visitor)
+  case sub_ints(args) args.visit(visitor)
+  case mul_ints(args) args.visit(visitor)
+  case div_ints(args) args.visit(visitor)
+  case mod_ints(args) args.visit(visitor)
+  case and_ints(args) args.visit(visitor)
+  case or_ints(args) args.visit(visitor)
+  case xor_ints(args) args.visit(visitor)
+  case compare_ints(args) args.visit(visitor)
+  case unbox(box) box.visit(visitor)
+  case generate_array(gen) {
+    gen.length.visit(visitor)
+    gen.generator.visit(visitor)
+  }
+  case array_get(args) args.visit(visitor)
+  case array_set(args) args.visit(visitor)
+  case array_slice(args) args.visit(visitor)
+  case array_len(array) array.visit(visitor)
+  case crash {}
+  case type_info(type) type.visit(visitor)
+  case static_to_dynamic(static) static.visit(visitor)
+  case dynamic_to_static(dynamic) dynamic.visit(visitor)
+  case recursive(recursive) {
+    recursive.initial.visit(visitor)  recursive.body.visit(visitor)
+  }
+  case recurse(args) args.visit(visitor)
+  case unreachable {}
+}
+fun visit[V](tuple: Tuple2[&TacoExpr, &TacoExpr], visitor: V) {
+  tuple.a.visit(visitor)
+  tuple.b.visit(visitor)
+}
+fun visit[V](tuple: Tuple3[&TacoExpr, &TacoExpr, &TacoExpr], visitor: V) {
+  tuple.a.visit(visitor)
+  tuple.b.visit(visitor)
+  tuple.c.visit(visitor)
+}
+fun visit[V](exprs: Slice[TacoExpr], visitor: V) {
+  for expr in exprs do expr.visit(visitor)
+}
+
+
+| All expressions that are either direct children or in a child body.
+fun children(expr: TacoExpr): Slice[TacoExpr] {
+  var children = list[TacoExpr]()
+  expr.visit_children(GatherChildren { children = children.& })
+  children.to_slice()
+}
+struct GatherChildren { children: &List[TacoExpr] }
+fun visit(expr: TacoExpr, gather: GatherChildren) { gather.children.push(expr) }
+fun visit(body: TacoBody, gather: GatherChildren) {
+  gather.children.push(body.expr)
+}
+
+
+| All expressions that are direct children, skipping bodies.
+fun children_not_in_bodies(expr: TacoExpr): Slice[TacoExpr] {
+  var children = list[TacoExpr]()
+  expr.visit_children(GatherChildren { children = children.& })
+  children.to_slice()
+}
+struct GatherChildrenIgnoringBodies { children: &List[TacoExpr] }
+fun visit(expr: TacoExpr, gather: GatherChildrenIgnoringBodies) {
+  gather.children.push(expr)
+}
+fun visit(body: TacoBody, gather: GatherChildrenIgnoringBodies) {}
+
+
+| Returns the child expressions that are guaranteed to be evaluated once when
+| this expression is is evaluated once. For example, returns the fields of a
+| struct expression, but does not return the inner expressions of lambdas or
+| switch bodies.
+fun direct_children(expr: TacoExpr): Slice[TacoExpr] {
+  switch a
+  case hole {}
+  case type {}
+  case byte {}
+  case int {}
+  case array(items) items
+  case struct_(fields) {
+    var children = list[TacoExpr]()
+    for field in fields do children.&.push(field.value)
+    children.to_slice()
+  }
+  case enum_(enum_) list(enum_.payload.*).to_slice()
+  case lambda list[TacoExpr]()
+  case box(inner) list(inner).to_slice()
+  case member(member) list(member.of.*).to_slice()
+  case switch_(switch_) list(switch_.condition.*).to_slice()
+  case call_fun(call) call.args
+  case call_lambda(call) {
+    var children = list(call.lambda)
+    for arg in call.args do children.&.push(arg)
+    children.to_slice()
+  }
+  case both(both) list(both.ignored.*, both.result.*).to_slice()
+  case let(let) list(let.def.*, let.result.*).to_slice()
+  case cast(inner) list(inner).to_slice()
+  case lower_byte(int) list(int).to_slice()
+  case byte_to_int(byte) list(byte).to_slice()
+  case add_ints(args) list(args.a.*, args.b.*).to_slice()
+  case sub_ints(args) list(args.a.*, args.b.*).to_slice()
+  case mul_ints(args) list(args.a.*, args.b.*).to_slice()
+  case div_ints(args) list(args.a.*, args.b.*).to_slice()
+  case mod_ints(args) list(args.a.*, args.b.*).to_slice()
+  case and_ints(args) list(args.a.*, args.b.*).to_slice()
+  case or_ints(args) list(args.a.*, args.b.*).to_slice()
+  case xor_ints(args) list(args.a.*, args.b.*).to_slice()
+  case compare_ints(args) list(args.a.*, args.b.*).to_slice()
+  case unbox(box) list(box).to_slice()
+  case generate_array(gen) list(gen.length.*).to_slice()
+  case array_get(get) list(get.array.*, get.index.*).to_slice()
+  case array_set(set) list(set.array.*, set.index.*, set.item.*).to_slice()
+  case array_slice(slice) list(slice.array.*, slice.start.*, slice.end.*).to_slice()
+  case array_len(array) list(array.*).to_slice()
+  case crash {}
+  case type_info(type) list(type.*).to_slice()
+  case static_to_dynamic(static) list(static.*).to_slice()
+  case dynamic_to_static(dynamic) list(dynamic.*).to_slice()
+  case recursive(recursive) recursive.args.to_slice()
+  case recurse(args) args
+  case unreachable {}
 }
 
 | TODO: Think about what to do with this.

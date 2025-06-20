@@ -1,50 +1,37 @@
 import mod.mar
 
 fun desugar_casts(taco: Taco): Taco {
-  var funs = map[String, TacoFun]()
+  var funs = map[String, TacoBody]()
   for fun_ in taco.funs do
-    funs.&.put(fun_.key, fun_.value.desugar_casts(funs.&))
+    funs.&.put(fun_.key, fun_.value.map(DesugarCasts { funs = funs.& }))
   Taco { funs, entry_point = taco.entry_point }
 }
 
-fun desugar_casts(fun_: TacoFun, funs: &Map[String, TacoFun]): TacoFun {
-  TacoFun { params = fun_.params, body = fun_.body.desugar_casts(funs) }
+struct DesugarCasts { funs: &Map[String, TacoBody] }
+fun map(expr: TacoExpr, desugar: DesugarCasts): TacoExpr {
+  var expr = expr.map_children(desugar)
+  if expr.op is cast(inner) then
+    return TacoCalledFun {
+      signature = compile_cast_fun(inner.type, expr.type, desugar.funs),
+      substitutions = no_substitutions,
+    }.call(list(inner.*).to_slice(), expr.type)
+  expr
 }
-
-fun desugar_casts(expr: TacoExpr, funs: &Map[String, TacoFun]): TacoExpr {
-  expr(
-    if expr.op is cast then
-      TacoOp.call_fun(TacoCalledFun {
-        signature = compile_cast_fun(
-          expr.children.get(0).type, expr.type, funs
-        ),
-        substitutions = no_substitutions,
-      })
-    else
-      expr.op,
-    expr.children.desugar_casts(funs),
-    expr.type
-  )
-}
-fun desugar_casts(
-  exprs: Slice[TacoExpr], funs: &Map[String, TacoFun]
-): Slice[TacoExpr] {
-  var new = list[TacoExpr]()
-  for old in exprs do new.&.push(old.desugar_casts(funs))
-  new.to_slice()
+fun map(body: TacoBody, desugar: DesugarCasts): TacoBody {
+  TacoBody { params = body.params, expr = body.expr.map(desugar) }
 }
 
 fun compile_cast_fun(
-  from: EggType, to: EggType, funs: &Map[String, TacoFun]
+  from: EggType, to: EggType, funs: &Map[String, TacoBody]
 ): String {
   var signature = "cast {from} to {to}"
   if funs.contains(signature) then return signature
-  funs.put(signature, uninitialized[TacoFun]().*) | placeholder
+  funs.put(signature, uninitialized[TacoBody]().*) | placeholder
 
   var value = hole(from)
-  funs.put(signature, TacoFun {
+  funs.put(signature, TacoBody {
     params = list(value).to_slice(),
-    body = {
+    expr = {
       if from.internal_kind() is never then taco_unreachable(to)
       else if from == to then taco_hole(value) | This cast is the identity fun!
       else
@@ -56,11 +43,13 @@ fun compile_cast_fun(
           var index = hole(type_int)
           generate_array(
             taco_hole(value).array_len(),
-            index,
-            taco_hole(value)
-              .array_get(taco_hole(index))
-              .cast(to_item_type)
-              .desugar_casts(funs),
+            body(
+              index,
+              taco_hole(value)
+                .array_get(taco_hole(index))
+                .cast(to_item_type)
+                .map(DesugarCasts { funs }),
+            ),
           )
         }
         case struct_(to_field_types)
@@ -72,21 +61,24 @@ fun compile_cast_fun(
                 taco_hole(value)
                   .member(field.key)
                   .cast(field.value)
-                  .desugar_casts(funs),
+                  .map(DesugarCasts { funs }),
               )
             to_fields
           })
         case enum_(to_variant_types) {
           var from_variant_types = from.kind().enum_.unwrap()
-          var cases = map[String, Tuple2[Hole, TacoExpr]]()
+          var cases = map[String, TacoBody]()
           for variant in from_variant_types do {
             var from_payload_type = variant.value
             var to_payload_type = to_variant_types.get(variant.key)
             var hole = hole(from_payload_type)
             cases.&.put(
               variant.key,
-              tuple(
-                hole, taco_hole(hole).cast(to_payload_type).desugar_casts(funs)
+              body(
+                hole,
+                taco_hole(hole)
+                  .cast(to_payload_type)
+                  .map(DesugarCasts { funs }),
               ),
             )
           }
@@ -99,7 +91,7 @@ fun compile_cast_fun(
           for param in to_lambda_type.args do
             outer_params.&.push(hole(param))
 
-          lambda(
+          lambda(body(
             outer_params.to_slice(),
             taco_hole(value)
               .call({
@@ -108,13 +100,13 @@ fun compile_cast_fun(
                   inner_params.&.push(
                     taco_hole(param.item)
                       .cast(from_lambda_type.args.get(param.index))
-                      .desugar_casts(funs)
+                      .map(DesugarCasts { funs })
                   )
                 inner_params.to_slice()
               })
               .cast(to_lambda_type.return_type)
-              .desugar_casts(funs),
-          )
+              .map(DesugarCasts { funs }),
+          ))
         }
         default panic("casting {from} to {to} is not supported")
     }

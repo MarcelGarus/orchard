@@ -1,7 +1,7 @@
 import mod.mar
 
 fun optimize(taco: Taco): Taco {
-  var funs = map[String, TacoFun]()
+  var funs = map[String, TacoBody]()
   for signature in taco.choose_optimization_order() do {
     | eprintln("Optimizing {signature}")
     | stderr.write(signature, taco.funs.get(signature))
@@ -31,193 +31,168 @@ fun choose_optimization_order(taco: Taco): Slice[String] {
 fun choose_order(signature: String, taco: Taco, out: &List[String]) {
   if out.iter().&.contains(signature) then return {}
   out.push(signature)
-  taco.funs.get(signature).body.choose_order(taco, out)
+  taco.funs.get(signature).expr.visit(ChooseOrder { taco, out }).ignore()
 }
-fun choose_order(expr: TacoExpr, taco: Taco, out: &List[String]) {
-  if expr.op is call_fun(fun_) then fun_.signature.choose_order(taco, out)
-  for child in expr.children do child.choose_order(taco, out)
+struct ChooseOrder { taco: Taco, out: &List[String] }
+fun visit(expr: TacoExpr, choose: ChooseOrder) {
+  if expr.op is call_fun(call) then
+    call.fun_.signature.choose_order(choose.taco, choose.out)
+  expr.visit_children(choose)
+}
+fun visit(body: TacoBody, choose: ChooseOrder) {
+  body.expr.visit(choose)
 }
 
 fun tree_shake(taco: Taco): Taco {
-  var funs = map[String, TacoFun]()
+  var funs = map[String, TacoBody]()
   for signature in taco.choose_optimization_order() do
     funs.&.put(signature, taco.funs.get(signature))
   Taco { funs, entry_point = taco.entry_point }
 }
 
-fun optimize(fun_: TacoFun, context: OptimizeTacoContext): TacoFun {
-  TacoFun { params = fun_.params, body = fun_.body.optimize(context) }
+struct OptimizeTacoContext { optimized: Map[String, TacoBody], taco: Taco }
+struct Optimize { context: OptimizeTacoContext }
+fun map(expr: TacoExpr, optimize: Optimize): TacoExpr {
+  expr.map_children(optimize).optimize_shallow(optimize.context)
 }
-
-struct OptimizeTacoContext { optimized: Map[String, TacoFun], taco: Taco }
-
+fun map(body: TacoBody, optimize: Optimize): TacoBody {
+  TacoBody { params = body.params, expr = body.expr.map(optimize) }
+}
 fun optimize(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
-  | stderr."Optimizing:"
-  | stderr.write(expr.op, 0)
-  | stderr."\n"
- 
-  var children = list[TacoExpr]()
-  for child in expr.children do children.&.push(child.optimize(context))
-  expr(expr.op, children.to_slice(), expr.type).optimize_shallow(context)
+  expr.map(Optimize { context })
 }
+fun optimize(body: TacoBody, context: OptimizeTacoContext): TacoBody {
+  body.map(Optimize { context })
+}
+
 | Assumes that the children are already optimized.
 fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   var type = expr.type
-  var children = expr.children
   switch expr.op
-  case member(name) {
-    var struct_ = children.get(0)
-    if struct_.op is struct_ then {
-      var keys = list[String]()
-      for field in struct_.type.kind().struct_.unwrap() do
-        keys.&.push(field.key)
-      keys.to_slice().&.sort()
-
-      var index = 0
-      loop if keys.get(index) == name then break else index = index + 1
-
-      return struct_.children.get(index)
-    }
-  }
-  case switch_(case_holes) {
-    var condition = children.first()
-    var cases = children.without_first()
-    if condition.op is enum_(name) then {
-      var keys = list[String]()
-      for variant in condition.type.kind().enum_.unwrap() do
-        keys.&.push(variant.key)
-      keys.to_slice().&.sort()
-
-      var index = 0
-      loop if keys.get(index) == name then break else index = index + 1
-
-      return cases.get(index)
-        .fill(map(case_holes.get(index) -> condition.children.get(0)))
+  case member(member)
+    if member.of.op is struct_(fields) then return fields.get(member.name)
+  case switch_(switch_) {
+    if switch_.condition.op is enum_(enum_) then {
+      return switch_.cases.get(enum_.variant)
+        .fill(enum_.payload.*)
         .optimize(context)
     }
   }
-  case call_fun(fun_) {
-    var signature = fun_.signature
-    var substitutions = fun_.substitutions
-    var args = children
+  case call_fun(call) {
+    | TODO: Try to run the function at compile time.
 
-    | Try to run the function at compile time.
-    | if
-    |   fun_.call_at_comptime(args, type, EggRunResources { exprs = 1000 }, context)
-    | is ok(result)
-    | then return result.to_expr()
-
-    | Possibly inline the function.
-    if context.optimized.get_maybe(signature) is some(fun_) then {
-      var should_inline = fun_.body.num_exprs() < 10
-      if should_inline then {
-        return recursive(
-          fun_.params,
-          args,
-          fun_.body
-            .specialize(substitutions)
-            .new_holes()
-            .call_to_recurse(signature, type),
-        ).optimize_shallow(context)
+    | We inline the function, if:
+    | - The function has already been visited during the optimization pass.
+    |   Otherwise, mutually recursive functions might hang the compiler.
+    | - The function size fits in some upper bound.
+    |   Otherwise, we may get exponential code explosion.
+    | - The function is not generic.
+    |   Otherwise, the function might call itself with different type arguments
+    |   and we can't model that, not even using a recursive expression. After
+    |   monomorphization, no generic functions exist, so every function has a
+    |   chance of being inlined eventually.
+    if call.fun_.substitutions.substitutions.size == 0 then
+      if context.optimized.get_maybe(call.fun_.signature) is some(body) then {
+        var should_inline = body.expr.num_exprs() <= 30
+        if should_inline then {
+          return recursive(
+            call.args,
+            body
+              .specialize(call.fun_.substitutions)
+              .new_holes()
+              .call_to_recurse(call.fun_, type.specialize(call.fun_.substitutions)),
+          ).optimize_shallow(context)
+        }
       }
-    }
   }
-  case call_lambda {
-    var lambda = children.first()
-    var args = children.without_first()
-    if lambda.op is lambda(params) then
-      return lambda.children.get(0).fill(params, args)
-  }
-  case both {
+  case call_lambda(call)
+    if call.lambda.op is lambda(body) then return body.fill(call.args)
+  case both(both) {
     var new_children = list[TacoExpr]()
-    children.get(0).collect_impure(new_children.&)
-    new_children.&.push(children.get(1))
+    both.ignored.collect_impure(new_children.&)
+    new_children.&.push(both.result.*)
     return body(new_children.to_slice())
   }
-  case let panic("optimizing let")
-  case cast {
-    var inner = children.get(0)
-    if inner.type == type then return inner
-    if inner.op is enum_(name) then {
-      var wanted_payload_type = type.kind().enum_.unwrap().get(name)
-      var payload = inner.children.get(0)
+  case let panic("optimize let")
+  case cast(inner) {
+    if inner.type == type then return inner.*
+    if inner.op is enum_(enum_) then {
+      var wanted_payload_type = type.kind().enum_.unwrap().get(enum_.variant)
       return enum_(
-        type, name, cast(payload, wanted_payload_type).optimize_shallow(context)
+        type,
+        enum_.variant,
+        enum_.payload.cast(wanted_payload_type).optimize_shallow(context),
       )
     }
   }
-  case lower_byte {
-    var int = children.get(0)
+  case lower_byte(int) {
     if int.op is int(int) then return taco_byte(int.lower_byte())
   }
-  case byte_to_int {
-    var byte = children.get(0)
+  case byte_to_int(byte) {
     if byte.op is byte(byte) then return taco_int(byte.to_int())
   }
-  case add_ints {
-    var a = children.get(0)
-    var b = children.get(1)
-    if a.op is int(a) then if a == 0 then return b
-    if b.op is int(b) then if b == 0 then return a
+  case add_ints(args) {
+    var a = args.a.*
+    var b = args.b.*
     if a.op is int(a) then if b.op is int(b) then return taco_int(a + b)
-    if a.op is sub_ints then if b == a.children.get(1) then
-      return body(list(b, a.children.get(0)).to_slice())
-    if b.op is sub_ints then if a == b.children.get(1) then
-      return body(list(a, b.children.get(0)).to_slice())
+    if a.op is int(a) then if a == 0 then return b  | 0 + x
+    if b.op is int(b) then if b == 0 then return a  | x + 0
+    if a.op is sub_ints(args) then if b == args.b.* then return both(b, args.a.*)  | (x - y) + y
+    if b.op is sub_ints(args) then if a == args.b.* then return both(a, args.a.*)  | x + (y - x)
   }
-  case sub_ints {
-    var a = children.get(0)
-    var b = children.get(1)
-    if b.op is int(b) then if b == 0 then return a
+  case sub_ints(args) {
+    var a = args.a.*
+    var b = args.b.*
     if a.op is int(a) then if b.op is int(b) then return taco_int(a - b)
+    if b.op is int(b) then if b == 0 then return a  | x - 0
   }
-  case mul_ints {
-    var a = children.get(0)
-    var b = children.get(1)
-    if a.op is int(a) then if a == 1 then return b
-    if b.op is int(b) then if b == 1 then return a
+  case mul_ints(args) {
+    var a = args.a.*
+    var b = args.b.*
     if a.op is int(a) then if b.op is int(b) then return taco_int(a * b)
+    if a.op is int(a) then if a == 1 then return b  | 1 * x
+    if b.op is int(b) then if b == 1 then return a  | x * 1
   }
-  case div_ints {
-    var a = children.get(0)
-    var b = children.get(1)
-    if b.op is int(b) then if b == 1 then return a
+  case div_ints(args) {
+    var a = args.a.*
+    var b = args.b.*
     if a.op is int(a) then if b.op is int(b) then if b != 0 then
       return taco_int(a / b)
+    if b.op is int(b) then if b == 1 then return a  | x / 1
   }
-  case mod_ints {
-    var a = children.get(0)
-    var b = children.get(1)
-    if b.op is int(b) then if b == 1 then return taco_int(0)
+  case mod_ints(args) {
+    var a = args.a.*
+    var b = args.b.*
     if a.op is int(a) then if b.op is int(b) then if b != 0 then
       return taco_int(a % b)
+    if b.op is int(b) then if b == 1 then return taco_int(0)  | x % 1
   }
-  case and_ints {
-    var a = children.get(0)
-    var b = children.get(1)
-    if a.op is int(a) then if a == 0 then return taco_int(0)
-    if b.op is int(b) then if b == 0 then return taco_int(0)
-    if a.op is int(a) then if a == -1 then return b
-    if b.op is int(b) then if b == -1 then return a
+  case and_ints(args) {
+    var a = args.a.*
+    var b = args.b.*
     if a.op is int(a) then if b.op is int(b) then return taco_int(a & b)
+    if a.op is int(a) then if a == 0 then return taco_int(0)  | 0 & x
+    if b.op is int(b) then if b == 0 then return taco_int(0)  | x & 0
+    if a.op is int(a) then if a == -1 then return b  | -1 & x
+    if b.op is int(b) then if b == -1 then return a  | x & -1
   }
-  case or_ints {
-    var a = children.get(0)
-    var b = children.get(1)
-    if a.op is int(a) then if a == 0 then return b
-    if b.op is int(b) then if b == 0 then return a
-    if a.op is int(a) then if a == -1 then return taco_int(-1)
-    if b.op is int(b) then if b == -1 then return taco_int(-1)
+  case or_ints(args) {
+    var a = args.a.*
+    var b = args.b.*
     if a.op is int(a) then if b.op is int(b) then return taco_int(or(a, b))
+    if a.op is int(a) then if a == 0 then return b  | 0 | x
+    if b.op is int(b) then if b == 0 then return a  | x | 0
+    if a.op is int(a) then if a == -1 then return taco_int(-1)  | -1 | x
+    if b.op is int(b) then if b == -1 then return taco_int(-1)  | x | -1
   }
-  case xor_ints {
-    var a = children.get(0)
-    var b = children.get(1)
+  case xor_ints(args) {
+    var a = args.a.*
+    var b = args.b.*
     if a.op is int(a) then if b.op is int(b) then return taco_int(a ^ b)
   }
-  case compare_ints {
-    var a = children.get(0)
-    var b = children.get(1)
+  case compare_ints(args) {
+    var a = args.a.*
+    var b = args.b.*
     if a.op is int(a) then if b.op is int(b) then {
       var symbol =
         switch a <=> b
@@ -227,101 +202,98 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       return enum_(type, symbol, taco_nothing)
     }
   }
-  case unbox {
-    var box = children.get(0)
-    if box.op is box then return box.children.get(0)
-  }
-  case generate_array(index_hole) {
-    var len = children.get(0)
-    var item = children.get(1)
-    if len.op is int(len) then if len <= 10 then {
+  case unbox(box) if box.op is box(inner) then return inner.*
+  case generate_array(gen) {
+    if gen.length.op is int(len) then if len <= 10 then {
       var items = list[TacoExpr]()
       for index in 0..len do
         items.&.push(
-          item
-            .fill(map(index_hole -> taco_int(index)))
+          gen.generator
+            .fill(list(taco_int(index)).to_slice())
             .optimize_shallow(context)
         )
-      return array(item.type, items.to_slice())
+      return array(gen.generator.expr.type, items.to_slice())
     }
   }
-  case array_get {
-    var array = children.get(0)
-    var index = children.get(1)
-    if array.op is array then if index.op is int(index) then
-      if (0..array.children.len).contains(index) then
-        return array.children.get(index)
+  case array_get(args) {
+    var array = args.a.*
+    var index = args.b.*
+    if array.op is array(items) then if index.op is int(index) then
+      if (0..items.len).contains(index) then return items.get(index)
   }
-  case array_set {
-    var array = children.get(0)
-    var index = children.get(1)
-    var item  = children.get(2)
-    if array.op is array then if index.op is int(index) then
-      if (0..array.children.len).contains(index) then {
+  case array_set(args) {
+    var array = args.a.*
+    var index = args.b.*
+    var item  = args.c.*
+    if array.op is array(items) then if index.op is int(index) then
+      if (0..items.len).contains(index) then {
         var new_items = list[TacoExpr]()
-        for item in array.children do new_items.&.push(item)
+        for item in items do new_items.&.push(item)
         new_items.&.set(index, item)
         return array(type, new_items.to_slice())
       }
   }
-  case array_slice {
-    var array = children.get(0)
-    var start = children.get(1)
-    var end = children.get(2)
-    if array.op is array then {
-      var items = array.children
+  case array_slice(args) {
+    var array = args.a.*
+    var start = args.b.*
+    var end = args.c.*
+    if array.op is array(items) then {
       if start.op is int(start) then if end.op is int(end) then {
         if (0..items.len).contains(start) and (0..items.len).contains(end)
         then return array(type, items.subslice(start..end))
       }
     }
   }
-  case array_len {
-    var array = children.get(0)
-    if array.op is array then return taco_int(array.children.len)
-    if array.op is generate_array then return array.children.get(0)
+  case array_len(array) {
+    if array.op is array(items) then return taco_int(items.len)
+    | TODO: generator may panic for an input
+    | if array.op is generate_array(gen) then return array.children.get(0)
   }
-  case recursive(holes) {
-    var args = children.without_last()
-    var body = children.last()
-    if not(body.recurses()) then return body.fill(holes, args).optimize(context)
-    
+  case recursive(recursive) {
+    if not(recursive.body.expr.recurses()) then
+      return recursive.body.fill(recursive.initial).optimize(context)
+
     | Find fixpoints
-    var fixpoints = body.find_fixpoints(holes, args, context)
-    var new_args = list[TacoExpr]()
-    for arg in args.values_for_black_holes(fixpoints) do
-      new_args.&.push(arg.optimize(context))
-    var new_holes = list[Hole]()
-    for arg in new_args do new_holes.&.push(hole(arg.type))
-    var new_holes = new_holes.to_slice()
+    var mask = recursive.body.find_fixpoint_mask(recursive.initial, context)
+    var new_args = {
+      var res = list[TacoExpr]()
+      for arg in recursive.initial.mask(mask) do
+        res.&.push(arg.optimize(context))
+      res.to_slice()
+    }
+    var new_holes = {
+      var res = list[Hole]()
+      for arg in new_args do res.&.push(hole(arg.type))
+      res.to_slice()
+    }
     return recursive(
-      new_holes,
-      new_args.to_slice(),
-      body
-        .fill(holes, fixpoints.fill_black_holes(new_holes))
-        .replace_recurses(fixpoints)
-        .optimize(context),
+      new_args,
+      body(
+        new_holes,
+        recursive.body
+          .fill(new_holes.unmask(mask))
+          .replace_recurses(mask)
+          .optimize(context),
+      )
     )
   }
-  case recurse {
-    for child in children do
-      if child.definitely_crashes() then return taco_crash(type)
-    if children.len == 1 then {
-      var child = children.get(0)
-      if child.op is switch_(holes) then {
-        var condition = child.children.first()
-        var cases = child.children.without_first()
-        var new_cases = list[TacoExpr]()
-        for case_ in cases do
-          new_cases.&.push(
-            recurse(list(case_).to_slice(), type).optimize_shallow(context)
+  case recurse(args) {
+    for arg in args do if arg.definitely_crashes() then return taco_crash(type)
+    if args.len == 1 then if args.get(0).op is switch_(switch_) then {
+      | Push recurse into the switch cases.
+      return switch_(switch_.condition.*, type, {
+        var cases = map[String, TacoBody]()
+        for case_ in switch_.cases do
+          cases.&.put(
+            case_.key,
+            TacoBody {
+              params = case_.value.params,
+              expr = recurse(list(case_.value.expr).to_slice(), type)
+                .optimize_shallow(context)
+            }
           )
-        return expr(
-          TacoOp.switch_(holes),
-          (list(condition) + new_cases).to_slice(),
-          type,
-        )
-      }
+        cases
+      })
     }
   }
   default {}
@@ -329,68 +301,95 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   expr
 }
 
+| The number of expressions inside this expression.
 fun num_exprs(expr: TacoExpr): Int {
-  var num = 0
-  for child in expr.children do num = num + child.num_exprs()
+  var num = 1
+  for child in expr.children() do num = num + child.num_exprs()
   num
 }
 
+| Whether the expression contains a recurse expression that is not nested within
+| a recursive expression.
 fun recurses(expr: TacoExpr): Bool {
   if expr.op is recursive then return false  | An inner recurse is local.
   if expr.op is recurse then return true
-  for child in expr.children do if child.recurses() then return true
+  for child in expr.children() do if child.recurses() then return true
   false
 }
 
+| Converts calls to the given called signature into recurse expressions.
 fun call_to_recurse(
-  expr: TacoExpr, signature: String, return_type: EggType
+  expr: TacoExpr, called: TacoCalledFun, return_type: EggType
 ): TacoExpr {
-  var args = list[TacoExpr]()
-  for arg in expr.children do
-    args.&.push(arg.call_to_recurse(signature, return_type))
-  var args = args.to_slice()
-
-  if expr.op is call_fun(fun_) then
-    if fun_.signature == signature then
-      return recurse(args, return_type)
-  expr(expr.op, args, expr.type)
+  expr.map(CallToRecurse { called, return_type })
+}
+fun call_to_recurse(
+  body: TacoBody, called: TacoCalledFun, return_type: EggType
+): TacoBody {
+  body.map(CallToRecurse { called, return_type })
+}
+struct CallToRecurse { called: TacoCalledFun, return_type: EggType }
+fun map(expr: TacoExpr, call_to_recurse: CallToRecurse): TacoExpr {
+  var expr = expr.map_children(call_to_recurse)
+  if expr.op is call_fun(call) then
+    if call.fun_ == call_to_recurse.called then
+      return recurse(call.args, call_to_recurse.return_type)
+  expr
+}
+fun map(body: TacoBody, call_to_recurse: CallToRecurse): TacoBody {
+  TacoBody { params = body.params, expr = body.expr.map(call_to_recurse) }
 }
 
-fun fill(
-  expr: TacoExpr, holes: Slice[Hole], fillings: Slice[TacoExpr]
-): TacoExpr {
-  var map = map[Hole, TacoExpr]()
-  for both in zip(holes.iter(), fillings.iter()) do map.&.put(both.a, both.b)
-  expr.fill(map)
+| Fills the body with concrete arguments for its parameters.
+fun fill(body: TacoBody, args: Slice[TacoExpr]): TacoExpr {
+  var fillings = map[Hole, TacoExpr]()
+  for both in zip(body.params.iter(), args.iter()) do
+    fillings.&.put(both.a, both.b)
+  body.expr.map(Fill { fillings })
 }
-fun fill(expr: TacoExpr, fillings: Map[Hole, TacoExpr]): TacoExpr {
+fun fill(body: TacoBody, arg: TacoExpr): TacoExpr {
+  body.fill(list(arg).to_slice())
+}
+struct Fill { fillings: Map[Hole, TacoExpr] }
+fun map(expr: TacoExpr, fill: Fill): TacoExpr {
   if expr.op is hole(hole) then
-    if fillings.get_maybe(hole) is some(value) then return value
-  
-  var children = list[TacoExpr]()
-  for child in expr.children do children.&.push(child.fill(fillings))
-  expr(expr.op, children.to_slice(), expr.type)
+    if fill.fillings.get_maybe(hole) is some(value) then return value
+  expr.map_children(fill)
+}
+fun map(body: TacoBody, fill: Fill): TacoBody {
+  TacoBody { params = body.params, expr = body.expr.map(fill) }
 }
 
-fun specialize(expr: TacoExpr, substitutions: Substitutions): TacoExpr {
-  var op =
-    switch expr.op
-    case type(type) TacoOp.type(type.specialize(substitutions))
-    case lambda(holes) TacoOp.lambda(holes.specialize(substitutions))
-    case switch_(holes) TacoOp.switch_(holes.specialize(substitutions))
-    default expr.op
-
-  var children = list[TacoExpr]()
-  for child in expr.children do children.&.push(child.specialize(substitutions))
-  var children = children.to_slice()
-
-  var type = expr.type.specialize(substitutions)
-
-  expr(op, children, type)
+fun specialize(body: TacoBody, substitutions: Substitutions): TacoBody {
+  stderr."Specializing using {substitutions}:\n"
+  stderr.write(body.expr, holes_namespace().&, no_indentation)
+  stderr."\nDone specializing:\n"
+  stderr.write(body.expr.map(Specialize { substitutions }), holes_namespace().&, no_indentation)
+  stderr."\n"
+  body.map(Specialize { substitutions })
+}
+struct Specialize { substitutions: Substitutions }
+fun map(expr: TacoExpr, specialize: Specialize): TacoExpr {
+  if expr.op is hole(hole) then
+    return taco_hole(hole.specialize(specialize.substitutions))
+  if expr.op is type(type) then
+    return taco_type(type.specialize(specialize.substitutions))
+  expr(
+    expr.map_children(specialize).op,
+    expr.type.specialize(specialize.substitutions),
+  )
+}
+fun map(body: TacoBody, specialize: Specialize): TacoBody {
+  TacoBody {
+    params = body.params.specialize(specialize.substitutions),
+    expr = body.expr.map(specialize),
+  }
 }
 
-fun can_diverge(op: TacoOp): Bool {
-  switch op
+
+| Whether the operation itself (not the children) can diverge.
+fun can_root_diverge(expr: TacoExpr): Bool {
+  switch expr.op
   case hole false
   case type false
   case byte false
@@ -434,55 +433,33 @@ fun can_diverge(op: TacoOp): Bool {
 }
 
 fun can_diverge(expr: TacoExpr): Bool {
-  expr.op.can_diverge() or {
-    for child in expr.children do if child.can_diverge() then return true
+  expr.can_root_diverge() or {
+    for child in expr.children() do if child.can_diverge() then return true
     false
   }
 }
 
 fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
-  if expr.op.can_diverge() then 
+  if expr.can_root_diverge() then 
     out.push(expr)
   else
-    for child in expr.children do child.collect_impure(out)
+    for child in expr.children() do child.collect_impure(out)
 }
 
 fun definitely_crashes(expr: TacoExpr): Bool {
   switch expr.op
   case lambda false
-  case switch_ {
-    if expr.children.first().definitely_crashes() then return true
-    for case_ in expr.children.without_first() do
-      if not(case_.definitely_crashes()) then return false
+  case switch_(switch_) {
+    if switch_.condition.definitely_crashes() then return true
+    for case_ in switch_.cases do
+      if not(case_.value.expr.definitely_crashes()) then return false
     true
   }
   case crash true
   case unreachable true
   default {
-    for child in expr.children do if child.definitely_crashes() then return true
+    for child in expr.children() do
+      if child.definitely_crashes() then return true
     false
   }
 }
-
-| fun optimized_member(builder: &EggBodyBuilder, of: EggExpr, name: String): EggExpr {
-|   if of.op is struct_(fields)
-|   then fields.get(name)
-|   else EggOp.member(EggMember { of, name })
-| }
-
-| fun call_at_comptime(
-|   fun_: EggCalledFun, args: Slice[EggExpr], type: EggType,
-|   resources: EggRunResources, context: OptimizeTacoContext,
-| ): Result[EggComptimeValue, Nothing] {
-|   var arg_values = list[EggComptimeValue]()
-|   for arg in args do
-|     arg_values.&.push(
-|       arg.to_comptime() or return error[EggComptimeValue, Nothing]({})
-|     )
-|   var arg_values = arg_values.to_slice()
-
-|   fun_.run(
-|     arg_values,
-|     RunEggContext { egg = context.fun_.egg, resources = resources.& },
-|   )
-| }

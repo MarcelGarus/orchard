@@ -1,23 +1,26 @@
+import mod.mar
+
 fun deduplicate(lime: Taco): Taco {
-  var funs = map[String, TacoFun]()
+  var funs = map[String, TacoBody]()
   for fun_ in lime.funs do funs.&.put(fun_.key, fun_.value.deduplicate())
   Taco { entry_point = lime.entry_point, funs = funs }
 }
 
-fun deduplicate(fun_: TacoFun): TacoFun {
-  TacoFun {
+fun deduplicate(fun_: TacoBody): TacoBody {
+  TacoBody {
     params = fun_.params,
-    body = {
+    expr = {
       var body = ongoing_body(fun_.params)
       var bodies = list(body)
-      var inner = fun_.body.deduplicate(bodies.&)
+      var inner = fun_.expr.map(Deduplicate { bodies = bodies.& })
       var body = bodies.&.pop()
-      body(body.lets.to_slice(), inner)
+      lets(body.lets.to_slice(), inner)
         .inline_lets_only_used_once_in_same_body()
     }
   }
 }
 
+struct Deduplicate { bodies: &List[OngoingBody] }
 struct OngoingBody {
   defined_holes: Slice[Hole], lets: List[Tuple2[Hole, TacoExpr]]
 }
@@ -25,64 +28,25 @@ fun ongoing_body(defined_holes: Slice[Hole]): OngoingBody {
   OngoingBody { defined_holes, lets = list[Tuple2[Hole, TacoExpr]]() }
 }
 
-fun deduplicate(expr: TacoExpr, bodies: &List[OngoingBody]): TacoExpr {
-  var expr =
-    switch expr.op
-    case lambda(params) {
-      var body = ongoing_body(params)
-      bodies.push(body)
-      var inner = expr.children.get(0).deduplicate(bodies)
-      var body = bodies.pop()
-      lambda(params, body(body.lets.to_slice(), inner))
-    }
-    case switch_(holes) {
-      var children = list[TacoExpr]()
-      children.&.push(expr.children.first().deduplicate(bodies))
-      for both in zip(holes.iter(), expr.children.without_first().iter()) do {
-        var body = ongoing_body(list(both.a).to_slice())
-        bodies.push(body)
-        var inner = both.b.deduplicate(bodies)
-        var body = bodies.pop()
-        children.&.push(body(body.lets.to_slice(), inner))
-      }
-      expr(expr.op, children.to_slice(), expr.type)
-    }
-    case generate_array(index) {
-      var length = expr.children.get(0).deduplicate(bodies)
-      var body = ongoing_body(list(index).to_slice())
-      bodies.push(body)
-      var generator = expr.children.get(1).deduplicate(bodies)
-      var body = bodies.pop()
-      generate_array(length, index, body(body.lets.to_slice(), generator))
-    }
-    case recursive(args) {
-      var children = list[TacoExpr]()
-      for child in expr.children.without_last() do
-        children.&.push(child.deduplicate(bodies))
-      var body = ongoing_body(args)
-      bodies.push(body)
-      var inner = expr.children.last().deduplicate(bodies)
-      var body = bodies.pop()
-      children.&.push(body(body.lets.to_slice(), inner))
-      expr(expr.op, children.to_slice(), expr.type)
-    }
-    default {
-      var children = list[TacoExpr]()
-      for child in expr.children do
-        children.&.push(child.deduplicate(bodies))
-      expr(expr.op, children.to_slice(), expr.type)
-    }
+fun map(expr: TacoExpr, deduplicate: Deduplicate): TacoExpr {
+  var expr = expr.map_children(deduplicate)
 
-  for body in bodies do
+  for body in deduplicate.bodies do
     for visible in body.lets do
       if visible.b == expr then return taco_hole(visible.a)
 
   if expr.is_expensive() then {
     var hole = hole(expr.type)
-    bodies.get_ref(bodies.len - 1).lets.&.push(tuple(hole, expr))
+    deduplicate.bodies.get_ref(deduplicate.bodies.len - 1).lets.&.push(tuple(hole, expr))
     taco_hole(hole)
   } else
     expr
+}
+fun map(body: TacoBody, deduplicate: Deduplicate): TacoBody {
+  deduplicate.bodies.push(ongoing_body(body.params))
+  var expr = body.expr.map(deduplicate)
+  var ongoing = deduplicate.bodies.pop()
+  TacoBody { params = body.params, expr = lets(ongoing.lets.to_slice(), expr) }
 }
 
 fun is_expensive(expr: TacoExpr): Bool {
@@ -107,64 +71,58 @@ fun is_expensive(expr: TacoExpr): Bool {
 
 fun count_hole_references(expr: TacoExpr): Map[Hole, Int] {
   var counts = map[Hole, Int]()
-  expr.count_hole_references(counts.&)
+  expr.visit(CountHoles { counts = counts.& })
   counts
 }
-fun count_hole_references(expr: TacoExpr, out: &Map[Hole, Int]) {
+struct CountHoles { counts: &Map[Hole, Int] }
+fun visit(expr: TacoExpr, count_holes: CountHoles) {
   if expr.op is hole(hole) then {
-    var count = out.get_ref_or_put_default(hole, 0)
+    var count = count_holes.counts.get_ref_or_put_default(hole, 0)
     count.* = count.* + 1
   }
-  for child in expr.children do child.count_hole_references(out)
+  expr.visit_children(count_holes)
+}
+fun visit(body: TacoBody, count_holes: CountHoles) {
+  body.expr.visit(count_holes)
 }
 
 fun inline_lets_only_used_once_in_same_body(expr: TacoExpr): TacoExpr {
   var hole_counts = expr.count_hole_references()
-  expr.inline_lets_only_used_once_in_same_body(hole_counts)
+  expr.map(InlineLetsOnlyUsedOnceInSameBody { hole_counts })
 }
-fun inline_lets_only_used_once_in_same_body(
-  expr: TacoExpr, hole_counts: Map[Hole, Int]
-): TacoExpr {
-  var children = list[TacoExpr]()
-  for child in expr.children do
-    children.&.push(child.inline_lets_only_used_once_in_same_body(hole_counts))
-  var children = children.to_slice()
+struct InlineLetsOnlyUsedOnceInSameBody { hole_counts: Map[Hole, Int] }
+fun map(expr: TacoExpr, inline: InlineLetsOnlyUsedOnceInSameBody): TacoExpr {
+  var expr = expr.map_children(inline)
 
-  if expr.op is let(hole) then {
-    var def = children.get(0)
-    var result = children.get(1)
-    if hole_counts.get(hole) == 1 then
-      if result.inline_hole_if_in_same_body(hole, def) is some(result) then
+  if expr.op is let(let) then {
+    var hole = let.result.params.get(0)
+    if inline.hole_counts.get(hole) == 1 then
+      if let.result.expr.inline_hole_if_in_same_body(hole, let.def.*)
+      is some(result)
+      then
         return result
   }
 
-  expr(expr.op, children, expr.type)
+  expr
 }
+fun map(body: TacoBody, inline: InlineLetsOnlyUsedOnceInSameBody): TacoBody {
+  TacoBody { params = body.params, expr = body.expr.map(inline) }
+}
+
 fun inline_hole_if_in_same_body(
   expr: TacoExpr, hole: Hole, def: TacoExpr
 ): Maybe[TacoExpr] {
   var used = false
-  var expr = expr.inline_hole_if_in_same_body(hole, def, used.&)
+  var expr = expr.map(InlineHoleIfInSameBody { hole, def, used = used.& })
   if used then some(expr) else none[TacoExpr]()
 }
-fun inline_hole_if_in_same_body(
-  expr: TacoExpr, hole: Hole, def: TacoExpr, used: &Bool
-): TacoExpr {
-  switch expr.op
-  case hole(h)
-    if h == hole then {
-      used.* = true
-      def
-    } else
-      expr
-  case lambda expr
-  case switch_ expr
-  case generate_array expr
-  case recursive expr
-  default {
-    var children = list[TacoExpr]()
-    for child in expr.children do
-      children.&.push(child.inline_hole_if_in_same_body(hole, def, used))
-    expr(expr.op, children.to_slice(), expr.type)
-  }
+struct InlineHoleIfInSameBody { hole: Hole, def: TacoExpr, used: &Bool }
+fun map(expr: TacoExpr, inline: InlineHoleIfInSameBody): TacoExpr {
+  if expr.op is hole(hole) then
+    if hole == inline.hole then {
+      inline.used.* = true
+      return inline.def
+    }
+  expr.map_children(inline)
 }
+fun map(body: TacoBody, inline: InlineHoleIfInSameBody): TacoBody { body }

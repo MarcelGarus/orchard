@@ -1,53 +1,36 @@
 import mod.mar
 
 fun desugar_dynamics(taco: Taco): Taco {
-  var funs = map[String, TacoFun]()
+  var funs = map[String, TacoBody]()
   for fun_ in taco.funs do
-    funs.&.put(fun_.key, fun_.value.desugar_dynamics(funs.&))
+    funs.&.put(fun_.key, fun_.value.map(DesugarDynamics { funs = funs.& }))
   Taco { funs, entry_point = taco.entry_point }
 }
 
-fun desugar_dynamics(fun_: TacoFun, funs: &Map[String, TacoFun]): TacoFun {
-  TacoFun { params = fun_.params, body = fun_.body.desugar_dynamics(funs) }
+struct DesugarDynamics { funs: &Map[String, TacoBody] }
+fun map(expr: TacoExpr, mapper: DesugarDynamics): TacoExpr {
+  var expr = expr.map_children(mapper)
+  if expr.op is static_to_dynamic(static) then
+    return compile_static_to_dynamic_fun(static.type, mapper.funs)
+      .call(list(static).to_slice())
+  else if expr.op is dynamic_to_static(dynamic) then
+    return compile_dynamic_to_static_fun(expr.type, mapper.funs)
+      .call(list(dynamic).to_slice())
+  expr
 }
-
-fun desugar_dynamics(expr: TacoExpr, funs: &Map[String, TacoFun]): TacoExpr {
-  expr(
-    if expr.op is static_to_dynamic then
-      TacoOp.call_fun(TacoCalledFun {
-        signature = compile_static_to_dynamic_fun(
-          expr.children.get(0).type, funs
-        ),
-        substitutions = no_substitutions,
-      })
-    else if expr.op is dynamic_to_static then
-      TacoOp.call_fun(TacoCalledFun {
-        signature = compile_dynamic_to_static_fun(expr.type, funs),
-        substitutions = no_substitutions,
-      })
-    else
-      expr.op,
-    expr.children.desugar_dynamics(funs),
-    expr.type
-  )
-}
-fun desugar_dynamics(
-  exprs: Slice[TacoExpr], funs: &Map[String, TacoFun]
-): Slice[TacoExpr] {
-  var new = list[TacoExpr]()
-  for old in exprs do new.&.push(old.desugar_dynamics(funs))
-  new.to_slice()
+fun map(body: TacoBody, mapper: DesugarDynamics): TacoBody {
+  TacoBody { params = body.params, body = body.expr.map(mapper) }
 }
 
 fun compile_static_to_dynamic_fun(
-  type: EggType, funs: &Map[String, TacoFun]
+  type: EggType, funs: &Map[String, TacoBody]
 ): String {
   var signature = "{type} to dynamic"
   if funs.contains(signature) then return signature
-  funs.put(signature, uninitialized[TacoFun]().*) | placeholder
+  funs.put(signature, uninitialized[TacoBody]().*) | placeholder
 
   var value = hole(type)
-  funs.put(signature, TacoFun {
+  funs.put(signature, TacoBody {
     params = list(value).to_slice(),
     body = {
       var value = taco_hole(value)
@@ -142,14 +125,14 @@ fun compile_static_to_dynamic_fun(
 }
 
 fun compile_dynamic_to_static_fun(
-  type: EggType, funs: &Map[String, TacoFun]
+  type: EggType, funs: &Map[String, TacoBody]
 ): String {
   var signature = "dynamic to {type}"
   if funs.contains(signature) then return signature
-  funs.put(signature, uninitialized[TacoFun]().*) | placeholder
+  funs.put(signature, uninitialized[TacoBody]().*) | placeholder
 
   var value = hole(type_dynamic)
-  funs.put(signature, TacoFun {
+  funs.put(signature, TacoBody {
     params = list(value).to_slice(),
     body = {
       var value = taco_hole(value)

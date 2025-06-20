@@ -1,7 +1,7 @@
 import ../plum.mar
 
 fun to_taco(egg: Egg, entry_point: String): Result[Taco, Error] {
-  var funs = map[String, TacoFun]()
+  var funs = map[String, TacoBody]()
   for fun_ in egg.funs do
     funs.&.put(fun_.key, fun_.value.compile())
   ok[Taco, Error](Taco {
@@ -12,7 +12,7 @@ fun to_taco(egg: Egg, entry_point: String): Result[Taco, Error] {
   })
 }
 
-fun compile(fun_: EggFun): TacoFun {
+fun compile(fun_: EggFun): TacoBody {
   var mapping = map[Id, TacoExpr]()
 
   var params = list[Hole]()
@@ -23,9 +23,9 @@ fun compile(fun_: EggFun): TacoFun {
   }
   var params = params.to_slice()
 
-  var body = fun_.body.compile(mapping.&, fun_.dag)
+  var expr = fun_.body.compile(mapping.&, fun_.dag)
 
-  TacoFun { params, body }
+  TacoBody { params, expr }
 }
 
 fun compile(
@@ -68,15 +68,15 @@ fun compile(
       mapping.&.put(param, taco_hole(hole))
       holes.&.push(hole)
     }
-    lambda(holes.to_slice(), lambda.compile(mapping, dag))
+    lambda(body(holes.to_slice(), lambda.compile(mapping, dag)))
   }
   case switch_(switch_) {
-    var cases = map[String, Tuple2[Hole, TacoExpr]]()
+    var cases = map[String, TacoBody]()
     for case_ in switch_.cases do {
       var binding = case_.value.params.get(0)
       var hole = hole(dag.type_of(binding))
       mapping.&.put(binding, taco_hole(hole))
-      cases.&.put(case_.key, tuple(hole, case_.value.compile(mapping, dag)))
+      cases.&.put(case_.key, body(hole, case_.value.compile(mapping, dag)))
     }
     switch_(switch_.condition.compile(mapping, dag), type, cases)
   }
@@ -109,8 +109,7 @@ fun compile(
         var index = hole(type_int)
         generate_array(
           args.get(0),
-          index,
-          args.get(1).call(list(taco_hole(index)).to_slice()),
+          body(index, args.get(1).call(list(taco_hole(index)).to_slice())),
         )
       }
       case array_get array_get(args.get(0), args.get(1))
