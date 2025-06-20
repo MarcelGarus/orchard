@@ -65,7 +65,7 @@ struct FixpointMask {
 fun find_fixpoint_mask(
   body: TacoBody, args: Slice[TacoExpr], context: OptimizeTacoContext
 ): FixpointMask {
-  | eprintln("Finding fixpoints")
+  eprintln("Finding fixpoints")
   | var namespace = holes_namespace()
   | eprintln("Initial args:")
   | for arg in args do {
@@ -89,15 +89,16 @@ fun find_fixpoint_mask(
       |   eprintln()
       | }
 
-      | for both in zip(new.iter(), recurse.children.iter()) do {
-      |   eprintln("Unioning")
-      |   stderr.write(both.a, namespace.&, indentation(1))
-      |   eprintln()
-      |   stderr.write(both.b, namespace.&, indentation(1))
-      |   eprintln()
-      |   stderr.write(union(both.a, both.b), namespace.&, indentation(1))
-      |   eprintln()
-      | }
+      for both in zip(new.iter(), args.iter()) do {
+        eprintln("Unioning")
+        var namespace = holes_namespace()
+        stderr.write(both.a, namespace.&, indentation(1))
+        eprintln()
+        stderr.write(both.b, namespace.&, indentation(1))
+        eprintln()
+        stderr.write(union(both.a, both.b), namespace.&, indentation(1))
+        eprintln()
+      }
       new = union(new, args) | TODO: Make children self-contained?
     }
     if new == candidate then break
@@ -164,41 +165,71 @@ fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
   | if a.op is recursive then return union(a.wrap_around(), b)
   | if b.op is recursive then return union(a, b.wrap_around())
 
-  if a.op is hole(a) then if b.op is hole(b) then
-    if a == b then return taco_hole(a)
-  if a.op is type(a) then if b.op is type(b) then
-    if a == b then return taco_type(a)
-  if a.op is byte(a) then if b.op is byte(b) then
-    if a == b then return taco_byte(a)
-  if a.op is int(a) then if b.op is int(b) then
-    if a == b then return taco_int(a)
-  if a.op is array(a_items) then if b.op is array(b_items) then
-    if a_items.len == b_items.len then
-      return array(a.type, union(a_items, b_items))
-  if a.op is struct_(a_fields) then if b.op is struct_(b_fields) then {
-    var fields = map[String, TacoExpr]()
-    for field in a_fields do
-      fields.&.put(field.key, union(field.value, b_fields.get(field.key)))
-    return expr(TacoOp.struct_(fields), a.type)
+  switch a.op
+  case hole(a) if b.op is hole(b) then if a == b then return taco_hole(a)
+  case type(a) if b.op is type(b) then if a == b then return taco_type(a)
+  case byte(a) if b.op is byte(b) then if a == b then return taco_byte(a)
+  case int(a) if b.op is int(b) then if a == b then return taco_int(a)
+  case array(a_items) {
+    switch b.op
+    case array(b_items)
+      if a_items.len == b_items.len then
+        return array(a.type, union(a_items, b_items))
+    case array_slice(b_args)
+      if a == b_args.a.* then
+        return array_slice(
+          a,
+          union(taco_int(0), b_args.b.*),
+          union(taco_int(a_items.len), b_args.c.*),
+        )
+    default {}
   }
-  if a.op is enum_(a_enum) then if b.op is enum_(b_enum) then
-    if a_enum.variant == b_enum.variant then
-      return enum_(
-        a.type, a_enum.variant, union(a_enum.payload.*, b_enum.payload.*)
-      )
-  if a.op is lambda(a_body) then if b.op is lambda(b_body) then {
-    var b_body = TacoBody {
-      params = a_body.params,
-      expr = b_body.fill({
-        var fillings = list[TacoExpr]()
-        for param in a_body.params do fillings.&.push(taco_hole(param))
-        fillings.to_slice()
-      })
+  case array_slice(a_args) {
+    switch b.op
+    case array(b_items)
+      if a_args.a.* == b then
+        return array_slice(
+          b,
+          union(a_args.b.*, taco_int(0)),
+          union(a_args.c.*, taco_int(b_items.len)),
+        )
+    case array_slice(b_args)
+      if a_args.a.* == b_args.a.* then
+        return array_slice(
+          a_args.a.*,
+          union(a_args.b.*, b_args.b.*),
+          union(a_args.c.*, b_args.c.*),
+        )
+    default {}
+  }
+  case struct_(a_fields)
+    if b.op is struct_(b_fields) then {
+      var fields = map[String, TacoExpr]()
+      for field in a_fields do
+        fields.&.put(field.key, union(field.value, b_fields.get(field.key)))
+      return expr(TacoOp.struct_(fields), a.type)
     }
-    if a_body.* == b_body then return a
-  }
-  if a.op is box(a_inner) then if b.op is box(b_inner) then
-    return box(union(a_inner.*, b_inner.*))
+  case enum_(a_enum)
+    if b.op is enum_(b_enum) then
+      if a_enum.variant == b_enum.variant then
+        return enum_(
+          a.type, a_enum.variant, union(a_enum.payload.*, b_enum.payload.*)
+        )
+  case lambda(a_body)
+    if b.op is lambda(b_body) then {
+      var b_body = TacoBody {
+        params = a_body.params,
+        expr = b_body.fill({
+          var fillings = list[TacoExpr]()
+          for param in a_body.params do fillings.&.push(taco_hole(param))
+          fillings.to_slice()
+        })
+      }
+      if a_body.* == b_body then return a
+    }
+  case box(a_inner)
+    if b.op is box(b_inner) then return box(union(a_inner.*, b_inner.*))
+  default {}
 
   taco_hole(black_hole(a.type))
 }
@@ -239,13 +270,13 @@ fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
 | }
 
 fun mask(exprs: Slice[TacoExpr], mask: FixpointMask): Slice[TacoExpr] {
-  | eprintln("values for black holes")
+  | eprintln("mask")
   | for expr in exprs do {
   |   stderr.write(expr, holes_namespace().&, indentation(1))
   |   eprintln()
   | }
   exprs.mask(mask.args)
-  | eprintln("values for black holes")
+  | eprintln("mask")
   | for expr in out do {
   |   stderr.write(expr, holes_namespace().&, indentation(1))
   |   eprintln()
@@ -256,9 +287,7 @@ fun mask(exprs: Slice[TacoExpr], mask: Slice[TacoExpr]): Slice[TacoExpr] {
   for both in zip(exprs.iter(), mask.iter()) do both.a.mask(both.b, out.&)
   out.to_slice()
 }
-fun mask(
-  expr: TacoExpr, mask: TacoExpr, out: &List[TacoExpr]
-) {
+fun mask(expr: TacoExpr, mask: TacoExpr, out: &List[TacoExpr]) {
   switch mask.op
   case hole(hole) if hole.is_black() then return out.push(expr)
   case type {}
@@ -267,6 +296,27 @@ fun mask(
   case array(items) {
     for item in items.iter().enumerate() do
       mask(expr.array_get(taco_int(item.index)), item.item, out)
+  }
+  case array_slice(args) {
+    | We know that the mask and actual expression refer to the same array.
+    switch expr.op
+    case array {
+      out.push(taco_int(0))
+      out.push(array_len(expr))
+    }
+    case array_slice(actual_args) {
+      if actual_args.a.* != args.a.* then {
+        var namespace = holes_namespace()
+        stderr."Incompatible mask:\n"
+        stderr.write(mask, namespace.&, indentation(1))
+        stderr."\n"
+        stderr.write(expr, namespace.&, indentation(1))
+        panic("meh")
+      }
+      mask(actual_args.b.*, args.b.*, out)
+      mask(actual_args.c.*, args.c.*, out)
+    }
+    default unreachable()
   }
   case struct_(fields) {
     for field in mask.type.kind().struct_.unwrap() do

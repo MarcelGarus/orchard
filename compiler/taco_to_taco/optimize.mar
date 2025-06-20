@@ -237,17 +237,82 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     var array = args.a.*
     var start = args.b.*
     var end = args.c.*
-    if array.op is array(items) then {
+    switch array.op
+    case array(items) {
       if start.op is int(start) then if end.op is int(end) then {
         if (0..items.len).contains(start) and (0..items.len).contains(end)
         then return array(type, items.subslice(start..end))
       }
     }
+    case array_slice(inner_args) {
+      var inner_array = inner_args.a.*
+      var inner_start = inner_args.b.*
+      var inner_end = inner_args.c.*
+      | Merge the two nested slice operations into one. This requires explicitly
+      | performing the checks that the inner slice would have done.
+      return array_slice(
+        inner_array,
+        if_(
+          compare(inner_start, taco_int(0)).optimize_shallow(context)
+            .is_less().optimize_shallow(context),
+          taco_crash(type_int),
+          add(inner_start, start).optimize_shallow(context),
+        ).optimize_shallow(context),
+        if_(
+          compare(
+            inner_end, array_len(inner_array).optimize_shallow(context)
+          ).optimize_shallow(context).is_less_equal().optimize_shallow(context),
+          add(inner_start, end).optimize_shallow(context),
+          taco_crash(type_int),
+        ).optimize_shallow(context),
+      )
+    }
+    default {}
   }
   case array_len(array) {
-    if array.op is array(items) then return taco_int(items.len)
-    | TODO: generator may panic for an input
-    | if array.op is generate_array(gen) then return array.children.get(0)
+    switch array.op
+    case array(items) return taco_int(items.len)
+    case generate_array(gen) {
+      | The generator may panic for an index, so we need to call it with the
+      | original indices.
+      return both(
+        recursive(list(taco_int(0)).to_slice(), {
+          var index = gen.generator.params.get(0)
+          body(index, both(
+            gen.generator.expr,
+            if_(
+              compare(taco_hole(index), gen.length.*).is_equal(),
+              taco_nothing,
+              recurse(
+                list(add(taco_hole(index), taco_int(1))).to_slice(),
+                type_nothing,
+              ),
+            )
+          ))
+        }),
+        gen.length.*,
+      )
+    }
+    case array_slice(args) {
+      var array = args.a.*
+      var start = args.b.*
+      var end = args.c.*
+      | We can calculate the length from the slice bounds. We must also perform
+      | bounds checking, just like the array slice function would have done.
+      return both(
+        if_(
+          compare(start, taco_int(0)).is_less(),
+          taco_crash(type_nothing),
+          if_(
+            compare(end, array_len(array)).is_greater(),
+            taco_crash(type_nothing),
+            taco_nothing,
+          ),
+        ),
+        subtract(end, start),
+      )
+    }
+    default {}
   }
   case recursive(recursive) {
     if not(recursive.body.expr.recurses()) then
@@ -272,8 +337,8 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
         new_holes,
         recursive.body
           .fill(new_holes.unmask(mask))
-          .replace_recurses(mask)
-          .optimize(context),
+          .optimize(context)
+          .replace_recurses(mask),
       )
     )
   }
