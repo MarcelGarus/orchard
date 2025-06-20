@@ -1,0 +1,64 @@
+# Parser  
+# The parser offers a way to step through bytes (the textual input). It
+# maintains a cursor that starts at the beginning. You can ^peek the current
+# character, ^advance the cursor by one character, and do higher-level
+# operations such as consuming all leading whitespace or consuming a word.
+#
+# ┌────────┐
+# │ parser │
+# └────────┘
+#     │
+#     v
+# ┌────────┬────────┬────────┐
+# │ ptr    | length | cursor │
+# └────────┴────────┴────────┘
+#     │
+#     v
+# ┌───────────────────────────────────────────┐
+# │ bytes                                     │
+# └───────────────────────────────────────────┘
+
+@make_parser              # ptr length
+ push_word _0             # ptr length 0
+ call ^alloc_slots_a_b_c  # ptr length 0 parser
+ call ^keep_store_c       # ptr length parser
+ call ^keep_store_b       # ptr parser
+ call ^keep_store_a       # parser
+ return
+
+@free_parser             # parser
+ dup                     # parser parser
+ call ^keep_load_a       # parser ptr parser
+ call ^load_b            # parser ptr length
+ free_byte_aligned       # parser
+ call ^free_slots_a_b_c  #
+ return
+
+# Turns a parser into its current character or zero if it's at the end.
+@peek                     # parser
+ dup                      # parser parser
+ call ^keep_load_b        # parser length parser
+ call ^load_c             # parser length cursor
+ compare                  # parser at_end?
+ jump_table 03 ^peek.return_0 ^peek.get_char ^unreachable
+@peek.return_0   # parser
+ pop 08          #
+ push_byte 00    # 0
+ return
+@peek.get_char      # parser
+ call ^keep_load_a  # ptr parser
+ call ^load_c       # ptr cursor
+ add                # ptr+cursor
+ load_byte          # char
+ return
+
+# Advances the parser's cursor by one character.
+@advance        # parser
+ dup            # parser parser
+ call ^load_c   # parser cursor
+ push_word _1   # parser cursor 1
+ add            # parser cursor+1
+ over           # parser cursor+1 parser
+ call ^store_c  # parser
+ pop 08         #
+ return

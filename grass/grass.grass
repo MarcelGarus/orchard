@@ -1,221 +1,195 @@
-!import grass.grass
+# The Grass Compiler  
+# (written in Grass)
+#
+# The compiler uses a continuation-passing style to request imported files from
+# the surrounding environment. Here's pseudocode on how to use the compiler:
+#
+# task = 0.run(ptr, len)
+# loop {
+#   match task {
+#     [ptr len ctx cont 00] -> task = cont.run(ctx, read_file(ptr, len))
+#     [ptr len _0  _0   01] -> break (ptr, len)
+#   }
+# }
+
+jump ^main
+! core.grass
+! memory.grass
+! slots.grass
+! parser.grass
+! output.grass
+
+@main                  # ptr length
+ call ^make_parser     # parser
+ push_word _0          # parser parent
+ over                  # parser parent parser
+ pop_below_top _16 08  # parent parser
+ call ^make_output     # parent parser output
+ call ^make_dict       # parent parser output words
+ TODO: init dict with hex digits
+ call ^make_dict       # parent parser output words labels
+ jump ^compile
+
+@compile               # parent parser output words labels
+ over3                 # parent parser output words labels parser
+ call ^next            # parent parser output words labels ptr len
+ dup                   # parent parser output words labels ptr len len
+ compare_zero          # parent parser output words labels ptr len at_end?
+ jump_table 03 ^compile.done ^compile.not_done ^compile.not_done
+@compile.not_done  # parent parser output words labels ptr len
+ dup               # parent parser output words labels ptr len len
+ push_word _1      # parent parser output words labels ptr len len 1
+ compare           # parent parser output words labels ptr len is_len_1?
+ jump_table 03 ^compile.len_is_1 ^compile.len_not_1 ^unreachable
+@compile.len_is_1        # parent parser output words labels ptr len
+ push_byte colon         # parent parser output words labels ptr len colon
+ call ^keep_starts_with  # parent parser output words labels ptr len colon?
+ jump_table 02 ^compile.not_colon ^compile.is_colon
+@compile.is_colon  # parent parser output words labels ptr len
+ pop 10            # parent parser output words labels
+ jump ^word_def
+@compile.not_colon       # parent parser output words labels ptr len
+ push_byte bang          # parent parser output words labels ptr len bang
+ call ^keep_starts_with  # parent parser output words labels ptr len bang?
+ jump_table 02 ^word_ref ^compiler.is_bang
+@compile.is_bang  # parent parser output words labels ptr len
+ pop 10           # parent parser output words labels
+ jump ^import
+@compile.len_not_1       # parent parser output words labels ptr len
+ push_byte at            # parent parser output words labels ptr len at
+ call ^keep_starts_with  # parent parser output words labels ptr len at?
+ jump_table 02 ^compile.not_label_def ^label_def
+@compile.not_label_def   # parent parser output words labels ptr len
+ push_byte tick          # parent parser output words labels ptr len tick
+ call ^keep_starts_with  # parent parser output words labels ptr len tick?
+ jump_table 02 ^word_ref ^label_ref
+@compile.done  # parent parser output words labels ptr len
+ pop 10        # parent parser output words labels
+ over4         # parent parser output words labels parent
+ compare_zero  # parent parser output words labels has_parent?
+ jump_table 03 ^compile.totally_done ^compile.back_to_parent ^compile.back_to_parent
+@compile.back_to_parent  # parent parser output words labels
+ pop 20                  # parent
+ call ^keep_load_a       # context parent
+ call ^keep_load_b       # context parser parent
+ call ^keep_load_c       # context parser output parent
+ call ^keep_load_d       # context parser output words parent
+ call ^load_e            # context parser output words labels
+ jump ^compile
+@compile.totally_done        # parent parser output words labels
+ call ^free_dict_of_nums     # parent parser output words
+ call ^free_dict_of_strings  # parent parser output
+ over                        # parent parser output parser
+ call ^free_parser           # parent parser output
+ pop_below_top _8 10         # output
+ call ^shrink                # ptr len
+
+# Imports a file. Pack up everything into a context closure that the environment
+# will pass on to our continuation.
+#
+# ┌─────────┐
+# │ context │
+# └─────────┘
+#     │
+#     v
+# ┌────────┬────────┬────────┬────────┬────────┐
+# │ parent | parser | output | words  │ labels |
+# └────────┴────────┴────────┴────────┴────────┘
+@import                      # parent parser output words labels
+ over3                       # parent parser output words labels parser
+ call ^next                  # parent parser output words labels ptr len
+ over6                       # parent parser output words labels ptr len parent
+ over6                       # parent parser output words labels ptr len parent parser
+ over6                       # parent parser output words labels ptr len parent parser output
+ over6                       # parent parser output words labels ptr len parent parser output words
+ over6                       # parent parser output words labels ptr len parent parser output words labels
+ pop_below_top _56 28        # ptr len parent parser output words labels
+ call ^make_slots_a_b_c_d_e  # ptr len parent parser output words labels context
+ call ^keep_store_e          # ptr len parent parser output words context
+ call ^keep_store_d          # ptr len parent parser output context
+ call ^keep_store_c          # ptr len parent parser context
+ call ^keep_store_b          # ptr len parent context
+ call ^keep_store_a          # ptr len context
+ push_indirect ^import.cont  # ptr len context cont
+ push_byte 00                # ptr len context cont 0
+ return
+@import.cont        # context ptr len
+ call ^make_parser  # context parser
+ over               # context parser context
+ call ^keep_load_c  # context parser output context
+ call ^keep_load_d  # context parser output words context
+ call ^load_e       # context parser output words labels
+ jump ^compile 
+
+# Compiles a definition. The colon and name have already been consumed, we only
+# need to parse the actual content up to the semicolon. Note that definitions
+# can't contain other definitions, imports, label definitions, or label
+# references.
+@word_def              # parser output words labels
+ over                  # parser output words labels words
+ over4                 # parser output words labels words parser
+ call ^next            # parser output words labels words ptr len
+ over6                 # parser output words labels words ptr len parser
+ call ^make_output     # parser output words labels words ptr len parser word_output
+ over4                 # parser output words labels words ptr len parser word_output words
+ call ^compile_def     # parser output words labels words ptr len def_ptr def_len
+ call ^make_slots_a_b  # parser output words labels words ptr len def_ptr def_len entry
+ call ^keep_store_b    # parser output words labels words ptr len def_ptr entry
+ call ^keep_store_a    # parser output words labels words ptr len entry
+ call ^put             # parser output words labels
+ jump ^compile
+
+@compile_def   # parser output dict
+ over2         # parser output dict parser
+ call ^next    # parser output dict word_ptr word_len
+ dup           # parser output dict word_ptr word_len word_len
+ push_word _1  # parser output dict word_ptr word_len word_len 1
+ compare       # parser output dict word_ptr word_len is_len_1?
+ jump_table 03 ^compile_def.len_is_1 ^compile_def.not_semicolon ^unreachable
+@compile_def.len_is_1  # parser output dict word_ptr word_len
+ over                  # parser output dict word_ptr word_len word_ptr
+ load_byte             # parser output dict word_ptr word_len byte
+ byte_to_int           # parser output dict word_ptr word_len byte
+ push_word TODO        # parser output dict word_ptr word_len byte ;
+ compare               # parser output dict word_ptr word_len is_semicolon?
+ jump_table 03 ^compile_def.is_semicolon ^compile_def.not_semicolon ^compile_def.not_semicolon
+@compile_def.not_semicolon  # parser output dict word_ptr word_len
+ over3                      # parser output dict word_ptr word_len output
+ over3                      # parser output dict word_ptr word_len output dict
+ over3                      # parser output dict word_ptr word_len output dict word_ptr
+ over3                      # parser output dict word_ptr word_len output dict word_ptr word_len
+ call ^lookup_string        # parser output dict word_ptr word_len output def_ptr def_len
+ call ^append               # parser output dict word_ptr word_len
+ pop 10                     # parser output dict
+ jump ^compile_def
+@compile_def.is_semicolon  # parser output dict word_ptr word_len
+ pop 18                    # parser output
+ pop_below_top _8 08       # output
+ call ^shrink              # ptr len
+ return
+
+@word_ref      # parser output words labels ptr len
+ over4         # parser output words labels ptr len output
+ over4         # parser output words labels ptr len output words
+ over3         # parser output words labels ptr len output words ptr
+ over3         # parser output words labels ptr len output words ptr len
+ call ^lookup  #
 
 
-# ptr length
-# -> ptr length 00
-# -> ptr length 01
+@label_def # parser output words labels ptr len
+ TODO
 
-TODO
-
-# Allocates memory and also makes sure that allocating worked.
-@safe_malloc_word_aligned  # length
-malloc_word_aligned        # ptr
-push_word_from_stack _0    # ptr ptr
-compare_zero               # ptr worked?
-jump_table ^unreachable ^word_malloc_worked ^word_malloc_worked
-@word_malloc_worked  # ptr
-return
-
-# Allocates memory and also makes sure that allocating worked.
-@safe_malloc_byte_aligned  # length
-malloc_byte_aligned        # ptr
-push_byte_from_stack _0    # ptr ptr
-compare_zero               # ptr worked?
-jump_table ^unreachable ^byte_malloc_worked ^byte_malloc_worked
-@byte_malloc_worked  # ptr
-return
-
-@memcopy
-TODO
-
-# Initializes a parser.
-@make_parser                    # ptr length
-push_word 24                    # ptr length 24
-call ^safe_malloc_word_aligned  # ptr length parser
-push_word_from_stack 0          # ptr length parser parser
-push_word_from_stack _24        # ptr length parser parser ptr
-store_word                      # ptr length parser
-push_word_from_stack 0          # ptr length parser parser
-push_word 8                     # ptr length parser parser 8
-add                             # ptr length parser parser+8
-push_word_from_stack _16        # ptr length parser parser+8 length
-store_word                      # ptr length parser
-push_word_from_stack 0          # ptr length parser parser
-push_word 16                    # ptr length parser parser 16
-add                             # ptr length parser parser+16
-push_word 0                     # ptr length parser parser+16 0
-store_word                      # ptr length parser
-pop_below_top _8 10             # parser
-
-# Initializes an output.
-@make_output                    #
-push_word _24                   # 24
-call ^safe_malloc_word_aligned  # output
-push_word_from_stack _0         # output output
-push_word _16                   # output output 16
-call ^safe_malloc_byte_aligned  # output output buffer
-store_word                      # output
-push_word_from_stack _0         # output output
-push_word _8                    # output output 8
-add                             # output output+8
-push_word _16                   # output output+8 0
-store_word                      # output
-push_word_from_stack _0         # output output
-push_word _16                   # output output 16
-add                             # output output+16
-push_word _0                    # output output+16 0
-store_word                      # output
-return
-
-@emit                     # output byte
-push_padding 07           # output byte ..
-push_word                 # output byte .. output
-push_word _8              # output byte .. output 8
-add                       # output byte .. output+8
-load_word                 # output byte .. capacity
-push_word_from_stack _16  # output byte .. capacity output
-push_word _16             # output byte .. capacity output 16
-add                       # output byte .. capacity output+16
-load_word                 # output byte .. capacity len
-sub                       # output byte .. capacity-len
-compare_zero              # output byte .. full?
-jump_table ^make_bigger ^emit_unchecked ^unreachable
-@make_bigger  # output byte ..
-TODO
-@emit_unchecked           # output byte ..
-push_word_from_stack _8   # output byte .. output
-load_word                 # output byte .. buffer
-push_word_from_stack _16  # output byte .. buffer output
-push_word _16             # output byte .. buffer output 16
-add                       # output byte .. buffer output+16
-load_word                 # output byte .. buffer cursor
-add                       # output byte .. buffer+cursor
-push_byte_from_stack _15  # output byte .. buffer+cursor byte
-store_byte                # output byte ..
-pop 08                    # output
-push_word _16             # output 16
-add                       # output+16
-push_word_from_stack _0   # output+16 output+16
-load_word                 # output+16 cursor
-push_word _1              # output+16 cursor 1
-add                       # output+16 cursor+1
-store_word                #
+@label_ref # parser output words labels ptr len
+ TODO
 
 
 
 
-compare_zero  # output output buffer alloced?
-jump_table ^unreachable make_output.alloc_
-todo
 
 
-
-@parse                   # parser output
-push_word_from_stack _8  # parser output parser
-call ^advance            # parser output char
-push_padding 07          # parser output char ..
-push_byte_from_stack _7  # parser output char .. char
-byte_to_int              # parser output char .. char
-compare_zero             # parser output char .. at_end?
-jump_table 03 ^done_parsing ^not_at_end ^not_at_end
-@not_at_end              # parser output char ..
-push_byte_from_stack 07  # parser output char .. char
-byte_to_int              # parser output char .. char
-push_byte space          # parser output char .. char space
-byte_to_int              # parser output char .. char space
-sub                      # parser output char .. char-space
-compare_zero             # parser output char .. is_space?
-jump_table 03 ^parse ^not_space ^not_space
-@not_space               # parser output char ..
-push_byte_from_stack 07  # parser output char .. char
-byte_to_int              # parser output char .. char
-push_byte newline        # parser output char .. char newline
-byte_to_int              # parser output char .. char newline
-sub                      # parser output char .. char-newline
-compare_zero             # parser output char .. newline?
-jump_table 03 ^parse ^not_space_or_newline ^not_space_or_newline
-@not_space_or_newline    # parser output char ..
-push_byte_from_stack 07  # parser output char .. char
-byte_to_int              # parser output char .. char
-push_byte octothorpe     # parser output char .. char octothorpe
-byte_to_int              # parser output char .. char octothorpe
-sub                      # parser output char .. char-octothorpe
-compare_zero             # parser output char .. comment?
-jump_table 03 ^consume_comment ^not_whitespace ^not_whitespace
-@consume_comment         # parser output char ..
-pop 08                   # parser output
-push_word_from_stack _8  # parser output parser
-call ^advance            # parser output char
-push_padding 07          # parser output char ..
-push_byte_from_stack 07  # parser output char .. char
-byte_to_int              # parser output char .. char
-push_byte newline        # parser output char .. char newline
-byte_to_int              # parser output char .. char newline
-sub                      # parser output char .. char-newline
-compare_zero             # parser output char .. newline?
-jump_table ^parse ^check_if_at_end ^check_if_at_end
-@check_if_at_end         # parser output char ..
-push_byte_from_stack 07  # parser output char .. char
-byte_to_int              # parser output char .. char
-compare_zero             # parser output char .. at_end?
-jump_table ^done_parsing ^consume_comment ^consume_comment
-@not_whitespace           # parser output char ..
-pop 07                    # parser output char
-call ^hex_to_num          # parser output first_digit
-push_word _16             # parser output first_digit 16
-mul                       # parser output first_digit*16
-push_word_from_stack _16  # parser output first_digit*16 parser
-call ^advance             # parser output first_digit*16 char
-call ^hex_to_num          # parser output first_digit*16 char
-add                       # parser output byte
-push_padding 07           # parser output byte ..
-push_word_from_stack _16  # parser output byte .. output
-push_byte_from_stack _15  # parser output byte .. output byte
-call ^emit                # parser output byte ..
-pop 08                    # parser output
-jump ^parse
-@done_parsing  # parser output char ..
-
-
-@advance                # parser
-push_word_from_stack _0 # parser parser
-push_word _8            # parser parser 8
-add                     # parser parser+8
-load_word               # parser length
-push_word_from_stack _8 # parser length parser
-push_word _16           # parser length parser 16
-add                     # parser length parser+16
-load_word               # parser length cursor
-sub                     # parser length-cursor
-compare_zero            # parser at_end?
-jump_table 03 ^advance.return_0 ^advance.get_char ^unreachable
-@advance.get_char        # parser
-push_word_from_stack _0  # parser parser
-load_word                # parser ptr
-push_word_from_stack _8  # parser ptr parser
-push_word _16            # parser ptr parser 16
-add                      # parser ptr parser+16
-load_word                # parser ptr cursor
-push_word_from_stack _16 # parser ptr cursor parser
-push_word _16            # parser ptr cursor parser 16
-add                      # parser ptr cursor parser+16
-push_word_from_stack _8  # parser ptr cursor parser+16 cursor
-push_word _1             # parser ptr cursor parser+16 cursor 1
-add                      # parser ptr cursor parser+16 cursor+1
-store_word               # parser ptr cursor
-add                      # parser ptr+cursor
-load_byte                # parser char
-pop_below_top _1 08      # char
-return
-@advance.return_0 # parser
-pop 08            #
-push_byte 00      # 00
-return
 
 @hex_to_num   # char
 
-
-@emit   # output byte
 
 @unreachable
 todo
