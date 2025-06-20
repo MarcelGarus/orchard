@@ -452,6 +452,27 @@ fun map(body: TacoBody, specialize: Specialize): TacoBody {
 }
 
 
+fun collect_captured(expr: TacoExpr): Slice[Hole] {
+  var ignore = set[Hole]()
+  var out = set[Hole]()
+  expr.visit(CollectCaptured { ignore = ignore.&, out = out.& })
+  var res = list[Hole]()
+  for hole in out do res.&.push(hole)
+  res.to_slice()
+}
+struct CollectCaptured { ignore: &Set[Hole], out: &Set[Hole] }
+fun visit(expr: TacoExpr, collect_captured: CollectCaptured) {
+  if expr.op is hole(hole) then
+    if not(collect_captured.ignore.contains(hole)) then
+      collect_captured.out.put(hole)
+  expr.visit_children(collect_captured)
+}
+fun visit(body: TacoBody, collect_captured: CollectCaptured) {
+  for param in body.params do collect_captured.ignore.put(param)
+  body.expr.visit(collect_captured)
+}
+
+
 | Whether the operation itself (not the children) can diverge.
 fun can_root_diverge(expr: TacoExpr): Bool {
   switch expr.op

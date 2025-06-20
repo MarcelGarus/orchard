@@ -37,7 +37,24 @@ fun map(expr: TacoExpr, deduplicate: Deduplicate): TacoExpr {
 
   if expr.is_expensive() then {
     var hole = hole(expr.type)
-    deduplicate.bodies.get_ref(deduplicate.bodies.len - 1).lets.&.push(tuple(hole, expr))
+    if expr.can_diverge() then
+      deduplicate.bodies.get_ref(deduplicate.bodies.len - 1).lets.&.push(tuple(hole, expr))
+    else {
+      | Add it to the outermost possible body so that we don't recompute the
+      | expression in loops / lambdas every time.
+      var referenced_holes = expr.collect_captured()
+      var i = deduplicate.bodies.len - 1
+      loop {
+        if i == 0 then break
+        var defined_holes = deduplicate.bodies.get(i).defined_holes
+        var can_move_further = true
+        for hole in referenced_holes do
+          if defined_holes.iter().&.contains(hole) then can_move_further = false
+        if not(can_move_further) then break
+        i = i - 1
+      }
+      deduplicate.bodies.get_ref(i).lets.&.push(tuple(hole, expr))
+    }
     taco_hole(hole)
   } else
     expr
