@@ -18,14 +18,24 @@ fun to_pudding(taco: Taco): Pudding {
   var funs = map[String, PuddingBody]()
   for fun_ in taco.funs do {
     | eprintln("Compiling {fun_.key}")
-    funs.&.put(fun_.key, fun_.value.to_pudding(funs.&))
+    funs.&.put(
+      fun_.key,
+      fun_.value.to_pudding(ToPuddingContext {
+        funs = funs.&, recursive = none[OngoingRecursive]()
+      }),
+    )
   }
   Pudding { entry_point, funs }
 }
 
+struct ToPuddingContext {
+  funs: &Map[String, PuddingBody], recursive: Maybe[OngoingRecursive]
+}
+struct OngoingRecursive { signature: String, captured: Slice[Hole] }
+
 | TODO: inline
-fun to_pudding(body: TacoBody, funs: &Map[String, PuddingBody]): PuddingBody {
-  var expr = body.expr.to_pudding(funs)
+fun to_pudding(body: TacoBody, context: ToPuddingContext): PuddingBody {
+  var expr = body.expr.to_pudding(context)
 
   for param in body.params do {
     | TODO: Count how often then the param is used.
@@ -37,7 +47,7 @@ fun to_pudding(body: TacoBody, funs: &Map[String, PuddingBody]): PuddingBody {
   PuddingBody { params = body.params, expr }
 }
 
-fun to_pudding(expr: TacoExpr, funs: &Map[String, PuddingBody]): PuddingExpr {
+fun to_pudding(expr: TacoExpr, context: ToPuddingContext): PuddingExpr {
   switch expr.op
   case hole(hole) pudding_hole(hole)
   case type(type) pudding_type(type)
@@ -45,17 +55,17 @@ fun to_pudding(expr: TacoExpr, funs: &Map[String, PuddingBody]): PuddingExpr {
   case int(int) pudding_int(int)
   case array(array) {
     var items = list[PuddingExpr]()
-    for item in array do items.&.push(item.to_pudding(funs))
+    for item in array do items.&.push(item.to_pudding(context))
     array(expr.type.kind().array.unwrap(), items.to_slice())
   }
   case struct_(struct_) {
     var fields = map[String, PuddingExpr]()
     for field in struct_ do
-      fields.&.put(field.key, field.value.to_pudding(funs))
+      fields.&.put(field.key, field.value.to_pudding(context))
     struct_(fields)
   }
   case enum_(enum_)
-    enum_(expr.type, enum_.variant, enum_.payload.to_pudding(funs))
+    enum_(expr.type, enum_.variant, enum_.payload.to_pudding(context))
   case lambda(lambda) {
     | Compile the lambda into a stand-alone function that accepts a closure as
     | an additional first argument.
@@ -68,7 +78,7 @@ fun to_pudding(expr: TacoExpr, funs: &Map[String, PuddingBody]): PuddingExpr {
       fields
     }))
     var closure_param = hole(closure_arg.type)
-    funs.put(signature, body(
+    context.funs.put(signature, body(
       {
         var params = list(closure_param)
         for param in lambda.params do params.&.push(param)
@@ -84,69 +94,69 @@ fun to_pudding(expr: TacoExpr, funs: &Map[String, PuddingBody]): PuddingExpr {
           )
         let(
           unbox(pudding_hole(closure_param)),
-          body(unboxed_closure, lambda.expr.fill(fillings).to_pudding(funs)),
+          body(unboxed_closure, lambda.expr.fill(fillings).to_pudding(context)),
         )
       }
     ))
     lambda(expr.type, signature, closure_arg)
   }
-  case box(inner) box(inner.to_pudding(funs))
-  case member(member) member.of.to_pudding(funs).member(member.name)
+  case box(inner) box(inner.to_pudding(context))
+  case member(member) member.of.to_pudding(context).member(member.name)
   case switch_(switch_) {
     var cases = map[String, PuddingBody]()
     for case_ in switch_.cases do
-      cases.&.put(case_.key, case_.value.to_pudding(funs))
-    switch_(switch_.condition.to_pudding(funs), expr.type, cases)
+      cases.&.put(case_.key, case_.value.to_pudding(context))
+    switch_(switch_.condition.to_pudding(context), expr.type, cases)
   }
   case call_fun(call) {
     if call.fun_.substitutions.substitutions.is_not_empty() then
       panic("call not monomorphized")
     var args = list[PuddingExpr]()
-    for arg in call.args do args.&.push(arg.to_pudding(funs))
+    for arg in call.args do args.&.push(arg.to_pudding(context))
     call.fun_.signature.call(args.to_slice(), expr.type)
   }
   case call_lambda(call) {
     var args = list[PuddingExpr]()
-    for arg in call.args do args.&.push(arg.to_pudding(funs))
-    call.lambda.to_pudding(funs).call(args.to_slice())
+    for arg in call.args do args.&.push(arg.to_pudding(context))
+    call.lambda.to_pudding(context).call(args.to_slice())
   }
   case both(both)
-    both(both.ignored.to_pudding(funs), both.result.to_pudding(funs))
+    both(both.ignored.to_pudding(context), both.result.to_pudding(context))
   case let(let) {
     | TODO: check how often the definition is used in the result
     | if needed_later_on.contains(id) then
     |   needed_later_on.remove(id)
     | else
     |   rev_body.&.push(dag.put_drop(id))
-    let(let.def.to_pudding(funs), let.result.to_pudding(funs))
+    let(let.def.to_pudding(context), let.result.to_pudding(context))
   }
   case cast panic("cast not desugared")
-  case lower_byte(arg) lower_byte(arg.to_pudding(funs))
-  case byte_to_int(arg) byte_to_int(arg.to_pudding(funs))
-  case add_ints(args) add(args.a.to_pudding(funs), args.b.to_pudding(funs))
-  case sub_ints(args) subtract(args.a.to_pudding(funs), args.b.to_pudding(funs))
-  case mul_ints(args) multiply(args.a.to_pudding(funs), args.b.to_pudding(funs))
-  case div_ints(args) divide(args.a.to_pudding(funs), args.b.to_pudding(funs))
-  case mod_ints(args) modulo(args.a.to_pudding(funs), args.b.to_pudding(funs))
-  case and_ints(args) and_(args.a.to_pudding(funs), args.b.to_pudding(funs))
-  case or_ints(args) or_(args.a.to_pudding(funs), args.b.to_pudding(funs))
-  case xor_ints(args) xor(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case lower_byte(arg) lower_byte(arg.to_pudding(context))
+  case byte_to_int(arg) byte_to_int(arg.to_pudding(context))
+  case add_ints(args) add(args.a.to_pudding(context), args.b.to_pudding(context))
+  case sub_ints(args) subtract(args.a.to_pudding(context), args.b.to_pudding(context))
+  case mul_ints(args) multiply(args.a.to_pudding(context), args.b.to_pudding(context))
+  case div_ints(args) divide(args.a.to_pudding(context), args.b.to_pudding(context))
+  case mod_ints(args) modulo(args.a.to_pudding(context), args.b.to_pudding(context))
+  case and_ints(args) and_(args.a.to_pudding(context), args.b.to_pudding(context))
+  case or_ints(args) or_(args.a.to_pudding(context), args.b.to_pudding(context))
+  case xor_ints(args) xor(args.a.to_pudding(context), args.b.to_pudding(context))
   case compare_ints(args)
-    compare(args.a.to_pudding(funs), args.b.to_pudding(funs))
-  case unbox(arg) unbox(arg.to_pudding(funs))
+    compare(args.a.to_pudding(context), args.b.to_pudding(context))
+  case unbox(arg) unbox(arg.to_pudding(context))
   case generate_array(gen)
-    generate_array(gen.length.to_pudding(funs), gen.generator.to_pudding(funs))
+    generate_array(gen.length.to_pudding(context), gen.generator.to_pudding(context))
   case array_get(args)
-    array_get(args.a.to_pudding(funs), args.b.to_pudding(funs))
+    array_get(args.a.to_pudding(context), args.b.to_pudding(context))
   case array_set(args)
     array_set(
-      args.a.to_pudding(funs), args.b.to_pudding(funs), args.c.to_pudding(funs)
+      args.a.to_pudding(context), args.b.to_pudding(context), args.c.to_pudding(context)
     )
   case array_slice(args)
     array_set(
-      args.a.to_pudding(funs), args.b.to_pudding(funs), args.c.to_pudding(funs)
+      args.a.to_pudding(context), args.b.to_pudding(context), args.c.to_pudding(context)
     )
-  case array_len(arg) array_len(arg.to_pudding(funs))
+  case array_len(arg) array_len(arg.to_pudding(context))
   case crash pudding_crash(expr.type)
   case type_info panic("type_info not desugared")
   case static_to_dynamic panic("static_to_dynamic not desugared")
@@ -154,22 +164,31 @@ fun to_pudding(expr: TacoExpr, funs: &Map[String, PuddingBody]): PuddingExpr {
   case recursive(recursive) {
     var signature = "recursive-{hole(type_nothing).id}"
     var captured = recursive.body.collect_captured()
-    funs.put(signature, body(
+    context.funs.put(signature, body(
       {
         var params = list[Hole]()
         for captured in captured do params.&.push(captured)
         for param in recursive.body.params do params.&.push(param)
         params.to_slice()
       },
-      recursive.body.expr.to_pudding(funs),
+      recursive.body.expr.to_pudding(ToPuddingContext {
+        funs = context.funs,
+        recursive = some(OngoingRecursive { signature, captured }),
+      }),
     ))
     signature.call({
       var args = list[PuddingExpr]()
       for captured in captured do args.&.push(pudding_hole(captured))
-      for arg in recursive.initial do args.&.push(arg.to_pudding(funs))
+      for arg in recursive.initial do args.&.push(arg.to_pudding(context))
       args.to_slice()
     }, expr.type)
   }
-  case recurse pudding_unreachable(expr.type)
+  case recurse(args) {
+    var recursive = context.recursive.unwrap()
+    var full_args = list[PuddingExpr]()
+    for captured in recursive.captured do full_args.&.push(pudding_hole(captured))
+    for arg in args do full_args.&.push(arg.to_pudding(context))
+    recursive.signature.call(full_args.to_slice(), expr.type)
+  }
   case unreachable pudding_unreachable(expr.type)
 }
