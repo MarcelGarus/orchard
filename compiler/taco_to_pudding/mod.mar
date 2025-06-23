@@ -1,7 +1,7 @@
-| Converting Yogurt to Pudding  
+| Converting Taco to Pudding  
 |
-| IDs in the Yogurt and Pudding are the same. Generally, the Pudding is also
-| very similar to the Yogurt in terms of abstraction. The only difference is
+| IDs in the Taco and Pudding are the same. Generally, the Pudding is also
+| very similar to the Taco in terms of abstraction. The only difference is
 | that it contains additional dup/drop instructions for incrementing and
 | decrementing the reference counts of values.
 | Every value in the Pudding is reference counted. Later on, some of the
@@ -11,229 +11,148 @@
 
 import ../plum.mar
 
-fun put(dag: &Dag[PuddingExpr], id: Id, expr: PuddingExpr): Id {
-  dag.nodes.&.set(id.index, expr)
-  id
-}
-fun put_dup(dag: &Dag[PuddingExpr], id: Id): Id {
-  dag.put(PuddingOp.dup(id) $ type_never)
-}
-fun put_drop(dag: &Dag[PuddingExpr], id: Id): Id {
-  dag.put(PuddingOp.drop(id) $ type_never)
-}
-
-fun require(
-  rev_body: &List[Id], id: Id, dag: &Dag[PuddingExpr], needed_later_on: &Set[Id]
-) {
-  if needed_later_on.contains(id) then
-    rev_body.push(dag.put_dup(id))
-  else
-    needed_later_on.put(id)
-}
-
-fun to_pudding(
-  id: Id, yogurt_dag: Dag[YogurtExpr],
-  dag: &Dag[PuddingExpr], rev_body: &List[Id], needed_later_on: &Set[Id],
-) {
-  var expr = yogurt_dag.get(id)
-  var type = expr.type
-
-  if not(needed_later_on.contains(id)) then
-    rev_body.&.push(dag.put_drop(id))
-  else
-    needed_later_on.remove(id)
-
-  switch expr.op
-  case param unreachable()
-  case byte(byte) rev_body.push(dag.put(id, PuddingOp.byte(byte) $ type))
-  case int(int) rev_body.push(dag.put(id, PuddingOp.int(int) $ type))
-  case string(string)
-    rev_body.push(dag.put(id, PuddingOp.string(string) $ type))
-  case array(items) {
-    rev_body.push(dag.put(id, PuddingOp.array(items) $ type))
-    for item in items do rev_body.require(item, dag, needed_later_on)
-  }
-  case struct_(fields) {
-    rev_body.push(dag.put(id, PuddingOp.struct_(fields) $ type))
-    for field in fields do rev_body.require(field.value, dag, needed_later_on)
-  }
-  case member(member) {
-    if needed_later_on.contains(member.of) then {
-      rev_body.push(dag.put_dup(id))
-      rev_body.push(dag.put(
-        id, PuddingOp.member(PuddingMember {
-          of = member.of, name = member.name
-        }) $ type
-      ))
-    } else {
-      rev_body.push(dag.put_drop(member.of))
-      rev_body.push(dag.put_dup(id))
-      rev_body.push(dag.put(
-        id, PuddingOp.member(PuddingMember {
-          of = member.of, name = member.name
-        }) $ type
-      ))
-      rev_body.require(member.of, dag, needed_later_on)
-    }
-  }
-  case enum_(enum_) {
-    rev_body.push(dag.put(
-      id, PuddingOp.enum_(PuddingEnum {
-        name = enum_.name, value = enum_.value
-      }) $ type
-    ))
-    rev_body.require(enum_.value, dag, needed_later_on)
-  }
-  case switch_(switch_) {
-    | Lower the individual cases.
-    var cases = map[String, PuddingBody]()
-    var needed_by_branches = map[String, Set[Id]]()
-    for case_ in switch_.cases do {
-      var needed_by_this_branch = set[Id]()
-      for id in needed_later_on do needed_by_this_branch.&.put(id)
-      cases.&.put(case_.key, case_.value.to_pudding(
-        yogurt_dag, dag, needed_by_this_branch.&
-      ))
-      needed_by_branches.&.put(case_.key, needed_by_this_branch)
-    }
-
-    | Figure out the IDs that all branches need.
-    for entry in needed_by_branches do
-      for id in entry.value do needed_later_on.&.put(id)
-
-    | If a branch doesn't use IDs that other branches use, drop those at the
-    | start of the branch body.
-    for case_ in cases do {
-      var needed_by_this_branch = needed_by_branches.get(case_.key)
-      var diff_to_other_branches = set[Id]()
-      for id in needed_later_on do
-        if not(needed_by_this_branch.contains(id)) then
-          diff_to_other_branches.&.put(id)
-
-      var drops = list(
-        dag.put_dup(case_.value.params.get(0)),
-        dag.put_drop(switch_.condition),
-      )
-      for id in diff_to_other_branches do drops.&.push(dag.put_drop(id))
-
-      cases.&.put(case_.key, PuddingBody {
-        params = case_.value.params,
-        exprs = {drops + case_.value.exprs.to_list()}.to_slice(),
-        returns = case_.value.returns,
-      })
-    }
-    rev_body.push(dag.put(
-      id, PuddingOp.switch_(PuddingSwitch {
-        condition = switch_.condition, cases
-      }) $ type
-    ))
-    rev_body.require(switch_.condition, dag, needed_later_on)
-  }
-  case lambda(lambda) {
-    rev_body.push(dag.put(
-      id, PuddingOp.lambda(PuddingLambda {
-        function = lambda.function, closure = lambda.closure
-      }) $ type
-    ))
-    rev_body.require(lambda.closure, dag, needed_later_on)
-  }
-  case call(call) {
-    switch call.callee
-    case lambda(lambda) {
-      rev_body.push(dag.put(
-        id, PuddingOp.call(PuddingCall {
-          callee = PuddingCallee.lambda(lambda), args = call.args
-        }) $ type
-      ))
-      rev_body.require(lambda, dag, needed_later_on)
-    }
-    case fun_(signature)
-      rev_body.push(dag.put(
-        id, PuddingOp.call(PuddingCall {
-          callee = PuddingCallee.fun_(signature), args = call.args
-        }) $ type
-      ))
-    case builtin(builtin) {
-      rev_body.push(dag.put(
-        id, PuddingOp.call(PuddingCall {
-          callee = PuddingCallee.builtin(
-            switch builtin
-            case lower_byte PuddingBuiltin.lower_byte
-            case byte_to_int PuddingBuiltin.byte_to_int
-            case add_ints PuddingBuiltin.add_ints
-            case sub_ints PuddingBuiltin.sub_ints
-            case mul_ints PuddingBuiltin.mul_ints
-            case div_ints PuddingBuiltin.div_ints
-            case mod_ints PuddingBuiltin.mod_ints
-            case and_ints PuddingBuiltin.and_ints
-            case or_ints PuddingBuiltin.or_ints
-            case xor_ints PuddingBuiltin.xor_ints
-            case compare_ints PuddingBuiltin.compare_ints
-            case box PuddingBuiltin.box
-            case unbox PuddingBuiltin.unbox
-            case generate_array PuddingBuiltin.generate_array
-            case array_get PuddingBuiltin.array_get
-            case array_set PuddingBuiltin.array_set
-            case array_slice PuddingBuiltin.array_slice
-            case array_len PuddingBuiltin.array_len
-            case crash PuddingBuiltin.crash
-          ),
-          args = call.args,
-        }) $ type
-      ))
-    }
-    for arg in call.args do rev_body.require(arg, dag, needed_later_on)
-  }
-  case type(ty) rev_body.push(dag.put(id, PuddingOp.type(ty) $ type))
-}
-
-fun to_pudding(
-  body: YogurtBody, yogurt_dag: Dag[YogurtExpr],
-  dag: &Dag[PuddingExpr], needed_later_on: &Set[Id],
-): PuddingBody {
-  var rev_body = list[Id]()
-
-  rev_body.&.require(body.returns, dag, needed_later_on)
-
-  for id in body.children.rev_iter() do
-    id.to_pudding(yogurt_dag, dag, rev_body.&, needed_later_on)
-
-  var params = list[Id]()
-  for param in body.params do {
-    if not(needed_later_on.contains(param)) then
-      rev_body.&.push(dag.put_drop(param))
-    else
-      needed_later_on.remove(param)
-    params.&.push(dag.put(param, PuddingOp.param $ yogurt_dag.type_of(param)))
-  }
-  var params = params.to_slice()
-
-  var exprs = list[Id]()
-  for id in rev_body.to_slice().rev_iter() do exprs.&.push(id)
-  var exprs = exprs.to_slice()
-
-  PuddingBody { params, exprs, returns = body.returns }
-}
-
-fun to_pudding(fun_: YogurtFun, pudding: &Pudding): PuddingFun {
-  var dag = dag[PuddingExpr]()
-
-  | The IDs in the Yogurt and Pudding are the same. So, we first reserve IDs for
-  | all Yogurt expressions so that the additional dup/drop expressions get
-  | bigger IDs.
-  for i in 0..{fun_.dag.nodes.len} do
-    dag.&.put(PuddingOp.param $ type_never) | placeholders
-
-  var body = fun_.body.to_pudding(fun_.dag, dag.&, set[Id]().&)
-
-  PuddingFun { dag, body }
-}
-
-fun to_pudding(yogurt: Yogurt): Pudding {
-  var pudding = pudding(yogurt.entry_point)
-  for fun_ in yogurt.funs do {
+fun to_pudding(taco: Taco): Pudding {
+  if taco.entry_point.substitutions.substitutions.is_not_empty() then
+    panic("entry point not monomorphized")
+  var entry_point = taco.entry_point.signature
+  var funs = map[String, PuddingBody]()
+  for fun_ in taco.funs do {
     | eprintln("Compiling {fun_.key}")
-    pudding.funs.&.put(fun_.key, fun_.value.to_pudding(pudding.&))
+    funs.&.put(fun_.key, fun_.value.to_pudding(funs.&))
   }
-  pudding
+  Pudding { entry_point, funs }
+}
+
+| TODO: inline
+fun to_pudding(body: TacoBody, funs: &Map[String, PuddingBody]): PuddingBody {
+  var expr = body.expr.to_pudding(funs)
+
+  for param in body.params do {
+    | TODO: Count how often then the param is used.
+    | 0: drop it
+    | 1: do nothing
+    | >1: dup it
+  }
+
+  PuddingBody { params = body.params, expr }
+}
+
+fun to_pudding(expr: TacoExpr, funs: &Map[String, PuddingBody]): PuddingExpr {
+  switch expr.op
+  case hole(hole) pudding_hole(hole)
+  case type(type) pudding_type(type)
+  case byte(byte) pudding_byte(byte)
+  case int(int) pudding_int(int)
+  case array(array) {
+    var items = list[PuddingExpr]()
+    for item in array do items.&.push(item.to_pudding(funs))
+    array(expr.type.kind().array.unwrap(), items.to_slice())
+  }
+  case struct_(struct_) {
+    var fields = map[String, PuddingExpr]()
+    for field in struct_ do
+      fields.&.put(field.key, field.value.to_pudding(funs))
+    struct_(fields)
+  }
+  case enum_(enum_)
+    enum_(expr.type, enum_.variant, enum_.payload.to_pudding(funs))
+  case lambda(lambda) {
+    | Compile the lambda into a stand-alone function that accepts a closure as
+    | an additional first argument.
+    var signature = "lambda-{hole(type_nothing).id}"
+    var captured = lambda.expr.collect_captured()
+    var closure_arg = box(struct_({
+      var fields = map[String, PuddingExpr]()
+      for captured in captured.iter().enumerate() do
+        fields.&.put("{captured.index}", pudding_hole(captured.item))
+      fields
+    }))
+    var closure_param = hole(closure_arg.type)
+    funs.put(
+      signature,
+      body(
+        {
+          var params = list(closure_param)
+          for param in lambda.params do params.&.push(param)
+          params.to_slice()
+        },
+        {
+          | TODO: dup/drop args as necessary
+          var expr = lambda.expr.to_pudding(funs)
+          var unboxed_closure = hole(closure_param.type.kind().box.unwrap())
+          for captured in captured.iter().enumerate() do
+            expr = let(
+              pudding_hole(unboxed_closure).member("{captured.index}"),
+              body(captured.item, expr),
+            )
+          let(unbox(pudding_hole(closure_param)), body(unboxed_closure, expr))
+        }
+      ),
+    )
+    lambda(expr.type, signature, closure_arg)
+  }
+  case box(inner) box(inner.to_pudding(funs))
+  case member(member) member.of.to_pudding(funs).member(member.name)
+  case switch_(switch_) {
+    var cases = map[String, PuddingBody]()
+    for case_ in switch_.cases do
+      cases.&.put(case_.key, case_.value.to_pudding(funs))
+    switch_(switch_.condition.to_pudding(funs), expr.type, cases)
+  }
+  case call_fun(call) {
+    if call.fun_.substitutions.substitutions.is_not_empty() then
+      panic("call not monomorphized")
+    var args = list[PuddingExpr]()
+    for arg in call.args do args.&.push(arg.to_pudding(funs))
+    call.fun_.signature.call(args.to_slice(), expr.type)
+  }
+  case call_lambda(call) {
+    var args = list[PuddingExpr]()
+    for arg in call.args do args.&.push(arg.to_pudding(funs))
+    call.lambda.to_pudding(funs).call(args.to_slice())
+  }
+  case both(both)
+    both(both.ignored.to_pudding(funs), both.result.to_pudding(funs))
+  case let(let) {
+    | TODO: check how often the definition is used in the result
+    | if needed_later_on.contains(id) then
+    |   needed_later_on.remove(id)
+    | else
+    |   rev_body.&.push(dag.put_drop(id))
+    let(let.def.to_pudding(funs), let.result.to_pudding(funs))
+  }
+  case cast panic("cast not desugared")
+  case lower_byte(arg) lower_byte(arg.to_pudding(funs))
+  case byte_to_int(arg) byte_to_int(arg.to_pudding(funs))
+  case add_ints(args) add(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case sub_ints(args) subtract(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case mul_ints(args) multiply(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case div_ints(args) divide(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case mod_ints(args) modulo(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case and_ints(args) and_(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case or_ints(args) or_(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case xor_ints(args) xor(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case compare_ints(args)
+    compare(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case unbox(arg) unbox(arg.to_pudding(funs))
+  case generate_array(gen)
+    generate_array(gen.length.to_pudding(funs), gen.generator.to_pudding(funs))
+  case array_get(args)
+    array_get(args.a.to_pudding(funs), args.b.to_pudding(funs))
+  case array_set(args)
+    array_set(
+      args.a.to_pudding(funs), args.b.to_pudding(funs), args.c.to_pudding(funs)
+    )
+  case array_slice(args)
+    array_set(
+      args.a.to_pudding(funs), args.b.to_pudding(funs), args.c.to_pudding(funs)
+    )
+  case array_len(arg) array_len(arg.to_pudding(funs))
+  case crash pudding_crash(expr.type)
+  case type_info panic("type_info not desugared")
+  case static_to_dynamic panic("static_to_dynamic not desugared")
+  case dynamic_to_static panic("dynamic_to_static not desugared")
+  case recursive pudding_unreachable(expr.type)
+  case recurse todo("recurse")
+  case unreachable pudding_unreachable(expr.type)
 }

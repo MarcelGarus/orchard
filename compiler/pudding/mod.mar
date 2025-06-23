@@ -6,19 +6,23 @@
 | allocations.
 
 import ../plum.mar
-import run.mar
+import builder.mar
+import format.mar
+| import run.mar
 
-struct Pudding { entry_point: String, funs: Map[String, PuddingFun] }
+struct Pudding { entry_point: String, funs: Map[String, PuddingBody] }
 
-struct PuddingFun { params: Slice[Hole], body: PuddingExpr }
+struct PuddingBody { params: Slice[Hole], expr: PuddingExpr }
 struct PuddingExpr { op: PuddingOp, type: EggType }
 enum PuddingOp {
   hole: Hole,
+  dup: Hole,
+  drop: Hole,
 
   type: EggType,
   byte: Byte,
   int: Int,
-  buffer: Slice[PuddingExpr],
+  array: Slice[PuddingExpr],
   struct_: Map[String, PuddingExpr],
   enum_: PuddingEnum,
   lambda: PuddingLambda,
@@ -29,7 +33,8 @@ enum PuddingOp {
   call_fun: PuddingCallFun,
   call_lambda: PuddingCallLambda,
 
-  body: PuddingBody,
+  both: Tuple2[&PuddingExpr, &PuddingExpr],
+  let: PuddingLet,
 
   lower_byte: &PuddingExpr,
   byte_to_int: &PuddingExpr,
@@ -43,103 +48,26 @@ enum PuddingOp {
   xor_ints: Tuple2[&PuddingExpr, &PuddingExpr],
   compare_ints: Tuple2[&PuddingExpr, &PuddingExpr],
   unbox: &PuddingExpr,
+  generate_array: PuddingGenerateArray,
+  array_get: Tuple2[&PuddingExpr, &PuddingExpr],
+  array_set: Tuple3[&PuddingExpr, &PuddingExpr, &PuddingExpr],
+  array_slice: Tuple3[&PuddingExpr, &PuddingExpr, &PuddingExpr],
+  array_len: &PuddingExpr,
   crash,
-  create_buffer: &PuddingExpr,
-  buffer_get: Tuple2[&PuddingExpr, &PuddingExpr],
-  buffer_set: Tuple3[&PuddingExpr, &PuddingExpr, &PuddingExpr],
-  buffer_len: &PuddingExpr,
 
-  recursive: PuddingRecursive,
-  recurse: Slice[PuddingExpr],
+  | recursive: PuddingRecursive,
+  | recurse: Slice[PuddingExpr],
 
   unreachable,
-
-  dup: &PuddingExpr,
-  drop: &PuddingExpr,
 }
-struct PuddingEnum { name: String, value: &PuddingExpr }
+struct PuddingEnum { variant: String, payload: &PuddingExpr }
 struct PuddingLambda { function: String, closure: &PuddingExpr }
 struct PuddingMember { of: &PuddingExpr, name: String }
 struct PuddingSwitch {
-  condition: &PuddingExpr, cases: Map[String, Tuple2[Hole, PuddingExpr]]
+  condition: &PuddingExpr, cases: Map[String, PuddingBody]
 }
 struct PuddingCallFun { fun_: String, args: Slice[PuddingExpr] }
 struct PuddingCallLambda { lambda: &PuddingExpr, args: Slice[PuddingExpr] }
-struct PuddingBody {
-  inner: Slice[Tuple2[Hole, PuddingExpr]], returns: PuddingExpr
-}
+struct PuddingLet { def: &PuddingExpr, body: &PuddingBody }
+struct PuddingGenerateArray { length: &PuddingExpr, generator: &PuddingBody }
 struct PuddingRecursive { args: Slice[Hole], body: &PuddingExpr }
-
-
-fun pudding(entry_point: String): Pudding {
-  Pudding { entry_point, funs = map[String, PuddingFun]() }
-}
-
-fun $(op: PuddingOp, type: EggType): _ { PuddingExpr { op, type } }
-
-fun return_type(fun_: PuddingFun): EggType {
-  fun_.dag.type_of(fun_.body.returns)
-}
-
-fun write[W](writer: W, pudding: Pudding) {
-  var first = true
-  for fun_ in pudding.funs do {
-    if first then first = false else writer."\n"
-    writer."{fun_.key}:"
-    writer.write(fun_.value.body, fun_.value, 1)
-  }
-}
-fun write[W](writer: W, body: PuddingBody, fun_: PuddingFun, indentation: Int) {
-  for param in body.params do writer." {param}"
-  writer."\n"
-  for id in body.exprs do {
-    var expr = fun_.dag.get(id)
-    for i in 0..indentation do writer."  "
-    writer."{id}: {expr.type} = "
-    writer.write(expr.op, fun_, indentation)
-    writer."\n"
-  }
-  for i in 0..indentation do writer."  "
-  writer."{body.returns}"
-}
-fun write[W](writer: W, op: PuddingOp, fun_: PuddingFun, indentation: Int) {
-  switch op
-  case param(param) writer."param {param}"
-  case byte(byte) writer."byte {byte}"
-  case int(int) writer."int {int}"
-  case string(string) writer."string {string.debug()}"
-  case array(items) {
-    writer."array"
-    for item in items do writer." {item}"
-  }
-  case type(type) writer."type {type}"
-  case struct_(struct_) {
-    writer."&"
-    for field in struct_ do writer." {field.key}: {field.value}"
-  }
-  case member(member) writer."{member.of}.{member.name}"
-  case enum_(enum_) writer."| {enum_.name} {enum_.value}"
-  case switch_(switch_) {
-    writer."switch {switch_.condition}"
-    for case_ in switch_.cases do {
-      writer."\n"
-      for i in 0..indentation do writer."  "
-      writer."  {case_.key}:"
-      writer.write(case_.value, fun_, indentation + 2)
-    }
-  }
-  case lambda(lambda)
-    writer."lambda [closure {lambda.closure}] {lambda.function}"
-  case call(call) {
-    writer."call {call.callee}"
-    for arg in call.args do writer." {arg}"
-  }
-  case dup(id) writer."dup {id}"
-  case drop(id) writer."drop {id}"
-}
-fun write[W](writer: W, callee: PuddingCallee) {
-  switch callee
-  case lambda(lambda) writer."{lambda}"
-  case fun_(fun_) writer."\"{fun_}\""
-  case builtin(builtin) writer."{builtin.debug()}"
-}
