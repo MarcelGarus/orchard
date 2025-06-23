@@ -1,0 +1,53 @@
+| Compiles lambdas into stand-alone functions that accept a closure Box as an
+| additional first argument.
+
+import mod.mar
+
+fun desugar_lambdas(taco: Taco): Taco {
+  var funs = map[String, TacoBody]()
+  for fun_ in taco.funs do
+    funs.&.put(fun_.key, fun_.value.map(DesugarLambdas { funs = funs.& }))
+  Taco { funs, entry_point = taco.entry_point }
+}
+
+struct DesugarLambdas { funs: &Map[String, TacoBody] }
+fun map(expr: TacoExpr, desugar: DesugarLambdas): TacoExpr {
+  var expr = expr.map_children(desugar)
+  if expr.op is lambda(lambda) then {
+    var signature = "lambda-{hole(type_nothing).id}"
+    var captured = lambda.expr.collect_captured()
+    var closure_arg = box(struct_({
+      var fields = map[String, TacoExpr]()
+      for captured in captured.iter().enumerate() do
+        fields.&.put("{captured.index}", taco_hole(captured.item))
+      fields
+    }))
+    var closure_param = hole(closure_arg.type)
+    desugar.funs.put(signature, body(
+      {
+        var params = list(closure_param)
+        for param in lambda.params do params.&.push(param)
+        params.to_slice()
+      },
+      {
+        var unboxed_closure = hole(closure_param.type.kind().box.unwrap())
+        var fillings = map[Hole, TacoExpr]()
+        for captured in captured.iter().enumerate() do
+          fillings.&.put(
+            captured.item, taco_hole(unboxed_closure).member("{captured.index}")
+          )
+        let(
+          unboxed_closure,
+          unbox(taco_hole(closure_param)),
+          lambda.expr.fill(fillings),
+        )
+      }
+    ))
+    lambda(expr.type, signature, closure_arg)
+  }
+    return lambdas_expr(type.op.type.unwrap())
+  expr
+}
+fun map(body: TacoBody, desugar: DesugarLambdas): TacoBody {
+  TacoBody { params = body.params, body = body.expr.map(desugar) }
+}
