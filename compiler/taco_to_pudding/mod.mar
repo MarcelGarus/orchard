@@ -68,27 +68,26 @@ fun to_pudding(expr: TacoExpr, funs: &Map[String, PuddingBody]): PuddingExpr {
       fields
     }))
     var closure_param = hole(closure_arg.type)
-    funs.put(
-      signature,
-      body(
-        {
-          var params = list(closure_param)
-          for param in lambda.params do params.&.push(param)
-          params.to_slice()
-        },
-        {
-          | TODO: dup/drop args as necessary
-          var expr = lambda.expr.to_pudding(funs)
-          var unboxed_closure = hole(closure_param.type.kind().box.unwrap())
-          for captured in captured.iter().enumerate() do
-            expr = let(
-              pudding_hole(unboxed_closure).member("{captured.index}"),
-              body(captured.item, expr),
-            )
-          let(unbox(pudding_hole(closure_param)), body(unboxed_closure, expr))
-        }
-      ),
-    )
+    funs.put(signature, body(
+      {
+        var params = list(closure_param)
+        for param in lambda.params do params.&.push(param)
+        params.to_slice()
+      },
+      {
+        | TODO: dup/drop args as necessary
+        var unboxed_closure = hole(closure_param.type.kind().box.unwrap())
+        var fillings = map[Hole, TacoExpr]()
+        for captured in captured.iter().enumerate() do
+          fillings.&.put(
+            captured.item, taco_hole(unboxed_closure).member("{captured.index}")
+          )
+        let(
+          unbox(pudding_hole(closure_param)),
+          body(unboxed_closure, lambda.expr.fill(fillings).to_pudding(funs)),
+        )
+      }
+    ))
     lambda(expr.type, signature, closure_arg)
   }
   case box(inner) box(inner.to_pudding(funs))
@@ -152,7 +151,25 @@ fun to_pudding(expr: TacoExpr, funs: &Map[String, PuddingBody]): PuddingExpr {
   case type_info panic("type_info not desugared")
   case static_to_dynamic panic("static_to_dynamic not desugared")
   case dynamic_to_static panic("dynamic_to_static not desugared")
-  case recursive pudding_unreachable(expr.type)
-  case recurse todo("recurse")
+  case recursive(recursive) {
+    var signature = "recursive-{hole(type_nothing).id}"
+    var captured = recursive.body.collect_captured()
+    funs.put(signature, body(
+      {
+        var params = list[Hole]()
+        for captured in captured do params.&.push(captured)
+        for param in recursive.body.params do params.&.push(param)
+        params.to_slice()
+      },
+      recursive.body.expr.to_pudding(funs),
+    ))
+    signature.call({
+      var args = list[PuddingExpr]()
+      for captured in captured do args.&.push(pudding_hole(captured))
+      for arg in recursive.initial do args.&.push(arg.to_pudding(funs))
+      args.to_slice()
+    }, expr.type)
+  }
+  case recurse pudding_unreachable(expr.type)
   case unreachable pudding_unreachable(expr.type)
 }
