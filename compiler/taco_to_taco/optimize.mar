@@ -117,6 +117,14 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       ).optimize_shallow(context)
 
     | Constant fold switches of known variants.
+    |
+    | switch      | int 2
+    |   | true:   |
+    |     &       |
+    |   true a:   |
+    |     int 2   |
+    |   false b:  |
+    |     int 3   |
     if switch_.condition.op is enum_(enum_) then {
       return switch_.cases.get(enum_.variant)
         .fill(enum_.payload.*)
@@ -170,28 +178,62 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       }
     }
 
+    | Consider inlining nested switches.
+    |
+    | switch          | switch
+    |   switch        |   compare
+    |     compare     |     hole a
+    |       hole a    |     hole b
+    |       hole b    |   less c:
+    |     less c:     |     crash
+    |       | false:  |   equal d:
+    |         &       |     &
+    |     equal d:    |   greater e:
+    |       | true:   |     crash
+    |         &       |
+    |     greater e:  |
+    |       | false:  |
+    |         &       |
+    |   true f:       |
+    |     &           |
+    |   false g:      |
+    |     crash       |
     if switch_.condition.op is switch_(inner_switch) then {
-      | Consider inlining the outer switch into the cases of the inner switch.
-      | var max_outer_case_complexity = 0
-      | for case_ in switch_.cases do
-      |   max_outer_case_complexity =
-      |     max(max_outer_case_complexity, case_.value.expr.num_exprs())
-      | if max_outer_case_complexity == 1 then {
-      |   return switch_(inner_switch.condition.*, expr.type, {
-      |     var new_cases = map[String, TacoBody]()
-      |     for case_ in inner_switch.cases do
-      |       new_cases.&.put(
-      |         case_.key,
-      |         body(
-      |           case_.value.params,
-      |           switch_(case_.value.expr, expr.type, switch_.cases)
-      |             .optimize_shallow(context),
-      |         ),
-      |       )
-      |     new_cases
-      |   })
-      | }
+      var all_cases_known = true
+      for case_ in inner_switch.cases do
+        if not(case_.value.expr.op is enum_) then all_cases_known = false
+      | If not all cases are known, we would have copy the entire outer switch
+      | into at least one case of the inner switch. That's a huge code
+      | explosion, so let's not do that.
+      if all_cases_known then {
+        | Calculate how much code explosion we would have. For example, if one
+        | case of the outer switch is really big and multiple branches from the
+        | inner switch evaluate to that variant, maybe we don't want to inline
+        | the code.
+        var max_outer_case_complexity = 0
+        for case_ in switch_.cases do
+          max_outer_case_complexity =
+            max(max_outer_case_complexity, case_.value.expr.num_exprs())
+        if max_outer_case_complexity <= 2 then {
+          return switch_(inner_switch.condition.*, expr.type, {
+            var new_cases = map[String, TacoBody]()
+            for case_ in inner_switch.cases do
+              new_cases.&.put(
+                case_.key,
+                body(
+                  case_.value.params,
+                  switch_(case_.value.expr, expr.type, switch_.cases)
+                    .optimize_shallow(context),
+                ),
+              )
+            new_cases
+          })
+        }
+      }
     }
+
+    | TODO: Inner switch but one variant of the outer switch is never chosen;
+    | case could be optimized to unreachable.
   }
   case call_fun(call) {
     | TODO: Try to run the function at compile time.
