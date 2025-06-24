@@ -69,6 +69,25 @@ fun optimize(body: TacoBody, context: OptimizeTacoContext): TacoBody {
 fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   var type = expr.type
   switch expr.op
+  case struct_(struct_) {
+    | Bubble up crashes and both.
+    for field in struct_ do
+      if field.value.op is crash then return taco_crash(type)
+    for field in struct_ do if field.value.op is both(both) then {
+      var new_fields = map[String, TacoExpr]()
+      for f in struct_ do
+        new_fields.&.put(f.key, if f.key == field.key then both.b.* else f.value)
+      return both(
+        both.a.*, struct_(new_fields).optimize_shallow(context)
+      ).optimize_shallow(context)
+    }
+  }
+  case enum_(enum_) {
+    | Bubble up crashes and both.
+    if enum_.payload.op is crash then return taco_crash(type)
+    if enum_.payload.op is both(both) then
+      return both(both.a.*, enum_(expr.type, enum_.variant, both.b.*))
+  }
   case member(member) {
     | Bubble up crashes and both.
     if member.of.op is crash then return taco_crash(type)
