@@ -69,19 +69,86 @@ fun optimize(body: TacoBody, context: OptimizeTacoContext): TacoBody {
 fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   var type = expr.type
   switch expr.op
-  case member(member)
+  case member(member) {
+    | Bubble up crashes and both.
+    if member.of.op is crash then return taco_crash(type)
+    if member.of.op is both(both) then
+      return both(
+        both.ignored.*,
+        member(both.result.*, member.name).optimize_shallow(context),
+      )
+
+    | Constant fold members of known structs.
+    | TODO: Keep the other fields for side effects.
+    | 
+    | member foo    | both
+    |   &           |   hole b
+    |     foo:      |   hole a
+    |       hole a  |
+    |     bar:      |
+    |       hole b  |
     if member.of.op is struct_(fields) then return fields.get(member.name)
+  }
   case switch_(switch_) {
+    | Bubble up crashes and both.
+    if switch_.condition.op is crash then return taco_crash(type)
+    if switch_.condition.op is both(both) then
+      return both(
+        both.ignored.*,
+        switch_(both.result.*, type, switch_.cases).optimize_shallow(context),
+      )
+
+    | Constant fold switches of known variants.
     if switch_.condition.op is enum_(enum_) then {
       return switch_.cases.get(enum_.variant)
         .fill(enum_.payload.*)
         .optimize(context)
     }
+
+    | If all expressions that don't crash or are unreachable are the same and
+    | don't depend on parameters, pull them out of the switch. This then allows
+    | the surrounding expressions to bubble up the both, leaving a simpler,
+    | constant-foldable expression.
+    |
+    | add           | add             | both
+    |   switch      |   both          |   switch
+    |     hole a    |     switch      |     hole a
+    |     true b:   |       hole a    |     true b:
+    |       crash   |       true b:   |       crash
+    |     false c:  |         crash   |     false c:
+    |       int 3   |       false c:  |       &
+    |   int 2       |         &       |   add
+    |               |     int 3       |     int 3
+    |               |   int 2         |     int 2
+    | TODO
+
+    if switch_.condition.op is switch_(inner_switch) then {
+      | Consider inlining the outer switch into the cases of the inner switch.
+      | var max_outer_case_complexity = 0
+      | for case_ in switch_.cases do
+      |   max_outer_case_complexity =
+      |     max(max_outer_case_complexity, case_.value.expr.num_exprs())
+      | if max_outer_case_complexity == 1 then {
+      |   return switch_(inner_switch.condition.*, expr.type, {
+      |     var new_cases = map[String, TacoBody]()
+      |     for case_ in inner_switch.cases do
+      |       new_cases.&.put(
+      |         case_.key,
+      |         body(
+      |           case_.value.params,
+      |           switch_(case_.value.expr, expr.type, switch_.cases)
+      |             .optimize_shallow(context),
+      |         ),
+      |       )
+      |     new_cases
+      |   })
+      | }
+    }
   }
   case call_fun(call) {
     | TODO: Try to run the function at compile time.
 
-    | We inline the function, if:
+    | Inline the function, if:
     | - The function has already been visited during the optimization pass.
     |   Otherwise, mutually recursive functions might hang the compiler.
     | - The function size fits in some upper bound.
@@ -91,6 +158,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     |   and we can't model that, not even using a recursive expression. After
     |   monomorphization, no generic functions exist, so every function has a
     |   chance of being inlined eventually.
+    | TODO: example
     if call.fun_.substitutions.substitutions.size == 0 then
       if context.optimized.get_maybe(call.fun_.signature) is some(body) then {
         var should_inline = body.expr.num_exprs() <= 30
@@ -100,22 +168,59 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
             body
               .specialize(call.fun_.substitutions)
               .new_holes()
-              .call_to_recurse(call.fun_, type.specialize(call.fun_.substitutions)),
+              .call_to_recurse(
+                call.fun_, type.specialize(call.fun_.substitutions)
+              ),
           ).optimize_shallow(context)
         }
       }
   }
-  case call_lambda(call)
+  case call_lambda(call) {
+    | TODO: Bubble up crashes and both.
+
+    | Constant fold calls of lambda literals.
+    | 
+    | call lambda   | add
+    |   lambda a:   |   int 3
+    |     add       |   hole b
+    |       hole a  |
+    |       hole b  |
+    |   int 3       |
     if call.lambda.op is lambda(body) then return body.fill(call.args)
+  }
   case both(both) {
+    | TODO: Bubble up crashes.
+
+    | Keep only the impure parts of the ignored expression.
+    | 
+    | both                 | both
+    |   &                  |   call maycrash
+    |     foo:             |   int 2
+    |       call maycrash  |
+    |   int 2
     var new_children = list[TacoExpr]()
     both.ignored.collect_impure(new_children.&)
     new_children.&.push(both.result.*)
     return body(new_children.to_slice())
   }
-  case let panic("optimize let")
+  case let {
+    | TODO: is this needed? if yes, do so. if not, write something
+    panic("optimize let")
+  }
   case cast(inner) {
+    | TODO: Bubble up crashes and both.
+    
+    | Remove unnecessary casts.
+    |
+    | cast Int  |  int 2
+    |   int 2   |
     if inner.type == type then return inner.*
+
+    | Instead of casting enums, construct them directly with the correct type.
+    | 
+    | cast (| none: (&) some: (Int))  | | none:  (| none: (&) some: (Int))
+    |   | none:  (| none: (&))        |     &
+    |       &                         |
     if inner.op is enum_(enum_) then {
       var wanted_payload_type = type.kind().enum_.unwrap().get(enum_.variant)
       return enum_(
@@ -126,14 +231,30 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     }
   }
   case lower_byte(int) {
+    | TODO: Bubble up crashes and both.
+
+    | Constant fold lower bytes of ints.
+    | TODO: Example
     if int.op is int(int) then return taco_byte(int.lower_byte())
   }
   case byte_to_int(byte) {
+    | TODO: Bubble up crashes and both.
+
     if byte.op is byte(byte) then return taco_int(byte.to_int())
   }
   case add_ints(args) {
     var a = args.a.*
     var b = args.b.*
+
+    | Bubble up crashes and both.
+    if a.op is crash then return taco_crash(type)
+    if b.op is crash then return taco_crash(type)
+    if a.op is both(both) then
+      return both(both.ignored.*, add(both.result.*, b).optimize_shallow(context))
+    if b.op is both(both) then
+      return both(both.ignored.*, add(a, both.result.*).optimize_shallow(context))
+
+    | Constant fold addition.
     if a.op is int(a) then if b.op is int(b) then return taco_int(a + b)
     if a.op is int(a) then if a == 0 then return b  | 0 + x
     if b.op is int(b) then if b == 0 then return a  | x + 0
@@ -143,12 +264,14 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   case sub_ints(args) {
     var a = args.a.*
     var b = args.b.*
+    | TODO: Bubble up crashes and both.
     if a.op is int(a) then if b.op is int(b) then return taco_int(a - b)
     if b.op is int(b) then if b == 0 then return a  | x - 0
   }
   case mul_ints(args) {
     var a = args.a.*
     var b = args.b.*
+    | TODO: Bubble up crashes and both.
     if a.op is int(a) then if b.op is int(b) then return taco_int(a * b)
     if a.op is int(a) then if a == 1 then return b  | 1 * x
     if b.op is int(b) then if b == 1 then return a  | x * 1
@@ -156,6 +279,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   case div_ints(args) {
     var a = args.a.*
     var b = args.b.*
+    | TODO: Bubble up crashes and both.
     if a.op is int(a) then if b.op is int(b) then if b != 0 then
       return taco_int(a / b)
     if b.op is int(b) then if b == 1 then return a  | x / 1
@@ -163,6 +287,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   case mod_ints(args) {
     var a = args.a.*
     var b = args.b.*
+    | TODO: Bubble up crashes and both.
     if a.op is int(a) then if b.op is int(b) then if b != 0 then
       return taco_int(a % b)
     if b.op is int(b) then if b == 1 then return taco_int(0)  | x % 1
@@ -170,6 +295,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   case and_ints(args) {
     var a = args.a.*
     var b = args.b.*
+    | TODO: Bubble up crashes and both.
     if a.op is int(a) then if b.op is int(b) then return taco_int(a & b)
     if a.op is int(a) then if a == 0 then return taco_int(0)  | 0 & x
     if b.op is int(b) then if b == 0 then return taco_int(0)  | x & 0
@@ -179,6 +305,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   case or_ints(args) {
     var a = args.a.*
     var b = args.b.*
+    | TODO: Bubble up crashes and both.
     if a.op is int(a) then if b.op is int(b) then return taco_int(or(a, b))
     if a.op is int(a) then if a == 0 then return b  | 0 | x
     if b.op is int(b) then if b == 0 then return a  | x | 0
@@ -188,11 +315,22 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   case xor_ints(args) {
     var a = args.a.*
     var b = args.b.*
+    | TODO: Bubble up crashes and both.
     if a.op is int(a) then if b.op is int(b) then return taco_int(a ^ b)
   }
   case compare_ints(args) {
     var a = args.a.*
     var b = args.b.*
+
+    | Bubble up crashes and both.
+    if a.op is crash then return taco_crash(type)
+    if b.op is crash then return taco_crash(type)
+    if a.op is both(both) then
+      return both(both.ignored.*, compare(both.result.*, b).optimize_shallow(context))
+    if b.op is both(both) then
+      return both(both.ignored.*, compare(a, both.result.*).optimize_shallow(context))
+
+    | TODO: Docs.
     if a.op is int(a) then if b.op is int(b) then {
       var symbol =
         switch a <=> b
@@ -202,8 +340,14 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       return enum_(type, symbol, taco_nothing)
     }
   }
-  case unbox(box) if box.op is box(inner) then return inner.*
+  case unbox(box) {
+    | TODO: Bubble up crashes and both.
+    | TODO: Document
+    if box.op is box(inner) then return inner.*
+  }
   case generate_array(gen) {
+    | TODO: Bubble up crashes and both.
+    | TODO: Docs.
     if gen.length.op is int(len) then if len <= 10 then {
       var items = list[TacoExpr]()
       for index in 0..len do
@@ -218,6 +362,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   case array_get(args) {
     var array = args.a.*
     var index = args.b.*
+    | TODO: Bubble up crashes and both.
     if array.op is array(items) then if index.op is int(index) then
       if (0..items.len).contains(index) then return items.get(index)
   }
@@ -225,6 +370,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     var array = args.a.*
     var index = args.b.*
     var item  = args.c.*
+    | TODO: Bubble up crashes and both.
     if array.op is array(items) then if index.op is int(index) then
       if (0..items.len).contains(index) then {
         var new_items = list[TacoExpr]()
@@ -237,6 +383,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     var array = args.a.*
     var start = args.b.*
     var end = args.c.*
+    | TODO: Bubble up crashes and both.
     switch array.op
     case array(items) {
       if start.op is int(start) then if end.op is int(end) then {
@@ -248,6 +395,9 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       var inner_array = inner_args.a.*
       var inner_start = inner_args.b.*
       var inner_end = inner_args.c.*
+
+      | TODO: Bubble up crashes and both.
+
       | Merge the two nested slice operations into one. This requires explicitly
       | performing the checks that the inner slice would have done.
       return array_slice(
@@ -270,6 +420,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     default {}
   }
   case array_len(array) {
+    | TODO: Bubble up crashes and both.
     switch array.op
     case array(items) return taco_int(items.len)
     case generate_array(gen) {
@@ -297,6 +448,9 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       var array = args.a.*
       var start = args.b.*
       var end = args.c.*
+
+      | TODO: Bubble up crashes and both.
+
       | We can calculate the length from the slice bounds. We must also perform
       | bounds checking, just like the array slice function would have done.
       return both(
@@ -315,6 +469,8 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     default {}
   }
   case recursive(recursive) {
+    | TODO: Bubble up crashes and both.
+
     if not(recursive.body.expr.recurses()) then
       return recursive.body.fill(recursive.initial).optimize(context)
 
@@ -343,7 +499,9 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     )
   }
   case recurse(args) {
-    for arg in args do if arg.definitely_crashes() then return taco_crash(type)
+    | TODO: Bubble up crashes and both.
+
+    for arg in args do if arg.op is crash then return taco_crash(type)
     if args.len == 1 then if args.get(0).op is switch_(switch_) then {
       | Push recurse into the switch cases.
       return switch_(switch_.condition.*, type, {
@@ -539,22 +697,4 @@ fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
     out.push(expr)
   else
     for child in expr.children() do child.collect_impure(out)
-}
-
-fun definitely_crashes(expr: TacoExpr): Bool {
-  switch expr.op
-  case lambda false
-  case switch_(switch_) {
-    if switch_.condition.definitely_crashes() then return true
-    for case_ in switch_.cases do
-      if not(case_.value.expr.definitely_crashes()) then return false
-    true
-  }
-  case crash true
-  case unreachable true
-  default {
-    for child in expr.children() do
-      if child.definitely_crashes() then return true
-    false
-  }
 }
