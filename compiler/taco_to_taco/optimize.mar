@@ -292,7 +292,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     |   int 2
     var impure = list[TacoExpr]()
     both.a.collect_impure(impure.&)
-    var result = both.b.*
+    var result = both.b.assert_not_crashing(impure.to_slice())
     for child in impure.to_slice().rev_iter() do result = both(child, result)
     return result
   }
@@ -821,4 +821,20 @@ fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
     out.push(expr)
   else
     for child in expr.children() do child.collect_impure(out)
+}
+
+
+fun assert_not_crashing(expr: TacoExpr, exprs: Slice[TacoExpr]): TacoExpr {
+  expr.map(AssertNotCrashing { exprs })
+}
+struct AssertNotCrashing { exprs: Slice[TacoExpr] }
+fun map(expr: TacoExpr, assert_not_crashing: AssertNotCrashing): TacoExpr {
+  if expr.op is both(both) then
+    for not_crashing in assert_not_crashing.exprs do
+      if both.a.* =~= not_crashing then
+        return both.b.map(assert_not_crashing)
+  expr.map_children(assert_not_crashing)
+}
+fun map(body: TacoBody, assert_not_crashing: AssertNotCrashing): TacoBody {
+  TacoBody { params = body.params, expr = body.expr.map(assert_not_crashing) }
 }
