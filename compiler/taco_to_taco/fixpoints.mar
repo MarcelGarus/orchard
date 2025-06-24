@@ -80,7 +80,9 @@ fun find_fixpoint_mask(
   loop {
     | eprintln("Analyzing recursions")
     var recurse_args =
-      body.fill(candidate.unblacken()).optimize(context).find_recurse_args()
+      body.fill(candidate.unblacken())
+        .optimize(context)
+        .find_recurse_args()
     var new = candidate
     for args in recurse_args do {
       | eprintln("  Recursion:")
@@ -90,14 +92,14 @@ fun find_fixpoint_mask(
       | }
 
       for both in zip(new.iter(), args.iter()) do {
-        eprintln("Unioning")
         var namespace = holes_namespace()
+        stderr."Unioning\n"
         stderr.write(both.a, namespace.&, indentation(1))
-        eprintln()
+        stderr."\n"
         stderr.write(both.b, namespace.&, indentation(1))
-        eprintln()
+        stderr."\n"
         stderr.write(union(both.a, both.b), namespace.&, indentation(1))
-        eprintln()
+        stderr."\n"
       }
       new = union(new, args) | TODO: Make children self-contained?
     }
@@ -392,17 +394,31 @@ fun map(body: TacoBody, replace_recurses: ReplaceRecurses): TacoBody {
   TacoBody { params = body.params, expr = body.expr.map(replace_recurses) }
 }
 
-| fun wrap_around(expr: TacoExpr): TacoExpr {
-|   if not(expr.op is recursive) then panic("can only wrap recursives")
-|   var holes = expr.op.recursive.unwrap()
-|   var args = expr.children.without_last()
-|   var body = expr.children.last()
-|   body.fill(holes, args).wrap_rec(holes, body)
-| }
-| fun wrap_rec(expr: TacoExpr, holes: Slice[Hole], body: TacoExpr): TacoExpr {
-|   if expr.op is recurse then
-|     return recursive(holes, expr.children, body) | TODO: what if an arg recurses?
-|   var children = list[TacoExpr]()
-|   for child in expr.children do children.&.push(child.wrap_rec(holes, body))
-|   expr(expr.op, children.to_slice(), expr.type)
-| }
+
+fun extend_recursives(expr: TacoExpr): TacoExpr {
+  expr.map(ExtendRecursives {})
+}
+fun extend_recursives(exprs: Slice[TacoExpr]): Slice[TacoExpr] {
+  exprs.map(ExtendRecursives {})
+}
+struct ExtendRecursives {}
+fun map(expr: TacoExpr, extend_recursives: ExtendRecursives): TacoExpr {
+  if expr.op is recursive(recursive) then
+    return recursive.b.*
+      .fill(recursive.a)
+      .map(ExtendRecurses { recursive = recursive.b.* })
+  expr.map_children(extend_recursives)
+}
+fun map(body: TacoBody, extend_recursives: ExtendRecursives): TacoBody {
+  TacoBody { params = body.params, expr = body.expr.map(extend_recursives) }
+}
+struct ExtendRecurses { recursive: TacoBody }
+fun map(expr: TacoExpr, extend_recurses: ExtendRecurses): TacoExpr {
+  var expr = expr.map_children(extend_recurses)
+  if expr.op is recurse(args) then
+    return recursive(args, extend_recurses.recursive)
+  expr
+}
+fun map(body: TacoBody, extend_recurses: ExtendRecurses): TacoBody {
+  TacoBody { params = body.params, expr = body.expr.map(extend_recurses) }
+}

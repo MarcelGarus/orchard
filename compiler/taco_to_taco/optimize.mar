@@ -153,13 +153,17 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       if not(diverges) then non_diverging_cases.&.push(case_)
     }
     if non_diverging_cases.is_not_empty() then {
-      var all_the_same = true
       var common = non_diverging_cases.get(0).value.expr
-      for case_ in non_diverging_cases do
-        if case_.value.expr != common then all_the_same = false
-      if all_the_same and common != taco_nothing then {
+      var inline = common != taco_nothing
+      for case_ in non_diverging_cases do {
+        if case_.value.expr != common then { inline = false  break }
+        if case_.value.expr.collect_captured().iter().&
+          .contains(case_.value.params.get(0))
+        then { inline = false  break }
+      }
+      if inline then {
         return both(
-          switch_(switch_.condition.*, expr.type, {
+          switch_(switch_.condition.*, type_nothing, {
             var new_cases = map[String, TacoBody]()
             for case_ in switch_.cases do
               new_cases.&.put(
@@ -591,6 +595,11 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       return rec.b.fill(rec.a).optimize(context)
 
     | Find fixpoints
+    stderr."Optimizing shallow recursive. Args:\n"
+    for arg in rec.a do {
+      stderr.write(arg, holes_namespace().&, indentation(1))
+      stderr."\n"
+    }
     var mask = rec.b.find_fixpoint_mask(rec.a, context)
     var new_args = {
       var res = list[TacoExpr]()
@@ -711,11 +720,6 @@ fun map(body: TacoBody, fill: Fill): TacoBody {
 }
 
 fun specialize(body: TacoBody, substitutions: Substitutions): TacoBody {
-  stderr."Specializing using {substitutions}:\n"
-  stderr.write(body.expr, holes_namespace().&, no_indentation)
-  stderr."\nDone specializing:\n"
-  stderr.write(body.expr.map(Specialize { substitutions }), holes_namespace().&, no_indentation)
-  stderr."\n"
   body.map(Specialize { substitutions })
 }
 struct Specialize { substitutions: Substitutions }
@@ -825,14 +829,14 @@ fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
 
 
 fun assert_not_crashing(expr: TacoExpr, exprs: Slice[TacoExpr]): TacoExpr {
+  if exprs.is_empty() then return expr
   expr.map(AssertNotCrashing { exprs })
 }
 struct AssertNotCrashing { exprs: Slice[TacoExpr] }
 fun map(expr: TacoExpr, assert_not_crashing: AssertNotCrashing): TacoExpr {
   if expr.op is both(both) then
     for not_crashing in assert_not_crashing.exprs do
-      if both.a.* =~= not_crashing then
-        return both.b.map(assert_not_crashing)
+      if both.a.* =~= not_crashing then return both.b.map(assert_not_crashing)
   expr.map_children(assert_not_crashing)
 }
 fun map(body: TacoBody, assert_not_crashing: AssertNotCrashing): TacoBody {
