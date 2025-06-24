@@ -106,7 +106,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
 
     | If all expressions that don't crash or are unreachable are the same and
     | don't depend on parameters, pull them out of the switch. This then allows
-    | the surrounding expressions to bubble up the both, leaving a simpler,
+    | the surrounding expressions to bubble up the "both", leaving a simpler,
     | constant-foldable expression.
     |
     | add           | add             | both
@@ -119,7 +119,37 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     |   int 2       |         &       |   add
     |               |     int 3       |     int 3
     |               |   int 2         |     int 2
-    | TODO
+    var non_diverging_cases = list[MapEntry[String, TacoBody]]()
+    for case_ in switch_.cases do {
+      var diverges =
+        {case_.value.expr.op is crash} or {case_.value.expr.op is unreachable}
+      if not(diverges) then non_diverging_cases.&.push(case_)
+    }
+    if non_diverging_cases.is_not_empty() then {
+      var all_the_same = true
+      var common = non_diverging_cases.get(0).value.expr
+      for case_ in non_diverging_cases do
+        if case_.value.expr != common then all_the_same = false
+      if all_the_same and common != taco_nothing then {
+        return both(
+          switch_(switch_.condition.*, expr.type, {
+            var new_cases = map[String, TacoBody]()
+            for case_ in switch_.cases do
+              new_cases.&.put(
+                case_.key,
+                body(
+                  case_.value.params,
+                  if case_.value.expr == common
+                  then taco_nothing
+                  else case_.value.expr.op.expr(type_nothing),
+                ),
+              )
+            new_cases
+          }),
+          common,
+        )
+      }
+    }
 
     if switch_.condition.op is switch_(inner_switch) then {
       | Consider inlining the outer switch into the cases of the inner switch.
