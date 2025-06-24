@@ -66,11 +66,11 @@ enum TacoOp {
 
   | Has two children. Executes, but ignores the first one, and evaluates to the
   | second one. This is only useful if the first expression may panic.
-  both: TacoBoth,
+  both: Tuple2[&TacoExpr, &TacoExpr],
 
   | A body where each of the expressions (except the last one) are also used to
   | fill a hole in the later scope. This essentially makes them into variables.
-  let: TacoLet,
+  let: Tuple2[&TacoExpr, &TacoBody],
 
   | Type-casts an expression to a compatible type.
   cast: &TacoExpr,
@@ -80,21 +80,21 @@ enum TacoOp {
   byte_to_int: &TacoExpr,
 
   | Int-related builtins.
-  add_ints: Tuple2[&TacoExpr, &TacoExpr],
-  sub_ints: Tuple2[&TacoExpr, &TacoExpr],
-  mul_ints: Tuple2[&TacoExpr, &TacoExpr],
-  div_ints: Tuple2[&TacoExpr, &TacoExpr],
-  mod_ints: Tuple2[&TacoExpr, &TacoExpr],
-  and_ints: Tuple2[&TacoExpr, &TacoExpr],
-  or_ints: Tuple2[&TacoExpr, &TacoExpr],
-  xor_ints: Tuple2[&TacoExpr, &TacoExpr],
-  compare_ints: Tuple2[&TacoExpr, &TacoExpr],
+  add: Tuple2[&TacoExpr, &TacoExpr],
+  subtract: Tuple2[&TacoExpr, &TacoExpr],
+  multiply: Tuple2[&TacoExpr, &TacoExpr],
+  divide: Tuple2[&TacoExpr, &TacoExpr],
+  modulo: Tuple2[&TacoExpr, &TacoExpr],
+  and_: Tuple2[&TacoExpr, &TacoExpr],
+  or_: Tuple2[&TacoExpr, &TacoExpr],
+  xor: Tuple2[&TacoExpr, &TacoExpr],
+  compare: Tuple2[&TacoExpr, &TacoExpr],
 
   | Boxing-related builtins (the box builtin is already covered above).
   unbox: &TacoExpr,
 
   | Array-related builtins.
-  generate_array: TacoGenerateArray,
+  generate_array: Tuple2[&TacoExpr, &TacoBody], | length, generator
   array_get: Tuple2[&TacoExpr, &TacoExpr], | array, index
   array_set: Tuple3[&TacoExpr, &TacoExpr, &TacoExpr], | array, index, item
   array_slice: Tuple3[&TacoExpr, &TacoExpr, &TacoExpr], | array, start, end
@@ -109,7 +109,7 @@ enum TacoOp {
   dynamic_to_static: &TacoExpr,
 
   | Inlined recursive functions become recursive expressions.
-  recursive: TacoRecursive,
+  recursive: Tuple2[Slice[TacoExpr], &TacoBody], | initial, body
   recurse: Slice[TacoExpr],
 
   | Marks code as unreachable. Code that definitely reaches this expression can
@@ -121,10 +121,6 @@ struct TacoMember { of: &TacoExpr, name: String }
 struct TacoSwitch { condition: &TacoExpr, cases: Map[String, TacoBody] }
 struct TacoCallFun { fun_: TacoCalledFun, args: Slice[TacoExpr] }
 struct TacoCallLambda { lambda: &TacoExpr, args: Slice[TacoExpr] }
-struct TacoBoth { ignored: &TacoExpr, result: &TacoExpr }
-struct TacoLet { def: &TacoExpr, result: &TacoBody }
-struct TacoGenerateArray { length: &TacoExpr, generator: &TacoBody }
-struct TacoRecursive { initial: Slice[TacoExpr], body: &TacoBody }
 
 
 fun black_hole(type: EggType): Hole { Hole { id = -1, type } }
@@ -151,22 +147,22 @@ fun ==(a: TacoOp, b: TacoOp): Bool {
   case switch_(a)        if b is switch_(b)        then a == b else false
   case call_fun(a)       if b is call_fun(b)       then a == b else false
   case call_lambda(a)    if b is call_lambda(b)    then a == b else false
-  case both(a)           if b is both(b)           then a == b else false
-  case let(a)            if b is let(b)            then a == b else false
+  case both(a)           if b is both(b)           then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case let(a)            if b is let(b)            then a.a.* == b.a.* and a.b.* == b.b.* else false
   case cast(a)           if b is cast(b)           then a.* == b.* else false
   case lower_byte(a)     if b is lower_byte(b)     then a.* == b.* else false
   case byte_to_int(a)    if b is byte_to_int(b)    then a.* == b.* else false
-  case add_ints(a)       if b is add_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
-  case sub_ints(a)       if b is sub_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
-  case mul_ints(a)       if b is mul_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
-  case div_ints(a)       if b is div_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
-  case mod_ints(a)       if b is mod_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
-  case and_ints(a)       if b is and_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
-  case or_ints(a)        if b is or_ints(b)        then a.a.* == b.a.* and a.b.* == b.b.* else false
-  case xor_ints(a)       if b is xor_ints(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
-  case compare_ints(a)   if b is compare_ints(b)   then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case add(a)            if b is add(b)            then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case subtract(a)       if b is subtract(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case multiply(a)       if b is multiply(b)       then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case divide(a)         if b is divide(b)         then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case modulo(a)         if b is modulo(b)         then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case and_(a)           if b is and_(b)           then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case or_(a)            if b is or_(b)            then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case xor(a)            if b is xor(b)            then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case compare(a)        if b is compare(b)        then a.a.* == b.a.* and a.b.* == b.b.* else false
   case unbox(a)          if b is unbox(b)          then a.* == b.* else false
-  case generate_array(a) if b is generate_array(b) then a == b else false
+  case generate_array(a) if b is generate_array(b) then a.a.* == b.a.* and a.b.* == b.b.* else false
   case array_get(a)      if b is array_get(b)      then a.a.* == b.a.* and a.b.* == b.b.* else false
   case array_set(a)      if b is array_set(b)      then a.a.* == b.a.* and a.b.* == b.b.* and a.c.* == b.c.* else false
   case array_slice(a)    if b is array_slice(b)    then a.a.* == b.a.* and a.b.* == b.b.* and a.c.* == b.c.* else false
@@ -175,7 +171,7 @@ fun ==(a: TacoOp, b: TacoOp): Bool {
   case type_info(a)      if b is type_info(b)      then a.* == b.* else false
   case static_to_dynamic(a) if b is static_to_dynamic(b) then a.* == b.* else false
   case dynamic_to_static(a) if b is dynamic_to_static(b) then a.* == b.* else false
-  case recursive(a)      if b is recursive(b)      then a == b else false
+  case recursive(a)      if b is recursive(b)      then a.a == b.a and a.b.* == a.b.* else false
   case recurse(a)        if b is recurse(b)        then a == b else false
   case unreachable(a)    b is unreachable
 }
@@ -197,18 +193,6 @@ fun ==(a: TacoCalledFun, b: TacoCalledFun): Bool {
 }
 fun ==(a: TacoCallLambda, b: TacoCallLambda): Bool {
   a.lambda.* == b.lambda.* and a.args == b.args
-}
-fun ==(a: TacoBoth, b: TacoBoth): Bool {
-  a.ignored.* == b.ignored.* and a.result.* == b.result.*
-}
-fun ==(a: TacoLet, b: TacoLet): Bool {
-  a.def.* == b.def.* and a.result.* == b.result.*
-}
-fun ==(a: TacoGenerateArray, b: TacoGenerateArray): Bool {
-  a.length.* == b.length.* and a.generator.* == b.generator.*
-}
-fun ==(a: TacoRecursive, b: TacoRecursive): Bool {
-  a.initial == b.initial and a.body.* == b.body.*
 }
 fun ==(a: TacoBody, b: TacoBody): Bool {
   a.params == b.params and a.expr == b.expr
@@ -239,26 +223,23 @@ fun map_children[M](expr: TacoExpr, mapper: M): TacoExpr {
   }
   case call_fun(call) call.fun_.call(call.args.map(mapper), expr.type)
   case call_lambda(call) call.lambda.map(mapper).call(call.args.map(mapper))
-  case both(both) both(both.ignored.map(mapper), both.result.map(mapper))
+  case both(both) both(both.a.map(mapper), both.b.map(mapper))
   case let(let)
-    let(
-      let.result.params.get(0), let.def.map(mapper), let.result.expr.map(mapper)
-    )
+    let(let.b.params.get(0), let.a.map(mapper), let.b.expr.map(mapper))
   case cast(inner) cast(inner.map(mapper), expr.type)
   case lower_byte(int) lower_byte(int.map(mapper))
   case byte_to_int(byte) byte_to_int(byte.map(mapper))
-  case add_ints(args) add(args.a.map(mapper), args.b.map(mapper))
-  case sub_ints(args) subtract(args.a.map(mapper), args.b.map(mapper))
-  case mul_ints(args) multiply(args.a.map(mapper), args.b.map(mapper))
-  case div_ints(args) divide(args.a.map(mapper), args.b.map(mapper))
-  case mod_ints(args) modulo(args.a.map(mapper), args.b.map(mapper))
-  case and_ints(args) and_(args.a.map(mapper), args.b.map(mapper))
-  case or_ints(args) or_(args.a.map(mapper), args.b.map(mapper))
-  case xor_ints(args) xor(args.a.map(mapper), args.b.map(mapper))
-  case compare_ints(args) compare(args.a.map(mapper), args.b.map(mapper))
+  case add(args) add(args.a.map(mapper), args.b.map(mapper))
+  case subtract(args) subtract(args.a.map(mapper), args.b.map(mapper))
+  case multiply(args) multiply(args.a.map(mapper), args.b.map(mapper))
+  case divide(args) divide(args.a.map(mapper), args.b.map(mapper))
+  case modulo(args) modulo(args.a.map(mapper), args.b.map(mapper))
+  case and_(args) and_(args.a.map(mapper), args.b.map(mapper))
+  case or_(args) or_(args.a.map(mapper), args.b.map(mapper))
+  case xor(args) xor(args.a.map(mapper), args.b.map(mapper))
+  case compare(args) compare(args.a.map(mapper), args.b.map(mapper))
   case unbox(box) unbox(box.map(mapper))
-  case generate_array(gen)
-    generate_array(gen.length.map(mapper), gen.generator.map(mapper))
+  case generate_array(gen) generate_array(gen.a.map(mapper), gen.b.map(mapper))
   case array_get(args) array_get(args.a.map(mapper), args.b.map(mapper))
   case array_set(args)
     array_set(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
@@ -268,10 +249,8 @@ fun map_children[M](expr: TacoExpr, mapper: M): TacoExpr {
   case crash expr
   case type_info(type) type_info(type.map(mapper))
   case static_to_dynamic(static) static_to_dynamic(static.map(mapper))
-  case dynamic_to_static(dynamic)
-    dynamic_to_static(dynamic.map(mapper), expr.type)
-  case recursive(recursive)
-    recursive(recursive.initial.map(mapper), recursive.body.map(mapper))
+  case dynamic_to_static(dyn) dynamic_to_static(dyn.map(mapper), expr.type)
+  case recursive(rec) recursive(rec.a.map(mapper), rec.b.map(mapper))
   case recurse(args) recurse(args.map(mapper), expr.type)
   case unreachable expr
 }
@@ -303,25 +282,22 @@ fun visit_children[V](expr: TacoExpr, visitor: V) {
     call.lambda.visit(visitor)
     call.args.visit(visitor)
   }
-  case both(both) { both.ignored.visit(visitor)  both.result.visit(visitor) }
-  case let(let) { let.def.visit(visitor)  let.result.visit(visitor) }
+  case both(both) both.visit(visitor)
+  case let(let) { let.a.visit(visitor)  let.b.visit(visitor) }
   case cast(inner) inner.visit(visitor)
   case lower_byte(int) int.visit(visitor)
   case byte_to_int(byte) byte.visit(visitor)
-  case add_ints(args) args.visit(visitor)
-  case sub_ints(args) args.visit(visitor)
-  case mul_ints(args) args.visit(visitor)
-  case div_ints(args) args.visit(visitor)
-  case mod_ints(args) args.visit(visitor)
-  case and_ints(args) args.visit(visitor)
-  case or_ints(args) args.visit(visitor)
-  case xor_ints(args) args.visit(visitor)
-  case compare_ints(args) args.visit(visitor)
+  case add(args) args.visit(visitor)
+  case subtract(args) args.visit(visitor)
+  case multiply(args) args.visit(visitor)
+  case divide(args) args.visit(visitor)
+  case modulo(args) args.visit(visitor)
+  case and_(args) args.visit(visitor)
+  case or_(args) args.visit(visitor)
+  case xor(args) args.visit(visitor)
+  case compare(args) args.visit(visitor)
   case unbox(box) box.visit(visitor)
-  case generate_array(gen) {
-    gen.length.visit(visitor)
-    gen.generator.visit(visitor)
-  }
+  case generate_array(gen) { gen.a.visit(visitor)  gen.b.visit(visitor) }
   case array_get(args) args.visit(visitor)
   case array_set(args) args.visit(visitor)
   case array_slice(args) args.visit(visitor)
@@ -330,9 +306,7 @@ fun visit_children[V](expr: TacoExpr, visitor: V) {
   case type_info(type) type.visit(visitor)
   case static_to_dynamic(static) static.visit(visitor)
   case dynamic_to_static(dynamic) dynamic.visit(visitor)
-  case recursive(recursive) {
-    recursive.initial.visit(visitor)  recursive.body.visit(visitor)
-  }
+  case recursive(rec) { rec.a.visit(visitor)  rec.b.visit(visitor) }
   case recurse(args) args.visit(visitor)
   case unreachable {}
 }
@@ -408,7 +382,7 @@ fun direct_children(expr: TacoExpr): Slice[TacoExpr] {
   case cast(inner) list(inner).to_slice()
   case lower_byte(int) list(int).to_slice()
   case byte_to_int(byte) list(byte).to_slice()
-  case add_ints(args) list(args.a.*, args.b.*).to_slice()
+  case add(args) list(args.a.*, args.b.*).to_slice()
   case sub_ints(args) list(args.a.*, args.b.*).to_slice()
   case mul_ints(args) list(args.a.*, args.b.*).to_slice()
   case div_ints(args) list(args.a.*, args.b.*).to_slice()

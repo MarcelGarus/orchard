@@ -74,8 +74,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if member.of.op is crash then return taco_crash(type)
     if member.of.op is both(both) then
       return both(
-        both.ignored.*,
-        member(both.result.*, member.name).optimize_shallow(context),
+        both.a.*, member(both.b.*, member.name).optimize_shallow(context)
       )
 
     | Constant fold members of known structs.
@@ -94,8 +93,8 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if switch_.condition.op is crash then return taco_crash(type)
     if switch_.condition.op is both(both) then
       return both(
-        both.ignored.*,
-        switch_(both.result.*, type, switch_.cases).optimize_shallow(context),
+        both.a.*,
+        switch_(both.b.*, type, switch_.cases).optimize_shallow(context),
       )
 
     | Constant fold switches of known variants.
@@ -199,8 +198,8 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     |       call maycrash  |
     |   int 2
     var new_children = list[TacoExpr]()
-    both.ignored.collect_impure(new_children.&)
-    new_children.&.push(both.result.*)
+    both.a.collect_impure(new_children.&)
+    new_children.&.push(both.b.*)
     return body(new_children.to_slice())
   }
   case let {
@@ -242,7 +241,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
 
     if byte.op is byte(byte) then return taco_int(byte.to_int())
   }
-  case add_ints(args) {
+  case add(args) {
     var a = args.a.*
     var b = args.b.*
 
@@ -250,25 +249,27 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if a.op is crash then return taco_crash(type)
     if b.op is crash then return taco_crash(type)
     if a.op is both(both) then
-      return both(both.ignored.*, add(both.result.*, b).optimize_shallow(context))
+      return both(both.a.*, add(both.b.*, b).optimize_shallow(context))
     if b.op is both(both) then
-      return both(both.ignored.*, add(a, both.result.*).optimize_shallow(context))
+      return both(both.a.*, add(a, both.b.*).optimize_shallow(context))
 
     | Constant fold addition.
     if a.op is int(a) then if b.op is int(b) then return taco_int(a + b)
     if a.op is int(a) then if a == 0 then return b  | 0 + x
     if b.op is int(b) then if b == 0 then return a  | x + 0
-    if a.op is sub_ints(args) then if b == args.b.* then return both(b, args.a.*)  | (x - y) + y
-    if b.op is sub_ints(args) then if a == args.b.* then return both(a, args.a.*)  | x + (y - x)
+    if a.op is subtract(args) then
+      if b == args.b.* then return both(b, args.a.*)  | (x - y) + y
+    if b.op is subtract(args) then
+      if a == args.b.* then return both(a, args.a.*)  | x + (y - x)
   }
-  case sub_ints(args) {
+  case subtract(args) {
     var a = args.a.*
     var b = args.b.*
     | TODO: Bubble up crashes and both.
     if a.op is int(a) then if b.op is int(b) then return taco_int(a - b)
     if b.op is int(b) then if b == 0 then return a  | x - 0
   }
-  case mul_ints(args) {
+  case multiply(args) {
     var a = args.a.*
     var b = args.b.*
     | TODO: Bubble up crashes and both.
@@ -276,7 +277,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if a.op is int(a) then if a == 1 then return b  | 1 * x
     if b.op is int(b) then if b == 1 then return a  | x * 1
   }
-  case div_ints(args) {
+  case divide(args) {
     var a = args.a.*
     var b = args.b.*
     | TODO: Bubble up crashes and both.
@@ -284,7 +285,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       return taco_int(a / b)
     if b.op is int(b) then if b == 1 then return a  | x / 1
   }
-  case mod_ints(args) {
+  case modulo(args) {
     var a = args.a.*
     var b = args.b.*
     | TODO: Bubble up crashes and both.
@@ -292,7 +293,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       return taco_int(a % b)
     if b.op is int(b) then if b == 1 then return taco_int(0)  | x % 1
   }
-  case and_ints(args) {
+  case and_(args) {
     var a = args.a.*
     var b = args.b.*
     | TODO: Bubble up crashes and both.
@@ -302,7 +303,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if a.op is int(a) then if a == -1 then return b  | -1 & x
     if b.op is int(b) then if b == -1 then return a  | x & -1
   }
-  case or_ints(args) {
+  case or_(args) {
     var a = args.a.*
     var b = args.b.*
     | TODO: Bubble up crashes and both.
@@ -312,13 +313,13 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if a.op is int(a) then if a == -1 then return taco_int(-1)  | -1 | x
     if b.op is int(b) then if b == -1 then return taco_int(-1)  | x | -1
   }
-  case xor_ints(args) {
+  case xor(args) {
     var a = args.a.*
     var b = args.b.*
     | TODO: Bubble up crashes and both.
     if a.op is int(a) then if b.op is int(b) then return taco_int(a ^ b)
   }
-  case compare_ints(args) {
+  case compare(args) {
     var a = args.a.*
     var b = args.b.*
 
@@ -326,9 +327,9 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     if a.op is crash then return taco_crash(type)
     if b.op is crash then return taco_crash(type)
     if a.op is both(both) then
-      return both(both.ignored.*, compare(both.result.*, b).optimize_shallow(context))
+      return both(both.a.*, compare(both.b.*, b).optimize_shallow(context))
     if b.op is both(both) then
-      return both(both.ignored.*, compare(a, both.result.*).optimize_shallow(context))
+      return both(both.a.*, compare(a, both.b.*).optimize_shallow(context))
 
     | TODO: Docs.
     if a.op is int(a) then if b.op is int(b) then {
@@ -348,15 +349,15 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   case generate_array(gen) {
     | TODO: Bubble up crashes and both.
     | TODO: Docs.
-    if gen.length.op is int(len) then if len <= 10 then {
+    if gen.a.op is int(len) then if len <= 10 then {
       var items = list[TacoExpr]()
       for index in 0..len do
         items.&.push(
-          gen.generator
+          gen.b
             .fill(list(taco_int(index)).to_slice())
             .optimize_shallow(context)
         )
-      return array(gen.generator.expr.type, items.to_slice())
+      return array(gen.b.expr.type, items.to_slice())
     }
   }
   case array_get(args) {
@@ -428,11 +429,11 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       | original indices.
       return both(
         recursive(list(taco_int(0)).to_slice(), {
-          var index = gen.generator.params.get(0)
+          var index = gen.b.params.get(0)
           body(index, both(
-            gen.generator.expr,
+            gen.b.expr,
             if_(
-              compare(taco_hole(index), gen.length.*).is_equal(),
+              compare(taco_hole(index), gen.a.*).is_equal(),
               taco_nothing,
               recurse(
                 list(add(taco_hole(index), taco_int(1))).to_slice(),
@@ -441,7 +442,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
             )
           ))
         }),
-        gen.length.*,
+        gen.a.*,
       )
     }
     case array_slice(args) {
@@ -468,18 +469,17 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     }
     default {}
   }
-  case recursive(recursive) {
+  case recursive(rec) {
     | TODO: Bubble up crashes and both.
 
-    if not(recursive.body.expr.recurses()) then
-      return recursive.body.fill(recursive.initial).optimize(context)
+    if not(rec.b.expr.recurses()) then
+      return rec.b.fill(rec.a).optimize(context)
 
     | Find fixpoints
-    var mask = recursive.body.find_fixpoint_mask(recursive.initial, context)
+    var mask = rec.b.find_fixpoint_mask(rec.a, context)
     var new_args = {
       var res = list[TacoExpr]()
-      for arg in recursive.initial.mask(mask) do
-        res.&.push(arg.optimize(context))
+      for arg in rec.a.mask(mask) do res.&.push(arg.optimize(context))
       res.to_slice()
     }
     var new_holes = {
@@ -491,7 +491,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
       new_args,
       body(
         new_holes,
-        recursive.body
+        rec.b
           .fill(new_holes.unmask(mask))
           .optimize(context)
           .replace_recurses(mask),
@@ -661,15 +661,15 @@ fun can_root_diverge(expr: TacoExpr): Bool {
   case cast false
   case lower_byte false
   case byte_to_int false
-  case add_ints false
-  case sub_ints false
-  case mul_ints false
-  case div_ints true
-  case mod_ints true
-  case and_ints false
-  case or_ints false
-  case xor_ints false
-  case compare_ints false
+  case add false
+  case subtract false
+  case multiply false
+  case divide true
+  case modulo true
+  case and_ false
+  case or_ false
+  case xor false
+  case compare false
   case unbox false
   case generate_array true
   case array_get true
