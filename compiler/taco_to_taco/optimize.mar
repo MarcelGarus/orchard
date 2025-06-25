@@ -67,6 +67,10 @@ fun optimize(body: TacoBody, context: OptimizeTacoContext): TacoBody {
 
 | Assumes that the children are already optimized.
 fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
+  | stderr."Optimize shallow\n"
+  | stderr.write(expr, holes_namespace().&, indentation(1))
+  | stderr."\n"
+  
   var type = expr.type
   switch expr.op
   case struct_(struct_) {
@@ -116,7 +120,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
         switch_(both.b.*, type, switch_.cases).optimize_shallow(context),
       ).optimize_shallow(context)
 
-    | Constant fold switches of known variants.
+    | Constant fold switches on enums of known variants.
     |
     | switch      | int 2
     |   | true:   |
@@ -131,10 +135,9 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
         .optimize(context)
     }
 
-    | If all expressions that don't crash or are unreachable are the same and
-    | don't depend on parameters, pull them out of the switch. This then allows
-    | the surrounding expressions to bubble up the "both", leaving a simpler,
-    | constant-foldable expression.
+    | If all non-diverging cases are the same and don't depend on parameters,
+    | pull them out of the switch. This then allows the surrounding expressions
+    | to bubble up the "both", leaving a simpler, constant-foldable expression.
     |
     | add           | add             | both
     |   switch      |   both          |   switch
@@ -255,7 +258,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     | TODO: example
     if call.fun_.substitutions.substitutions.size == 0 then
       if context.optimized.get_maybe(call.fun_.signature) is some(body) then {
-        var should_inline = body.expr.num_exprs() <= 30
+        var should_inline = true | body.expr.num_exprs() <= 30
         if should_inline then {
           return recursive(
             call.args,
@@ -280,7 +283,8 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     |       hole a  |
     |       hole b  |
     |   int 3       |
-    if call.lambda.op is lambda(body) then return body.fill(call.args)
+    if call.lambda.op is lambda(body) then
+      return body.fill(call.args).optimize(context)
   }
   case both(both) {
     if both.a.*.op is unreachable then return taco_unreachable(expr.type)
@@ -309,8 +313,8 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
     
     | Remove unnecessary casts.
     |
-    | cast Int  |  int 2
-    |   int 2   |
+    | cast (Int)  |  int 2
+    |   int 2     |
     if inner.type == type then return inner.*
 
     | Instead of casting enums, construct them directly with the correct type.
@@ -474,7 +478,7 @@ fun optimize_shallow(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
         items.&.push(
           gen.b
             .fill(list(taco_int(index)).to_slice())
-            .optimize_shallow(context)
+            .optimize(context)
         )
       return array(gen.b.expr.type, items.to_slice())
     }
