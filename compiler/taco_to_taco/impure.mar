@@ -1,0 +1,71 @@
+
+| Whether the operation itself (not the children) can diverge.
+fun can_root_diverge(expr: TacoExpr): Bool {
+  switch expr.op
+  case hole false
+  case type false
+  case byte false
+  case int false
+  case array false
+  case struct_ false
+  case enum_ false
+  case lambda false
+  case box false
+  case member false
+  case switch_ true
+  case call_fun true
+  case call_lambda true
+  case both false
+  case let false
+  case cast false
+  case lower_byte false
+  case byte_to_int false
+  case add false
+  case subtract false
+  case multiply false
+  case divide true
+  case modulo true
+  case and_ false
+  case or_ false
+  case xor false
+  case compare false
+  case unbox false
+  case generate_array true
+  case array_get true
+  case array_set true
+  case array_slice true
+  case array_len false
+  case crash true
+  case type_info false
+  case static_to_dynamic false
+  case dynamic_to_static true
+  case recursive true
+  case recurse true
+  case unreachable true
+}
+
+fun can_diverge(expr: TacoExpr): Bool {
+  expr.can_root_diverge() or {
+    for child in expr.children() do if child.can_diverge() then return true
+    false
+  }
+}
+
+fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
+  if expr.can_root_diverge() then 
+    out.push(expr)
+  else
+    for child in expr.children() do child.collect_impure(out)
+}
+
+fun assert_not_crashing(expr: TacoExpr, exprs: Slice[TacoExpr]): TacoExpr {
+  if exprs.is_empty() then return expr
+  expr.map(AssertNotCrashing { exprs })
+}
+struct AssertNotCrashing { exprs: Slice[TacoExpr] }
+fun map(expr: TacoExpr, assert_not_crashing: AssertNotCrashing): TacoExpr {
+  if expr.op is both(both) then
+    for not_crashing in assert_not_crashing.exprs do
+      if both.a.* =~= not_crashing then return both.b.map(assert_not_crashing)
+  expr.map_children(assert_not_crashing)
+}

@@ -21,48 +21,16 @@ fun optimize(taco: Taco): Taco {
   Taco { funs, entry_point = taco.entry_point }.tree_shake()
 }
 
-fun choose_optimization_order(taco: Taco): Slice[String] {
-  var rev_order = list[String]()
-  taco.entry_point.signature.choose_order(taco, rev_order.&)
-  var order = list[String]()
-  for signature in rev_order.to_slice().rev_iter() do order.&.push(signature)
-  order.to_slice()
-}
-fun choose_order(signature: String, taco: Taco, out: &List[String]) {
-  if out.iter().&.contains(signature) then return {}
-  out.push(signature)
-  taco.funs.get(signature).expr.visit(ChooseOrder { taco, out }).ignore()
-}
-struct ChooseOrder { taco: Taco, out: &List[String] }
-fun visit(expr: TacoExpr, choose: ChooseOrder) {
-  if expr.op is call_fun(call) then
-    call.fun_.signature.choose_order(choose.taco, choose.out)
-  expr.visit_children(choose)
-}
-fun visit(body: TacoBody, choose: ChooseOrder) {
-  body.expr.visit(choose)
-}
-
-fun tree_shake(taco: Taco): Taco {
-  var funs = map[String, TacoBody]()
-  for signature in taco.choose_optimization_order() do
-    funs.&.put(signature, taco.funs.get(signature))
-  Taco { funs, entry_point = taco.entry_point }
-}
-
 struct OptimizeTacoContext { optimized: Map[String, TacoBody], taco: Taco }
-struct Optimize { context: OptimizeTacoContext }
-fun map(expr: TacoExpr, optimize: Optimize): TacoExpr {
-  expr.map_children(optimize).optimize_shallow(optimize.context)
-}
-fun map(body: TacoBody, optimize: Optimize): TacoBody {
-  TacoBody { params = body.params, expr = body.expr.map(optimize) }
-}
 fun optimize(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
   expr.map(Optimize { context })
 }
 fun optimize(body: TacoBody, context: OptimizeTacoContext): TacoBody {
   body.map(Optimize { context })
+}
+struct Optimize { context: OptimizeTacoContext }
+fun map(expr: TacoExpr, optimize: Optimize): TacoExpr {
+  expr.map_children(optimize).optimize_shallow(optimize.context)
 }
 
 | Assumes that the children are already optimized.
@@ -696,9 +664,6 @@ fun map(expr: TacoExpr, call_to_recurse: CallToRecurse): TacoExpr {
       return recurse(call.args, call_to_recurse.return_type)
   expr
 }
-fun map(body: TacoBody, call_to_recurse: CallToRecurse): TacoBody {
-  TacoBody { params = body.params, expr = body.expr.map(call_to_recurse) }
-}
 
 | Fills the body with concrete arguments for its parameters.
 fun fill(body: TacoBody, args: Slice[TacoExpr]): TacoExpr {
@@ -719,31 +684,6 @@ fun map(expr: TacoExpr, fill: Fill): TacoExpr {
     if fill.fillings.get_maybe(hole) is some(value) then return value
   expr.map_children(fill)
 }
-fun map(body: TacoBody, fill: Fill): TacoBody {
-  TacoBody { params = body.params, expr = body.expr.map(fill) }
-}
-
-fun specialize(body: TacoBody, substitutions: Substitutions): TacoBody {
-  body.map(Specialize { substitutions })
-}
-struct Specialize { substitutions: Substitutions }
-fun map(expr: TacoExpr, specialize: Specialize): TacoExpr {
-  if expr.op is hole(hole) then
-    return taco_hole(hole.specialize(specialize.substitutions))
-  if expr.op is type(type) then
-    return taco_type(type.specialize(specialize.substitutions))
-  expr(
-    expr.map_children(specialize).op,
-    expr.type.specialize(specialize.substitutions),
-  )
-}
-fun map(body: TacoBody, specialize: Specialize): TacoBody {
-  TacoBody {
-    params = body.params.specialize(specialize.substitutions),
-    expr = body.expr.map(specialize),
-  }
-}
-
 
 fun collect_captured(expr: TacoExpr): Slice[Hole] {
   var out = set[Hole]()
@@ -769,80 +709,4 @@ fun visit(expr: TacoExpr, collect_captured: CollectCaptured) {
 fun visit(body: TacoBody, collect_captured: CollectCaptured) {
   for param in body.params do collect_captured.ignore.put(param)
   body.expr.visit(collect_captured)
-}
-
-
-| Whether the operation itself (not the children) can diverge.
-fun can_root_diverge(expr: TacoExpr): Bool {
-  switch expr.op
-  case hole false
-  case type false
-  case byte false
-  case int false
-  case array false
-  case struct_ false
-  case enum_ false
-  case lambda false
-  case box false
-  case member false
-  case switch_ true
-  case call_fun true
-  case call_lambda true
-  case both false
-  case let false
-  case cast false
-  case lower_byte false
-  case byte_to_int false
-  case add false
-  case subtract false
-  case multiply false
-  case divide true
-  case modulo true
-  case and_ false
-  case or_ false
-  case xor false
-  case compare false
-  case unbox false
-  case generate_array true
-  case array_get true
-  case array_set true
-  case array_slice true
-  case array_len false
-  case crash true
-  case type_info false
-  case static_to_dynamic false
-  case dynamic_to_static true
-  case recursive true
-  case recurse true
-  case unreachable true
-}
-
-fun can_diverge(expr: TacoExpr): Bool {
-  expr.can_root_diverge() or {
-    for child in expr.children() do if child.can_diverge() then return true
-    false
-  }
-}
-
-fun collect_impure(expr: TacoExpr, out: &List[TacoExpr]) {
-  if expr.can_root_diverge() then 
-    out.push(expr)
-  else
-    for child in expr.children() do child.collect_impure(out)
-}
-
-
-fun assert_not_crashing(expr: TacoExpr, exprs: Slice[TacoExpr]): TacoExpr {
-  if exprs.is_empty() then return expr
-  expr.map(AssertNotCrashing { exprs })
-}
-struct AssertNotCrashing { exprs: Slice[TacoExpr] }
-fun map(expr: TacoExpr, assert_not_crashing: AssertNotCrashing): TacoExpr {
-  if expr.op is both(both) then
-    for not_crashing in assert_not_crashing.exprs do
-      if both.a.* =~= not_crashing then return both.b.map(assert_not_crashing)
-  expr.map_children(assert_not_crashing)
-}
-fun map(body: TacoBody, assert_not_crashing: AssertNotCrashing): TacoBody {
-  TacoBody { params = body.params, expr = body.expr.map(assert_not_crashing) }
 }
