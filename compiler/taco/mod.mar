@@ -100,6 +100,12 @@ enum TacoOp {
   array_slice: Tuple3[&TacoExpr, &TacoExpr, &TacoExpr], | array, start, end
   array_len: &TacoExpr,
 
+  | Unchecked array-related stuff.
+  unchecked_generate_non_empty_array: Tuple2[&TacoExpr, &TacoBody], | length, generator
+  unchecked_array_get: Tuple2[&TacoExpr, &TacoExpr], | array, index
+  unchecked_array_set: Tuple3[&TacoExpr, &TacoExpr, &TacoExpr], | array, index, item
+  unchecked_array_slice: Tuple3[&TacoExpr, &TacoExpr, &TacoExpr], | array, start, end
+
   | Crashes the VM.
   crash,
 
@@ -167,6 +173,10 @@ fun ==(a: TacoOp, b: TacoOp): Bool {
   case array_set(a)      if b is array_set(b)      then a.a.* == b.a.* and a.b.* == b.b.* and a.c.* == b.c.* else false
   case array_slice(a)    if b is array_slice(b)    then a.a.* == b.a.* and a.b.* == b.b.* and a.c.* == b.c.* else false
   case array_len(a)      if b is array_len(b)      then a.* == b.* else false
+  case unchecked_generate_non_empty_array(a) if b is unchecked_generate_non_empty_array(b) then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case unchecked_array_get(a) if b is unchecked_array_get(b) then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case unchecked_array_set(a) if b is unchecked_array_set(b) then a.a.* == b.a.* and a.b.* == b.b.* and a.c.* == b.c.* else false
+  case unchecked_array_slice(a) if b is unchecked_array_slice(b) then a.a.* == b.a.* and a.b.* == b.b.* and a.c.* == b.c.* else false
   case crash             b is crash
   case type_info(a)      if b is type_info(b)      then a.* == b.* else false
   case static_to_dynamic(a) if b is static_to_dynamic(b) then a.* == b.* else false
@@ -236,6 +246,10 @@ fun =~=(a: TacoOp, b: TacoOp): Bool {
   case array_set(a)      if b is array_set(b)      then a.a.* =~= b.a.* and a.b.* =~= b.b.* and a.c.* =~= b.c.* else false
   case array_slice(a)    if b is array_slice(b)    then a.a.* =~= b.a.* and a.b.* =~= b.b.* and a.c.* =~= b.c.* else false
   case array_len(a)      if b is array_len(b)      then a.* =~= b.* else false
+  case unchecked_generate_non_empty_array(a) if b is unchecked_generate_non_empty_array(b) then a.a.* =~= b.a.* and a.b.* =~= b.b.* else false
+  case unchecked_array_get(a) if b is unchecked_array_get(b) then a.a.* =~= b.a.* and a.b.* =~= b.b.* else false
+  case unchecked_array_set(a) if b is unchecked_array_set(b) then a.a.* =~= b.a.* and a.b.* =~= b.b.* and a.c.* =~= b.c.* else false
+  case unchecked_array_slice(a) if b is unchecked_array_slice(b) then a.a.* =~= b.a.* and a.b.* =~= b.b.* and a.c.* =~= b.c.* else false
   case crash             b is crash
   case type_info(a)      if b is type_info(b)      then a.* =~= b.* else false
   case static_to_dynamic(a) if b is static_to_dynamic(b) then a.* =~= b.* else false
@@ -327,6 +341,14 @@ fun map_children[M](expr: TacoExpr, mapper: M): TacoExpr {
   case array_slice(args)
     array_slice(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
   case array_len(array) array_len(array.map(mapper))
+  case unchecked_generate_non_empty_array(gen)
+    unchecked_generate_non_empty_array(gen.a.map(mapper), gen.b.map(mapper))
+  case unchecked_array_get(args)
+    unchecked_array_get(args.a.map(mapper), args.b.map(mapper))
+  case unchecked_array_set(args)
+    unchecked_array_set(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
+  case unchecked_array_slice(args)
+    unchecked_array_slice(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
   case crash expr
   case type_info(type) type_info(type.map(mapper))
   case static_to_dynamic(static) static_to_dynamic(static.map(mapper))
@@ -386,6 +408,13 @@ fun visit_children[V](expr: TacoExpr, visitor: V) {
   case array_set(args) args.visit(visitor)
   case array_slice(args) args.visit(visitor)
   case array_len(array) array.visit(visitor)
+  case unchecked_generate_non_empty_array(gen) {
+    gen.a.visit(visitor)
+    gen.b.visit(visitor)
+  }
+  case unchecked_array_get(args) args.visit(visitor)
+  case unchecked_array_set(args) args.visit(visitor)
+  case unchecked_array_slice(args) args.visit(visitor)
   case crash {}
   case type_info(type) type.visit(visitor)
   case static_to_dynamic(static) static.visit(visitor)
@@ -438,57 +467,57 @@ fun visit(body: TacoBody, gather: GatherChildrenIgnoringBodies) {}
 | this expression is is evaluated once. For example, returns the fields of a
 | struct expression, but does not return the inner expressions of lambdas or
 | switch bodies.
-fun direct_children(expr: TacoExpr): Slice[TacoExpr] {
-  switch expr.op
-  case hole {}
-  case type {}
-  case byte {}
-  case int {}
-  case array(items) items
-  case struct_(fields) {
-    var children = list[TacoExpr]()
-    for field in fields do children.&.push(field.value)
-    children.to_slice()
-  }
-  case enum_(enum_) list(enum_.payload.*).to_slice()
-  case lambda list[TacoExpr]()
-  case box(inner) list(inner).to_slice()
-  case member(member) list(member.of.*).to_slice()
-  case switch_(switch_) list(switch_.condition.*).to_slice()
-  case call_fun(call) call.args
-  case call_lambda(call) {
-    var children = list(call.lambda)
-    for arg in call.args do children.&.push(arg)
-    children.to_slice()
-  }
-  case both(both) list(both.ignored.*, both.result.*).to_slice()
-  case let(let) list(let.def.*, let.result.*).to_slice()
-  case cast(inner) list(inner).to_slice()
-  case lower_byte(int) list(int).to_slice()
-  case byte_to_int(byte) list(byte).to_slice()
-  case add(args) list(args.a.*, args.b.*).to_slice()
-  case sub_ints(args) list(args.a.*, args.b.*).to_slice()
-  case mul_ints(args) list(args.a.*, args.b.*).to_slice()
-  case div_ints(args) list(args.a.*, args.b.*).to_slice()
-  case mod_ints(args) list(args.a.*, args.b.*).to_slice()
-  case and_ints(args) list(args.a.*, args.b.*).to_slice()
-  case or_ints(args) list(args.a.*, args.b.*).to_slice()
-  case xor_ints(args) list(args.a.*, args.b.*).to_slice()
-  case compare_ints(args) list(args.a.*, args.b.*).to_slice()
-  case unbox(box) list(box).to_slice()
-  case generate_array(gen) list(gen.length.*).to_slice()
-  case array_get(get) list(get.array.*, get.index.*).to_slice()
-  case array_set(set) list(set.array.*, set.index.*, set.item.*).to_slice()
-  case array_slice(slice) list(slice.array.*, slice.start.*, slice.end.*).to_slice()
-  case array_len(array) list(array.*).to_slice()
-  case crash {}
-  case type_info(type) list(type.*).to_slice()
-  case static_to_dynamic(static) list(static.*).to_slice()
-  case dynamic_to_static(dynamic) list(dynamic.*).to_slice()
-  case recursive(recursive) recursive.args.to_slice()
-  case recurse(args) args
-  case unreachable {}
-}
+| fun direct_children(expr: TacoExpr): Slice[TacoExpr] {
+|   switch expr.op
+|   case hole {}
+|   case type {}
+|   case byte {}
+|   case int {}
+|   case array(items) items
+|   case struct_(fields) {
+|     var children = list[TacoExpr]()
+|     for field in fields do children.&.push(field.value)
+|     children.to_slice()
+|   }
+|   case enum_(enum_) list(enum_.payload.*).to_slice()
+|   case lambda list[TacoExpr]()
+|   case box(inner) list(inner).to_slice()
+|   case member(member) list(member.of.*).to_slice()
+|   case switch_(switch_) list(switch_.condition.*).to_slice()
+|   case call_fun(call) call.args
+|   case call_lambda(call) {
+|     var children = list(call.lambda)
+|     for arg in call.args do children.&.push(arg)
+|     children.to_slice()
+|   }
+|   case both(both) list(both.ignored.*, both.result.*).to_slice()
+|   case let(let) list(let.def.*, let.result.*).to_slice()
+|   case cast(inner) list(inner).to_slice()
+|   case lower_byte(int) list(int).to_slice()
+|   case byte_to_int(byte) list(byte).to_slice()
+|   case add(args) list(args.a.*, args.b.*).to_slice()
+|   case sub_ints(args) list(args.a.*, args.b.*).to_slice()
+|   case mul_ints(args) list(args.a.*, args.b.*).to_slice()
+|   case div_ints(args) list(args.a.*, args.b.*).to_slice()
+|   case mod_ints(args) list(args.a.*, args.b.*).to_slice()
+|   case and_ints(args) list(args.a.*, args.b.*).to_slice()
+|   case or_ints(args) list(args.a.*, args.b.*).to_slice()
+|   case xor_ints(args) list(args.a.*, args.b.*).to_slice()
+|   case compare_ints(args) list(args.a.*, args.b.*).to_slice()
+|   case unbox(box) list(box).to_slice()
+|   case generate_array(gen) list(gen.length.*).to_slice()
+|   case array_get(get) list(get.array.*, get.index.*).to_slice()
+|   case array_set(set) list(set.array.*, set.index.*, set.item.*).to_slice()
+|   case array_slice(slice) list(slice.array.*, slice.start.*, slice.end.*).to_slice()
+|   case array_len(array) list(array.*).to_slice()
+|   case crash {}
+|   case type_info(type) list(type.*).to_slice()
+|   case static_to_dynamic(static) list(static.*).to_slice()
+|   case dynamic_to_static(dynamic) list(dynamic.*).to_slice()
+|   case recursive(recursive) recursive.args.to_slice()
+|   case recurse(args) args
+|   case unreachable {}
+| }
 
 | TODO: Think about what to do with this.
 
