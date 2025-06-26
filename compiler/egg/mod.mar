@@ -14,81 +14,50 @@
 
 import ../plum.mar
 import builder.mar
-import run.mar
+import builtins.mar
+import dag.mar
+| import run.mar
 import type.mar
+import op_type.mar
+
+| All EggOps are allocated and managed by the DAG in dag.mar. This allows using
+| EggIds everywhere instead of having to use references.
 
 struct Egg { funs: Map[String, EggFun] }
-
-struct EggFun {
-  module: Module, name: StringAndSrc, dag: Dag[EggExpr], body: EggBody
-}
-struct EggBody { params: Slice[Id], children: Slice[Id], returns: EggExpr }
-
-struct EggExpr { op: EggOp, type: EggType, src: Src }
+struct EggFun { body: EggBody }
+struct EggBody { params: Slice[EggId], children: Slice[EggId], returns: EggId }
 enum EggOp {
-  param,
-  id: Id, | refers to another (already computed) expression that is in scope
+  param: EggType,
 
   | Constructing values.
   type: EggType,
   int: Int,
   string: String,
-  struct_: Slice[Tuple2[String, EggExpr]],
+  struct_: Map[String, EggId],
   enum_: EggEnum,
-  lambda: &EggBody,
+  lambda: EggBody,
 
   | Working with values.
   member: EggMember,
   switch_: EggSwitch,
-  call: EggCall,
+  call_fun: EggCallFun,
+  call_lambda: EggCallLambda,
+  call_builtin: EggCallBuiltin,
 
-  cast: &EggExpr,
+  cast: EggCast,
 }
-struct EggEnum { name: String, value: &EggExpr }
-struct EggMember { of: &EggExpr, name: String }
-struct EggSwitch { condition: &EggExpr, cases: Map[String, EggBody] }
-struct EggCall { callee: EggCallee, args: Slice[EggExpr] }
-enum EggCallee {
-  fun_: EggCalledFun, builtin: EggCalledBuiltin, lambda: &EggExpr
+struct EggEnum { type: EggType, variant: String, payload: EggId }
+struct EggMember { of: EggId, name: String }
+struct EggSwitch { condition: EggId, type: EggType, cases: Map[String, EggBody] }
+struct EggCallFun {
+  fun_: String, substitutions: Substitutions,
+  args: Slice[EggId], return_type: EggType,
 }
-struct EggCalledFun { signature: String, substitutions: Substitutions }
-struct EggCalledBuiltin { builtin: EggBuiltin, substitutions: Substitutions }
-
-| Plum code can import these functions from the "builtins" module.
-enum EggBuiltin {
-  | byte operations
-  lower_byte, byte_to_int,
-  | int operations
-  add_ints, sub_ints, mul_ints, div_ints, mod_ints, and_ints, or_ints, xor_ints,
-  compare_ints,
-  | box operations
-  box, unbox,
-  | array operations
-  generate_array, array_get, array_set, array_slice, array_len,
-  | lambda operations
-  call,
-  | error stuff
-  crash,
-  | type operations
-  type_of, type_info,
-  | dynamic typing operations
-  static_to_dynamic, dynamic_to_static,
+struct EggCallLambda { lambda: EggId, args: Slice[EggId] }
+struct EggCallBuiltin {
+  builtin: EggBuiltin, substitutions: Substitutions, args: Slice[EggId]
 }
-var egg_builtins = | Keep in sync with the builtins above!
-  list(
-    EggBuiltin.lower_byte, EggBuiltin.byte_to_int,
-    EggBuiltin.add_ints, EggBuiltin.sub_ints, EggBuiltin.mul_ints,
-    EggBuiltin.div_ints, EggBuiltin.mod_ints, EggBuiltin.and_ints,
-    EggBuiltin.or_ints, EggBuiltin.xor_ints,
-    EggBuiltin.compare_ints,
-    EggBuiltin.box, EggBuiltin.unbox,
-    EggBuiltin.generate_array, EggBuiltin.array_get, EggBuiltin.array_set,
-    EggBuiltin.array_slice, EggBuiltin.array_len,
-    EggBuiltin.call,
-    EggBuiltin.crash,
-    EggBuiltin.type_of, EggBuiltin.type_info,
-    EggBuiltin.static_to_dynamic, EggBuiltin.dynamic_to_static,
-  ).to_slice()
+struct EggCast { what: EggId, type: EggType }
 
 
 fun signature(module: Module, name: String, params: Slice[EggType]): String {
@@ -98,7 +67,7 @@ fun signature(module: Module, name: String, params: Slice[EggType]): String {
   b.to_string()
 }
 
-fun return_type(fun_: EggFun): EggType { fun_.body.returns.type }
+fun return_type(fun_: EggFun): EggType { fun_.dag.get(fun_.body.returns.type) }
 
 fun write[W](writer: W, yogurt: Egg) {
   var first = true
@@ -112,7 +81,7 @@ fun write[W](writer: W, signature: String, fun_: EggFun) {
   writer.write(fun_.body, fun_.dag, indentation(1))
 }
 fun write[W](
-  writer: W, body: EggBody, dag: Dag[EggExpr], indentation: Indentation
+  writer: W, body: EggBody, dag: Dag[EggOp], indentation: Indentation
 ) {
   for param in body.params do {
     writer."
@@ -128,11 +97,11 @@ fun write[W](
   writer.write(body.returns, dag, indentation)
 }
 fun write[W](
-  writer: W, expr: EggExpr, dag: Dag[EggExpr], indentation: Indentation
+  writer: W, id: EggId, dag: Dag[EggOp], indentation: Indentation
 ) {
   writer."{indentation}"
-  var type = expr.type
-  switch expr.op
+  var type = type_nothing
+  switch dag.get(id)
   case param(param) unreachable()
   case id(id) writer."{pretty_op("id")} {pretty(id)}  {pretty(type)}"
   case type(type) writer."{pretty_op("type")} {type}  {pretty(type_type)}"

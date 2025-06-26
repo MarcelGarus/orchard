@@ -36,35 +36,29 @@ fun compile(
   types: Map[String, EggTypeDef], toasts: Map[Module, Toast],
 ): Result[EggFun, Error] {
   var visible = visible()
-  var dag = dag[EggExpr]()
+  var dag = dag[EggOp]()
   var builder = dag.&.body_builder().&
 
   var param_types = list[EggType]()
   for param in fun_.params do {
     var type = param.type.compile(module, types)?
-    visible.&.define(
-      param.name.string, builder.push_param(type, param.name.src)
-    )
+    visible.&.define(param.name.string, builder.push_param(type))
     param_types.&.push(type)
   }
   var param_types = param_types.to_slice()
 
   | Push the type variables into the body.
   for var_ in param_types.collect_type_variables() do
-    visible.&.define(
-      var_, builder.push(egg_type(type_variable(var_), invalid_src))
-    )
+    visible.&.define(var_, builder.type(type_variable(var_)))
   for param in fun_.params do
     if param.type.compile(module, types)? == type_type then {
-      var id = builder.push(
-        egg_type(type_variable(param.name.string), param.name.src)
-      )
+      var id = builder.type(type_variable(param.name.string))
       visible.&.define(param.name.string, id)
     }
 
   var returned = fun_.body.compile(builder, module, visible.&, EggContext { toasts, types })?
   | TODO: What's up with this?
-  | var last = none[EggExpr]()
+  | var last = none[Id]()
   | for expr in fun_.body.body.unwrap() do
   |   last = some(builder.push(
   |     expr.compile(builder, module, visible.&, EggContext { toasts, types })?
@@ -89,24 +83,23 @@ fun compile(
 struct EggContext { toasts: Map[Module, Toast], types: Map[String, EggTypeDef] }
 
 fun compile(
-  toast: ToastExpr, builder: &EggBodyBuilder, module: Module, visible: &Visible,
+  toast: ToastExpr, builder: &EggBuilder, module: Module, visible: &Visible,
   context: EggContext,
-): Result[EggExpr, Error] {
-  ok[EggExpr, Error](
+): Result[Id, Error] {
+  ok[Id, Error](
     switch toast
-    case todo(src) egg_crash("Todo", type_never, src)
-    case int(int) egg_int(int.int, int.src)
-    case string(string) egg_string(string.string, string.src)
-    case type(type) egg_type(type.compile(module, context.types)?, toast.src())
-    case struct_(struct_) struct_({
-      var fields = list[Tuple2[String, EggExpr]]()
+    case todo(src) builder.crash("Todo")
+    case int(int) builder.int(int.int)
+    case string(string) builder.string(string.string)
+    case type(type) builder.type(type.compile(module, context.types)?)
+    case struct_(struct_) builder.struct_({
+      var fields = list[Tuple2[String, Id]]()
       var names = set[String]()
       for field in struct_.fields do {
         var name = field.name.string
         var value = field.value.compile(builder, module, visible, context)?
-        var type = value.type
         if names.contains(name) then
-          return error[EggExpr, Error](error(
+          return error[Id, Error](error(
             "Field {name} is in the struct multiple times.",
             struct_.ampersand.src,
           ))
@@ -114,17 +107,17 @@ fun compile(
         names.&.put(name)
       }
       fields.to_slice()
-    }, struct_.ampersand.src)
+    })
     case enum_(enum_) {
       var name = enum_.name.string
       var value = enum_.value.compile(builder, module, visible, context)?
-      enum_(type_enum(map(name -> value.type)), name, value, enum_.pipe.src)
+      builder.enum_(type_enum(map(name -> value.type)), name, value)
     }
     case switch_(switch_) {
       | Compile the condition.
       var condition = switch_.condition.compile(builder, module, visible, context)?
       var variant_types = condition.type.kind().enum_
-        or return error[EggExpr, Error](error(
+        or return error[Id, Error](error(
           "Switched on non-enum: {condition.type}", switch_.percent.src
         ))
 
@@ -133,7 +126,7 @@ fun compile(
       var handled_variants = set[String]()
       for case_ in switch_.cases do {
         if handled_variants.contains(case_.symbol.string) then
-          return error[EggExpr, Error](error(
+          return error[Id, Error](error(
             "{case_.symbol.string} is handled multiple times.",
             switch_.percent.src,
           ))
@@ -141,17 +134,17 @@ fun compile(
       }
       for variant in variant_types do
         if not(handled_variants.contains(variant.key)) then
-          return error[EggExpr, Error](error(
+          return error[Id, Error](error(
             "{variant.key} is not handled.", switch_.percent.src
           ))
       for variant in handled_variants do
         if not(variant_types.contains(variant)) then
-          return error[EggExpr, Error](error(
+          return error[Id, Error](error(
             "Handling non-existent variant {variant}.", switch_.percent.src
           ))
 
       | Compile the individual cases.
-      var case_compilers = map[String, Tuple2[EggBodyBuilder, EggExpr]]()
+      var case_compilers = map[String, Tuple2[EggBodyBuilder, Id]]()
       var case_types = list[EggType]()
       for case_ in switch_.cases do {
         var symbol = case_.symbol.string
@@ -174,7 +167,7 @@ fun compile(
         case_types.&.push(returns.type)
       }
       var common_type = union(case_types.to_slice()) or
-        return error[EggExpr, Error](error(
+        return error[Id, Error](error(
           "Couldn't union types {case_types}", switch_.percent.src
         ))
       var common_type = common_type
@@ -191,7 +184,7 @@ fun compile(
     }
     case name(name)
       visible.lookup(name.string) or
-        return error[EggExpr, Error](error(
+        return error[Id, Error](error(
           "Unknown referenced name {name.string}.", name.src
         ))
     case lambda(lambda) {
@@ -211,7 +204,7 @@ fun compile(
       lambda(builder.dag.*, lambda_body, lambda.backslash.src)
     }
     case call(call) {
-      var args = list[EggExpr]()
+      var args = list[Id]()
       for arg in call.args do
         args.&.push(arg.compile(builder, module, visible, context)?)
       var args = args.to_slice()
@@ -229,7 +222,7 @@ fun compile(
                 var struct_ = args.get(0)
                 var field_type = struct_.type.kind()
                   .struct_.unwrap().get(name.string)
-                return ok[EggExpr, Error](
+                return ok[Id, Error](
                   EggOp.member(EggMember {
                     of = struct_.put_on_heap(), name = name.string
                   }).expr(field_type, name.src)
@@ -254,7 +247,7 @@ fun compile(
                 switch arg.op
                 case type(type) break(type)
                 case id(id) arg = builder.dag.get(id)
-                default return error[EggExpr, Error](error(
+                default return error[Id, Error](error(
                   "Arguments of the type Type have to be known at 
                   'compile-time. Arg is {args.get(i).debug()}",
                   name.src
@@ -274,7 +267,7 @@ fun compile(
         )?
 
         | Cast arguments
-        var cast_args = list[EggExpr]()
+        var cast_args = list[Id]()
         for both in zip(args.iter(), match.param_types.iter()) do
           cast_args.&.push(both.a.cast(both.b, call.function.src()))
         var args = cast_args.to_slice()
@@ -292,17 +285,17 @@ fun compile(
         var lambda = call.function.compile(builder, module, visible, context)?
         var lambda_type = lambda.type
         var lambda_type = lambda_type.kind().lambda or
-          return return error[EggExpr, Error](error(
+          return return error[Id, Error](error(
             "Tried to call non-lambda: {lambda_type}", call.function.src()
           ))
 
         | Cast arguments
-        var cast_args = list[EggExpr]()
+        var cast_args = list[Id]()
         for both in zip(args.iter(), lambda_type.args.iter()) do {
           var arg = both.a
           var expected_type = both.b
           arg.type.is_assignable_to(expected_type) or
-            return return error[EggExpr, Error](error(
+            return return error[Id, Error](error(
               "Tried to call lambda with wrong types.", call.function.src()
             ))
           cast_args.&.push(arg.cast(expected_type, call.function.src()))
@@ -318,7 +311,7 @@ fun compile(
       value
     }
     case body(exprs) {
-      var last = none[EggExpr]()
+      var last = none[Id]()
       for expr in exprs do {
         if last is some(last) then builder.push(last).ignore()
         last = some(expr.compile(builder, module, visible, context)?)
@@ -329,9 +322,8 @@ fun compile(
 }
 
 fun compile_pattern(
-  pattern: ToastExpr, matched: EggExpr,
-  body: &EggBodyBuilder, module: Module, visible: &Visible,
-  context: EggContext,
+  pattern: ToastExpr, matched: Id,
+  body: &EggBuilder, module: Module, visible: &Visible, context: EggContext,
 ): Result[Nothing, Error] {
   switch pattern
   case todo error[Nothing, Error](error("Todo in pattern.", pattern.src()))
@@ -348,7 +340,7 @@ fun compile_pattern(
       "Type literals can't be in patterns.", pattern.src()
     ))
   case struct_(pattern) {
-    var struct_fields = matched.type.kind().struct_ or
+    var struct_fields = matched.type().kind().struct_ or
       return error[Nothing, Error](error(
         "Tried to use a struct pattern to match on {matched.type}.",
         pattern.ampersand.src,
