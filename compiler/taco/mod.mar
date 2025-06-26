@@ -90,6 +90,10 @@ enum TacoOp {
   xor: Tuple2[&TacoExpr, &TacoExpr],
   compare: Tuple2[&TacoExpr, &TacoExpr],
 
+  | Unchecked division stuff (the divisor is guaranteed to not be zero).
+  unchecked_divide: Tuple2[&TacoExpr, &TacoExpr],
+  unchecked_modulo: Tuple2[&TacoExpr, &TacoExpr],
+
   | Boxing-related builtins (the box builtin is already covered above).
   unbox: &TacoExpr,
 
@@ -167,6 +171,8 @@ fun ==(a: TacoOp, b: TacoOp): Bool {
   case or_(a)            if b is or_(b)            then a.a.* == b.a.* and a.b.* == b.b.* else false
   case xor(a)            if b is xor(b)            then a.a.* == b.a.* and a.b.* == b.b.* else false
   case compare(a)        if b is compare(b)        then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case unchecked_divide(a) if b is unchecked_divide(b) then a.a.* == b.a.* and a.b.* == b.b.* else false
+  case unchecked_modulo(a) if b is unchecked_modulo(b) then a.a.* == b.a.* and a.b.* == b.b.* else false
   case unbox(a)          if b is unbox(b)          then a.* == b.* else false
   case generate_array(a) if b is generate_array(b) then a.a.* == b.a.* and a.b.* == b.b.* else false
   case array_get(a)      if b is array_get(b)      then a.a.* == b.a.* and a.b.* == b.b.* else false
@@ -240,6 +246,8 @@ fun =~=(a: TacoOp, b: TacoOp): Bool {
   case or_(a)            if b is or_(b)            then a.a.* =~= b.a.* and a.b.* =~= b.b.* else false
   case xor(a)            if b is xor(b)            then a.a.* =~= b.a.* and a.b.* =~= b.b.* else false
   case compare(a)        if b is compare(b)        then a.a.* =~= b.a.* and a.b.* =~= b.b.* else false
+  case unchecked_divide(a) if b is unchecked_divide(b) then a.a.* =~= b.a.* and a.b.* =~= b.b.* else false
+  case unchecked_modulo(a) if b is unchecked_modulo(b) then a.a.* =~= b.a.* and a.b.* =~= b.b.* else false
   case unbox(a)          if b is unbox(b)          then a.* =~= b.* else false
   case generate_array(a) if b is generate_array(b) then a.a.* =~= b.a.* and a.b.* =~= b.b.* else false
   case array_get(a)      if b is array_get(b)      then a.a.* =~= b.a.* and a.b.* =~= b.b.* else false
@@ -333,6 +341,10 @@ fun map_children[M](expr: TacoExpr, mapper: M): TacoExpr {
   case or_(args) or_(args.a.map(mapper), args.b.map(mapper))
   case xor(args) xor(args.a.map(mapper), args.b.map(mapper))
   case compare(args) compare(args.a.map(mapper), args.b.map(mapper))
+  case unchecked_divide(args)
+    unchecked_divide(args.a.map(mapper), args.b.map(mapper))
+  case unchecked_modulo(args)
+    unchecked_modulo(args.a.map(mapper), args.b.map(mapper))
   case unbox(box) unbox(box.map(mapper))
   case generate_array(gen) generate_array(gen.a.map(mapper), gen.b.map(mapper))
   case array_get(args) array_get(args.a.map(mapper), args.b.map(mapper))
@@ -346,9 +358,13 @@ fun map_children[M](expr: TacoExpr, mapper: M): TacoExpr {
   case unchecked_array_get(args)
     unchecked_array_get(args.a.map(mapper), args.b.map(mapper))
   case unchecked_array_set(args)
-    unchecked_array_set(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
+    unchecked_array_set(
+      args.a.map(mapper), args.b.map(mapper), args.c.map(mapper)
+    )
   case unchecked_array_slice(args)
-    unchecked_array_slice(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
+    unchecked_array_slice(
+      args.a.map(mapper), args.b.map(mapper), args.c.map(mapper)
+    )
   case crash expr
   case type_info(type) type_info(type.map(mapper))
   case static_to_dynamic(static) static_to_dynamic(static.map(mapper))
@@ -402,6 +418,8 @@ fun visit_children[V](expr: TacoExpr, visitor: V) {
   case or_(args) args.visit(visitor)
   case xor(args) args.visit(visitor)
   case compare(args) args.visit(visitor)
+  case unchecked_divide(args) args.visit(visitor)
+  case unchecked_modulo(args) args.visit(visitor)
   case unbox(box) box.visit(visitor)
   case generate_array(gen) { gen.a.visit(visitor)  gen.b.visit(visitor) }
   case array_get(args) args.visit(visitor)

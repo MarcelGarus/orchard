@@ -55,8 +55,10 @@ fun diverges(expr: TacoExpr): Diverges {
   case add(args) merge(args.a.diverges(), args.b.diverges())
   case subtract(args) merge(args.a.diverges(), args.b.diverges())
   case multiply(args) merge(args.a.diverges(), args.b.diverges())
-  case divide(args) merge(args.a.diverges(), args.b.diverges())
-  case modulo(args) merge(args.a.diverges(), args.b.diverges())
+  case divide(args) merge(args.a.diverges(), args.b.diverges(), Diverges.maybe)
+  case modulo(args) merge(args.a.diverges(), args.b.diverges(), Diverges.maybe)
+  case unchecked_divide(args) merge(args.a.diverges(), args.b.diverges())
+  case unchecked_modulo(args) merge(args.a.diverges(), args.b.diverges())
   case and_(args) merge(args.a.diverges(), args.b.diverges())
   case or_(args) merge(args.a.diverges(), args.b.diverges())
   case xor(args) merge(args.a.diverges(), args.b.diverges())
@@ -81,6 +83,13 @@ fun diverges(expr: TacoExpr): Diverges {
       args.a.diverges(), args.b.diverges(), args.c.diverges(), Diverges.maybe
     )
   case array_len(arg) arg.diverges()
+  case unchecked_generate_non_empty_array(gen)
+    merge(gen.a.diverges(), gen.b.expr.diverges())
+  case unchecked_array_get(args) merge(args.a.diverges(), args.b.diverges())
+  case unchecked_array_set(args)
+    merge(args.a.diverges(), args.b.diverges(), args.c.diverges())
+  case unchecked_array_slice(args)
+    merge(args.a.diverges(), args.b.diverges(), args.c.diverges())
   case crash Diverges.yes
   case type_info(arg) arg.diverges()
   case static_to_dynamic(arg) arg.diverges()
@@ -163,14 +172,16 @@ fun keep_only_impure(expr: TacoExpr): TacoExpr {
   default expr
 }
 
-fun assert_not_crashing(expr: TacoExpr, exprs: Slice[TacoExpr]): TacoExpr {
-  if exprs.is_empty() then return expr
-  expr.map(AssertNotCrashing { exprs })
+fun assert_not_crashing(expr: TacoExpr, not_crashing: TacoExpr): TacoExpr {
+  expr.map(AssertNotCrashing { not_crashing })
 }
-struct AssertNotCrashing { exprs: Slice[TacoExpr] }
+fun assert_not_crashing(body: TacoBody, not_crashing: TacoExpr): TacoBody {
+  body.map(AssertNotCrashing { not_crashing })
+}
+struct AssertNotCrashing { not_crashing: TacoExpr }
 fun map(expr: TacoExpr, assert_not_crashing: AssertNotCrashing): TacoExpr {
   if expr.op is both(both) then
-    for not_crashing in assert_not_crashing.exprs do
-      if both.a.* =~= not_crashing then return both.b.map(assert_not_crashing)
+    if both.a.* =~= assert_not_crashing.not_crashing then
+      return both.b.map(assert_not_crashing)
   expr.map_children(assert_not_crashing)
 }
