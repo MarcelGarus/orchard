@@ -24,14 +24,11 @@ fun visit(id: EggId, collect: CollectCaptured) {
   switch id.resolve()
   case param panic("param")
   case type {}
-  | case byte {}
   case int {}
   case string {}
-  | case array(items) TacoOp.array(items.visit(collect)).expr(expr.type)
   case struct_(fields) for field in fields do collect.add(field.value)
   case enum_(enum_) collect.add(enum_.payload)
   case lambda(body) body.visit(collect)
-  | case box(inner) builder.box(inner.visit(collect, builder))
   case member(member) collect.add(member.of)
   case switch_(switch_) {
     collect.add(switch_.condition)
@@ -44,29 +41,41 @@ fun visit(id: EggId, collect: CollectCaptured) {
   }
   case call_builtin(call) for arg in call.args do collect.add(arg)
   case cast(cast) collect.add(cast.what)
-  | case lower_byte(int) lower_byte(int.visit(collect))
-  | case byte_to_int(byte) byte_to_int(byte.visit(collect))
-  | case add(args) add(args.a.visit(collect), args.b.visit(collect))
-  | case subtract(args) subtract(args.a.visit(collect), args.b.visit(collect))
-  | case multiply(args) multiply(args.a.visit(collect), args.b.visit(collect))
-  | case divide(args) divide(args.a.visit(collect), args.b.visit(collect))
-  | case modulo(args) modulo(args.a.visit(collect), args.b.visit(collect))
-  | case and_(args) and_(args.a.visit(collect), args.b.visit(collect))
-  | case or_(args) or_(args.a.visit(collect), args.b.visit(collect))
-  | case xor(args) xor(args.a.visit(collect), args.b.visit(collect))
-  | case compare(args) compare(args.a.visit(collect), args.b.visit(collect))
+  case byte {}
+  case lower_byte(arg)  collect.add(arg)
+  case byte_to_int(arg) collect.add(arg)
+  case add(args)      { collect.add(args.a)  collect.add(args.b) }
+  case subtract(args) { collect.add(args.a)  collect.add(args.b) }
+  case multiply(args) { collect.add(args.a)  collect.add(args.b) }
+  case divide(args)   { collect.add(args.a)  collect.add(args.b) }
+  case modulo(args)   { collect.add(args.a)  collect.add(args.b) }
+  case and_(args)     { collect.add(args.a)  collect.add(args.b) }
+  case or_(args)      { collect.add(args.a)  collect.add(args.b) }
+  case xor(args)      { collect.add(args.a)  collect.add(args.b) }
+  case compare(args)  { collect.add(args.a)  collect.add(args.b) }
   | case unchecked_divide(args)
   |   unchecked_divide(args.a.visit(collect), args.b.visit(collect))
   | case unchecked_modulo(args)
   |   unchecked_modulo(args.a.visit(collect), args.b.visit(collect))
-  | case unbox(box) unbox(box.visit(collect))
-  | case generate_array(gen) generate_array(gen.a.visit(collect), gen.b.visit(collect))
-  | case array_get(args) array_get(args.a.visit(collect), args.b.visit(collect))
-  | case array_set(args)
-  |   array_set(args.a.visit(collect), args.b.visit(collect), args.c.visit(collect))
-  | case array_slice(args)
-  |   array_slice(args.a.visit(collect), args.b.visit(collect), args.c.visit(collect))
-  | case array_len(array) array_len(array.visit(collect))
+  case box(arg)   collect.add(arg)
+  case unbox(arg) collect.add(arg)
+  case array(array) for item in array.items do collect.add(item)
+  case generate_array(args) {
+    collect.add(args.length)
+    args.generator.visit(collect)
+  }
+  case array_get(args) { collect.add(args.array)  collect.add(args.index) }
+  case array_set(args) {
+    collect.add(args.array)
+    collect.add(args.index)
+    collect.add(args.item)
+  }
+  case array_slice(args) {
+    collect.add(args.array)
+    collect.add(args.start)
+    collect.add(args.end)
+  }
+  case array_len(arg) collect.add(arg)
   | case unchecked_generate_non_empty_array(gen)
   |   unchecked_generate_non_empty_array(gen.a.visit(collect), gen.b.visit(collect))
   | case unchecked_array_get(args)
@@ -79,11 +88,11 @@ fun visit(id: EggId, collect: CollectCaptured) {
   |   unchecked_array_slice(
   |     args.a.visit(collect), args.b.visit(collect), args.c.visit(collect)
   |   )
-  | case crash expr
-  | case type_info(type) type_info(type.visit(collect))
-  | case static_to_dynamic(static) static_to_dynamic(static.visit(collect))
-  | case dynamic_to_static(dyn) dynamic_to_static(dyn.visit(collect), expr.type)
+  case type_info(arg) collect.add(arg)
+  case static_to_dynamic(static) collect.add(static)
+  case dynamic_to_static(convert) collect.add(convert.dynamic)
+  case crash(message) collect.add(message)
+  case unreachable {}
   | case recursive(rec) recursive(rec.a.visit(collect), rec.b.visit(collect))
   | case recurse(args) recurse(args.visit(collect), expr.type)
-  | case unreachable expr
 }

@@ -1,0 +1,63 @@
+import mod.mar
+
+fun desugar_builtins(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  for fun_ in egg.funs do
+    funs.&.put(fun_.key, fun_.value.map(DesugarBuiltins {}))
+  Egg { funs, entry_point = egg.entry_point }
+}
+
+struct DesugarBuiltins {}
+fun map(
+  id: EggId, desugar: DesugarBuiltins,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(desugar, builder, mapping)
+
+  if expr is call_builtin(call) then {
+    var args = call.args
+    eprintln("Builtin {call.builtin}")
+    switch call.builtin
+    case lower_byte builder.lower_byte(args.get(0))
+    case byte_to_int builder.byte_to_int(args.get(0))
+    case add_ints builder.add(args.get(0), args.get(1))
+    case sub_ints builder.subtract(args.get(0), args.get(1))
+    case mul_ints builder.multiply(args.get(0), args.get(1))
+    case div_ints builder.divide(args.get(0), args.get(1))
+    case mod_ints builder.modulo(args.get(0), args.get(1))
+    case and_ints builder.and_(args.get(0), args.get(1))
+    case or_ints builder.or_(args.get(0), args.get(1))
+    case xor_ints builder.xor(args.get(0), args.get(1))
+    case compare_ints builder.compare(args.get(0), args.get(1))
+    case box builder.box(args.get(0))
+    case unbox builder.unbox(args.get(0))
+    case generate_array
+      builder.generate_array(args.get(0), {
+        var builder = egg_body_builder().&
+        var index = builder.param(type_int)
+        var result = builder.call(args.get(1), list(index).to_slice())
+        builder.finish(result)
+      })
+    case array_get builder.array_get(args.get(0), args.get(1))
+    case array_set builder.array_set(args.get(0), args.get(1), args.get(2))
+    case array_slice
+      builder.array_slice(
+        args.get(0),
+        builder.member(args.get(1), "start"),
+        builder.member(args.get(1), "end"),
+      )
+    case array_len builder.array_len(args.get(0))
+    case call builder.call(args.get(0), empty_slice[EggId]())
+    case crash builder.crash(args.get(0))
+    case type_of builder.type(args.get(0).type())
+    case type_info builder.type_info(args.get(0))
+    case static_to_dynamic builder.static_to_dynamic(args.get(0))
+    case dynamic_to_static
+      builder.dynamic_to_static(
+        args.get(0),
+        call.builtin.type_signature().return_type
+          .specialize(call.substitutions),
+      )
+  } else
+    builder.push(expr)
+}

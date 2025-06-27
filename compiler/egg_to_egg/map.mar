@@ -27,82 +27,125 @@ fun map_children[M](
 
 fun map_children[M](
   id: EggId, mapper: M, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]
-): EggId {
+): EggExpr {
   switch id.resolve()
   case param unreachable()
-  case type(type) builder.type(type)
-  | case byte(byte) builder.byte(byte)
-  case int(int) builder.int(int)
-  | case array(items) TacoOp.array(items.map(mapper)).expr(expr.type)
-  case string(string) builder.string(string)
+  case type(type) EggExpr.type(type)
+  case int(int) EggExpr.int(int)
+  case string(string) EggExpr.string(string)
   case struct_(struct_) {
     var fields = map[String, EggId]()
     for field in struct_ do fields.&.put(field.key, field.value.map(mapping))
-    builder.struct_(fields)
+    EggExpr.struct_(fields)
   }
   case enum_(enum_)
-    builder.enum_(enum_.type, enum_.variant, enum_.payload.map(mapping))
-  case lambda(body) builder.lambda(body.map(mapper, mapping))
-  | case box(inner) builder.box(inner.map(mapper, builder))
-  case member(member) builder.member(member.of.map(mapping), member.name)
+    EggExpr.enum_(EggEnum {
+      type = enum_.type,
+      variant = enum_.variant,
+      payload = enum_.payload.map(mapping),
+    })
+  case lambda(body) EggExpr.lambda(body.map(mapper, mapping))
+  case member(member)
+    EggExpr.member(EggMember {
+      of = member.of.map(mapping), name = member.name
+    })
   case switch_(switch_) {
     var condition = switch_.condition.map(mapping)
     var cases = map[String, EggBody]()
     for case_ in switch_.cases do
       cases.&.put(case_.key, case_.value.map(mapper, mapping))
-    builder.switch_(condition, switch_.type, cases)
+    EggExpr.switch_(EggSwitch { condition, type = switch_.type, cases })
   }
   case call_fun(call)
-    builder.call(
-      call.fun_, call.substitutions, call.args.map(mapping), call.return_type
-    )
+    EggExpr.call_fun(EggCallFun {
+      fun_ = call.fun_,
+      substitutions = call.substitutions,
+      args = call.args.map(mapping),
+      return_type = call.return_type,
+    })
   case call_lambda(call)
-    builder.call(call.lambda.map(mapping), call.args.map(mapping))
+    EggExpr.call_lambda(EggCallLambda {
+      lambda = call.lambda.map(mapping), args = call.args.map(mapping)
+    })
   case call_builtin(call)
-    builder.call(call.builtin, call.substitutions, call.args.map(mapping))
-  case cast(cast) builder.cast(cast.what.map(mapping), cast.type)
-  | case lower_byte(int) lower_byte(int.map(mapper))
-  | case byte_to_int(byte) byte_to_int(byte.map(mapper))
-  | case add(args) add(args.a.map(mapper), args.b.map(mapper))
-  | case subtract(args) subtract(args.a.map(mapper), args.b.map(mapper))
-  | case multiply(args) multiply(args.a.map(mapper), args.b.map(mapper))
-  | case divide(args) divide(args.a.map(mapper), args.b.map(mapper))
-  | case modulo(args) modulo(args.a.map(mapper), args.b.map(mapper))
-  | case and_(args) and_(args.a.map(mapper), args.b.map(mapper))
-  | case or_(args) or_(args.a.map(mapper), args.b.map(mapper))
-  | case xor(args) xor(args.a.map(mapper), args.b.map(mapper))
-  | case compare(args) compare(args.a.map(mapper), args.b.map(mapper))
+    EggExpr.call_builtin(EggCallBuiltin {
+      builtin = call.builtin,
+      substitutions = call.substitutions,
+      args = call.args.map(mapping),
+    })
+  case cast(cast)
+    EggExpr.cast(EggCast { what = cast.what.map(mapping), type = cast.type })
+  case byte(byte) EggExpr.byte(byte)
+  case lower_byte(arg) EggExpr.lower_byte(arg.map(mapping))
+  case byte_to_int(arg) EggExpr.byte_to_int(arg.map(mapping))
+  case add(args) EggExpr.add(tuple(args.a.map(mapping), args.b.map(mapping)))
+  case subtract(args)
+    EggExpr.subtract(tuple(args.a.map(mapping), args.b.map(mapping)))
+  case multiply(args)
+    EggExpr.multiply(tuple(args.a.map(mapping), args.b.map(mapping)))
+  case divide(args)
+    EggExpr.divide(tuple(args.a.map(mapping), args.b.map(mapping)))
+  case modulo(args)
+    EggExpr.modulo(tuple(args.a.map(mapping), args.b.map(mapping)))
+  case and_(args) EggExpr.and_(tuple(args.a.map(mapping), args.b.map(mapping)))
+  case or_(args) EggExpr.or_(tuple(args.a.map(mapping), args.b.map(mapping)))
+  case xor(args) EggExpr.xor(tuple(args.a.map(mapping), args.b.map(mapping)))
+  case compare(args)
+    EggExpr.compare(tuple(args.a.map(mapping), args.b.map(mapping)))
   | case unchecked_divide(args)
-  |   unchecked_divide(args.a.map(mapper), args.b.map(mapper))
+  |   unchecked_divide(args.a.map(mapping), args.b.map(mapping))
   | case unchecked_modulo(args)
-  |   unchecked_modulo(args.a.map(mapper), args.b.map(mapper))
-  | case unbox(box) unbox(box.map(mapper))
-  | case generate_array(gen) generate_array(gen.a.map(mapper), gen.b.map(mapper))
-  | case array_get(args) array_get(args.a.map(mapper), args.b.map(mapper))
-  | case array_set(args)
-  |   array_set(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
-  | case array_slice(args)
-  |   array_slice(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
-  | case array_len(array) array_len(array.map(mapper))
+  |   unchecked_modulo(args.a.map(mapping), args.b.map(mapping))
+  case box(arg) EggExpr.box(arg.map(mapping))
+  case unbox(arg) EggExpr.unbox(arg.map(mapping))
+  case array(array)
+    EggExpr.array(EggArray {
+      items = array.items.map(mapping), item_type = array.item_type
+    })
+  case generate_array(args)
+    EggExpr.generate_array(EggGenerateArray {
+      length = args.length.map(mapping),
+      generator = args.generator.map(mapper, mapping),
+    })
+  case array_get(args)
+    EggExpr.array_get(EggArrayGet {
+      array = args.array.map(mapping), index = args.index.map(mapping)
+    })
+  case array_set(args)
+    EggExpr.array_set(EggArraySet {
+      array = args.array.map(mapping),
+      index = args.index.map(mapping),
+      item = args.item.map(mapping),
+    })
+  case array_slice(args)
+    EggExpr.array_slice(EggArraySlice {
+      array = args.array.map(mapping),
+      start = args.start.map(mapping),
+      end = args.end.map(mapping),
+    })
+  case array_len(arg) EggExpr.array_len(arg.map(mapping))
   | case unchecked_generate_non_empty_array(gen)
-  |   unchecked_generate_non_empty_array(gen.a.map(mapper), gen.b.map(mapper))
+  |   unchecked_generate_non_empty_array(gen.a.map(mapping), gen.b.map(mapping))
   | case unchecked_array_get(args)
-  |   unchecked_array_get(args.a.map(mapper), args.b.map(mapper))
+  |   unchecked_array_get(args.a.map(mapping), args.b.map(mapping))
   | case unchecked_array_set(args)
   |   unchecked_array_set(
-  |     args.a.map(mapper), args.b.map(mapper), args.c.map(mapper)
+  |     args.a.map(mapping), args.b.map(mapping), args.c.map(mapping)
   |   )
   | case unchecked_array_slice(args)
   |   unchecked_array_slice(
-  |     args.a.map(mapper), args.b.map(mapper), args.c.map(mapper)
+  |     args.a.map(mapping), args.b.map(mapping), args.c.map(mapping)
   |   )
-  | case crash expr
-  | case type_info(type) type_info(type.map(mapper))
-  | case static_to_dynamic(static) static_to_dynamic(static.map(mapper))
-  | case dynamic_to_static(dyn) dynamic_to_static(dyn.map(mapper), expr.type)
-  | case recursive(rec) recursive(rec.a.map(mapper), rec.b.map(mapper))
-  | case recurse(args) recurse(args.map(mapper), expr.type)
-  | case unreachable expr
+  case type_info(arg) EggExpr.type_info(arg.map(mapping))
+  case static_to_dynamic(arg) EggExpr.static_to_dynamic(arg.map(mapping))
+  case dynamic_to_static(convert)
+    EggExpr.dynamic_to_static(EggDynamicToStatic {
+      dynamic = convert.dynamic.map(mapping), static = convert.static
+    })
+  case crash(message) EggExpr.crash(message.map(mapping))
+  case unreachable EggExpr.unreachable
+  | case recursive(rec) recursive(rec.a.map(mapping), rec.b.map(mapping))
+  | case recurse(args) recurse(args.map(mapping), expr.type)
 }
 
 fun map(id: EggId, mapping: &Map[EggId, EggId]): EggId { mapping.get(id) }
