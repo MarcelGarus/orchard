@@ -1,0 +1,31 @@
+import mod.mar
+
+fun tree_shake(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  for signature in egg.choose_optimization_order() do
+    funs.&.put(signature, egg.funs.get(signature))
+  Egg { funs, entry_point = egg.entry_point }
+}
+
+fun tree_shake(body: EggBody): EggBody {
+  | We go through the body from the bottom to the top, tracking which locals are
+  | referenced later in the body. This way, when we encounter an expression, we
+  | know immediately whether we can throw it away.
+  var referenced_later_on = set[EggId]()
+  referenced_later_on.&.put(body.returns)
+
+  var rev_children = list[EggId]()
+  for id in body.children.rev_iter() do {
+    if not(referenced_later_on.contains(id)) and {id.diverges() is no} then
+      continue
+
+    for referenced in id.captured() do referenced_later_on.&.put(referenced)
+    rev_children.&.push(id)
+  }
+  var children = list[EggId]()
+  for id in rev_children.to_slice().rev_iter() do children.&.push(id)
+
+  EggBody {
+    params = body.params, children = children.to_slice(), returns = body.returns
+  }
+}

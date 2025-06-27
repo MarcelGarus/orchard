@@ -1,0 +1,89 @@
+import mod.mar
+
+fun captured(id: EggId): Set[EggId] {
+  var out = set[EggId]()
+  id.visit(CollectCaptured { ignore = set[EggId]().&, out = out.& })
+  out
+}
+fun captured(body: EggBody): Set[EggId] {
+  var out = set[EggId]()
+  body.visit(CollectCaptured { ignore = body.params.to_set().&, out = out.& })
+  out
+}
+
+struct CollectCaptured { ignore: &Set[EggId], out: &Set[EggId] }
+fun add(collect: CollectCaptured, id: EggId) {
+  if not(collect.ignore.contains(id)) then collect.out.put(id)
+}
+fun visit(body: EggBody, collect: CollectCaptured) {
+  for param in body.params do collect.ignore.put(param)
+  for child in body.children do child.visit(collect)
+  collect.add(body.returns)
+}
+fun visit(id: EggId, collect: CollectCaptured) {
+  switch id.resolve()
+  case param panic("param")
+  case type {}
+  | case byte {}
+  case int {}
+  case string {}
+  | case array(items) TacoOp.array(items.visit(collect)).expr(expr.type)
+  case struct_(fields) for field in fields do collect.add(field.value)
+  case enum_(enum_) collect.add(enum_.payload)
+  case lambda(body) body.visit(collect)
+  | case box(inner) builder.box(inner.visit(collect, builder))
+  case member(member) collect.add(member.of)
+  case switch_(switch_) {
+    collect.add(switch_.condition)
+    for case_ in switch_.cases do case_.value.visit(collect)
+  }
+  case call_fun(call) for arg in call.args do collect.add(arg)
+  case call_lambda(call) {
+    collect.add(call.lambda)
+    for arg in call.args do collect.add(arg)
+  }
+  case call_builtin(call) for arg in call.args do collect.add(arg)
+  case cast(cast) collect.add(cast.what)
+  | case lower_byte(int) lower_byte(int.visit(collect))
+  | case byte_to_int(byte) byte_to_int(byte.visit(collect))
+  | case add(args) add(args.a.visit(collect), args.b.visit(collect))
+  | case subtract(args) subtract(args.a.visit(collect), args.b.visit(collect))
+  | case multiply(args) multiply(args.a.visit(collect), args.b.visit(collect))
+  | case divide(args) divide(args.a.visit(collect), args.b.visit(collect))
+  | case modulo(args) modulo(args.a.visit(collect), args.b.visit(collect))
+  | case and_(args) and_(args.a.visit(collect), args.b.visit(collect))
+  | case or_(args) or_(args.a.visit(collect), args.b.visit(collect))
+  | case xor(args) xor(args.a.visit(collect), args.b.visit(collect))
+  | case compare(args) compare(args.a.visit(collect), args.b.visit(collect))
+  | case unchecked_divide(args)
+  |   unchecked_divide(args.a.visit(collect), args.b.visit(collect))
+  | case unchecked_modulo(args)
+  |   unchecked_modulo(args.a.visit(collect), args.b.visit(collect))
+  | case unbox(box) unbox(box.visit(collect))
+  | case generate_array(gen) generate_array(gen.a.visit(collect), gen.b.visit(collect))
+  | case array_get(args) array_get(args.a.visit(collect), args.b.visit(collect))
+  | case array_set(args)
+  |   array_set(args.a.visit(collect), args.b.visit(collect), args.c.visit(collect))
+  | case array_slice(args)
+  |   array_slice(args.a.visit(collect), args.b.visit(collect), args.c.visit(collect))
+  | case array_len(array) array_len(array.visit(collect))
+  | case unchecked_generate_non_empty_array(gen)
+  |   unchecked_generate_non_empty_array(gen.a.visit(collect), gen.b.visit(collect))
+  | case unchecked_array_get(args)
+  |   unchecked_array_get(args.a.visit(collect), args.b.visit(collect))
+  | case unchecked_array_set(args)
+  |   unchecked_array_set(
+  |     args.a.visit(collect), args.b.visit(collect), args.c.visit(collect)
+  |   )
+  | case unchecked_array_slice(args)
+  |   unchecked_array_slice(
+  |     args.a.visit(collect), args.b.visit(collect), args.c.visit(collect)
+  |   )
+  | case crash expr
+  | case type_info(type) type_info(type.visit(collect))
+  | case static_to_dynamic(static) static_to_dynamic(static.visit(collect))
+  | case dynamic_to_static(dyn) dynamic_to_static(dyn.visit(collect), expr.type)
+  | case recursive(rec) recursive(rec.a.visit(collect), rec.b.visit(collect))
+  | case recurse(args) recurse(args.visit(collect), expr.type)
+  | case unreachable expr
+}

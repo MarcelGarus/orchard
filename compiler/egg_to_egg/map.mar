@@ -1,0 +1,113 @@
+import mod.mar
+
+fun map[M](fun_: EggFun, mapper: M): EggFun {
+  EggFun { body = fun_.body.map(mapper, map[EggId, EggId]().&) }
+}
+
+fallback fun map[M](
+  body: EggBody, mapper: M, mapping: &Map[EggId, EggId]
+): EggBody {
+  body.map_children(mapper, mapping)
+}
+
+fun map_children[M](
+  body: EggBody, mapper: M, mapping: &Map[EggId, EggId]
+): EggBody {
+  var builder = egg_body_builder().&
+  for old in body.params do {
+    var new = builder.param(old.type())
+    mapping.put(old, new)
+  }
+  for old in body.children do {
+    var new = old.map(mapper, builder, mapping)
+    mapping.&.put(old, new)
+  }
+  builder.finish(mapping.get(body.returns))
+}
+
+fun map_children[M](
+  id: EggId, mapper: M, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]
+): EggId {
+  switch id.resolve()
+  case param unreachable()
+  case type(type) builder.type(type)
+  | case byte(byte) builder.byte(byte)
+  case int(int) builder.int(int)
+  | case array(items) TacoOp.array(items.map(mapper)).expr(expr.type)
+  case string(string) builder.string(string)
+  case struct_(struct_) {
+    var fields = map[String, EggId]()
+    for field in struct_ do fields.&.put(field.key, field.value.map(mapping))
+    builder.struct_(fields)
+  }
+  case enum_(enum_)
+    builder.enum_(enum_.type, enum_.variant, enum_.payload.map(mapping))
+  case lambda(body) builder.lambda(body.map(mapper, mapping))
+  | case box(inner) builder.box(inner.map(mapper, builder))
+  case member(member) builder.member(member.of.map(mapping), member.name)
+  case switch_(switch_) {
+    var condition = switch_.condition.map(mapping)
+    var cases = map[String, EggBody]()
+    for case_ in switch_.cases do
+      cases.&.put(case_.key, case_.value.map(mapper, mapping))
+    builder.switch_(condition, switch_.type, cases)
+  }
+  case call_fun(call)
+    builder.call(
+      call.fun_, call.substitutions, call.args.map(mapping), call.return_type
+    )
+  case call_lambda(call)
+    builder.call(call.lambda.map(mapping), call.args.map(mapping))
+  case call_builtin(call)
+    builder.call(call.builtin, call.substitutions, call.args.map(mapping))
+  case cast(cast) builder.cast(cast.what.map(mapping), cast.type)
+  | case lower_byte(int) lower_byte(int.map(mapper))
+  | case byte_to_int(byte) byte_to_int(byte.map(mapper))
+  | case add(args) add(args.a.map(mapper), args.b.map(mapper))
+  | case subtract(args) subtract(args.a.map(mapper), args.b.map(mapper))
+  | case multiply(args) multiply(args.a.map(mapper), args.b.map(mapper))
+  | case divide(args) divide(args.a.map(mapper), args.b.map(mapper))
+  | case modulo(args) modulo(args.a.map(mapper), args.b.map(mapper))
+  | case and_(args) and_(args.a.map(mapper), args.b.map(mapper))
+  | case or_(args) or_(args.a.map(mapper), args.b.map(mapper))
+  | case xor(args) xor(args.a.map(mapper), args.b.map(mapper))
+  | case compare(args) compare(args.a.map(mapper), args.b.map(mapper))
+  | case unchecked_divide(args)
+  |   unchecked_divide(args.a.map(mapper), args.b.map(mapper))
+  | case unchecked_modulo(args)
+  |   unchecked_modulo(args.a.map(mapper), args.b.map(mapper))
+  | case unbox(box) unbox(box.map(mapper))
+  | case generate_array(gen) generate_array(gen.a.map(mapper), gen.b.map(mapper))
+  | case array_get(args) array_get(args.a.map(mapper), args.b.map(mapper))
+  | case array_set(args)
+  |   array_set(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
+  | case array_slice(args)
+  |   array_slice(args.a.map(mapper), args.b.map(mapper), args.c.map(mapper))
+  | case array_len(array) array_len(array.map(mapper))
+  | case unchecked_generate_non_empty_array(gen)
+  |   unchecked_generate_non_empty_array(gen.a.map(mapper), gen.b.map(mapper))
+  | case unchecked_array_get(args)
+  |   unchecked_array_get(args.a.map(mapper), args.b.map(mapper))
+  | case unchecked_array_set(args)
+  |   unchecked_array_set(
+  |     args.a.map(mapper), args.b.map(mapper), args.c.map(mapper)
+  |   )
+  | case unchecked_array_slice(args)
+  |   unchecked_array_slice(
+  |     args.a.map(mapper), args.b.map(mapper), args.c.map(mapper)
+  |   )
+  | case crash expr
+  | case type_info(type) type_info(type.map(mapper))
+  | case static_to_dynamic(static) static_to_dynamic(static.map(mapper))
+  | case dynamic_to_static(dyn) dynamic_to_static(dyn.map(mapper), expr.type)
+  | case recursive(rec) recursive(rec.a.map(mapper), rec.b.map(mapper))
+  | case recurse(args) recurse(args.map(mapper), expr.type)
+  | case unreachable expr
+}
+
+fun map(id: EggId, mapping: &Map[EggId, EggId]): EggId { mapping.get(id) }
+fun map(ids: Slice[EggId], mapping: &Map[EggId, EggId]): Slice[EggId] {
+  var new = list[EggId]()
+  for old in ids do new.&.push(old.map(mapping))
+  new.to_slice()
+}
