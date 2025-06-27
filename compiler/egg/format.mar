@@ -1,0 +1,98 @@
+import mod.mar
+
+
+fun write[W](writer: W, egg: Egg) {
+  var first = true
+  for fun_ in egg.funs do {
+    if first then first = false else writer."\n"
+    var namespace = namespace().&
+    writer."{pretty_signature_def(fun_.key)}"
+    for param in fun_.value.body.params do
+      writer." {pretty(param, namespace)}"
+    writer."\n"
+    writer.write(fun_.value.body, namespace, indentation(1))
+  }
+}
+
+fun pretty(id: EggId, namespace: &Namespace): _ {
+  PrettyEggId { id, namespace }
+}
+struct PrettyEggId { id: EggId, namespace: &Namespace }
+fun write[W](writer: W, pretty: PrettyEggId) {
+  writer."{pretty.namespace.get(pretty.id.id.index).styled(style_of_id)}"
+}
+
+fun write[W](
+  writer: W, body: EggBody, namespace: &Namespace, indentation: Indentation
+) {
+  for id in body.children do {
+    writer."{indentation}{pretty(id, namespace)} = "
+    writer.write(id, namespace, indentation + 1)
+    writer."\n"
+  }
+  writer."{indentation}{pretty(body.returns, namespace)}"
+}
+fun write[W](
+  writer: W, id: EggId, namespace: &Namespace, indentation: Indentation
+) {
+  var type = id.type()
+  switch id.resolve()
+  case param(param) unreachable()
+  case type(type) writer."{pretty_op("type")} {type}  {pretty(type_type)}"
+  case int(int) writer."{pretty_op("int")} {int}  {pretty(type)}"
+  case string(string)
+    writer."{pretty_op("string")} {string.debug()}  {pretty(type)}"
+  case struct_(struct_) {
+    writer."{pretty_op("&")}"
+    for field in struct_ do
+      writer." {field.key}: {pretty(field.value, namespace)}"
+    writer."  {pretty(type)}"
+  }
+  case enum_(enum_)
+    writer."
+      '{pretty_op("|")} {enum_.variant}: {pretty(enum_.payload, namespace)}
+      '  {pretty(type)}"
+  case lambda(body) {
+    writer."{pretty_op("lambda")}"
+    for param in body.params do writer." {pretty(param, namespace)}"
+    writer."  {pretty(type)}\n"
+    writer.write(body, namespace, indentation)
+  }
+  case member(member)
+    writer."
+      '{pretty_op("member")} {member.name} of {pretty(member.of, namespace)}
+      '  {pretty(type)}"
+  case switch_(switch_) {
+    writer."
+      '{pretty_op("switch")} {pretty(switch_.condition, namespace)}
+      '  {pretty(type)}"
+    for case_ in switch_.cases do {
+      writer."
+        '\n{indentation + 1}{case_.key}:
+        ' {pretty(case_.value.params.get(0), namespace)}\n"
+      writer.write(case_.value, namespace, indentation + 2)
+    }
+  }
+  case call_fun(call) {
+    writer."{pretty_op("call")} {pretty_signature(call.fun_)}"
+    if call.substitutions.substitutions.is_not_empty() then
+      writer." with {call.substitutions}"
+    for arg in call.args do writer." {pretty(arg, namespace)}"
+    writer."  {pretty(type)}"
+  }
+  case call_lambda(call) {
+    writer."{pretty_op("call lambda")} {pretty(call.lambda, namespace)}"
+    for arg in call.args do writer." {pretty(arg, namespace)}"
+    writer."  {pretty(type)}"
+  }
+  case call_builtin(call) {
+    writer."{pretty_op("call")} {pretty_signature(call.builtin.format())}"
+    if call.substitutions.substitutions.is_not_empty() then
+      writer." with {call.substitutions}"
+    for arg in call.args do writer." {pretty(arg, namespace)}"
+    writer."  {pretty(type)}"
+  }
+  case cast(cast)
+    writer."{pretty_op("cast")} {pretty(cast.what, namespace)}  {pretty(type)}"
+}
+fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }

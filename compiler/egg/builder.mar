@@ -1,126 +1,159 @@
 import mod.mar
 
-fun egg_param(type: EggType): Id { egg_dag.put(EggOp.param(type)) }
-
-fun egg_type(type: EggType): Id { egg_dag.put(EggOp.type(type)) }
-
-fun egg_int(int: Int): Id { egg_dag.put(EggOp.int(int)) }
-
-fun egg_string(string: String): Id { egg_dag.put(EggOp.string(string)) }
-
-fun egg_struct(fields: Map[String, Id]): Id {
-  egg_dag.put(EggOp.struct_(fields))
+struct EggBodyBuilder { params: List[EggId], children: List[EggId] }
+fun egg_body_builder(): _ {
+  EggBodyBuilder { params = list[EggId](), children = list[EggId]() }
+}
+fun param(builder: &EggBodyBuilder, type: EggType): EggId {
+  var id = EggId { id = egg_dag.put(EggExpr.param(type)) }
+  builder.params.&.push(id)
+  id
+}
+fun push(builder: &EggBodyBuilder, op: EggExpr): EggId {
+  var id = EggId { id = egg_dag.put(op) }
+  builder.children.&.push(id)
+  id
+}
+fun finish(builder: EggBodyBuilder, returns: EggId): EggBody {
+  EggBody {
+    params = builder.params.to_slice(),
+    children = builder.children.to_slice(),
+    returns,
+  }
 }
 
-fun egg_enum(type: EggType, variant: String, payload: Id): Id {
-  egg_dag.put(EggOp.enum_(EggEnum { type, variant, payload }))
+fun type(builder: &EggBodyBuilder, type: EggType): EggId {
+  builder.push(EggExpr.type(type))
 }
 
-fun egg_lambda(body: EggBody): Id { egg_dag.put(EggOp.lambda(body)) }
-
-fun egg_member(of: Id, name: String): Id {
-  egg_dag.put(EggOp.member(EggMember { of, name }))
+fun int(builder: &EggBodyBuilder, int: Int): EggId {
+  builder.push(EggExpr.int(int))
 }
 
-fun egg_switch(condition: Id, type: EggType, cases: Map[String, EggBody]): Id {
-  egg_dag.put(EggOp.switch_(EggSwitch { condition, type, cases }))
+fun string(builder: &EggBodyBuilder, string: String): EggId {
+  builder.push(EggExpr.string(string))
 }
 
-fun egg_call(
+fun struct_(builder: &EggBodyBuilder, fields: Map[String, EggId]): EggId {
+  builder.push(EggExpr.struct_(fields))
+}
+
+fun enum_(builder: &EggBodyBuilder, type: EggType, variant: String, payload: EggId): EggId {
+  builder.push(EggExpr.enum_(EggEnum { type, variant, payload }))
+}
+
+fun lambda(builder: &EggBodyBuilder, body: EggBody): EggId {
+  builder.push(EggExpr.lambda(body))
+}
+
+fun member(builder: &EggBodyBuilder, of: EggId, name: String): EggId {
+  builder.push(EggExpr.member(EggMember { of, name }))
+}
+
+fun switch_(
+  builder: &EggBodyBuilder, condition: EggId, type: EggType, cases: Map[String, EggBody]
+): EggId {
+  builder.push(EggExpr.switch_(EggSwitch { condition, type, cases }))
+}
+
+fun call(
+  builder: &EggBodyBuilder, 
   fun_: String, substitutions: Substitutions,
-  args: Slice[Id], return_type: EggType,
-): Id {
-  egg_dag.put(EggOp.call_fun(EggCallFun {
+  args: Slice[EggId], return_type: EggType,
+): EggId {
+  builder.push(EggExpr.call_fun(EggCallFun {
     fun_, substitutions, args, return_type
   }))
 }
 
-fun egg_call(lambda: Id, args: Slice[Id]): Id {
-  egg_dag.put(EggOp.call_lambda(EggCallLambda { lambda, args, }))
+fun call(builder: &EggBodyBuilder, lambda: EggId, args: Slice[EggId]): EggId {
+  builder.push(EggExpr.call_lambda(EggCallLambda { lambda, args, }))
 }
 
-fun egg_call(
-  builtin: EggBuiltin, substitutions: Substitutions, args: Slice[Id]
-): Id {
-  egg_dag.put(EggOp.call_builtin(EggCallBuiltin {
+fun call(builder: &EggBodyBuilder, 
+  builtin: EggBuiltin, substitutions: Substitutions, args: Slice[EggId]
+): EggId {
+  builder.push(EggExpr.call_builtin(EggCallBuiltin {
     builtin, substitutions, args
   }))
 }
 
-fun egg_cast(what: Id, type: EggType): Id {
-  egg_dag.put(EggOp.cast(EggCast { what, type }))
+fun cast(builder: &EggBodyBuilder, what: EggId, type: EggType): EggId {
+  builder.push(EggExpr.cast(EggCast { what, type }))
 }
 
-fun egg_crash(message: Id): Id {
-  egg_call(EggBuiltin.crash, no_substitutions, list(message).to_slice())
+fun crash(builder: &EggBodyBuilder, message: EggId): EggId {
+  builder.call(EggBuiltin.crash, no_substitutions, list(message).to_slice())
 }
 
-fun egg_crash(message: String): Id { egg_crash(egg_string(message)) }
+fun crash(builder: &EggBodyBuilder, message: String): EggId {
+  builder.crash(builder.string(message))
+}
 
-| fun recursive_call(args: Slice[Id], return_type: EggType): Id {
+| fun recursive_call(args: Slice[EggId], return_type: EggType): EggId {
 |   call(EggCallee.recursive, args, return_type)
 | }
-| fun add(a: Id, b: Id): Id {
+| fun add(a: EggId, b: EggId): EggId {
 |   EggBuiltin.add_ints.call(list(a, b).to_slice(), type_int)
 | }
-| fun array_get(array: Id, index: Id): Id {
+| fun array_get(array: EggId, index: EggId): EggId {
 |   EggBuiltin.array_get.call(
 |     list(array, index).to_slice(),
 |     array.type.kind().array.unwrap(),
 |   )
 | }
-| fun array_len(array: Id): Id {
+| fun array_len(array: EggId): EggId {
 |   EggBuiltin.array_len.call(list(array).to_slice(), type_int)
 | }
-| fun box(inner: Id): Id {
+| fun box(inner: EggId): EggId {
 |   EggBuiltin.box.no_substitutions().call(
 |     list(inner).to_slice(), type_box(inner.type)
 |   )
 | }
-| fun unbox(box: Id): Id {
+| fun unbox(box: EggId): EggId {
 |   EggCalledBuiltin {}
 |   EggBuiltin.unbox.call(
 |     list(box).to_slice(), box.type.kind().box.unwrap()
 |   )
 | }
-| fun byte_to_int(byte: Id): Id {
+| fun byte_to_int(byte: EggId): EggId {
 |   EggBuiltin.byte_to_int.call(list(byte).to_slice(), type_int)
 | }
-| fun generate_array(length: Id, generator: Id): Id {
+| fun generate_array(length: EggId, generator: EggId): EggId {
 |   EggBuiltin.generate_array.call(
 |     list(length, generator).to_slice(),
 |     type_array(body.type_of(generator).kind().lambda.unwrap().return_type),
 |   )
 | }
-| fun compare_ints(a: Id, b: Id): Id {
+| fun compare_ints(a: EggId, b: EggId): EggId {
 |   EggBuiltin.compare_ints.call(list(a, b).to_slice(), type_ordering)
 | }
 
 
-| fun egg_unreachable(type: EggType): Id {
+| fun unreachable(builder: &EggBodyBuilder, type: EggType): EggId {
 |   egg_crash("unreachable", type)
 | }
-| fun loop_(name: String, args: Slice[Id], body: EggBody): Id {
-|   EggOp.loop_(EggLoop { name, args, body = body.put_on_heap() })
+| fun loop_(name: String, args: Slice[EggId], body: EggBody): EggId {
+|   EggExpr.loop_(EggLoop { name, args, body = body.put_on_heap() })
 |     .egg_dag.put(body.returns.type)
 | }
-| fun continue_(args: Slice[Id]): Id {
-|   EggOp.continue_(args).egg_dag.put(type_never)
+| fun continue_(args: Slice[EggId]): EggId {
+|   EggExpr.continue_(args).egg_dag.put(type_never)
 | }
 
 
-| var egg_nothing = struct_(map[String, Id]())
+| var egg_nothing = struct_(map[String, EggId]())
 | var egg_true = enum_(type_bool, "true", egg_nothing)
 | var egg_false = enum_(type_bool, "false", egg_nothing)
 
 | fun body(
-|   dag: &Dag[Id], params: Slice[EggType], returns: Id
+|   dag: &Dag[EggId], params: Slice[EggType], returns: EggId
 | ): EggBody {
 |   var body = dag.body_builder().&
 |   for param in params do body.param(param)
 |   body.finish(returns)
 | }
-| fun body_accepting_nothing(dag: &Dag[Id], returns: Id): EggBody {
+| fun body_accepting_nothing(dag: &Dag[EggId], returns: EggId): EggBody {
 |   body(list(type_nothing).to_slice(), returns)
 | }
 
@@ -132,18 +165,3 @@ fun egg_crash(message: String): Id { egg_crash(egg_string(message)) }
 | fun no_substitutions(builtin: EggBuiltin): EggCalledBuiltin {
 |   builtin.with_substitutions(no_substitutions)
 | }
-
-
-struct EggBuilder { params: List[Id], children: List[Id] }
-fun egg_builder(): _ {
-  EggBuilder { params = list[Id](), children = list[Id]() }
-}
-fun push_param(builder: &EggBuilder, id: Id) { builder.params.&.push(id) }
-fun push(builder: &EggBuilder, id: Id) { builder.children.&.push(id) }
-fun finish(builder: EggBuilder, returns: Id): EggBody {
-  EggBody {
-    params = builder.params.to_slice(),
-    children = builder.children.to_slice(),
-    returns,
-  }
-}

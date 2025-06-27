@@ -16,17 +16,18 @@ import ../plum.mar
 import builder.mar
 import builtins.mar
 import dag.mar
+import format.mar
 | import run.mar
 import type.mar
 import op_type.mar
 
-| All EggOps are allocated and managed by the DAG in dag.mar. This allows using
-| EggIds everywhere instead of having to use references.
+| All EggExprs are allocated and managed by the DAG in dag.mar. This allows
+| using EggIds everywhere instead of having to use references.
 
 struct Egg { funs: Map[String, EggFun] }
 struct EggFun { body: EggBody }
 struct EggBody { params: Slice[EggId], children: Slice[EggId], returns: EggId }
-enum EggOp {
+enum EggExpr {
   param: EggType,
 
   | Constructing values.
@@ -67,99 +68,4 @@ fun signature(module: Module, name: String, params: Slice[EggType]): String {
   b.to_string()
 }
 
-fun return_type(fun_: EggFun): EggType { fun_.dag.get(fun_.body.returns.type) }
-
-fun write[W](writer: W, yogurt: Egg) {
-  var first = true
-  for fun_ in yogurt.funs do {
-    if first then first = false else writer."\n"
-    writer.write(fun_.key, fun_.value)
-  }
-}
-fun write[W](writer: W, signature: String, fun_: EggFun) {
-  writer."{pretty_signature_def(signature)}\n"
-  writer.write(fun_.body, fun_.dag, indentation(1))
-}
-fun write[W](
-  writer: W, body: EggBody, dag: Dag[EggOp], indentation: Indentation
-) {
-  for param in body.params do {
-    writer."
-      '{indentation}{pretty(param)}: {pretty_op("param")}
-      ' {pretty(dag.get(param).type)}\n"
-  }
-  for id in body.children do {
-    var expr = dag.get(id)
-    writer."{indentation}{pretty(id)} =\n"
-    writer.write(expr, dag, indentation + 1)
-    writer."\n"
-  }
-  writer.write(body.returns, dag, indentation)
-}
-fun write[W](
-  writer: W, id: EggId, dag: Dag[EggOp], indentation: Indentation
-) {
-  writer."{indentation}"
-  var type = type_nothing
-  switch dag.get(id)
-  case param(param) unreachable()
-  case id(id) writer."{pretty_op("id")} {pretty(id)}  {pretty(type)}"
-  case type(type) writer."{pretty_op("type")} {type}  {pretty(type_type)}"
-  case int(int) writer."{pretty_op("int")} {int}  {pretty(type)}"
-  case string(string)
-    writer."{pretty_op("string")} {string.debug()}  {pretty(type)}"
-  case struct_(struct_) {
-    writer."{pretty_op("&")}  {pretty(type)}"
-    for field in struct_ do {
-      writer."\n{indentation + 1}{field.a}:\n"
-      writer.write(field.b, dag, indentation + 2)
-    }
-  }
-  case enum_(enum_) {
-    writer."{pretty_op("|")} {enum_.name}  {pretty(type)}\n"
-    writer.write(enum_.value.*, dag, indentation + 2)
-  }
-  case lambda(body) {
-    writer."{pretty_op("lambda")}  {pretty(type)}\n"
-    writer.write(body.*, dag, indentation + 1)
-  }
-  case member(member) {
-    writer."{pretty_op("member")} {member.name}  {pretty(type)}\n"
-    writer.write(member.of.*, dag, indentation + 1)
-  }
-  case switch_(switch_) {
-    writer."{pretty_op("switch")}  {pretty(type)}\n"
-    writer.write(switch_.condition.*, dag, indentation + 1)
-    for case_ in switch_.cases do {
-      writer."\n{indentation + 1}{case_.key}:\n"
-      writer.write(case_.value, dag, indentation + 2)
-    }
-  }
-  case call(call) {
-    switch call.callee
-    case fun_(fun_) {
-      writer."{pretty_op("call")} {pretty_signature(fun_.signature)}"
-      if fun_.substitutions.substitutions.is_not_empty() then
-        writer." with {fun_.substitutions}"
-    }
-    case builtin(builtin) {
-      writer."{pretty_op("call")} {pretty_signature(builtin.builtin.format())}"
-      if builtin.substitutions.substitutions.is_not_empty() then
-        writer." with {builtin.substitutions}"
-    }
-    case lambda(lambda) {
-      writer."{pretty_op("call lambda")}"
-      writer.write(lambda.*, dag, indentation + 1)
-    }
-    writer."  {pretty(type)}"
-    for arg in call.args do {
-      writer."\n"
-      writer.write(arg, dag, indentation + 1)
-    }
-  }
-  case cast(inner) {
-    writer."cast  {pretty(type)}\n"
-    writer.write(inner.*, dag, indentation + 1)
-  }
-}
-fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }
+fun return_type(fun_: EggFun): EggType { fun_.body.returns.type() }
