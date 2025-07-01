@@ -73,25 +73,25 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   case member(member) {
     | Constant fold members of known structs.
     |
-    | member foo    | both
-    |   &           |   hole b
-    |     foo:      |   hole a
-    |       hole a  |
-    |     bar:      |
-    |       hole b  |
+    | c = & foo: a bar: b  | c = & foo: a bar: b
+    | d = member c.foo     | e = add a a 
+    | e = add d d          |
     if member.of.resolve() is struct_(fields) then
       return fields.get(member.name)
   }
   case switch_(switch_) {
     | Constant fold switches on enums of known variants.
     |
-    | switch      | int 2
-    |   | true:   |
-    |     &       |
-    |   true a:   |
-    |     int 2   |
-    |   false b:  |
-    |     int 3   |
+    | a = &            | a = &
+    | b = | true: a    | b = | true: a
+    | c =              | e = int 2
+    |   switch b       |
+    |     true d:      |
+    |       e = int 2  |
+    |       e          |
+    |     false f:     |
+    |       g = int 3  |
+    |       g          |
     | if switch_.condition.resolve() is enum_(enum_) then {
     |   return switch_.cases.get(enum_.variant)
     |     .fill(enum_.payload.*)
@@ -99,19 +99,21 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | }
 
     | If all non-diverging cases are the same and don't depend on parameters,
-    | pull them out of the switch. This then allows the surrounding expressions
-    | to bubble up the "both", leaving a simpler, constant-foldable expression.
+    | pull them out of the switch, leaving the switch to evaluate to Nothing.
+    | This then leaves simpler, more constant-foldable ingredients for later
+    | expressions.
     |
-    | add           | add             | both
-    |   switch      |   both          |   switch
-    |     hole a    |     switch      |     hole a
-    |     true b:   |       hole a    |     true b:
-    |       crash   |       true b:   |       crash
-    |     false c:  |         crash   |     false c:
-    |       int 3   |       false c:  |       &
-    |   int 2       |         &       |   add
-    |               |     int 3       |     int 3
-    |               |   int 2         |     int 2
+    | b =              | b =              | b =
+    |   switch a       |   switch a       |   switch a
+    |     true c:      |     true c:      |     true c:
+    |       d = crash  |       d = crash  |       d = crash
+    |       d          |       d          |       d
+    |     false e:     |     false e:     |     false e:
+    |       f = int 3  |       f = &      |       f = &
+    |       f          |       f          |       f
+    | g = int 2        | g = int 3        | g = int 5
+    | h = add b g      | h = int 2        |
+    |                  | i = add g h      |
     | var non_diverging_cases = list[MapEntry[String, EggBody]]()
     | for case_ in switch_.cases do {
     |   var diverges =
@@ -127,7 +129,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |       .contains(case_.value.params.get(0))
     |     then { inline = false  break }
     |   }
-    |   if inline then {
+    |   if inline then
     |     return both(
     |       switch_(switch_.condition.*, type_nothing, {
     |         var new_cases = map[String, EggBody]()
@@ -144,30 +146,33 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |         new_cases
     |       }),
     |       common,
-    |     ).opt(context)
-    |   }
+    |     )
     | }
 
-    | Consider inlining nested switches.
+    | Consider "inlining" switches that switch on the result of other switches.
     |
-    | switch          | switch
-    |   switch        |   compare
-    |     compare     |     hole a
-    |       hole a    |     hole b
-    |       hole b    |   less c:
-    |     less c:     |     crash
-    |       | false:  |   equal d:
-    |         &       |     &
-    |     equal d:    |   greater e:
-    |       | true:   |     crash
-    |         &       |
-    |     greater e:  |
-    |       | false:  |
-    |         &       |
-    |   true f:       |
-    |     &           |
-    |   false g:      |
-    |     crash       |
+    | c = compare a b       | c = compare a b
+    | d =                   | d =
+    |   switch c            |   switch c
+    |     less e:           |     less e:
+    |       f = &           |       f = crash
+    |       g = | false: f  |       f
+    |       g               |     equal g:
+    |     equal h:          |       h = &
+    |       i = &           |       h
+    |       j = | true: i   |     less i:
+    |       j               |       j = crash
+    |     greater k:        |       j
+    |       l = &           |
+    |       m = | true: l   |
+    |       m               |
+    | n =                   |
+    |   switch d            |
+    |     true o:           |
+    |       p = &           |
+    |       p               |
+    |     false q:          |
+    |       r = crash       |
     | if switch_.condition.op is switch_(inner_switch) then {
     |   var all_cases_known = true
     |   for case_ in inner_switch.cases do
@@ -193,7 +198,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |             body(
     |               case_.value.params,
     |               switch_(case_.value.expr, expr.type, switch_.cases)
-    |                 .opt(context),
+    |                 ,
     |             ),
     |           )
     |         new_cases
@@ -219,36 +224,36 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |   monomorphization, no generic functions exist, so every function has a
     |   chance of being inlined eventually.
     |
-    | call core/int/+  | add
-    |   int 3          |   int 3
-    |   int 2          |   int 2
-    | if call.fun_.substitutions.substitutions.size == 0 then
-    |   if context.optimized.get_maybe(call.fun_.signature) is some(body) then {
-    |     var should_inline = true | body.expr.num_exprs() <= 30
-    |     if should_inline then {
-    |       return recursive(
-    |         call.args,
-    |         body
-    |           .specialize(call.fun_.substitutions)
-    |           .new_holes()
-    |           .call_to_recurse(
-    |             call.fun_, type.specialize(call.fun_.substitutions)
-    |           ),
-    |       ).opt(context)
-    |     }
-    |   }
+    | a = int 3                | a = int 3    | a = int 3
+    | b = int 2                | b = int 2    | b = int 2
+    | c = call core/int/+ a b  | c = add a b  | c = int 5
+    |if call.substitutions.substitutions.size == 0 then
+    |  if optimize.optimized.get_maybe(call.fun_) is some(body) then {
+    |    var should_inline = true | body.expr.num_exprs() <= 30
+    |    if should_inline then {
+    |      return builder.recursive(
+    |        call.args,
+    |        body.specialize(call.substitutions)
+    |          .new_holes()
+    |          .call_to_recurse(
+    |            call.fun_, type.specialize(call.substitutions)
+    |          ),
+    |      )
+    |    }
+    |  }
   }
   case call_lambda(call) {
-    | Constant fold calls of lambda literals.
-    | 
-    | call lambda   | add
-    |   lambda a:   |   int 3
-    |     add       |   hole b
-    |       hole a  |
-    |       hole b  |
-    |   int 3       |
-    | if call.lambda.op is lambda(body) then
-    |   return body.fill(call.args).optimize(context)
+    | Inline calls of lambda literals.
+    |
+    | a = lambda b:             | a = lambda b:  | a = lambda b:
+    |   c = int 3               |   c = int 3    |   c = int 3
+    |   d = add b c             |   d = add b c  |   d = add b c
+    |   d                       |   d            |   d
+    | e = int 4                 | e = int 4      | e = int 4
+    | f = call lambda a with e  | f = int 3      | f = int 3
+    |                           | g = add e f    | g = int 7
+    |if call.lambda.resolve() is lambda(body) then
+    |  return body.fill(builder, call.args)
   }
   case cast(cast) {
     | Remove unnecessary casts.
@@ -296,10 +301,10 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | if b.op is int(b) then if b == 0 then return a  | x + 0
     | if a.op is subtract(args) then
     |   if b == args.b.* then
-    |     return both(b, args.a.*).opt(context)  | (x - y) + y
+    |     return both(b, args.a.*)  | (x - y) + y
     | if b.op is subtract(args) then
     |   if a == args.b.* then
-    |     return both(a, args.a.*).opt(context)  | x + (y - x)
+    |     return both(a, args.a.*)  | x + (y - x)
   }
   case subtract(args) {
     var a = args.a.resolve()
@@ -411,7 +416,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   |   if gen.a.op is both(both) then
   |     return both(
   |       both.a.resolve(), unchecked_generate_non_empty_array(both.b.resolve(), gen.b.resolve())
-  |     ).opt(context)
+  |     )
   |   if gen.b.find_both_independent_of_locals() is some(ignored) then
   |     return both(
   |       gen.a.resolve(),
@@ -420,8 +425,8 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   |         unchecked_generate_non_empty_array(
   |           gen.a.resolve(), gen.b.assert_not_crashing(ignored)
   |         ),
-  |       ).opt(context),
-  |     ).opt(context)
+  |       ),
+  |     )
 
   |   | For small arrays, specialize and constant fold the generator for each
   |   | index.
@@ -482,18 +487,18 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |   return array_slice(
     |     inner_array,
     |     if_(
-    |       compare(inner_start, taco_int(0)).opt(context)
-    |         .is_less().opt(context),
+    |       compare(inner_start, taco_int(0))
+    |         .is_less(),
     |       taco_crash(type_int),
-    |       add(inner_start, start).opt(context),
-    |     ).opt(context),
+    |       add(inner_start, start),
+    |     ),
     |     if_(
     |       compare(
-    |         inner_end, array_len(inner_array).opt(context)
-    |       ).opt(context).is_less_equal().opt(context),
-    |       add(inner_start, end).opt(context),
+    |         inner_end, array_len(inner_array)
+    |       ).is_less_equal(),
+    |       add(inner_start, end),
     |       taco_crash(type_int),
-    |     ).opt(context),
+    |     ),
     |   )
     | }
     | default {}
@@ -517,10 +522,10 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |             type_nothing,
     |           ),
     |         )
-    |       ).opt(context))
+    |       ))
     |     }),
     |     gen.a.resolve(),
-    |   ).opt(context)
+    |   )
     | }
     | case array_slice(args) {
     |   var array = args.a.resolve()
@@ -540,7 +545,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |       ),
     |     ),
     |     subtract(end, start),
-    |   ).opt(context)
+    |   )
     | }
     | default {}
   }
@@ -585,8 +590,8 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   |       new_args.&.push(if i == arg.index then both.b.resolve() else args.get(i))
   |     return both(
   |       both.a.resolve(),
-  |       recurse(new_args.to_slice(), expr.type).opt(context),
-  |     ).opt(context)
+  |       recurse(new_args.to_slice(), expr.type),
+  |     )
   |   }
 
   |   | Push recurse into switch cases.
@@ -599,7 +604,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   |           EggBody {
   |             params = case_.value.params,
   |             expr = recurse(list(case_.value.expr).to_slice(), type)
-  |               .opt(context)
+  |               
   |           }
   |         )
   |       cases
