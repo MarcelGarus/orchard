@@ -30,13 +30,46 @@ fun map(
   id: EggId,
   optimize: Optimize, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
-  var expr = id.map_children(optimize, builder, mapping)
+  var id = EggId { id = egg_dag.put(id.map_children(optimize, builder, mapping)) }
 
-  | stderr."Optimize shallow\n"
-  | stderr.write(expr, holes_namespace().&, indentation(1))
+  | var namespace = namespace().&
+  | stderr."Optimizing\n  {pretty(id, namespace)} = "
+  | stderr.write(id, namespace, indentation(0))
   | stderr."\n"
+
+  | Compile the single expression into an optimized body (allowing it to expand
+  | to zero or multiple expressions).
+  var optimized = {
+    var builder = egg_body_builder().&
+    builder.finish(id.optimize(optimize, builder))
+  }
+  var better_id = optimized.returns
+
+  | stderr."Optimized:"
+  | for child in optimized.children do {
+  |   stderr."\n  {pretty(child, namespace)} = "
+  |   stderr.write(child, namespace, indentation(0))
+  | }
+  | stderr."\n  {pretty(better_id, namespace)}\n"
+
+  if optimized.children.is_empty() then return better_id
+  if optimized.children.len == 1 then
+    if optimized.children.get(0) == better_id then
+      return builder.push(better_id.resolve())
   
-  switch expr
+  var last = none[EggId]()
+  for child in optimized.children do {
+    var id = child.map(optimize, builder, mapping)
+    last = some(id)
+  }
+  last.unwrap()
+}
+
+| Assuming that the dependencies of the expression are accessible in the
+| builder and already optimized, emit expressions that are equivalent to
+| performing the expression.
+fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
+  switch id.resolve()
   case member(member) {
     | Constant fold members of known structs.
     |
@@ -229,14 +262,15 @@ fun map(
     | cast (| none: (&) some: (Int))  | | none:  (| none: (&) some: (Int))
     |   | none:  (| none: (&))        |     &
     |       &                         |
-    | if inner.op is enum_(enum_) then {
-    |   var wanted_payload_type = type.kind().enum_.unwrap().get(enum_.variant)
-    |   return enum_(
-    |     type,
-    |     enum_.variant,
-    |     enum_.payload.cast(wanted_payload_type).opt(context),
-    |   )
-    | }
+    if cast.what.resolve() is enum_(enum_) then {
+      return builder.enum_(
+        cast.type,
+        enum_.variant,
+        builder.cast(
+          enum_.payload, cast.type.kind().enum_.unwrap().get(enum_.variant)
+        ),
+      )
+    }
   }
   case lower_byte(arg) {
     | Constant fold getting the lower byte of known ints.
@@ -574,7 +608,8 @@ fun map(
   | }
   default {}
 
-  builder.push(expr)
+  builder.children.&.push(id)
+  id
 }
 
 | fun opt(expr: EggExpr, context: OptimizeEggContext): EggExpr {
