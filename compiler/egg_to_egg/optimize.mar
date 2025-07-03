@@ -227,20 +227,19 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | a = int 3                | a = int 3    | a = int 3
     | b = int 2                | b = int 2    | b = int 2
     | c = call core/int/+ a b  | c = add a b  | c = int 5
-    |if call.substitutions.substitutions.size == 0 then
-    |  if optimize.optimized.get_maybe(call.fun_) is some(body) then {
-    |    var should_inline = true | body.expr.num_exprs() <= 30
-    |    if should_inline then {
-    |      return builder.recursive(
-    |        call.args,
-    |        body.specialize(call.substitutions)
-    |          .new_holes()
-    |          .call_to_recurse(
-    |            call.fun_, type.specialize(call.substitutions)
-    |          ),
-    |      )
-    |    }
-    |  }
+    if call.substitutions.substitutions.size == 0 then
+      if optimize.optimized.get_maybe(call.fun_) is some(fun_) then {
+        var should_inline = true | body.expr.num_exprs() <= 30
+        if should_inline then {
+          return builder.recursive(
+            call.args,
+            fun_.specialize(call.substitutions).body,
+            | .call_to_recurse(
+            |   call.fun_, call.return_type.specialize(call.substitutions)
+            | ),
+          )
+        }
+      }
   }
   case call_lambda(call) {
     | Inline calls of lambda literals.
@@ -617,14 +616,6 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   id
 }
 
-| fun opt(expr: EggExpr, context: OptimizeEggContext): EggExpr {
-
-|   switch expr.op
-|   default {}
-
-|   expr
-| }
-
 | | The number of expressions inside this expression.
 | fun num_exprs(expr: EggExpr): Int {
 |   var num = 1
@@ -679,32 +670,6 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
 |   if expr.op is hole(hole) then
 |     if fill.fillings.get_maybe(hole) is some(value) then return value
 |   expr.map_children(fill)
-| }
-
-| fun collect_captured(expr: EggExpr): Slice[Hole] {
-|   var out = set[Hole]()
-|   expr.visit(CollectCaptured { ignore = set[Hole]().&, out = out.& })
-|   var res = list[Hole]()
-|   for hole in out do res.&.push(hole)
-|   res.to_slice()
-| }
-| fun collect_captured(body: EggBody): Slice[Hole] {
-|   var out = set[Hole]()
-|   body.visit(CollectCaptured { ignore = set[Hole]().&, out = out.& })
-|   var res = list[Hole]()
-|   for hole in out do res.&.push(hole)
-|   res.to_slice()
-| }
-| struct CollectCaptured { ignore: &Set[Hole], out: &Set[Hole] }
-| fun visit(expr: EggExpr, collect_captured: CollectCaptured) {
-|   if expr.op is hole(hole) then
-|     if not(collect_captured.ignore.contains(hole)) then
-|       collect_captured.out.put(hole)
-|   expr.visit_children(collect_captured)
-| }
-| fun visit(body: EggBody, collect_captured: CollectCaptured) {
-|   for param in body.params do collect_captured.ignore.put(param)
-|   body.expr.visit(collect_captured)
 | }
 
 | fun find_both_independent_of_locals(body: EggBody): Maybe[EggExpr] {
