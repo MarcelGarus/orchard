@@ -102,11 +102,8 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |     false f:     |
     |       g = int 3  |
     |       g          |
-    | if switch_.condition.resolve() is enum_(enum_) then {
-    |   return switch_.cases.get(enum_.variant)
-    |     .fill(enum_.payload.*)
-    |     .optimize(context)
-    | }
+    if switch_.condition.resolve() is enum_(enum_) then
+      return switch_.cases.get(enum_.variant).fill(enum_.payload, builder)
 
     | If all non-diverging cases are the same and don't depend on parameters,
     | pull them out of the switch, leaving the switch to evaluate to Nothing.
@@ -719,14 +716,14 @@ fun visit(id: EggId, gather: GatherChildren) { gather.children.push(id) }
 
 | Fills the body with concrete arguments for its parameters.
 fun fill(body: EggBody, args: Slice[EggId], builder: &EggBodyBuilder): EggId {
-  var mapping = map[EggId, EggId]()
+  var mapping = map[EggId, EggId]().&
   for both in zip(body.params.iter(), args.iter()) do
-    mapping.&.put(both.a, both.b)
+    mapping.put(both.a, both.b)
   for old in body.children do {
-    var new = old.map(Fill {}, builder, mapping.&)
-    mapping.&.put(old, new)
+    var new = old.map(Fill {}, builder, mapping)
+    mapping.put(old, new)
   }
-  mapping.get(body.returns)
+  body.returns.map(mapping)
 }
 fun fill(body: EggBody, arg: EggId, builder: &EggBodyBuilder): EggId {
   body.fill(list(arg).to_slice(), builder)
