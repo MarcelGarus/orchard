@@ -127,7 +127,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | var non_diverging_cases = list[MapEntry[String, EggBody]]()
     | for case_ in switch_.cases do {
     |   var diverges =
-    |     {case_.value.expr.op is crash} or {case_.value.expr.op is unreachable}
+    |     {case_.value.expr.resolve() is crash} or {case_.value.expr.resolve() is unreachable}
     |   if not(diverges) then non_diverging_cases.&.push(case_)
     | }
     | if non_diverging_cases.is_not_empty() then {
@@ -150,7 +150,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |               case_.value.params,
     |               if case_.value.expr == common
     |               then taco_nothing
-    |               else case_.value.expr.op.expr(type_nothing),
+    |               else case_.value.expr.resolve().expr(type_nothing),
     |             ),
     |           )
     |         new_cases
@@ -183,10 +183,10 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |       p               |
     |     false q:          |
     |       r = crash       |
-    | if switch_.condition.op is switch_(inner_switch) then {
+    | if switch_.condition.resolve() is switch_(inner_switch) then {
     |   var all_cases_known = true
     |   for case_ in inner_switch.cases do
-    |     if not(case_.value.expr.op is enum_) then all_cases_known = false
+    |     if not(case_.value.expr.resolve() is enum_) then all_cases_known = false
     |   | If not all cases are known, we would have copy the entire outer switch
     |   | into at least one case of the inner switch. That's a huge code
     |   | explosion, so let's not do that.
@@ -291,142 +291,176 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     }
   }
   case lower_byte(arg) {
-    | Constant fold getting the lower byte of known ints.
-    |
-    | lower byte  | byte 3
-    |   int 3     |
-    | if arg.op is int(int) then return taco_byte(int.lower_byte())
+    | Constant fold.
+    if arg.resolve() is int(int) then return builder.byte(int.lower_byte())
+
+    | lower_byte(byte_to_int(a)) = a
+    if arg.resolve() is byte_to_int(a) then return a
   }
   case byte_to_int(arg) {
-    | Constant fold converting known bytes to ints.
-    |
-    | byte to int  | int 2
-    |   byte 2     |
-    | if arg.op is byte(byte) then return taco_int(byte.to_int())
+    | Constant fold.
+    if arg.resolve() is byte(byte) then return builder.int(byte.to_int())
   }
   case add(args) {
     var a = args.a
     var b = args.b
 
-    | Constant fold addition.
-    | if a.op is int(a) then if b.op is int(b) then return taco_int(a + b)
-    | if a.op is int(a) then if a == 0 then return b  | 0 + x
-    | if b.op is int(b) then if b == 0 then return a  | x + 0
-    | if a.op is subtract(args) then
-    |   if b == args.b.* then
-    |     return both(b, args.a.*)  | (x - y) + y
-    | if b.op is subtract(args) then
-    |   if a == args.b.* then
-    |     return both(a, args.a.*)  | x + (y - x)
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a + b)
+
+    | 0 + x = x
+    if a.resolve() is int(a) then if a == 0 then return b
+
+    | x + 0 = x
+    if b.resolve() is int(b) then if b == 0 then return a
+
+    | (x - y) + y = x
+    if a.resolve() is subtract(args) then if b == args.b then return args.a
+
+    | x + (y - x) = y
+    if b.resolve() is subtract(args) then if a == args.b then return args.a
   }
   case subtract(args) {
-    var a = args.a.resolve()
-    var b = args.b.resolve()
-
-    | Constant fold subtraction.
-    | if a.op is int(a) then if b.op is int(b) then return taco_int(a - b)
-
-    | Simplify subtraction.
-    |
-    | subtract  | hole a
-    |   hole a  |
-    |   int 0   |
-    | if b.op is int(b) then if b == 0 then return a  | x - 0
-  }
-  case multiply(args) {
-    var a = args.a.resolve()
-    var b = args.b.resolve()
-
-    | Constant fold multiplication.
-    |
-    | multiply  | int 8
-    |   int 2   |
-    |   int 4   |
-    | if a.op is int(a) then if b.op is int(b) then return taco_int(a * b)
-
-    | Simplify multiplication.
-    |
-    | multiply  | hole a
-    |   hole a  |
-    |   int 1   |
-    | if a.op is int(a) then if a == 1 then return b  | 1 * x
-    | if b.op is int(b) then if b == 1 then return a  | x * 1
-  }
-  case divide(args) {
-    var a = args.a.resolve()
-    var b = args.b.resolve()
-    | if a.op is int(a) then if b.op is int(b) then if b != 0 then
-    |   return taco_int(a / b)
-    | if b.op is int(b) then if b == 1 then return a  | x / 1
-  }
-  case modulo(args) {
-    var a = args.a.resolve()
-    var b = args.b.resolve()
-    | if a.op is int(a) then if b.op is int(b) then if b != 0 then
-    |   return taco_int(a % b)
-    | if b.op is int(b) then if b == 1 then return taco_int(0)  | x % 1
-  }
-  case and_(args) {
-    var a = args.a.resolve()
-    var b = args.b.resolve()
-    | if a.op is int(a) then if b.op is int(b) then return taco_int(a & b)
-    | if a.op is int(a) then if a == 0 then return taco_int(0)  | 0 & x
-    | if b.op is int(b) then if b == 0 then return taco_int(0)  | x & 0
-    | if a.op is int(a) then if a == -1 then return b  | -1 & x
-    | if b.op is int(b) then if b == -1 then return a  | x & -1
-  }
-  case or_(args) {
-    var a = args.a.resolve()
-    var b = args.b.resolve()
-    | if a.op is int(a) then if b.op is int(b) then return taco_int(or(a, b))
-    | if a.op is int(a) then if a == 0 then return b  | 0 | x
-    | if b.op is int(b) then if b == 0 then return a  | x | 0
-    | if a.op is int(a) then if a == -1 then return taco_int(-1)  | -1 | x
-    | if b.op is int(b) then if b == -1 then return taco_int(-1)  | x | -1
-  }
-  case xor(args) {
-    var a = args.a.resolve()
-    var b = args.b.resolve()
-    | if a.op is int(a) then if b.op is int(b) then return taco_int(a ^ b)
-  }
-  case compare(args) {
-    var a = args.a.resolve()
-    var b = args.b.resolve()
+    var a = args.a
+    var b = args.b
 
     | Constant fold.
-    |
-    | compare  | | less:
-    |   int 2  |   &
-    |   int 3  |
-    | if a.op is int(a) then if b.op is int(b) then {
-    |   var symbol =
-    |     switch a <=> b
-    |     case less "less"
-    |     case equal "equal"
-    |     case greater "greater"
-    |   return enum_(type, symbol, taco_nothing)
-    | }
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a - b)
 
-    | Simplify some comparisons.
-    |
-    | compare     | compare
-    |   subtract  |   hole a
-    |     hole a  |   hole b
-    |     hole b  |
-    |   int 0     |
-    | if a.op is subtract(sub) then if b.op is int(b) then if b == 0 then {
-    |   return compare(sub.a.resolve(), sub.b.resolve())
-    | }
+    | x - 0 = x
+    if b.resolve() is int(b) then if b == 0 then return a
+
+    | (x + y) - y = x
+    if a.resolve() is add(args) then if args.b == b then return args.a
+  }
+  case multiply(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a * b)
+
+    | 1 * x = x
+    if a.resolve() is int(a) then if a == 1 then return b
+
+    | x * 1 = x
+    if b.resolve() is int(b) then if b == 1 then return a
+  }
+  case divide(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold crash.
+    if b.resolve() is int(b) then if b == 0 then
+      return builder.crash(builder.string("divide by zero"), type_int)
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a / b)
+
+    | x / 1 = x
+    if b.resolve() is int(b) then if b == 1 then return a
+  }
+  case modulo(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold crash.
+    if b.resolve() is int(b) then if b == 0 then
+      return builder.crash(builder.string("modulo by zero"), type_int)
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a % b)
+
+    | x % 1 = 0
+    if b.resolve() is int(b) then if b == 1 then return builder.int(0)
+  }
+  case and_(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a & b)
+
+    | 0 & x = 0
+    if a.resolve() is int(a) then if a == 0 then return builder.int(0)
+  
+    | x & 0 = 0
+    if b.resolve() is int(b) then if b == 0 then return builder.int(0)
+
+    | -1 & x = x
+    if a.resolve() is int(a) then if a == -1 then return b
+
+    | x & -1 = x
+    if b.resolve() is int(b) then if b == -1 then return a
+  }
+  case or_(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(or(a, b))
+
+    | 0 or x = x
+    if a.resolve() is int(a) then if a == 0 then return b
+  
+    | x or 0 = x
+    if b.resolve() is int(b) then if b == 0 then return a
+
+    | -1 or x = -1
+    if a.resolve() is int(a) then if a == -1 then return builder.int(-1)
+  
+    | x or -1 = -1
+    if b.resolve() is int(b) then if b == -1 then return builder.int(-1)
+  }
+  case xor(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a ^ b)
+    
+    | x xor x = 0
+    if a == b then return builder.int(0)
+  }
+  case compare(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.enum_(
+        type_ordering,
+        switch a <=> b
+        case less "less"
+        case equal "equal"
+        case greater "greater",
+        builder.nothing()
+      )
+
+    | compare((x - y), 0) = compare(x, y)
+    if a.resolve() is subtract(sub) then if b.resolve() is int(b) then
+      if b == 0 then return builder.compare(sub.a, sub.b)
+    
+    | Note: Because add and subtract wrap around, we can't optimize something
+    | like compare(x + 1, x) to greater.
   }
   case unbox(box) {
-    | TODO: Document
-    | if box.op is box(inner) then return inner.resolve()
+    | unbox(box(x)) = x
+    if box.resolve() is box(inner) then return inner
   }
   | case unchecked_generate_non_empty_array(gen) {
   |   | Bubble up unreachable, crashes, and both.
-  |   if gen.a.op is unreachable then return taco_unreachable(expr.type)
-  |   if gen.a.op is crash then return taco_crash(expr.type)
-  |   if gen.a.op is both(both) then
+  |   if gen.a.resolve() is unreachable then return taco_unreachable(expr.type)
+  |   if gen.a.resolve() is crash then return taco_crash(expr.type)
+  |   if gen.a.resolve() is both(both) then
   |     return both(
   |       both.a.resolve(), unchecked_generate_non_empty_array(both.b.resolve(), gen.b.resolve())
   |     )
@@ -450,7 +484,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   |   |     multiply                        |   int 4
   |   |       hole a                        |   int 9
   |   |       hole a                        |   int 25
-  |   if gen.a.op is int(len) then if len <= 10 then {
+  |   if gen.a.resolve() is int(len) then if len <= 10 then {
   |     var items = list[EggExpr]()
   |     for index in 0..len do
   |       items.&.push(
@@ -462,16 +496,16 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   |   }
   | }
   case array_get(args) {
-    var array = args.array.resolve()
-    var index = args.index.resolve()
-    | if array.op is array(items) then if index.op is int(index) then
+    var array = args.array
+    var index = args.index
+    | if array.resolve() is array(items) then if index.resolve() is int(index) then
     |   if (0..items.len).contains(index) then return items.get(index)
   }
   case array_set(args) {
-    var array = args.array.resolve()
-    var index = args.index.resolve()
-    var item  = args.item.resolve()
-    | if array.op is array(items) then if index.op is int(index) then
+    var array = args.array
+    var index = args.index
+    var item  = args.item
+    | if array.resolve() is array(items) then if index.resolve() is int(index) then
     |   if (0..items.len).contains(index) then {
     |     var new_items = list[EggExpr]()
     |     for item in items do new_items.&.push(item)
@@ -480,20 +514,20 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |   }
   }
   case array_slice(args) {
-    var array = args.array.resolve()
-    var start = args.start.resolve()
-    var end = args.end.resolve()
-    | switch array.op
+    var array = args.array
+    var start = args.start
+    var end = args.end
+    | switch array.resolve()
     | case array(items) {
-    |   if start.op is int(start) then if end.op is int(end) then {
+    |   if start.resolve() is int(start) then if end.resolve() is int(end) then {
     |     if (0..items.len).contains(start) and (0..items.len).contains(end)
     |     then return array(type, items.subslice(start..end))
     |   }
     | }
     | case array_slice(inner_args) {
-    |   var inner_array = inner_args.a.resolve()
-    |   var inner_start = inner_args.b.resolve()
-    |   var inner_end = inner_args.c.resolve()
+    |   var inner_array = inner_args.a
+    |   var inner_start = inner_args.b
+    |   var inner_end = inner_args.c
 
     |   | Merge the two nested slice operations into one. This requires explicitly
     |   | performing the checks that the inner slice would have done.
@@ -517,7 +551,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | default {}
   }
   case array_len(array) {
-    | switch array.op
+    | switch array.resolve()
     | case array(items) return taco_int(items.len)
     | case generate_array(gen) {
     |   | The generator may panic for an index, so we need to call it with the
@@ -541,9 +575,9 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |   )
     | }
     | case array_slice(args) {
-    |   var array = args.a.resolve()
-    |   var start = args.b.resolve()
-    |   var end = args.c.resolve()
+    |   var array = args.a
+    |   var start = args.b
+    |   var end = args.c
 
     |   | We can calculate the length from the slice bounds. We must also perform
     |   | bounds checking, just like the array slice function would have done.
@@ -600,8 +634,8 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   }
   | case recurse(args) {
   |   | Bubble up crashes and both.
-  |   for arg in args do if arg.op is crash then return taco_crash(type)
-  |   for arg in args.iter().enumerate() do if arg.item.op is both(both) then {
+  |   for arg in args do if arg.resolve() is crash then return taco_crash(type)
+  |   for arg in args.iter().enumerate() do if arg.item.resolve() is both(both) then {
   |     var new_args = list[EggExpr]()
   |     for i in 0..args.len do
   |       new_args.&.push(if i == arg.index then both.b.resolve() else args.get(i))
@@ -612,7 +646,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   |   }
 
   |   | Push recurse into switch cases.
-  |   if args.len == 1 then if args.get(0).op is switch_(switch_) then {
+  |   if args.len == 1 then if args.get(0).resolve() is switch_(switch_) then {
   |     return switch_(switch_.condition.resolve(), type, {
   |       var cases = map[String, EggBody]()
   |       for case_ in switch_.cases do
@@ -677,7 +711,7 @@ fun visit(id: EggId, gather: GatherChildren) { gather.children.push(id) }
 | struct CallToRecurse { called: EggCalledFun, return_type: EggType }
 | fun map(expr: EggExpr, call_to_recurse: CallToRecurse): EggExpr {
 |   var expr = expr.map_children(call_to_recurse)
-|   if expr.op is call_fun(call) then
+|   if expr.resolve() is call_fun(call) then
 |     if call.fun_ == call_to_recurse.called then
 |       return recurse(call.args, call_to_recurse.return_type)
 |   expr
@@ -715,7 +749,7 @@ fun map(
 |   locals: Slice[Hole], independent: &Maybe[EggExpr]
 | }
 | fun visit(expr: EggExpr, finder: FindBothIndependentOfLocals) {
-|   if expr.op is both(both) then {
+|   if expr.resolve() is both(both) then {
 |     var is_independent = true
 |     for captured in both.a.*.collect_captured() do
 |       for id in finder.locals do
