@@ -11,11 +11,13 @@ import mod.mar
 fun optimize(egg: Egg): Egg {
   var funs = map[String, EggFun]()
   for signature in egg.choose_optimization_order() do {
-    | eprintln("Optimizing {signature}")
-    funs.&.put(
-      signature,
-      egg.funs.get(signature).map(Optimize { optimized = funs.&, egg }),
-    )
+    eprintln("Optimizing {signature}")
+    var optimized = egg.funs.get(signature).map(Optimize { optimized = funs.&, egg })
+    eprintln("Optimized {signature}:")
+    stderr.write("fds", optimized)
+    stderr."\n"
+    optimized.verify()
+    funs.&.put(signature, optimized)
   }
   Egg { funs, entry_point = egg.entry_point }.tree_shake()
 }
@@ -27,48 +29,56 @@ fun map(
   body.map_children(optimize, mapping).tree_shake()
 }
 fun map(
-  id: EggId,
+  old: EggId,
   optimize: Optimize, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
-  var id = EggId { id = egg_dag.put(id.map_children(optimize, builder, mapping)) }
+  var namespace = namespace().&
+  | stderr."Optimizing children of\n"
+  | stderr.write(old, namespace, indentation(1))
+  | stderr."\n"
 
-  | var namespace = namespace().&
-  | stderr."Optimizing\n  {pretty(id, namespace)} = "
-  | stderr.write(id, namespace, indentation(0))
+  var children_optimized = EggId {
+    id = egg_dag.put(old.map_children(optimize, builder, mapping))
+  }
+
+  | stderr."Optimizing (children optimized)\n  {pretty(children_optimized, namespace)} = "
+  | stderr.write(children_optimized, namespace, indentation(2))
   | stderr."\n"
 
   | Compile the single expression into an optimized body (allowing it to expand
   | to zero or multiple expressions).
-  var optimized = {
+  var fully_optimized = {
     var builder = egg_body_builder().&
-    builder.finish(id.optimize(optimize, builder))
+    builder.finish(children_optimized.optimize(optimize, builder))
   }
-  var better_id = optimized.returns
 
-  | stderr."Optimized:"
-  | for child in optimized.children do {
+  | stderr."Fully optimized:"
+  | for child in fully_optimized.children do {
   |   stderr."\n  {pretty(child, namespace)} = "
-  |   stderr.write(child, namespace, indentation(0))
+  |   stderr.write(child, namespace, indentation(2))
   | }
-  | stderr."\n  {pretty(better_id, namespace)}\n"
+  | stderr."\n  {pretty(fully_optimized.returns, namespace)}\n"
 
-  if optimized.children.is_empty() then return better_id
-  if optimized.children.len == 1 then
-    if optimized.children.get(0) == better_id then
-      return builder.push(better_id.resolve())
-  
-  var last = none[EggId]()
-  for child in optimized.children do {
-    var id = child.map(optimize, builder, mapping)
-    last = some(id)
-  }
-  last.unwrap()
+  var new =
+    if fully_optimized.returns == children_optimized then {
+      builder.children.&.push(children_optimized)
+      children_optimized
+    } else {
+      for child in fully_optimized.children do {
+        var even_more_optimized = child.map(optimize, builder, mapping)
+        mapping.put(child, even_more_optimized)
+      }
+      fully_optimized.returns.map(mapping)
+    }
+  mapping.put(old, new)
+  new
 }
 
 | Assuming that the dependencies of the expression are accessible in the
 | builder and already optimized, emit expressions that are equivalent to
 | performing the expression.
 fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
+  | eprintln("Optimizing {id.debug()}")
   switch id.resolve()
   case member(member) {
     | Constant fold members of known structs.
@@ -231,6 +241,10 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
       if optimize.optimized.get_maybe(call.fun_) is some(fun_) then {
         var should_inline = true | body.expr.num_exprs() <= 30
         if should_inline then {
+          eprintln("inlining call")
+          eprintln("fun:\n")
+          stderr.write(Egg { funs = map("to_inline" -> fun_), entry_point = "" })
+          stderr."\n"
           return builder.recursive(
             call.args,
             fun_.specialize(call.substitutions).body,
@@ -548,38 +562,42 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | }
     | default {}
   }
-  | case recursive(rec) {
-  |   if not(rec.b.expr.recurses()) then
-  |     return rec.b.fill(rec.a).optimize(context)
+  case recursive(rec) {
+    eprintln("it's recursive")
+    if not(rec.body.recurses()) then {
+      eprintln("recursive does not recurse")
+      return rec.body.fill(rec.initial, builder)
+    } else
+      eprintln("recursive recurses")
 
-  |   | Find fixpoints
-  |   stderr."Optimizing shallow recursive. Args:\n"
-  |   for arg in rec.a do {
-  |     stderr.write(arg, holes_namespace().&, indentation(1))
-  |     stderr."\n"
-  |   }
-  |   var mask = rec.b.find_fixpoint_mask(rec.a, context)
-  |   var new_args = {
-  |     var res = list[EggExpr]()
-  |     for arg in rec.a.mask(mask) do res.&.push(arg.optimize(context))
-  |     res.to_slice()
-  |   }
-  |   var new_holes = {
-  |     var res = list[Hole]()
-  |     for arg in new_args do res.&.push(hole(arg.type))
-  |     res.to_slice()
-  |   }
-  |   return recursive(
-  |     new_args,
-  |     body(
-  |       new_holes,
-  |       rec.b
-  |         .fill(new_holes.unmask(mask))
-  |         .optimize(context)
-  |         .replace_recurses(mask),
-  |     )
-  |   )
-  | }
+    | Find fixpoints
+    | stderr."Optimizing shallow recursive. Args:\n"
+    | for arg in rec.initial do {
+    |   stderr.write(arg, holes_namespace().&, indentation(1))
+    |   stderr."\n"
+    | }
+    | var mask = rec.b.find_fixpoint_mask(rec.a, context)
+    | var new_args = {
+    |   var res = list[EggExpr]()
+    |   for arg in rec.a.mask(mask) do res.&.push(arg.optimize(context))
+    |   res.to_slice()
+    | }
+    | var new_holes = {
+    |   var res = list[Hole]()
+    |   for arg in new_args do res.&.push(hole(arg.type))
+    |   res.to_slice()
+    | }
+    | return recursive(
+    |   new_args,
+    |   body(
+    |     new_holes,
+    |     rec.b
+    |       .fill(new_holes.unmask(mask))
+    |       .optimize(context)
+    |       .replace_recurses(mask),
+    |   )
+    | )
+  }
   | case recurse(args) {
   |   | Bubble up crashes and both.
   |   for arg in args do if arg.op is crash then return taco_crash(type)
@@ -616,20 +634,33 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   id
 }
 
+fun recurses(body: EggBody): Bool {
+  for child in body.children do if child.recurses() then return true
+  false
+}
+fun recurses(id: EggId): Bool {
+  switch id.resolve()
+  case recursive false
+  case recurse true
+  default {
+    for child in id.children() do if child.recurses() then return true
+    false
+  }
+}
+
+fun children(id: EggId): Slice[EggId] {
+  var children = list[EggId]()
+  id.visit_children(GatherChildren { children = children.& })
+  children.to_slice()
+}
+struct GatherChildren { children: &List[EggId] }
+fun visit(id: EggId, gather: GatherChildren) { gather.children.push(id) }
+
 | | The number of expressions inside this expression.
 | fun num_exprs(expr: EggExpr): Int {
 |   var num = 1
 |   for child in expr.children() do num = num + child.num_exprs()
 |   num
-| }
-
-| | Whether the expression contains a recurse expression that is not nested within
-| | a recursive expression.
-| fun recurses(expr: EggExpr): Bool {
-|   if expr.op is recursive then return false  | An inner recurse is local.
-|   if expr.op is recurse then return true
-|   for child in expr.children() do if child.recurses() then return true
-|   false
 | }
 
 | | Converts calls to the given called signature into recurse expressions.
@@ -652,25 +683,26 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
 |   expr
 | }
 
-| | Fills the body with concrete arguments for its parameters.
-| fun fill(body: EggBody, args: Slice[EggExpr]): EggExpr {
-|   var fillings = map[Hole, EggExpr]()
-|   for both in zip(body.params.iter(), args.iter()) do
-|     fillings.&.put(both.a, both.b)
-|   body.expr.fill(fillings)
-| }
-| fun fill(body: EggBody, arg: EggExpr): EggExpr {
-|   body.fill(list(arg).to_slice())
-| }
-| fun fill(expr: EggExpr, fillings: Map[Hole, EggExpr]): EggExpr {
-|   expr.map(Fill { fillings })
-| }
-| struct Fill { fillings: Map[Hole, EggExpr] }
-| fun map(expr: EggExpr, fill: Fill): EggExpr {
-|   if expr.op is hole(hole) then
-|     if fill.fillings.get_maybe(hole) is some(value) then return value
-|   expr.map_children(fill)
-| }
+| Fills the body with concrete arguments for its parameters.
+fun fill(body: EggBody, args: Slice[EggId], builder: &EggBodyBuilder): EggId {
+  var mapping = map[EggId, EggId]()
+  for both in zip(body.params.iter(), args.iter()) do
+    mapping.&.put(both.a, both.b)
+  for old in body.children do {
+    var new = old.map(Fill {}, builder, mapping.&)
+    mapping.&.put(old, new)
+  }
+  mapping.get(body.returns)
+}
+fun fill(body: EggBody, arg: EggId, builder: &EggBodyBuilder): EggId {
+  body.fill(list(arg).to_slice(), builder)
+}
+struct Fill {}
+fun map(
+  expr: EggId, fill: Fill, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]
+): EggId {
+  builder.push(expr.map_children(fill, builder, mapping))
+}
 
 | fun find_both_independent_of_locals(body: EggBody): Maybe[EggExpr] {
 |   var independent = none[EggExpr]()
