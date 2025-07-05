@@ -130,6 +130,14 @@ fun compare(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
   builder.push(EggExpr.compare(tuple(a, b)))
 }
 
+fun unchecked_divide(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.unchecked_divide(tuple(a, b)))
+}
+
+fun unchecked_modulo(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.unchecked_modulo(tuple(a, b)))
+}
+
 fun box(builder: &EggBodyBuilder, arg: EggId): EggId {
   builder.push(EggExpr.box(arg))
 }
@@ -170,6 +178,34 @@ fun array_len(builder: &EggBodyBuilder, array: EggId): EggId {
   builder.push(EggExpr.array_len(array))
 }
 
+fun unchecked_generate_non_empty_array(
+  builder: &EggBodyBuilder, length: EggId, generator: EggBody
+): EggId {
+  builder.push(EggExpr.unchecked_generate_non_empty_array(EggGenerateArray {
+    length, generator
+  }))
+}
+
+fun unchecked_array_get(
+  builder: &EggBodyBuilder, array: EggId, index: EggId
+): EggId {
+  builder.push(EggExpr.unchecked_array_get(EggArrayGet { array, index }))
+}
+
+fun unchecked_array_set(
+  builder: &EggBodyBuilder, array: EggId, index: EggId, item: EggId
+): EggId {
+  builder.push(EggExpr.unchecked_array_set(EggArraySet { array, index, item }))
+}
+
+fun unchecked_array_slice(
+  builder: &EggBodyBuilder, array: EggId, start: EggId, end: EggId
+): EggId {
+  builder.push(EggExpr.unchecked_array_slice(EggArraySlice {
+    array, start, end
+  }))
+}
+
 fun type_info(builder: &EggBodyBuilder, type: EggId): EggId {
   builder.push(EggExpr.type_info(type))
 }
@@ -197,60 +233,19 @@ fun crash(builder: &EggBodyBuilder, message: String, type: EggType): EggId {
 fun unreachable(builder: &EggBodyBuilder, type: EggType): EggId {
   builder.push(EggExpr.unreachable(type))
 }
+
 fun recursive(
   builder: &EggBodyBuilder, initial: Slice[EggId], body: EggBody
 ): EggId {
   builder.push(EggExpr.recursive(EggRecursive { initial, body }))
 }
+
 fun recurse(
   builder: &EggBodyBuilder, next: Slice[EggId], type: EggType
 ): EggId {
   builder.push(EggExpr.recurse(EggRecurse { next, type }))
 }
 
-| fun recursive_call(args: Slice[EggId], return_type: EggType): EggId {
-|   call(EggCallee.recursive, args, return_type)
-| }
-| fun add(a: EggId, b: EggId): EggId {
-|   EggBuiltin.add_ints.call(list(a, b).to_slice(), type_int)
-| }
-| fun array_get(array: EggId, index: EggId): EggId {
-|   EggBuiltin.array_get.call(
-|     list(array, index).to_slice(),
-|     array.type.kind().array.unwrap(),
-|   )
-| }
-| fun array_len(array: EggId): EggId {
-|   EggBuiltin.array_len.call(list(array).to_slice(), type_int)
-| }
-| fun box(inner: EggId): EggId {
-|   EggBuiltin.box.no_substitutions().call(
-|     list(inner).to_slice(), type_box(inner.type)
-|   )
-| }
-| fun unbox(box: EggId): EggId {
-|   EggCalledBuiltin {}
-|   EggBuiltin.unbox.call(
-|     list(box).to_slice(), box.type.kind().box.unwrap()
-|   )
-| }
-| fun byte_to_int(byte: EggId): EggId {
-|   EggBuiltin.byte_to_int.call(list(byte).to_slice(), type_int)
-| }
-| fun generate_array(length: EggId, generator: EggId): EggId {
-|   EggBuiltin.generate_array.call(
-|     list(length, generator).to_slice(),
-|     type_array(body.type_of(generator).kind().lambda.unwrap().return_type),
-|   )
-| }
-| fun compare_ints(a: EggId, b: EggId): EggId {
-|   EggBuiltin.compare_ints.call(list(a, b).to_slice(), type_ordering)
-| }
-
-
-| fun unreachable(builder: &EggBodyBuilder, type: EggType): EggId {
-|   egg_crash("unreachable", type)
-| }
 | fun loop_(name: String, args: Slice[EggId], body: EggBody): EggId {
 |   EggExpr.loop_(EggLoop { name, args, body = body.put_on_heap() })
 |     .egg_dag.put(body.returns.type)
@@ -264,6 +259,38 @@ fun nothing(builder: &EggBodyBuilder): EggId {
   builder.struct_(map[String, EggId]())
 }
 
+fun if_(
+  builder: &EggBodyBuilder, condition: EggId, then_: EggBody, else_: EggBody
+): EggId {
+  builder.switch_(condition, then_.returns.type(), map(
+    "true" -> then_,
+    "false" -> else_,
+  ))
+}
+
+fun switch_on_ordering(
+  builder: &EggBodyBuilder,
+  ordering: EggId, less: EggBody, equal: EggBody, greater: EggBody,
+): EggId {
+  builder.switch_(ordering, less.returns.type(), map(
+    "less" -> less,
+    "equal" -> equal,
+    "greater" -> greater,
+  ))
+}
+
+fun egg_body_taking_nothing_returning_nothing(): EggBody {
+  var builder = egg_body_builder().&
+  builder.param(type_nothing)
+  builder.finish(builder.nothing())
+}
+
+fun egg_body_taking_nothing_crashing_with_out_of_bounds(): EggBody {
+  var builder = egg_body_builder().&
+  builder.param(type_nothing)
+  builder.finish(builder.crash("out of bounds", type_nothing))
+}
+
 | var egg_nothing = struct_(map[String, EggId]())
 | var egg_true = enum_(type_bool, "true", egg_nothing)
 | var egg_false = enum_(type_bool, "false", egg_nothing)
@@ -274,16 +301,4 @@ fun nothing(builder: &EggBodyBuilder): EggId {
 |   var body = dag.body_builder().&
 |   for param in params do body.param(param)
 |   body.finish(returns)
-| }
-| fun body_accepting_nothing(dag: &Dag[EggId], returns: EggId): EggBody {
-|   body(list(type_nothing).to_slice(), returns)
-| }
-
-| fun with_substitutions(
-|   builtin: EggBuiltin, substitutions: Substitutions
-| ): EggCalledBuiltin {
-|   EggCalledBuiltin { builtin, substitutions }
-| }
-| fun no_substitutions(builtin: EggBuiltin): EggCalledBuiltin {
-|   builtin.with_substitutions(no_substitutions)
 | }
