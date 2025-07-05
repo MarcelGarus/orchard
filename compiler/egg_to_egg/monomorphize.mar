@@ -1,5 +1,44 @@
 import mod.mar
 
+fun monomorphize(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  var entry_point = egg.entry_point.monomorphize(no_substitutions, egg, funs.&)
+  Egg { funs, entry_point }
+}
+fun monomorphize(
+  signature: String, substitutions: Substitutions,
+  egg: Egg, out: &Map[String, EggFun],
+): String {
+  var unspecialized_fun = egg.funs.get(signature)
+
+  if substitutions.substitutions.is_not_empty() then
+    signature = "{signature} with {substitutions}"
+  if out.contains(signature) then return signature
+
+  out.put(signature, uninitialized[EggFun]().*) | placeholder
+  var specialized_fun = unspecialized_fun
+    .specialize(substitutions) | specialize all types
+    .map(Monomorphize { egg, funs = out }) | replace call_fun exprs by monoing
+  out.put(signature, specialized_fun)
+  signature
+}
+struct Monomorphize { egg: Egg, funs: &Map[String, EggFun] }
+fun map(
+  id: EggId, mono: Monomorphize,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(mono, builder, mapping)
+  return
+    if expr is call_fun(call) then
+      builder.call(
+        call.fun_.monomorphize(call.substitutions, mono.egg, mono.funs),
+        no_substitutions,
+        call.args,
+        call.return_type,
+      )
+    else builder.push(expr)
+}
+
 fun specialize(fun_: EggFun, substitutions: Substitutions): EggFun {
   EggFun { body = fun_.body.specialize(substitutions, map[EggId, EggId]().&) }
 }
