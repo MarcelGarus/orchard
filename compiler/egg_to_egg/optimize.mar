@@ -495,32 +495,45 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   case array_get(args) {
     var array = args.array
     var index = args.index
-    | if array.resolve() is array(items) then if index.resolve() is int(index) then
-    |   if (0..items.len).contains(index) then return items.get(index)
+
+    | Constant fold.
+    if array.resolve() is array(array) then if index.resolve() is int(index) then
+      return if (0..array.items.len).contains(index) then
+        array.items.get(index)
+      else
+        builder.crash("out of bounds", array.item_type)
   }
   case array_set(args) {
     var array = args.array
     var index = args.index
     var item  = args.item
-    | if array.resolve() is array(items) then if index.resolve() is int(index) then
-    |   if (0..items.len).contains(index) then {
-    |     var new_items = list[EggExpr]()
-    |     for item in items do new_items.&.push(item)
-    |     new_items.&.set(index, item)
-    |     return array(type, new_items.to_slice())
-    |   }
+
+    | Constant fold.
+    if array.resolve() is array(array) then if index.resolve() is int(index) then
+      return if (0..array.items.len).contains(index) then {
+        var new_items = list[EggId]()
+        for item in array.items do new_items.&.push(item)
+        new_items.&.set(index, item)
+        builder.array(new_items.to_slice(), array.item_type)
+      } else
+        builder.crash("out of bounds", type_array(array.item_type))
   }
   case array_slice(args) {
     var array = args.array
     var start = args.start
     var end = args.end
-    | switch array.resolve()
-    | case array(items) {
-    |   if start.resolve() is int(start) then if end.resolve() is int(end) then {
-    |     if (0..items.len).contains(start) and (0..items.len).contains(end)
-    |     then return array(type, items.subslice(start..end))
-    |   }
-    | }
+
+    switch array.resolve()
+    case array(array) {
+      | Constant fold.
+      if start.resolve() is int(start) then if end.resolve() is int(end) then
+        return
+          if (0..array.items.len).contains(start)
+            and (0..=array.items.len).contains(end)
+            and start <= end
+          then builder.array(array.items.subslice(start..end), array.item_type)
+          else builder.crash("out of bounds", type_array(array.item_type))
+    }
     | case array_slice(inner_args) {
     |   var inner_array = inner_args.a
     |   var inner_start = inner_args.b
@@ -545,53 +558,20 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |     ),
     |   )
     | }
-    | default {}
+    default {}
   }
   case array_len(array) {
-    | switch array.resolve()
-    | case array(items) return taco_int(items.len)
-    | case generate_array(gen) {
-    |   | The generator may panic for an index, so we need to call it with the
-    |   | original indices.
-    |   return both(
-    |     recursive(list(taco_int(0)).to_slice(), {
-    |       var index = gen.b.params.get(0)
-    |       body(index, both(
-    |         gen.b.expr,
-    |         if_(
-    |           compare(taco_hole(index), gen.a.resolve()).is_equal(),
-    |           taco_nothing,
-    |           recurse(
-    |             list(add(taco_hole(index), taco_int(1))).to_slice(),
-    |             type_nothing,
-    |           ),
-    |         )
-    |       ))
-    |     }),
-    |     gen.a.resolve(),
-    |   )
-    | }
-    | case array_slice(args) {
-    |   var array = args.a
-    |   var start = args.b
-    |   var end = args.c
-
-    |   | We can calculate the length from the slice bounds. We must also perform
-    |   | bounds checking, just like the array slice function would have done.
-    |   return both(
-    |     if_(
-    |       compare(start, taco_int(0)).is_less(),
-    |       taco_crash(type_nothing),
-    |       if_(
-    |         compare(end, array_len(array)).is_greater(),
-    |         taco_crash(type_nothing),
-    |         taco_nothing,
-    |       ),
-    |     ),
-    |     subtract(end, start),
-    |   )
-    | }
-    | default {}
+    switch array.resolve()
+    case array(array)
+      | Constant fold.
+      return builder.int(array.items.len)
+    case generate_array(gen)
+      | length(generate_array(length, generator)) = length
+      return gen.length
+    case array_slice(args)
+      | length(slice(array, start, end)) = end - start
+      return builder.subtract(args.end, args.start)
+    default {}
   }
   case recursive(rec) {
     eprintln("it's recursive")
