@@ -15,67 +15,60 @@ fun merge(a: Diverges, b: Diverges, c: Diverges, d: Diverges): Diverges {
   a.merge(b).merge(c).merge(d)
 }
 
+fun diverges(body: EggBody): Diverges {
+  var result = Diverges.no
+  for child in body.children do result = merge(result, child.diverges())
+  result
+}
 fun diverges(id: EggId): Diverges {
   switch id.resolve()
   case param panic("param")
   case type Diverges.no
-  | case byte Diverges.no
   case int Diverges.no
   case string Diverges.no
-  | case array(items) {
-  |   var result = Diverges.no
-  |   for item in items do result = merge(result, item.diverges())
-  |   result
-  | }
-  case struct_(fields) Diverges.no
-  case enum_(enum_) Diverges.no
+  case struct_ Diverges.no
+  case enum_ Diverges.no
   case lambda Diverges.no
-  | case box(arg) arg.diverges()
-  case member(member) Diverges.no
+  case member Diverges.no
   case switch_(switch_) {
     var result = Diverges.no
-    for case_ in switch_.cases do
-      result = merge(result, case_.value.children.diverges())
+    for case_ in switch_.cases do result = merge(result, case_.value.diverges())
     result
   }
-  case call_fun Diverges.maybe
-  case call_lambda Diverges.maybe
-  | case both(args) merge(args.a.diverges(), args.b.diverges())
-  | case let(let) merge(let.a.diverges(), let.b.expr.diverges())
+  case call_fun(call)
+    if call.return_type == type_never then Diverges.yes else Diverges.maybe
+  case call_lambda(call)
+    if call.lambda.type().kind().lambda.unwrap().return_type == type_never then
+      Diverges.yes
+    else
+      Diverges.maybe
+  case call_builtin
+    | Note: We don't care about a precise assessment here because builtins are
+    | immediately desugared into more specific expressions anyways.
+    Diverges.maybe
   case cast Diverges.no
-  | case lower_byte(arg) arg.diverges()
-  | case byte_to_int(arg) arg.diverges()
-  | case add(args) merge(args.a.diverges(), args.b.diverges())
-  | case subtract(args) merge(args.a.diverges(), args.b.diverges())
-  | case multiply(args) merge(args.a.diverges(), args.b.diverges())
-  | case divide(args) merge(args.a.diverges(), args.b.diverges(), Diverges.maybe)
-  | case modulo(args) merge(args.a.diverges(), args.b.diverges(), Diverges.maybe)
-  | case unchecked_divide(args) merge(args.a.diverges(), args.b.diverges())
-  | case unchecked_modulo(args) merge(args.a.diverges(), args.b.diverges())
-  | case and_(args) merge(args.a.diverges(), args.b.diverges())
-  | case or_(args) merge(args.a.diverges(), args.b.diverges())
-  | case xor(args) merge(args.a.diverges(), args.b.diverges())
-  | case compare(args) merge(args.a.diverges(), args.b.diverges())
-  | case unbox(arg) arg.diverges()
-  | case generate_array(args)
-  |   merge(
-  |     args.a.diverges(),
-  |     switch args.b.expr.diverges()
-  |     case yes Diverges.maybe
-  |     case maybe Diverges.maybe
-  |     case no Diverges.no
-  |   )
-  | case array_get(args)
-  |   merge(args.a.diverges(), args.b.diverges(), Diverges.maybe)
-  | case array_set(args)
-  |   merge(
-  |     args.a.diverges(), args.b.diverges(), args.c.diverges(), Diverges.maybe
-  |   )
-  | case array_slice(args)
-  |   merge(
-  |     args.a.diverges(), args.b.diverges(), args.c.diverges(), Diverges.maybe
-  |   )
-  | case array_len(arg) arg.diverges()
+  case byte Diverges.no
+  case lower_byte Diverges.no
+  case byte_to_int Diverges.no
+  case add Diverges.no
+  case subtract Diverges.no
+  case multiply Diverges.no
+  case divide Diverges.maybe
+  case modulo Diverges.maybe
+  case and_ Diverges.no
+  case or_ Diverges.no
+  case xor Diverges.no
+  case compare Diverges.no
+  | case unchecked_divide Diverges.no
+  | case unchecked_modulo Diverges.no
+  case box Diverges.no
+  case unbox Diverges.no
+  case array Diverges.no
+  case generate_array Diverges.maybe
+  case array_get Diverges.maybe
+  case array_set Diverges.maybe
+  case array_slice Diverges.maybe
+  case array_len Diverges.no
   | case unchecked_generate_non_empty_array(gen)
   |   merge(gen.a.diverges(), gen.b.expr.diverges())
   | case unchecked_array_get(args) merge(args.a.diverges(), args.b.diverges())
@@ -83,17 +76,11 @@ fun diverges(id: EggId): Diverges {
   |   merge(args.a.diverges(), args.b.diverges(), args.c.diverges())
   | case unchecked_array_slice(args)
   |   merge(args.a.diverges(), args.b.diverges(), args.c.diverges())
-  | case crash Diverges.yes
-  | case type_info(arg) arg.diverges()
-  | case static_to_dynamic(arg) arg.diverges()
-  | case dynamic_to_static(arg) merge(arg.diverges(), Diverges.maybe)
-  | case recursive(rec) {
-  |   var result = Diverges.maybe
-  |   for arg in rec.a do result = merge(result, arg.diverges())
-  |   merge(result, rec.b.expr.diverges())
-  | }
-  | case recurse Diverges.maybe
-  | case unreachable Diverges.yes
+  | case type_info Diverges.no
+  case static_to_dynamic Diverges.no
+  case dynamic_to_static Diverges.maybe
+  case crash Diverges.yes
+  case unreachable Diverges.maybe
   default Diverges.maybe
 }
 fun diverges(ids: Slice[EggId]): Diverges {
@@ -101,47 +88,3 @@ fun diverges(ids: Slice[EggId]): Diverges {
   for id in ids do result = merge(result, id.diverges())
   result
 }
-
-| fun is_pure(expr: YogurtExpr): Bool {
-|   switch expr.op
-|   case param false
-|   case byte true
-|   case int true
-|   case string true
-|   case array true
-|   case struct_ true
-|   case member true
-|   case enum_ true
-|   case switch_(switch_) {
-|     false | TODO
-|   }
-|   case lambda true
-|   case call(call) {
-|     switch call.callee
-|     case lambda false
-|     case fun_ false
-|     case builtin(builtin) {
-|       switch builtin
-|       case lower_byte true
-|       case byte_to_int true
-|       case add_ints true
-|       case sub_ints true
-|       case mul_ints true
-|       case div_ints false
-|       case mod_ints false
-|       case and_ints true
-|       case or_ints true
-|       case xor_ints true
-|       case compare_ints true
-|       case box true
-|       case unbox true
-|       case generate_array false
-|       case array_get false
-|       case array_set false
-|       case array_slice false
-|       case array_len true
-|       case crash false
-|     }
-|   }
-|   case type true
-| }

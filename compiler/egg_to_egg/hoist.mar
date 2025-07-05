@@ -1,0 +1,86 @@
+| Expression Hoisting  
+|
+| To optimize the code, we want to minimize the amount of work that we do. Some
+| bodies (such as those of lambdas or array generators) may be called many, many
+| times, so it can make sense to "hoist" expressions from inside them to the
+| outer scope -- doing the work once, letting the body capture the results, and
+| then reusing those instead of redoing the work.
+|
+| What expressions can we hoist out of bodies?
+| - We can't hoist expressions that depend on the body's parameters directly or
+|   indirectly.
+| - If we are not sure that the body is executed at all (such as switch cases or
+|   lambdas), we can't hoist potentially crashing expressions because our
+|   optimizations should not introduce crashes.
+|
+| Technically, even hoisting pure expressions out of bodies does not always
+| reduce the amount of work as a body might not be executed at all. For example,
+| consider a switch where one case crashes with a message. We could pull the
+| pure crash message string out of the case, but we probably don't want to do
+| that because programs typically don't crash during normal operations and
+| constructing the string is expensive (allocating memory etc). Ugh. Nuance.
+
+import mod.mar
+
+struct BodyWithHoisted { body: EggBody, hoisted: Slice[EggId] }
+
+| Hoist expressions from the body, assuming that it runs often (but it's not
+| guaranteed to run).
+fun hoist_from_body_running_often(body: EggBody): BodyWithHoisted {
+  var hoisted = list[EggId]()
+  var body = body.map(
+    HoistOften { kept = set[EggId]().&, hoisted = hoisted.& },
+    map[EggId, EggId]().&,
+  )
+  BodyWithHoisted { body, hoisted = hoisted.to_slice() }
+}
+
+struct HoistOften { kept: &Set[EggId], hoisted: &List[EggId] }
+fun map(
+  body: EggBody, hoist: HoistOften, mapping: &Map[EggId, EggId]
+): EggBody {
+  var builder = egg_body_builder().&
+  for old in body.params do {
+    var new = builder.param(old.type())
+    mapping.put(old, new)
+    hoist.kept.put(old)
+  }
+  for old in body.children do {
+    var any_reference_not_hoisted = {
+      var res = false
+      for id in old.captured() do if hoist.kept.contains(id) then res = true
+      res
+    }
+    var keep = any_reference_not_hoisted or not(old.diverges() is no)
+
+    if keep then {
+      var new = old.map(hoist, builder, mapping)
+      mapping.put(old, new)
+      hoist.kept.put(old)
+    } else {
+      hoist.hoisted.push(old)
+    }
+  }
+  builder.finish(body.returns.map(mapping))
+}
+fun map(
+  id: EggId, hoist: HoistOften,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  switch id.resolve()
+  case switch_(switch_) {
+    var cases = map[String, EggBody]()
+    for case_ in switch_.cases do
+      cases.&.put(
+        case_.key,
+        if case_.value.diverges() is yes then
+          case_.value
+        else
+          case_.value.map(hoist, mapping),
+      )
+    builder.switch_(
+      switch_.condition.map(hoist, builder, mapping), switch_.type, cases
+    )
+  }
+  default builder.push(id.map_children(hoist, builder, mapping))
+}

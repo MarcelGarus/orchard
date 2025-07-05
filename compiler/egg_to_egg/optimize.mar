@@ -60,10 +60,9 @@ fun map(
   | stderr."\n  {pretty(fully_optimized.returns, namespace)}\n"
 
   var new =
-    if fully_optimized.returns == children_optimized then {
-      builder.children.&.push(children_optimized)
-      children_optimized
-    } else {
+    if fully_optimized.returns == children_optimized then
+      builder.push(children_optimized)
+    else {
       for child in fully_optimized.children do {
         var even_more_optimized = child.map(optimize, builder, mapping)
         mapping.put(child, even_more_optimized)
@@ -80,6 +79,22 @@ fun map(
 fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   | eprintln("Optimizing {id.debug()}")
   switch id.resolve()
+  case lambda(lambda) {
+    | Assume that the lambda will run often, hoist pure expressions out of it do
+    | prevent redoing the work to calculate them over and over every time the
+    | lambda is called.
+    |
+    | b =                   | b = multiply a a
+    |   lambda c:           | c =
+    |     d = multiply a a  |   lambda d:
+    |     e = add c d       |     e = add b d
+    |     e                 |     e
+    var hoisted = lambda.hoist_from_body_running_often()
+    if hoisted.hoisted.is_not_empty() then {
+      for id in hoisted.hoisted do builder.push(id)
+      return builder.lambda(hoisted.body)
+    }
+  }
   case member(member) {
     | Constant fold members of known structs.
     |
@@ -453,70 +468,64 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | unbox(box(x)) = x
     if box.resolve() is box(inner) then return inner
   }
-  | case unchecked_generate_non_empty_array(gen) {
-  |   | Bubble up unreachable, crashes, and both.
-  |   if gen.a.resolve() is unreachable then return taco_unreachable(expr.type)
-  |   if gen.a.resolve() is crash then return taco_crash(expr.type)
-  |   if gen.a.resolve() is both(both) then
-  |     return both(
-  |       both.a.resolve(), unchecked_generate_non_empty_array(both.b.resolve(), gen.b.resolve())
-  |     )
-  |   if gen.b.find_both_independent_of_locals() is some(ignored) then
-  |     return both(
-  |       gen.a.resolve(),
-  |       both(
-  |         ignored,
-  |         unchecked_generate_non_empty_array(
-  |           gen.a.resolve(), gen.b.assert_not_crashing(ignored)
-  |         ),
-  |       ),
-  |     )
+  case unchecked_generate_non_empty_array(args) {
+    | if args.b.find_both_independent_of_locals() is some(ignored) then
+    |   return both(
+    |     args.a.resolve(),
+    |     both(
+    |       ignored,
+    |       unchecked_generate_non_empty_array(
+    |         args.a.resolve(), args.b.assert_not_crashing(ignored)
+    |       ),
+    |     ),
+    |   )
 
-  |   | For small arrays, specialize and constant fold the generator for each
-  |   | index.
-  |   |
-  |   | unchecked_generate_non_empty_array  | array
-  |   |   int 5                             |   int 0
-  |   |   generator a:                      |   int 1
-  |   |     multiply                        |   int 4
-  |   |       hole a                        |   int 9
-  |   |       hole a                        |   int 25
-  |   if gen.a.resolve() is int(len) then if len <= 10 then {
-  |     var items = list[EggExpr]()
-  |     for index in 0..len do
-  |       items.&.push(
-  |         gen.b
-  |           .fill(list(taco_int(index)).to_slice())
-  |           .optimize(context)
-  |       )
-  |     return array(gen.b.expr.type, items.to_slice())
-  |   }
-  | }
+    | For small arrays, specialize and constant fold the generator for each
+    | index.
+    |
+    | a = int 4                               | a = int 5
+    | b =                                     | b = int 0
+    |   unchecked_generate_non_empty_array a  | c = int 1
+    |     generator c:                        | d = int 4
+    |       d = multiply c c                  | e = int 9
+    |       d                                 | f = array b c d e
+    if args.length.resolve() is int(length) then if length <= 10 then {
+      var items = list[EggId]()
+      for index in 0..length do
+        items.&.push(args.generator.fill(builder.int(index), builder))
+      return builder.array(items.to_slice(), args.generator.returns.type())
+    }
+
+    | Hoist expressions (even potentially crashing ones) that don't depend on
+    | the parameters out of the generator.
+    var hoisted = args.generator.hoist_from_body_running_often()
+    if hoisted.hoisted.is_not_empty() then {
+      for id in hoisted.hoisted do builder.push(id)
+      return builder.unchecked_generate_non_empty_array(
+        args.length, hoisted.body
+      )
+    }
+  }
   case array_get(args) {
-    var array = args.array
-    var index = args.index
-
     | Constant fold.
-    if array.resolve() is array(array) then if index.resolve() is int(index) then
-      return if (0..array.items.len).contains(index) then
-        array.items.get(index)
-      else
-        builder.crash("out of bounds", array.item_type)
+    if args.array.resolve() is array(array) then
+      if args.index.resolve() is int(index) then
+        return if (0..array.items.len).contains(index) then
+          array.items.get(index)
+        else
+          builder.crash("out of bounds", array.item_type)
   }
   case array_set(args) {
-    var array = args.array
-    var index = args.index
-    var item  = args.item
-
     | Constant fold.
-    if array.resolve() is array(array) then if index.resolve() is int(index) then
-      return if (0..array.items.len).contains(index) then {
-        var new_items = list[EggId]()
-        for item in array.items do new_items.&.push(item)
-        new_items.&.set(index, item)
-        builder.array(new_items.to_slice(), array.item_type)
-      } else
-        builder.crash("out of bounds", type_array(array.item_type))
+    if args.array.resolve() is array(array) then
+      if args.index.resolve() is int(index) then
+        return if (0..array.items.len).contains(index) then {
+          var new_items = list[EggId]()
+          for item in array.items do new_items.&.push(item)
+          new_items.&.set(index, args.item)
+          builder.array(new_items.to_slice(), array.item_type)
+        } else
+          builder.crash("out of bounds", type_array(array.item_type))
   }
   case array_slice(args) {
     var array = args.array
@@ -641,8 +650,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   | }
   default {}
 
-  builder.children.&.push(id)
-  id
+  builder.push(id)
 }
 
 fun recurses(body: EggBody): Bool {
