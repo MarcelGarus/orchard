@@ -1,6 +1,6 @@
 import mod.mar
 
-fun desugar_bounds_checks(egg: Egg): Egg {
+fun desugar_checks_of_array_ops(egg: Egg): Egg {
   var funs = map[String, EggFun]()
   for fun_ in egg.funs do
     funs.&.put(fun_.key, fun_.value.map(DesugarBoundsChecks {}))
@@ -13,28 +13,13 @@ fun map(
 ): EggId {
   var expr = id.map_children(desugar, builder, mapping)
   switch expr
-  | case divide(args) {
-  |   builder.switch_on_ordering(
-  |     builder.compare(args.b, builder.int(0)),
-  |     egg_body_taking_nothing_returning_nothing(),
-  |     {
-  |       var builder = egg_body_builder().&
-  |       builder.param(type_nothing)
-  |       builder.finish(builder.crash("divide by zero", type_nothing))
-  |     },
-  |     egg_body_taking_nothing_returning_nothing(),
-  |   )
-  |   builder.unchecked_divide()
-  | }
   case generate_array(args) {
     var item_type = args.generator.returns.type()
     builder.switch_on_ordering(
       builder.compare(args.length, builder.int(0)),
-      {
-        var builder = egg_body_builder().&
-        builder.param(type_nothing)
-        builder.finish(builder.crash("negative length", type_array(item_type)))
-      },
+      egg_body_taking_nothing_crashing(
+        "negative length", type_array(item_type)
+      ),
       {
         var builder = egg_body_builder().&
         builder.param(type_nothing)
@@ -54,30 +39,30 @@ fun map(
   case array_get(args) {
     builder.switch_on_ordering(
       builder.compare(args.index, builder.int(0)),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
+      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
       egg_body_taking_nothing_returning_nothing(),
       egg_body_taking_nothing_returning_nothing(),
     )
     builder.switch_on_ordering(
       builder.compare(args.index, builder.array_len(args.array)),
       egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
+      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
+      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
     )
     builder.unchecked_array_get(args.array, args.index)
   }
   case array_set(args) {
     builder.switch_on_ordering(
       builder.compare(args.index, builder.int(0)),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
+      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
       egg_body_taking_nothing_returning_nothing(),
       egg_body_taking_nothing_returning_nothing(),
     )
     builder.switch_on_ordering(
       builder.compare(args.index, builder.array_len(args.array)),
       egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
+      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
+      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
     )
     builder.unchecked_array_set(args.array, args.index, args.item)
   }
@@ -85,7 +70,7 @@ fun map(
     var length = builder.array_len(args.array)
     builder.switch_on_ordering(
       builder.compare(args.start, builder.int(0)),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
+      egg_body_taking_nothing_crashing("bad bounds", type_nothing),
       egg_body_taking_nothing_returning_nothing(),
       egg_body_taking_nothing_returning_nothing(),
     )
@@ -93,21 +78,58 @@ fun map(
       builder.compare(args.start, length),
       egg_body_taking_nothing_returning_nothing(),
       egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
+      egg_body_taking_nothing_crashing("bad bounds", type_nothing),
     )
     builder.switch_on_ordering(
       builder.compare(args.start, args.end),
       egg_body_taking_nothing_returning_nothing(),
       egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
+      egg_body_taking_nothing_crashing("bad bounds", type_nothing),
     )
     builder.switch_on_ordering(
       builder.compare(args.end, length),
       egg_body_taking_nothing_returning_nothing(),
       egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing_with_out_of_bounds(),
+      egg_body_taking_nothing_crashing("bad bounds", type_nothing),
     )
     builder.unchecked_array_slice(args.array, args.start, args.end)
   }
   default builder.push(expr)
 }
+
+
+fun desugar_checks_of_divide_and_modulo(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  for fun_ in egg.funs do
+    funs.&.put(fun_.key, fun_.value.map(DesugarDivideAndModulo {}))
+  Egg { funs, entry_point = egg.entry_point }
+}
+
+struct DesugarDivideAndModulo {}
+fun map(
+  id: EggId, desugar: DesugarDivideAndModulo,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(desugar, builder, mapping)
+  switch expr
+  case divide(args) {
+    builder.switch_on_ordering(
+      builder.compare(args.b, builder.int(0)),
+      egg_body_taking_nothing_returning_nothing(),
+      egg_body_taking_nothing_crashing("divide by zero", type_nothing),
+      egg_body_taking_nothing_returning_nothing(),
+    )
+    builder.unchecked_divide(args.a, args.b)
+  }
+  case modulo(args) {
+    builder.switch_on_ordering(
+      builder.compare(args.b, builder.int(0)),
+      egg_body_taking_nothing_returning_nothing(),
+      egg_body_taking_nothing_crashing("modulo by zero", type_nothing),
+      egg_body_taking_nothing_returning_nothing(),
+    )
+    builder.unchecked_modulo(args.a, args.b)
+  }
+  default builder.push(expr)
+}
+

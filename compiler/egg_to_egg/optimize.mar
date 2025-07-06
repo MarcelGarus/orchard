@@ -33,17 +33,17 @@ fun map(
   optimize: Optimize, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
   var namespace = namespace().&
-  | stderr."Optimizing children of\n"
-  | stderr.write(old, namespace, indentation(1))
-  | stderr."\n"
+  stderr."Optimizing children of\n"
+  stderr.write(old, namespace, indentation(1))
+  stderr."\n"
 
   var children_optimized = EggId {
     id = egg_dag.put(old.map_children(optimize, builder, mapping))
   }
 
-  | stderr."Optimizing (children optimized)\n  {pretty(children_optimized, namespace)} = "
-  | stderr.write(children_optimized, namespace, indentation(2))
-  | stderr."\n"
+  stderr."Optimizing (children optimized)\n  {pretty(children_optimized, namespace)} = "
+  stderr.write(children_optimized, namespace, indentation(2))
+  stderr."\n"
 
   | Compile the single expression into an optimized body (allowing it to expand
   | to zero or multiple expressions).
@@ -52,12 +52,12 @@ fun map(
     builder.finish(children_optimized.optimize(optimize, builder))
   }
 
-  | stderr."Fully optimized:"
-  | for child in fully_optimized.children do {
-  |   stderr."\n  {pretty(child, namespace)} = "
-  |   stderr.write(child, namespace, indentation(2))
-  | }
-  | stderr."\n  {pretty(fully_optimized.returns, namespace)}\n"
+  stderr."Fully optimized:"
+  for child in fully_optimized.children do {
+    stderr."\n  {pretty(child, namespace)} = "
+    stderr.write(child, namespace, indentation(2))
+  }
+  stderr."\n  {pretty(fully_optimized.returns, namespace)}\n"
 
   var new =
     if fully_optimized.returns == children_optimized then
@@ -77,18 +77,19 @@ fun map(
 | builder and already optimized, emit expressions that are equivalent to
 | performing the expression.
 fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
-  | eprintln("Optimizing {id.debug()}")
+  eprintln("Optimizing {id.debug()}")
   switch id.resolve()
   case lambda(lambda) {
-    | Assume that the lambda will run often, hoist pure expressions out of it do
-    | prevent redoing the work to calculate them over and over every time the
-    | lambda is called.
+    | Assuming that the lambda will run often, hoisting pure expressions out of
+    | it prevents recalculating them over and over every time the lambda is
+    | called.
     |
-    | b =                   | b = multiply a a
-    |   lambda c:           | c =
-    |     d = multiply a a  |   lambda d:
-    |     e = add c d       |     e = add b d
-    |     e                 |     e
+    | a = ...
+    | ---------------------------------------
+    | lambda c:           |  b = multiply a a
+    |   d = multiply a a  |  lambda d:
+    |   e = add c d       |    e = add b d
+    |   e                 |    e
     var hoisted = lambda.hoist_from_body_running_often()
     if hoisted.hoisted.is_not_empty() then {
       for id in hoisted.hoisted do builder.push(id)
@@ -98,25 +99,27 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   case member(member) {
     | Constant fold members of known structs.
     |
-    | c = & foo: a bar: b  | c = & foo: a bar: b
-    | d = member c.foo     | e = add a a 
-    | e = add d d          |
+    | a = ...
+    | b = ...
+    | c = & foo: a bar: b
+    | -------------------
+    | member c.foo  |  a
     if member.of.resolve() is struct_(fields) then
       return fields.get(member.name)
   }
   case switch_(switch_) {
     | Constant fold switches on enums of known variants.
     |
-    | a = &            | a = &
-    | b = | true: a    | b = | true: a
-    | c =              | e = int 2
-    |   switch b       |
-    |     true d:      |
-    |       e = int 2  |
-    |       e          |
-    |     false f:     |
-    |       g = int 3  |
-    |       g          |
+    | a = &
+    | b = | true: a
+    | -----------------------
+    | switch b       |  int 2
+    |   true d:      |
+    |     e = int 2  |
+    |     e          |
+    |   false f:     |
+    |     g = int 3  |
+    |     g          |
     if switch_.condition.resolve() is enum_(enum_) then
       return switch_.cases.get(enum_.variant).fill(enum_.payload, builder)
 
@@ -125,17 +128,17 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | This then leaves simpler, more constant-foldable ingredients for later
     | expressions.
     |
-    | b =              | b =              | b =
-    |   switch a       |   switch a       |   switch a
-    |     true c:      |     true c:      |     true c:
-    |       d = crash  |       d = crash  |       d = crash
-    |       d          |       d          |       d
-    |     false e:     |     false e:     |     false e:
-    |       f = int 3  |       f = &      |       f = &
-    |       f          |       f          |       f
-    | g = int 2        | g = int 3        | g = int 5
-    | h = add b g      | h = int 2        |
-    |                  | i = add g h      |
+    | a = ...
+    | ---------------------------------
+    | switch a       |  b =
+    |   true b:      |    switch a
+    |     c = crash  |      true c:
+    |     c          |        d = crash
+    |   false d:     |        d
+    |     e = int 3  |      false e:
+    |     e          |        f = &
+    |                |        f
+    |                |  int 3
     | var non_diverging_cases = list[MapEntry[String, EggBody]]()
     | for case_ in switch_.cases do {
     |   var diverges =
@@ -173,18 +176,18 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
 
     | Consider "inlining" switches that switch on the result of other switches.
     |
-    | c = compare a b       | c = compare a b
-    | d =                   | d =
-    |   switch c            |   switch c
-    |     less e:           |     less e:
-    |       f = &           |       f = crash
-    |       g = | false: f  |       f
-    |       g               |     equal g:
-    |     equal h:          |       h = &
-    |       i = &           |       h
-    |       j = | true: i   |     less i:
-    |       j               |       j = crash
-    |     greater k:        |       j
+    | c = compare a b       |  c = compare a b
+    | d =                   |  d =
+    |   switch c            |    switch c
+    |     less e:           |      less e:
+    |       f = &           |        f = crash
+    |       g = | false: f  |        f
+    |       g               |      equal g:
+    |     equal h:          |        h = &
+    |       i = &           |        h
+    |       j = | true: i   |      less i:
+    |       j               |        j = crash
+    |     greater k:        |        j
     |       l = &           |
     |       m = | true: l   |
     |       m               |
@@ -231,6 +234,9 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
 
     | TODO: Inner switch but one variant of the outer switch is never chosen;
     | case could be optimized to unreachable.
+
+    | TODO: If a switch diverges in a case, when switching on the same
+    | expression later, the diverging case is unreachable.
   }
   case call_fun(call) {
     | TODO: Try to run the function at compile time.
@@ -246,9 +252,10 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |   monomorphization, no generic functions exist, so every function has a
     |   chance of being inlined eventually.
     |
-    | a = int 3                | a = int 3    | a = int 3
-    | b = int 2                | b = int 2    | b = int 2
-    | c = call core/int/+ a b  | c = add a b  | c = int 5
+    | a = int 3
+    | b = int 2
+    | --------------------------------
+    | call + a b  |  add a b  |  int 5
     if call.substitutions.substitutions.size == 0 then
       if optimize.optimized.get_maybe(call.fun_) is some(fun_) then {
         var should_inline = true | body.expr.num_exprs() <= 30
@@ -260,6 +267,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
           return builder.recursive(
             call.args,
             fun_.specialize(call.substitutions).body,
+            | TODO:
             | .call_to_recurse(
             |   call.fun_, call.return_type.specialize(call.substitutions)
             | ),
@@ -270,28 +278,32 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   case call_lambda(call) {
     | Inline calls of lambda literals.
     |
-    | a = lambda b:             | a = lambda b:  | a = lambda b:
-    |   c = int 3               |   c = int 3    |   c = int 3
-    |   d = add b c             |   d = add b c  |   d = add b c
-    |   d                       |   d            |   d
-    | e = int 4                 | e = int 4      | e = int 4
-    | f = call lambda a with e  | f = int 3      | f = int 3
-    |                           | g = add e f    | g = int 7
+    | a =
+    |   lambda b:
+    |     c = int 3
+    |     d = add b c
+    |     d
+    | e = int 4
+    | ----------------------------------
+    | call lambda a with e  |  f = int 3
+    |                       |  add e f
     if call.lambda.resolve() is lambda(lambda_body) then
      return lambda_body.fill(call.args, builder)
   }
   case cast(cast) {
     | Remove unnecessary casts.
     |
-    | cast (Int)  |  int 2
-    |   int 2     |
+    | a = int 2
+    | ------------------
+    | cast a (Int)  |  a
     if cast.what.type() == cast.type then return cast.what
 
     | Instead of casting enums, construct them directly with the correct type.
     |
-    | cast (| none: (&) some: (Int))  | | none:  (| none: (&) some: (Int))
-    |   | none:  (| none: (&))        |     &
-    |       &                         |
+    | a = &
+    | b = | none: a (| none: (&))
+    | ------------------------------------------------------------------------
+    | cast b (| none: (&) some: (Int))  |  | none: a (| none: (&) some: (Int))
     if cast.what.resolve() is enum_(enum_) then {
       return builder.enum_(
         cast.type,
@@ -483,12 +495,13 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | For small arrays, specialize and constant fold the generator for each
     | index.
     |
-    | a = int 4                               | a = int 5
-    | b =                                     | b = int 0
-    |   unchecked_generate_non_empty_array a  | c = int 1
-    |     generator c:                        | d = int 4
-    |       d = multiply c c                  | e = int 9
-    |       d                                 | f = array b c d e
+    | a = int 4
+    | ----------------------------------------------------------
+    | unchecked_generate_non_empty_array a  |  b = multiply 0 0
+    |   generator b:                        |  c = multiply 1 1
+    |     c = multiply b b                  |  d = multiply 2 2
+    |     c                                 |  e = multiply 3 3
+    |                                       |  f = array b c d e
     if args.length.resolve() is int(length) then if length <= 10 then {
       var items = list[EggId]()
       for index in 0..length do
@@ -496,9 +509,10 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
       return builder.array(items.to_slice(), args.generator.returns.type())
     }
 
-    | Hoist expressions (even potentially crashing ones) that don't depend on
-    | the parameters out of the generator.
-    var hoisted = args.generator.hoist_from_body_running_often()
+    | Hoist expressions (even potentially crashing ones) out of the generator as
+    | long as they don't depend on the index or hoisting would change the order
+    | of potentially crashing expressions.
+    var hoisted = args.generator.hoist_from_body_running_at_least_once()
     if hoisted.hoisted.is_not_empty() then {
       for id in hoisted.hoisted do builder.push(id)
       return builder.unchecked_generate_non_empty_array(
@@ -722,28 +736,3 @@ fun map(
 ): EggId {
   builder.push(expr.map_children(fill, builder, mapping))
 }
-
-| fun find_both_independent_of_locals(body: EggBody): Maybe[EggExpr] {
-|   var independent = none[EggExpr]()
-|   body.expr.visit(FindBothIndependentOfLocals {
-|     locals = body.params, independent = independent.&
-|   })
-|   independent
-| }
-| struct FindBothIndependentOfLocals {
-|   locals: Slice[Hole], independent: &Maybe[EggExpr]
-| }
-| fun visit(expr: EggExpr, finder: FindBothIndependentOfLocals) {
-|   if expr.resolve() is both(both) then {
-|     var is_independent = true
-|     for captured in both.a.*.collect_captured() do
-|       for id in finder.locals do
-|         if captured == id then is_independent = false
-|     if is_independent then {
-|       finder.independent.* = some(both.a.*)
-|       return {}
-|     }
-|   }
-|   expr.visit_children(finder)
-| }
-| fun visit(body: EggBody, finder: FindBothIndependentOfLocals) {}

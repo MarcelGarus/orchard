@@ -25,7 +25,8 @@ import mod.mar
 struct BodyWithHoisted { body: EggBody, hoisted: Slice[EggId] }
 
 | Hoist expressions from the body, assuming that it runs often (but it's not
-| guaranteed to run).
+| guaranteed to run). This means that we hoist all operations except if they
+| directly or indirecty depend on the body parameters or they may crash.
 fun hoist_from_body_running_often(body: EggBody): BodyWithHoisted {
   var hoisted = list[EggId]()
   var body = body.map(
@@ -53,11 +54,15 @@ fun map(
     }
     var keep = any_reference_not_hoisted or not(old.diverges() is no)
 
+    eprintln("keep {pretty(old, namespace().&)}? {keep}")
     if keep then {
       var new = old.map(hoist, builder, mapping)
       mapping.put(old, new)
       hoist.kept.put(old)
     } else {
+      eprintln("Hoisting {old.debug()}")
+      stderr.write(old, namespace().&, indentation(1))
+      stderr."\n"
       hoist.hoisted.push(old)
     }
   }
@@ -74,13 +79,113 @@ fun map(
       cases.&.put(
         case_.key,
         if case_.value.diverges() is yes then
-          case_.value
+          case_.value.map(DoNotHoist {}, mapping)
         else
           case_.value.map(hoist, mapping),
       )
-    builder.switch_(
-      switch_.condition.map(hoist, builder, mapping), switch_.type, cases
-    )
+    builder.switch_(switch_.condition.map(mapping), switch_.type, cases)
   }
   default builder.push(id.map_children(hoist, builder, mapping))
+}
+
+| Hoist expressions from a body that it is guaranteed to run at least once.
+| Knowing the fact that the body runs allows us to hoist crashing expressions
+| such as bounds checks, as long as they don't come after possibly-crashing,
+| non-hoisted expressions.
+fun hoist_from_body_running_at_least_once(body: EggBody): BodyWithHoisted {
+  var hoisted = list[EggId]()
+  var body = body.map(
+    HoistAtLeastOnce {
+      kept = set[EggId]().&,
+      hoisted = hoisted.&,
+      kept_something_possibly_crashing = false,
+    },
+    map[EggId, EggId]().&,
+  )
+  BodyWithHoisted { body, hoisted = hoisted.to_slice() }
+}
+
+struct HoistAtLeastOnce {
+  kept: &Set[EggId],
+  hoisted: &List[EggId],
+  kept_something_possibly_crashing: Bool,
+}
+fun map(
+  body: EggBody, hoist: HoistAtLeastOnce, mapping: &Map[EggId, EggId]
+): EggBody {
+  var builder = egg_body_builder().&
+  for old in body.params do {
+    var new = builder.param(old.type())
+    mapping.put(old, new)
+    hoist.kept.put(old)
+  }
+  for old in body.children do {
+    var any_reference_not_hoisted = {
+      var res = false
+      for id in old.captured() do if hoist.kept.contains(id) then res = true
+      res
+    }
+    var keep =
+      if any_reference_not_hoisted then
+        true  | If this depends on a kept expression, we need to keep it too.
+      else
+        if old.diverges() is no then {
+          false  | This does not depend on kept expressions and is pure.
+        } else {
+          if hoist.kept_something_possibly_crashing then {
+            | There is a possibly crashing expression that we kept before
+            | because it depends (directly or indirectly) on the parameters
+            | given to the body. Hoisting the current expression, which is
+            | independent of the parameters, would move it before the previous
+            | possibly crashing expression, which may change the observable
+            | crash message. So, we can't hoist it.
+            true
+          } else {
+            false
+          }
+        }
+    if keep and {old.diverges() is no} then
+      hoist.kept_something_possibly_crashing = true
+
+    eprintln("keep {pretty(old, namespace().&)}? {keep}")
+    if keep then {
+      var new = old.map(hoist, builder, mapping)
+      mapping.put(old, new)
+      hoist.kept.put(old)
+    } else {
+      eprintln("Hoisting {old.debug()}")
+      stderr.write(old, namespace().&, indentation(1))
+      stderr."\n"
+      hoist.hoisted.push(old)
+    }
+  }
+  builder.finish(body.returns.map(mapping))
+}
+fun map(
+  id: EggId, hoist: HoistAtLeastOnce,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  switch id.resolve()
+  case switch_(switch_) {
+    var cases = map[String, EggBody]()
+    for case_ in switch_.cases do
+      cases.&.put(
+        case_.key,
+        if case_.value.diverges() is yes then
+          case_.value.map(DoNotHoist {}, mapping)
+        else
+          case_.value.map(hoist, mapping),
+      )
+    builder.switch_(switch_.condition.map(mapping), switch_.type, cases)
+  }
+  default builder.push(id.map_children(hoist, builder, mapping))
+}
+
+| Does not hoist anything, just maps the IDs using the mapping.
+struct DoNotHoist {}
+fun map(
+  id: EggId, dont_hoist: DoNotHoist,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  builder.push(id.map_children(dont_hoist, builder, mapping))
 }
