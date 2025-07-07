@@ -2,22 +2,30 @@ import mod.mar
 
 enum Diverges { yes, no, maybe }
 
-fun merge(a: Diverges, b: Diverges): Diverges {
+| Given that both a *and* b are executed and exhibit the given behavior, what's
+| the overall behavior?
+fun both(a: Diverges, b: Diverges): Diverges {
   switch a
   case yes Diverges.yes
-  case maybe { switch b case yes Diverges.yes default Diverges.maybe }
+  case maybe if b is yes then Diverges.yes else Diverges.maybe
   case no b
 }
-fun merge(a: Diverges, b: Diverges, c: Diverges): Diverges {
-  a.merge(b).merge(c)
+
+| Given that either a *or* b is executed and they exhibit the given behavior,
+| what's the overall behavior?
+fun one_of(a: Diverges, b: Diverges): Diverges {
+  switch a
+  case yes if b is yes then Diverges.yes else Diverges.maybe
+  case no  if b is no  then Diverges.no  else Diverges.maybe
+  case maybe Diverges.maybe
 }
-fun merge(a: Diverges, b: Diverges, c: Diverges, d: Diverges): Diverges {
-  a.merge(b).merge(c).merge(d)
-}
+
+fun is_pure(id: EggId): Bool { id.diverges() is no }
+fun is_impure(id: EggId): Bool { not(id.is_pure()) }
 
 fun diverges(body: EggBody): Diverges {
   var result = Diverges.no
-  for child in body.children do result = merge(result, child.diverges())
+  for child in body.children do result = both(result, child.diverges())
   result
 }
 fun diverges(id: EggId): Diverges {
@@ -31,9 +39,16 @@ fun diverges(id: EggId): Diverges {
   case lambda Diverges.no
   case member Diverges.no
   case switch_(switch_) {
-    var result = Diverges.no
-    for case_ in switch_.cases do result = merge(result, case_.value.diverges())
-    result
+    var result = none[Diverges]()
+    for case_ in switch_.cases do {
+      var case_behavior = case_.value.diverges()
+      result = some(
+        switch result
+        case some(existing_behavior) one_of(existing_behavior, case_behavior)
+        case none case_behavior
+      )
+    }
+    result or Diverges.yes
   }
   case call_fun(call)
     if call.return_type == type_never then Diverges.yes else Diverges.maybe
@@ -59,8 +74,8 @@ fun diverges(id: EggId): Diverges {
   case or_ Diverges.no
   case xor Diverges.no
   case compare Diverges.no
-  | case unchecked_divide Diverges.no
-  | case unchecked_modulo Diverges.no
+  case unchecked_divide Diverges.no
+  case unchecked_modulo Diverges.no
   case box Diverges.no
   case unbox Diverges.no
   case array Diverges.no
