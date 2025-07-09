@@ -1,0 +1,32 @@
+import mod.mar
+
+fun deduplicate(body: EggBody): EggBody {
+  body.map(Deduplicate { visible = list[EggId]().& }, map[EggId, EggId]().&)
+}
+struct Deduplicate { visible: &List[EggId] }
+fun map(
+  id: EggId, deduplicate: Deduplicate,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  if deduplicate.visible.to_slice().rev_iter().&.contains(id) then
+    return id.map(mapping)
+  builder.push(id.map_children(deduplicate, builder, mapping))
+}
+fun map(
+  body: EggBody, deduplicate: Deduplicate, mapping: &Map[EggId, EggId]
+): EggBody {
+  var builder = egg_body_builder().&
+  var num_visible = deduplicate.visible.len
+  for old in body.params do {
+    var new = builder.param(old.type())
+    mapping.put(old, new)
+    deduplicate.visible.push(old)
+  }
+  for old in body.children do {
+    var new = old.map(deduplicate, builder, mapping)
+    mapping.put(old, new)
+    deduplicate.visible.push(old)
+  }
+  deduplicate.visible.len = num_visible
+  builder.finish(body.returns.map(mapping))
+}
