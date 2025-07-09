@@ -26,7 +26,7 @@ struct Optimize { optimized: &Map[String, EggFun], egg: Egg }
 fun map(
   body: EggBody, optimize: Optimize, mapping: &Map[EggId, EggId]
 ): EggBody {
-  body.map_children(optimize, mapping).tree_shake()
+  body.map_children(optimize, mapping).deduplicate().tree_shake()
 }
 fun map(
   old: EggId,
@@ -257,7 +257,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | call + a b  |  add a b  |  int 5
     if call.substitutions.substitutions.size == 0 then
       if optimize.optimized.get_maybe(call.fun_) is some(fun_) then {
-        var should_inline = true | body.expr.num_exprs() <= 30
+        var should_inline = fun_.body.num_exprs() <= 30
         if should_inline then {
           eprintln("inlining call")
           eprintln("fun:\n")
@@ -265,11 +265,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
           stderr."\n"
           return builder.recursive(
             call.args,
-            fun_.specialize(call.substitutions).body,
-            | TODO:
-            | .call_to_recurse(
-            |   call.fun_, call.return_type.specialize(call.substitutions)
-            | ),
+            fun_.body.call_to_recurse(call.fun_, call.return_type),
           )
         }
       }
@@ -688,32 +684,33 @@ fun children(id: EggId): Slice[EggId] {
 struct GatherChildren { children: &List[EggId] }
 fun visit(id: EggId, gather: GatherChildren) { gather.children.push(id) }
 
-| | The number of expressions inside this expression.
-| fun num_exprs(expr: EggExpr): Int {
-|   var num = 1
-|   for child in expr.children() do num = num + child.num_exprs()
-|   num
-| }
+| The number of expressions inside this expression.
+fun num_exprs(body: EggBody): Int {
+  var count = 0
+  body.visit(CountExprs { count = count.& })
+  count
+}
+struct CountExprs { count: &Int }
+fun visit(id: EggId, counter: CountExprs) {
+  counter.count += 1
+  id.visit_children(counter)
+}
 
-| | Converts calls to the given called signature into recurse expressions.
-| fun call_to_recurse(
-|   expr: EggExpr, called: EggCalledFun, return_type: EggType
-| ): EggExpr {
-|   expr.map(CallToRecurse { called, return_type })
-| }
-| fun call_to_recurse(
-|   body: EggBody, called: EggCalledFun, return_type: EggType
-| ): EggBody {
-|   body.map(CallToRecurse { called, return_type })
-| }
-| struct CallToRecurse { called: EggCalledFun, return_type: EggType }
-| fun map(expr: EggExpr, call_to_recurse: CallToRecurse): EggExpr {
-|   var expr = expr.map_children(call_to_recurse)
-|   if expr.resolve() is call_fun(call) then
-|     if call.fun_ == call_to_recurse.called then
-|       return recurse(call.args, call_to_recurse.return_type)
-|   expr
-| }
+| Converts calls to the given function into recurse expressions.
+fun call_to_recurse(body: EggBody, fun_: String, return_type: EggType): EggBody {
+  body.map(CallToRecurse { called = fun_, return_type }, map[EggId, EggId]().&)
+}
+struct CallToRecurse { called: String, return_type: EggType }
+fun map(
+  id: EggId, mapper: CallToRecurse,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(mapper, builder, mapping)
+  if expr is call_fun(call) then
+    if call.fun_ == mapper.called then
+      return builder.recurse(call.args, mapper.return_type)
+  builder.push(expr)
+}
 
 | Fills the body with concrete arguments for its parameters.
 fun fill(body: EggBody, args: Slice[EggId], builder: &EggBodyBuilder): EggId {
