@@ -45,6 +45,11 @@ fun specialize(fun_: EggFun, substitutions: Substitutions): EggFun {
 fun specialize(
   body: EggBody, substitutions: Substitutions, mapping: &Map[EggId, EggId]
 ): EggBody {
+  body.map(substitutions, mapping)
+}
+fun map(
+  body: EggBody, substitutions: Substitutions, mapping: &Map[EggId, EggId]
+): EggBody {
   var builder = egg_body_builder().&
   for old in body.params do {
     var new = builder.param(
@@ -69,16 +74,24 @@ fun map(
   case string {}
   case struct_ {}
   case enum_(enum_)
-    return builder.enum_(enum_.type, enum_.variant, enum_.payload.map(mapping))
+    return builder.enum_(
+      enum_.type.specialize(substitutions),
+      enum_.variant,
+      enum_.payload.map(mapping),
+    )
   case lambda {}
   case member {}
   case switch_(switch_)
-    return builder.switch_(switch_.condition.map(mapping), switch_.type, {
-      var cases = map[String, EggBody]()
-      for case_ in switch_.cases do
-        cases.&.put(case_.key, case_.value.map(substitutions, mapping))
-      cases
-    })
+    return builder.switch_(
+      switch_.condition.map(mapping),
+      switch_.type.specialize(substitutions),
+      {
+        var cases = map[String, EggBody]()
+        for case_ in switch_.cases do
+          cases.&.put(case_.key, case_.value.map(substitutions, mapping))
+        cases
+      },
+    )
   case call_fun(call)
     return builder.call(
       call.fun_,
