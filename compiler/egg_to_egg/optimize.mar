@@ -12,17 +12,22 @@ fun optimize(egg: Egg): Egg {
   var funs = map[String, EggFun]()
   for signature in egg.choose_optimization_order() do {
     eprintln("Optimizing {signature}")
-    var optimized = egg.funs.get(signature).map(Optimize { optimized = funs.&, egg })
+    var optimized = egg.funs.get(signature).map(Optimize { optimized = funs.& })
     eprintln("Optimized {signature}:")
-    stderr.write("fds", optimized)
+    stderr.write("optimized", optimized)
     stderr."\n"
     optimized.verify()
     funs.&.put(signature, optimized)
   }
   Egg { funs, entry_point = egg.entry_point }.tree_shake()
 }
+fun optimize_without_inlining(body: EggBody): EggBody {
+  body.map(
+    Optimize { optimized = map[String, EggFun]().& }, map[EggId, EggId]().&
+  )
+}
 
-struct Optimize { optimized: &Map[String, EggFun], egg: Egg }
+struct Optimize { optimized: &Map[String, EggFun] }
 fun map(
   body: EggBody, optimize: Optimize, mapping: &Map[EggId, EggId]
 ): EggBody {
@@ -480,17 +485,6 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     if box.resolve() is box(inner) then return inner
   }
   case unchecked_generate_non_empty_array(args) {
-    | if args.b.find_both_independent_of_locals() is some(ignored) then
-    |   return both(
-    |     args.a.resolve(),
-    |     both(
-    |       ignored,
-    |       unchecked_generate_non_empty_array(
-    |         args.a.resolve(), args.b.assert_not_crashing(ignored)
-    |       ),
-    |     ),
-    |   )
-
     | For small arrays, specialize and constant fold the generator for each
     | index.
     |
@@ -596,54 +590,30 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     default {}
   }
   case recursive(rec) {
-    eprintln("it's recursive")
-    if not(rec.body.recurses()) then {
-      eprintln("recursive does not recurse")
-      return rec.body.fill(rec.initial, builder)
-    } else
-      eprintln("recursive recurses")
+    | Remove the recursive wrapper if the body doesn't recurse.
+    if not(rec.body.recurses()) then return rec.body.fill(rec.initial, builder)
 
-    | Find fixpoints
-    | stderr."Optimizing shallow recursive. Args:\n"
-    | for arg in rec.initial do {
-    |   stderr.write(arg, holes_namespace().&, indentation(1))
-    |   stderr."\n"
-    | }
-    | var mask = rec.b.find_fixpoint_mask(rec.a, context)
-    | var new_args = {
-    |   var res = list[EggExpr]()
-    |   for arg in rec.a.mask(mask) do res.&.push(arg.optimize(context))
-    |   res.to_slice()
-    | }
-    | var new_holes = {
-    |   var res = list[Hole]()
-    |   for arg in new_args do res.&.push(hole(arg.type))
-    |   res.to_slice()
-    | }
-    | return recursive(
-    |   new_args,
-    |   body(
-    |     new_holes,
-    |     rec.b
-    |       .fill(new_holes.unmask(mask))
-    |       .optimize(context)
-    |       .replace_recurses(mask),
-    |   )
-    | )
+    | Find fixpoint.
+    var fixpoint = rec.find_fixpoint()
+    if not(fixpoint.is_trivial()) then {
+      var dehydrated_initial = fixpoint.dehydrate(rec.initial, builder)
+      var new_body = {
+        var builder = egg_body_builder().&
+        var dehydrated_params = {
+          var res = list[EggId]()
+          for d in dehydrated_initial do res.&.push(builder.param(d.type()))
+          res.to_slice()
+        }
+        var rehydrated = fixpoint.hydrate(dehydrated_params, builder)
+        builder.finish(rec.body.fill(rehydrated, builder))
+      } .optimize_without_inlining()
+        .replace_recurses(fixpoint)
+      return builder.recursive(dehydrated_initial, new_body)
+    }
+
+    | TODO: recursion without variables? remove and turn recurse into "halt" expressions
   }
   | case recurse(args) {
-  |   | Bubble up crashes and both.
-  |   for arg in args do if arg.resolve() is crash then return taco_crash(type)
-  |   for arg in args.iter().enumerate() do if arg.item.resolve() is both(both) then {
-  |     var new_args = list[EggExpr]()
-  |     for i in 0..args.len do
-  |       new_args.&.push(if i == arg.index then both.b.resolve() else args.get(i))
-  |     return both(
-  |       both.a.resolve(),
-  |       recurse(new_args.to_slice(), expr.type),
-  |     )
-  |   }
-
   |   | Push recurse into switch cases.
   |   if args.len == 1 then if args.get(0).resolve() is switch_(switch_) then {
   |     return switch_(switch_.condition.resolve(), type, {

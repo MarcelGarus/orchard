@@ -1,0 +1,502 @@
+| Recursive and Recurse Expressions  
+|
+| I want to optimize recursive code, but inlining recursive functions naively
+| hangs the compiler (because recursive functions call themselves, they get
+| inlined again and again and again).
+| I fixed this by introducing recursive expressions: Expressions that have a
+| body with parameters as well as arguments that are immediately passed into the
+| body when they are evaluated. However, they can contain recursive expressions
+| to "jump back out" and evaluate again with different parameters. Consider this
+| code:
+|
+| sum iterator: (Iterator Int) -> Int =
+|   iterator .fold 0 \ a: Int b: Int -> a .+ b
+|
+| fold iterator: (Iterator a) initial_state: s folder: (\ s a -> s) -> s =
+|   iterator.next
+|   % empty -> initial_state
+|     more: (& item rest) -> rest .fold (folder initial_state item) folder
+|
+| I want to analyze and optimize the fold function in the concrete context of
+| the sum function, but I can't inline it again and again and again. So, I only
+| inline it once, turning it into a recursive expression that contains a
+| recurse experssion:
+|
+| sum a =
+|   b = int 0
+|   c =
+|     lambda d e:
+|       f = add d e
+|       f
+|   g =
+|     recursive a b c
+|       body h i j:
+|         k = call lambda h
+|         l =
+|           switch k
+|             empty m:
+|               i
+|             more n:
+|               o = member n.rest
+|               p = member n.item
+|               q = call lambda j with i p
+|               r = recurse o q j
+|               r
+|         l
+|   g
+| 
+| See how the call of fold with three arguments became a recursive expression
+| with three holes (h, i, j) and three initial arguments (a, b, c)? The call of
+| fold calling itself became a recurse expression with (o, q, j).
+| 
+| Fixpoints  
+|
+| In the sum function above, the fold function got inlined and turned into a
+| recursive expression. You might notice that the third parameter, the
+| reducer/folder, is always the lambda adding two numbers. That's a fixpoint!
+| I want to detect fixpoints because I can "factor out" the compile-time known
+| parts (such as the add lambda), compile-time bake them into the recursive
+| expression only use the unknown parts as the real recursion variables.
+|
+| However, not all fixpoints are as easy to spot as this one. I also want to
+| find fixpoints where the initial and recursive expressions are not the exact
+| same, but share a "shape". Some parts of this shape might be statically known,
+| others not. For example, I might figure out that a recursion variable always
+| has the shape (& foo: 3 bar: <hole>). The hole here indicates that the value
+| varies among recursions. Still, if some part in the recursive expression
+| accesses the foo field, we want to be able to optimize that. So, here's the
+| general strategy:
+|
+| 1. Find a fixpoint.
+|    1. We maintain a candidate for the shape of the recursion variables,
+|       starting with the initial arguments of the recursive expression.
+|    2. Specialize and optimize the recursive body for the candidate. Find all
+|       remaining recurse expressions and merge our candidate with the
+|       arguments.
+|    3. Did the candidiate change?
+|       Yes: Continue with step 1.2.
+|       No:  We have found a shape that – if passed into the body – only results
+|            in recursions that also adhere to the same shape. That's a
+|            fixpoint!
+| 2. Replace the recursive arguments with only the holes of the fixpoint shape.
+|    1. For the initial arguments, extract the parts corresponding to the
+|       fixpoint's holes ("dehydration", boiling away the compile-time known
+|       shape).
+|    2. At the beginning of the recursive body, reconstruct the original values
+|       ("hydration").
+|    3. At each recurse expression, extract the parts corresponding to the
+|       fixpoint's holes ("dehydration").
+|
+| For a realistic example, consider the expression that you get when you iterate
+| over an array (bounds checks omitted for clarity):
+|
+| iterate a =
+|   b = int 0
+|   c = &
+|   d =
+|     recursive a
+|       body e:
+|         f = | empty: c
+|         g = int 1
+|         h = array length e
+|         i = compare h b
+|         j =
+|           switch i
+|             less: k
+|               l = | false: c
+|               l
+|             equal: m
+|               n = | true: c
+|               n
+|             greater: o
+|               p = | false: c
+|               p
+|         q = lambda
+|           r = 
+|             switch j
+|               true: s
+|                 f
+|               false: t
+|                 u = unchecked array get e b
+|                 v = unchecked array slice e g h
+|                 w = recurse v
+|                 x = & rest: w item: u
+|                 y = | more: x
+|                 y
+|           r
+|         q
+|   d
+|
+| This works, but the recursion is over more state than necessary (an array). If
+| you would write this in an imperative language with a loop, you would not use
+| the array as a loop variable and then assign subarrays to that:
+|
+| for (var array = my_array; array.len > 0; array = array.slice(1, array.len)) {
+|   ...
+| }
+|
+| Instead, you'd use an index as the loop variable:
+|
+| for (var index = 0; index < array.len; i++) {
+|   ...
+| }
+|
+| My fixpoint optimization explained above achieves something similar:
+| Our initial candidate is (a). If we would only recurse with (a), we could
+| constant-fold (a) to wherever we use the recursion variable and remove the
+| variable entirely. Thankfully, that's not the case because that would indicate
+| an infinite loop.
+| Instead, after optimizing the recursive body for e = a, we find a recurse
+| expression with v = "unchecked array slice a 1 3". Note that a, the g, and the
+| length have been constant-folded. We try to merge this with our original
+| array. In particular, because an array is the same as an array slice from 0 to
+| its length, the common shape is (slice a <hole> 3) – the start indices 0 and 1
+| can only be merged to a general hole.
+| If we pass (slice a <hole> 3) into the loop body and optimize for that, we
+| find the same recursion with "unchecked array slice a <hole> 3" – a fixpoint!
+| So, we rewrite the initial argument to the recursion to use 0, and we only
+| pass in the next index in the recurse expressions.
+
+import mod.mar
+
+struct Fixpoint { shapes: Slice[Shape] }
+enum Shape {
+  hole: EggType,
+  id: EggId,
+  | struct_: Map[String, Shape],
+  | enum_: Tuple3[EggType, String, &Shape],
+  | box: &Shape,
+  | array: Slice[Shape],
+  | slice: Slice[Shape],
+}
+fun ==(a: Shape, b: Shape): Bool {
+  switch a
+  case hole(a) if b is hole(b) then a == b else false
+  case id(a)   if b is id(b)   then a == b else false
+}
+
+fun is_trivial(fixpoint: Fixpoint): Bool {
+  var all_holes = true
+  for shape in fixpoint.shapes do if not(shape is hole) then all_holes = false
+  all_holes
+}
+
+fun find_fixpoint(rec: EggRecursive): Fixpoint {
+  var candidate = {
+    var shapes = list[Shape]()
+    for arg in rec.initial do shapes.&.push(Shape.id(arg))
+    shapes.to_slice()
+  }
+
+  loop {
+    var builder = egg_body_builder().&
+    var body = builder.finish(
+      rec.body.fill(candidate.holes_to_params(builder), builder)
+    )
+    var recurses = body.optimize_without_inlining().collect_recurses()
+
+    var previous = candidate
+    for recurse in recurses do candidate = candidate.merge(recurse.next)
+    if candidate == previous then break
+  }
+
+  Fixpoint { shapes = candidate }
+}
+
+fun holes_to_params(
+  shapes: Slice[Shape], builder: &EggBodyBuilder
+): Slice[EggId] {
+  var out = list[EggId]()
+  for shape in shapes do out.&.push(shape.holes_to_params(builder))
+  out.to_slice()
+}
+fun holes_to_params(shape: Shape, builder: &EggBodyBuilder): EggId {
+  switch shape
+  case hole(type) builder.param(type)
+  case id(id) id
+}
+
+| This returns a list of all recurse expressions that refer to the surrounding
+| recursive expression. This explicitly does not return recurses in inner
+| recursive expressions.
+fun collect_recurses(body: EggBody): Slice[EggRecurse] {
+  var recurses = list[EggRecurse]()
+  body.visit(CollectRecurses { out = recurses.& })
+  recurses.to_slice()
+}
+struct CollectRecurses { out: &List[EggRecurse] }
+fun visit(id: EggId, collect_recurses: CollectRecurses) {
+  switch id.resolve()
+  case recurse(rec) collect_recurses.out.push(rec)
+  case recursive(rec) for arg in rec.initial do arg.visit(collect_recurses)
+  default id.visit_children(collect_recurses)
+}
+
+| Merges a new expression into the fixpoint.
+fun merge(fixpoint: Shape, id: EggId): Shape {
+  switch fixpoint
+  case hole(type) Shape.hole(type)
+  case id(fix) if fix == id then Shape.id(id) else Shape.hole(id.type())
+}
+fun merge(fixpoints: Slice[Shape], ids: Slice[EggId]): Slice[Shape] {
+  var merged = list[Shape]()
+  for both in zip(fixpoints.iter(), ids.iter()) do
+    merged.&.push(merge(both.a, both.b))
+  merged.to_slice()
+}
+
+fun dehydrate(
+  fixpoint: Fixpoint, ids: Slice[EggId], builder: &EggBodyBuilder
+): Slice[EggId] {
+  var out = list[EggId]()
+  for both in zip(fixpoint.shapes.iter(), ids.iter()) do
+    both.a.dehydrate(both.b, builder, out.&)
+  out.to_slice()
+}
+fun dehydrate(
+  shape: Shape, id: EggId, builder: &EggBodyBuilder, out: &List[EggId]
+) {
+  switch shape
+  case hole(type) out.push(id)
+  case id(fix) if id != fix then panic("bad id")
+}
+
+fun hydrate(
+  fixpoint: Fixpoint, ids: Slice[EggId], builder: &EggBodyBuilder
+): Slice[EggId] {
+  var ids = ids.iter()
+  var out = list[EggId]()
+  for shape in fixpoint.shapes do out.&.push(shape.hydrate(ids.&, builder))
+  out.to_slice()
+}
+fun hydrate[I](
+  shape: Shape, ids: &Iter[EggId, I], builder: &EggBodyBuilder
+): EggId {
+  switch shape
+  case hole(type) ids.next().unwrap()
+  case id(id) id
+}
+
+
+
+| fun union(a: Slice[TacoExpr], b: Slice[TacoExpr]): Slice[TacoExpr] {
+|   var all = list[TacoExpr]()
+|   for both in zip(a.iter(), b.iter()) do all.&.push(union(both.a, both.b))
+|   all.to_slice()
+| }
+| fun union(a: TacoExpr, b: TacoExpr): TacoExpr {
+|   if a == b then return a
+
+|   if a.op is hole(hole) then if hole.is_black() then return a
+|   if b.op is hole(hole) then if hole.is_black() then return b
+
+|   | if a.op is recursive then return union(a.wrap_around(), b)
+|   | if b.op is recursive then return union(a, b.wrap_around())
+
+|   switch a.op
+|   case hole(a) if b.op is hole(b) then if a == b then return taco_hole(a)
+|   case type(a) if b.op is type(b) then if a == b then return taco_type(a)
+|   case byte(a) if b.op is byte(b) then if a == b then return taco_byte(a)
+|   case int(a) if b.op is int(b) then if a == b then return taco_int(a)
+|   case array(a_items) {
+|     switch b.op
+|     case array(b_items)
+|       if a_items.len == b_items.len then
+|         return array(a.type, union(a_items, b_items))
+|     case array_slice(b_args)
+|       if a == b_args.a.* then
+|         return array_slice(
+|           a,
+|           union(taco_int(0), b_args.b.*),
+|           union(taco_int(a_items.len), b_args.c.*),
+|         )
+|     default {}
+|   }
+|   case array_slice(a_args) {
+|     switch b.op
+|     case array(b_items)
+|       if a_args.a.* == b then
+|         return array_slice(
+|           b,
+|           union(a_args.b.*, taco_int(0)),
+|           union(a_args.c.*, taco_int(b_items.len)),
+|         )
+|     case array_slice(b_args)
+|       if a_args.a.* == b_args.a.* then
+|         return array_slice(
+|           a_args.a.*,
+|           union(a_args.b.*, b_args.b.*),
+|           union(a_args.c.*, b_args.c.*),
+|         )
+|     default {}
+|   }
+|   case struct_(a_fields)
+|     if b.op is struct_(b_fields) then {
+|       var fields = map[String, TacoExpr]()
+|       for field in a_fields do
+|         fields.&.put(field.key, union(field.value, b_fields.get(field.key)))
+|       return expr(TacoOp.struct_(fields), a.type)
+|     }
+|   case enum_(a_enum)
+|     if b.op is enum_(b_enum) then
+|       if a_enum.variant == b_enum.variant then
+|         return enum_(
+|           a.type, a_enum.variant, union(a_enum.payload.*, b_enum.payload.*)
+|         )
+|   case lambda(a_body)
+|     if b.op is lambda(b_body) then {
+|       var b_body = TacoBody {
+|         params = a_body.params,
+|         expr = b_body.fill({
+|           var fillings = list[TacoExpr]()
+|           for param in a_body.params do fillings.&.push(taco_hole(param))
+|           fillings.to_slice()
+|         })
+|       }
+|       if a_body.* == b_body then return a
+|     }
+|   case box(a_inner)
+|     if b.op is box(b_inner) then return box(union(a_inner.*, b_inner.*))
+|   default {}
+
+|   taco_hole(black_hole(a.type))
+| }
+
+| | Simplifies the expression given that we know that it doesn't crash.
+| fun not_crashing(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
+|   var children = list[TacoExpr]()
+|   for child in expr.children do children.&.push(child.not_crashing(context))
+|   var children = children.to_slice()
+
+|   switch expr.op
+|   case switch_(holes) {
+|     var condition = children.first()
+|     var cases = children.without_first()
+|     var new_holes = list[Hole]()
+|     var new_cases = list[TacoExpr]()
+|     for both in zip(holes.iter(), cases.iter()) do
+|       if not(both.b.definitely_crashes()) then {
+|         new_holes.&.push(both.a)
+|         new_cases.&.push(both.b.not_crashing(context))
+|       }
+|     if new_cases.len == 0 then return taco_crash(expr.type)
+|     if new_cases.len == 1 then
+|       return new_cases.get(0)
+|         .fill(map(new_holes.get(0) -> condition))
+|         .optimize(context)
+|         .not_crashing(context)
+|     return expr(
+|       TacoOp.switch_(new_holes.to_slice()),
+|       (list(condition) + new_cases).to_slice(),
+|       expr.type
+|     )
+|   }
+|   case body return expr.children.last().not_crashing(context)
+|   default {}
+
+|   expr(expr.op, children, expr.type)
+| }
+
+| fun mask(expr: TacoExpr, mask: TacoExpr, out: &List[TacoExpr]) {
+|   switch mask.op
+|   case hole(hole) if hole.is_black() then return out.push(expr)
+|   case type {}
+|   case byte {}
+|   case int {}
+|   case array(items) {
+|     for item in items.iter().enumerate() do
+|       mask(expr.array_get(taco_int(item.index)), item.item, out)
+|   }
+|   case array_slice(args) {
+|     | We know that the mask and actual expression refer to the same array.
+|     switch expr.op
+|     case array {
+|       out.push(taco_int(0))
+|       out.push(array_len(expr))
+|     }
+|     case array_slice(actual_args) {
+|       if actual_args.a.* != args.a.* then {
+|         var namespace = holes_namespace()
+|         stderr."Incompatible mask:\n"
+|         stderr.write(mask, namespace.&, indentation(1))
+|         stderr."\n"
+|         stderr.write(expr, namespace.&, indentation(1))
+|         panic("meh")
+|       }
+|       mask(actual_args.b.*, args.b.*, out)
+|       mask(actual_args.c.*, args.c.*, out)
+|     }
+|     default unreachable()
+|   }
+|   case struct_(fields) {
+|     for field in mask.type.kind().struct_.unwrap() do
+|       mask(expr.member(field.key), fields.get(field.key), out)
+|   }
+|   case enum_(enum_) {
+|     var variant_types = mask.type.kind().enum_.unwrap()
+|     var target_type = variant_types.get(enum_.variant)
+
+|     var cases = map[String, TacoBody]()
+|     for variant in variant_types do {
+|       var hole = hole(variant.value)
+|       cases.&.put(
+|         variant.key,
+|         body(
+|           hole,
+|           if variant.key == enum_.variant
+|           then taco_hole(hole)
+|           else taco_unreachable(target_type),
+|         ),
+|       )
+|     }
+
+|     mask(switch_(expr, target_type, cases), enum_.payload.*, out)
+|   }
+|   case lambda {}
+|   case box(inner) mask(unbox(expr), inner.*, out)
+|   default
+|     if mask.contains_black_hole() then
+|       panic("Unknown fixpoint mask {mask.debug()}")
+| }
+
+
+fun replace_recurses(body: EggBody, fixpoint: Fixpoint): EggBody {
+  body.map_children(ReplaceRecurses { fixpoint }, map[EggId, EggId]().&)
+}
+struct ReplaceRecurses { fixpoint: Fixpoint }
+fun map(
+  id: EggId, mapper: ReplaceRecurses,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  switch id.resolve()
+  case recursive(rec)
+    builder.recursive(rec.initial.map(mapping), rec.body.map(mapping))
+  case recurse(rec)
+    builder.recurse(
+      mapper.fixpoint.dehydrate(rec.next.map(mapping), builder), rec.type
+    )
+  default builder.push(id.map_children(mapper, builder, mapping))
+}
+
+
+| fun extend_recursives(expr: TacoExpr): TacoExpr {
+|   expr.map(ExtendRecursives {})
+| }
+| fun extend_recursives(exprs: Slice[TacoExpr]): Slice[TacoExpr] {
+|   exprs.map(ExtendRecursives {})
+| }
+| struct ExtendRecursives {}
+| fun map(expr: TacoExpr, extend_recursives: ExtendRecursives): TacoExpr {
+|   if expr.op is recursive(recursive) then
+|     return recursive.b.*
+|       .fill(recursive.a)
+|       .map(ExtendRecurses { recursive = recursive.b.* })
+|   expr.map_children(extend_recursives)
+| }
+| struct ExtendRecurses { recursive: TacoBody }
+| fun map(expr: TacoExpr, extend_recurses: ExtendRecurses): TacoExpr {
+|   var expr = expr.map_children(extend_recurses)
+|   if expr.op is recurse(args) then
+|     return recursive(args, extend_recurses.recursive)
+|   expr
+| }
