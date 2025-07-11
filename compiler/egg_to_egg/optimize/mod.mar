@@ -136,6 +136,34 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     if switch_.condition.resolve() is enum_(enum_) then
       return switch_.cases.get(enum_.variant).fill(enum_.payload, builder)
 
+    | If all cases are either the same value that doesn't depend on parameters
+    | or unreachable, replace the switch with that value.
+    |
+    | a = ...
+    | ---------------------------------
+    | switch a             |  int 3
+    |   true b:            |
+    |     c = unreachable  |
+    |     c                |
+    |   false d:           |
+    |     e = int 3        |
+    |     e                |
+    var reachable_cases = list[MapEntry[String, EggBody]]()
+    for case_ in switch_.cases do
+      if not(case_.value.is_unreachable()) then reachable_cases.&.push(case_)
+    eprintln("{reachable_cases.len} reachable cases")
+    if reachable_cases.is_empty() then return builder.unreachable(switch_.type)
+    else if not(reachable_cases.get(0).value.uses_params()) then {
+      var common = reachable_cases.get(0).value.without_params()
+      eprintln("common: {common.debug()}")
+      var inline = true
+      for case_ in reachable_cases do {
+        if not(inline) then break
+        if case_.value.without_params() != common then inline = false
+      }
+      if inline then return common.fill(empty_slice[EggId](), builder)
+    }
+
     | If all non-diverging cases are the same and don't depend on parameters,
     | pull them out of the switch, leaving the switch to evaluate to Nothing.
     | This then leaves simpler, more constant-foldable ingredients for later
@@ -152,40 +180,41 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |     e          |        f = &
     |                |        f
     |                |  int 3
-    | var non_diverging_cases = list[MapEntry[String, EggBody]]()
-    | for case_ in switch_.cases do {
-    |   var diverges =
-    |     {case_.value.expr.resolve() is crash} or {case_.value.expr.resolve() is unreachable}
-    |   if not(diverges) then non_diverging_cases.&.push(case_)
-    | }
-    | if non_diverging_cases.is_not_empty() then {
-    |   var common = non_diverging_cases.get(0).value.expr
-    |   var inline = common != taco_nothing
-    |   for case_ in non_diverging_cases do {
-    |     if case_.value.expr != common then { inline = false  break }
-    |     if case_.value.expr.collect_captured().iter().&
-    |       .contains(case_.value.params.get(0))
-    |     then { inline = false  break }
-    |   }
-    |   if inline then
-    |     return both(
-    |       switch_(switch_.condition.*, type_nothing, {
-    |         var new_cases = map[String, EggBody]()
-    |         for case_ in switch_.cases do
-    |           new_cases.&.put(
-    |             case_.key,
-    |             body(
-    |               case_.value.params,
-    |               if case_.value.expr == common
-    |               then taco_nothing
-    |               else case_.value.expr.resolve().expr(type_nothing),
-    |             ),
-    |           )
-    |         new_cases
-    |       }),
-    |       common,
-    |     )
-    | }
+    var non_diverging_cases = list[MapEntry[String, EggBody]]()
+    for case_ in switch_.cases do
+      if not(case_.value.definitely_diverges_biased()) then
+        non_diverging_cases.&.push(case_)
+    if non_diverging_cases.is_not_empty()
+      and not(non_diverging_cases.get(0).value.uses_params())
+    then {
+      var common = non_diverging_cases.get(0).value.without_params()
+      var nothing = egg_body_builder().&.nothing()
+      var is_body_just_returning_nothing =
+        common.returns == nothing and {
+          common.children.is_empty() or
+            common.children.len == 1 and common.children.get(0) == nothing
+        }
+      var inline = not(is_body_just_returning_nothing)
+      for case_ in non_diverging_cases do {
+        if not(inline) then break
+        if case_.value.without_params() != common then inline = false
+      }
+      if inline then {
+        builder.switch_(switch_.condition, type_nothing, {
+          var new_cases = map[String, EggBody]()
+          for case_ in switch_.cases do
+            new_cases.&.put(case_.key, {
+              var builder = egg_body_builder().&
+              for param in case_.value.params do builder.params.&.push(param)
+              if case_.value == common
+              then builder.finish(builder.nothing())
+              else case_.value
+            })
+          new_cases
+        })
+        return common.fill(empty_slice[EggId](), builder)
+      }
+    }
 
     | Consider "inlining" switches that switch on the result of other switches.
     |
@@ -722,4 +751,12 @@ fun map(
   expr: EggId, fill: Fill, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]
 ): EggId {
   builder.push(expr.map_children(fill, builder, mapping))
+}
+
+fun without_params(body: EggBody): EggBody {
+  EggBody {
+    params = empty_slice[EggId](),
+    children = body.children,
+    returns = body.returns,
+  }
 }
