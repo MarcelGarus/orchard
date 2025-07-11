@@ -55,7 +55,7 @@ fun map(
     }
     var independent_of_kept_expressions = not(any_reference_not_hoisted)
     var hoist = independent_of_kept_expressions
-      and not(old.is_unchecked()) and old.is_pure()
+      and not(old.is_unchecked()) and old.is_pure_biased()
 
     eprintln("hoist {pretty(old, namespace().&)}? {hoist}")
     if hoist then {
@@ -81,7 +81,7 @@ fun map(
     for case_ in switch_.cases do
       cases.&.put(
         case_.key,
-        if case_.value.diverges() is yes then
+        if case_.value.definitely_diverges_biased() then
           case_.value.map(DoNotHoist {}, mapping)
         else
           case_.value.map(mapper, mapping),
@@ -131,17 +131,14 @@ fun map(
     var independent_of_kept_expressions = not(any_reference_not_hoisted)
     var hoist =
       independent_of_kept_expressions and not(old.is_unchecked()) and {
-        old.is_pure() or not(mapper.kept_something_possibly_diverging)
+        old.is_pure_biased() or not(mapper.kept_something_possibly_diverging)
       }
-    if not(hoist) and old.is_impure() then
+    if not(hoist) and not(old.is_pure_biased()) then
       mapper.kept_something_possibly_diverging = true
 
-    eprintln("hoist {pretty(old, namespace().&)}? {hoist}")
-    if hoist then {
-      stderr.write(old, namespace().&, indentation(1))
-      stderr."\n"
+    if hoist then
       mapper.hoisted.push(old)
-    } else {
+    else {
       var new = old.map(mapper, builder, mapping)
       mapping.put(old, new)
       mapper.kept.put(old)
@@ -159,7 +156,7 @@ fun map(
     for case_ in switch_.cases do
       cases.&.put(
         case_.key,
-        if case_.value.diverges() is yes then
+        if case_.value.definitely_diverges_biased() then
           case_.value.map(DoNotHoist {}, mapping)
         else
           case_.value.map(hoist, mapping),
