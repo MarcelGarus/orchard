@@ -551,16 +551,16 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
       )
     }
   }
-  case array_get(args) {
+  case unchecked_array_get(args) {
     | Constant fold.
     if args.array.resolve() is array(array) then
       if args.index.resolve() is int(index) then
         return if (0..array.items.len).contains(index) then
           array.items.get(index)
         else
-          builder.crash("out of bounds", array.item_type)
+          builder.unreachable(array.item_type)
   }
-  case array_set(args) {
+  case unchecked_array_set(args) {
     | Constant fold.
     if args.array.resolve() is array(array) then
       if args.index.resolve() is int(index) then
@@ -570,14 +570,13 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
           new_items.&.set(index, args.item)
           builder.array(new_items.to_slice(), array.item_type)
         } else
-          builder.crash("out of bounds", type_array(array.item_type))
+          builder.unreachable(type_array(array.item_type))
   }
-  case array_slice(args) {
-    var array = args.array
+  case unchecked_array_slice(args) {
     var start = args.start
     var end = args.end
 
-    switch array.resolve()
+    switch args.array.resolve()
     case array(array) {
       | Constant fold.
       if start.resolve() is int(start) then if end.resolve() is int(end) then
@@ -586,32 +585,15 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
             and (0..=array.items.len).contains(end)
             and start <= end
           then builder.array(array.items.subslice(start..end), array.item_type)
-          else builder.crash("out of bounds", type_array(array.item_type))
+          else builder.unreachable(type_array(array.item_type))
     }
-    | case array_slice(inner_args) {
-    |   var inner_array = inner_args.a
-    |   var inner_start = inner_args.b
-    |   var inner_end = inner_args.c
-
-    |   | Merge the two nested slice operations into one. This requires explicitly
-    |   | performing the checks that the inner slice would have done.
-    |   return array_slice(
-    |     inner_array,
-    |     if_(
-    |       compare(inner_start, taco_int(0))
-    |         .is_less(),
-    |       taco_crash(type_int),
-    |       add(inner_start, start),
-    |     ),
-    |     if_(
-    |       compare(
-    |         inner_end, array_len(inner_array)
-    |       ).is_less_equal(),
-    |       add(inner_start, end),
-    |       taco_crash(type_int),
-    |     ),
-    |   )
-    | }
+    case unchecked_array_slice(inner_args)
+      | Merge the two nested slice operations into one.
+      return builder.unchecked_array_slice(
+        inner_args.array,
+        builder.add(inner_args.start, args.start),
+        builder.add(inner_args.start, args.end),
+      )
     default {}
   }
   case array_len(array) {
