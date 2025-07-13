@@ -186,6 +186,21 @@ fun ==(a: ShapeArraySlice, b: ShapeArraySlice): Bool {
   a.array == b.array and a.start.* == b.start.* and a.end.* == b.end.*
 }
 
+fun write[W](writer: W, fixpoint: Fixpoint) {
+  var first = true
+  for shape in fixpoint.shapes do {
+    if first then first = false else writer." "
+    writer.write(shape)
+  }
+}
+fun write[W](writer: W, shape: Shape) {
+  switch shape
+  case id(id) writer."(id:{id.id.index.debug()})"
+  case int(int) writer."(int {int})"
+  case array_slice(slice) writer."(slice {slice.array.id.index.debug()} {slice.start.*} {slice.end.*})"
+  case hole writer."(?)"
+}
+
 fun is_trivial(fixpoint: Fixpoint): Bool {
   var all_holes = true
   for shape in fixpoint.shapes do if not(shape is hole) then all_holes = false
@@ -207,13 +222,17 @@ fun find_fixpoint(rec: EggRecursive): Fixpoint {
     var body = body.optimize_without_inlining()
 
     stderr."Fixpoint propagation:\n"
+    stderr."  Candidate: {candidate}\n"
     stderr.write(body, namespace().&, indentation(1))
     stderr."\n"
     var recurses = body.collect_recurses()
 
     var previous = candidate
-    for recurse in recurses do
+    for recurse in recurses do {
+      eprint("Merging {candidate} and {recurse.next.shapes()} ")
       candidate = merge(candidate, recurse.next.shapes())
+      eprintln("-> {candidate}")
+    }
     if candidate == previous then break
   }
 
@@ -269,10 +288,10 @@ fun merge(a: Shape, b: Shape): Shape {
     Shape.hole(a_id.type())
   }
   case int(a_int) {
-    if b is id(b_id) then
-      if b_id.resolve() is int(b_int) then if a_int == b_int then return b
-
     if b is int(b_int) then if a_int == b_int then return a
+
+    if b is id(b_id) then
+      if b_id.resolve() is int(b_int) then if a_int == b_int then return a
 
     Shape.hole(type_int)
   }
@@ -343,7 +362,7 @@ fun dehydrate(
       slice_shape.start.dehydrate(builder.int(0), builder, out)
       slice_shape.end.dehydrate(builder.int(array.items.len), builder, out)
     }
-    case array_slice(slice) {
+    case unchecked_array_slice(slice) {
       if slice_shape.array != slice.array then panic("mismatched array")
       slice_shape.start.dehydrate(slice.start, builder, out)
       slice_shape.end.dehydrate(slice.end, builder, out)

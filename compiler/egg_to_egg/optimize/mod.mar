@@ -628,17 +628,25 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     var start = args.start
     var end = args.end
 
+    | Note: We intentionally do not constant-fold array slices of array literals
+    | into new array literals, even though this would be a correct
+    | transformation. In some scenarios, such as when the original array is
+    | never used again, this transformation makes sense.
+    | However, because the newly created array literal has a completely new
+    | identity and is not related to the original array, this prevents other
+    | important optimizations such as fixpoint analysis.
+
     switch args.array.resolve()
-    case array(array) {
-      | Constant fold.
-      if start.resolve() is int(start) then if end.resolve() is int(end) then
-        return
-          if (0..array.items.len).contains(start)
-            and (0..=array.items.len).contains(end)
-            and start <= end
-          then builder.array(array.items.subslice(start..end), array.item_type)
-          else builder.unreachable(type_array(array.item_type))
-    }
+    | case array(array) {
+    |   | Constant fold.
+    |   if start.resolve() is int(start) then if end.resolve() is int(end) then
+    |     return
+    |       if (0..array.items.len).contains(start)
+    |         and (0..=array.items.len).contains(end)
+    |         and start <= end
+    |       then builder.array(array.items.subslice(start..end), array.item_type)
+    |       else builder.unreachable(type_array(array.item_type))
+    | }
     case unchecked_array_slice(inner_args)
       | Merge the two nested slice operations into one.
       return builder.unchecked_array_slice(
@@ -656,8 +664,14 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     case generate_array(gen)
       | length(generate_array(length, generator)) = length
       return gen.length
+    case unchecked_generate_non_empty_array(gen)
+      | length(unchecked_generate_non_empty_array(length, generator)) = length
+      return gen.length
     case array_slice(args)
-      | length(slice(array, start, end)) = end - start
+      | length(array_slice(array, start, end)) = end - start
+      return builder.subtract(args.end, args.start)
+    case unchecked_array_slice(args)
+      | length(unchecked_array_slice(array, start, end)) = end - start
       return builder.subtract(args.end, args.start)
     default {}
   }
