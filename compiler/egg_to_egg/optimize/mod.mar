@@ -379,6 +379,19 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |                       |  add e f
     if call.lambda.resolve() is lambda(lambda_body) then
      return lambda_body.fill(call.args, builder)
+
+    | Inline calls of lambda literals.
+    if call.lambda.resolve() is raw_lambda(lambda) then {
+      var full_args = list[EggId]()
+      for arg in call.args do full_args.&.push(arg)
+      full_args.&.push(lambda.closure)
+      return builder.call(
+        lambda.fun_,
+        no_substitutions,
+        full_args.to_slice(),
+        lambda.type.kind().lambda.unwrap().return_type,
+      )
+    }
   }
   case cast(cast) {
     | Remove unnecessary casts.
@@ -845,6 +858,10 @@ fun fill(body: EggBody, args: Slice[EggId], builder: &EggBodyBuilder): EggId {
 }
 fun fill(body: EggBody, arg: EggId, builder: &EggBodyBuilder): EggId {
   body.fill(list(arg).to_slice(), builder)
+}
+fun fill(body: EggBody, mapping: Map[EggId, EggId]): EggBody {
+  var mapping = mapping.copy()
+  body.map(Fill {}, mapping.&)
 }
 struct Fill {}
 fun map(

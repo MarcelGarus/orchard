@@ -1,0 +1,47 @@
+import mod.mar
+
+fun desugar_lambdas(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  for fun_ in egg.funs do
+    funs.&.put(fun_.key, fun_.value.map(DesugarLambdas { funs = funs.& }))
+  Egg { funs, entry_point = egg.entry_point }
+}
+
+struct DesugarLambdas { funs: &Map[String, EggFun] }
+
+fun map(
+  id: EggId, desugar: DesugarLambdas,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(desugar, mapping)
+  var lambda = expr.lambda or return builder.push(expr)
+
+  var captured = lambda.captured()
+  var closure = builder.box(builder.struct_({
+    var fields = map[String, EggId]()
+    for captured in captured.iter().enumerate() do
+      fields.&.put("{captured.index}", captured.item)
+    fields
+  }))
+  var lambda_body = {
+    var builder = egg_body_builder().&
+    for param in lambda.params do builder.params.&.push(param)
+    var inner_closure = builder.param(closure.type())
+    var inner_unboxed_closure = builder.unbox(inner_closure)
+
+    var mapping = map[EggId, EggId]()
+    for captured in captured.iter().enumerate() do
+      mapping.&.put(
+        captured.item,
+        builder.member(inner_unboxed_closure, "{captured.index}"),
+      )
+    builder.finish(
+      lambda
+        .fill(mapping)
+        .fill(builder.params.to_slice().without_last(), builder)
+    )
+  }
+  var signature = "lambda-{id.id.index}"
+  desugar.funs.put(signature, EggFun { body = lambda_body })
+  builder.raw_lambda(signature, closure, id.type())
+}
