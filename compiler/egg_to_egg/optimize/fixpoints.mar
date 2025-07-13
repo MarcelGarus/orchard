@@ -160,19 +160,30 @@
 import mod.mar
 
 struct Fixpoint { shapes: Slice[Shape] }
+
+| Something we know about the shape of an expression. Sorted roughly from
+| highest to lowest quality (this is not a total ordering, so some order is
+| arbitrary).
 enum Shape {
-  hole: EggType,
-  id: EggId,
-  | struct_: Map[String, Shape],
-  | enum_: Tuple3[EggType, String, &Shape],
-  | box: &Shape,
-  | array: Slice[Shape],
-  | slice: Slice[Shape],
+  id: EggId, | We know the exact expression.
+  int: Int,
+  | struct_: Map[String, Shape], TODO
+  | enum_: Tuple3[EggType, String, &Shape], TODO
+  | box: &Shape, TODO
+  array_slice: ShapeArraySlice,
+  hole: EggType, | We know nothing about the expression.
 }
+struct ShapeArraySlice { array: EggId, start: &Shape, end: &Shape }
+
 fun ==(a: Shape, b: Shape): Bool {
   switch a
-  case hole(a) if b is hole(b) then a == b else false
-  case id(a)   if b is id(b)   then a == b else false
+  case id(a)          if b is id(b)          then a == b else false
+  case int(a)         if b is int(b)         then a == b else false
+  case hole(a)        if b is hole(b)        then a == b else false
+  case array_slice(a) if b is array_slice(b) then a == b else false
+}
+fun ==(a: ShapeArraySlice, b: ShapeArraySlice): Bool {
+  a.array == b.array and a.start.* == b.start.* and a.end.* == b.end.*
 }
 
 fun is_trivial(fixpoint: Fixpoint): Bool {
@@ -190,30 +201,36 @@ fun find_fixpoint(rec: EggRecursive): Fixpoint {
 
   loop {
     var builder = egg_body_builder().&
-    var body = builder.finish(
-      rec.body.fill(candidate.holes_to_params(builder), builder)
-    )
-    var recurses = body.optimize_without_inlining().collect_recurses()
+    candidate.holes_to_params(builder)
+    var rehydrated = candidate.hydrate(builder.params.iter().&, builder)
+    var body = builder.finish(rec.body.fill(rehydrated, builder))
+    var body = body.optimize_without_inlining()
+    stderr."Fixpoint propagation:\n"
+    stderr.write(body, namespace().&, indentation(1))
+    stderr."\n"
+    var recurses = body.collect_recurses()
 
     var previous = candidate
-    for recurse in recurses do candidate = candidate.merge(recurse.next)
+    for recurse in recurses do
+      candidate = merge(candidate, recurse.next.shapes())
     if candidate == previous then break
   }
 
   Fixpoint { shapes = candidate }
 }
 
-fun holes_to_params(
-  shapes: Slice[Shape], builder: &EggBodyBuilder
-): Slice[EggId] {
-  var out = list[EggId]()
-  for shape in shapes do out.&.push(shape.holes_to_params(builder))
-  out.to_slice()
+fun holes_to_params(shapes: Slice[Shape], builder: &EggBodyBuilder) {
+  for shape in shapes do shape.holes_to_params(builder)
 }
-fun holes_to_params(shape: Shape, builder: &EggBodyBuilder): EggId {
+fun holes_to_params(shape: Shape, builder: &EggBodyBuilder) {
   switch shape
-  case hole(type) builder.param(type)
-  case id(id) id
+  case id {}
+  case int {}
+  case array_slice(slice) {
+    slice.start.holes_to_params(builder)
+    slice.end.holes_to_params(builder)
+  }
+  case hole(type) builder.param(type).ignore()
 }
 
 | This returns a list of all recurse expressions that refer to the surrounding
@@ -232,17 +249,76 @@ fun visit(id: EggId, collect_recurses: CollectRecurses) {
   default id.visit_children(collect_recurses)
 }
 
-| Merges a new expression into the fixpoint.
-fun merge(fixpoint: Shape, id: EggId): Shape {
-  switch fixpoint
-  case hole(type) Shape.hole(type)
-  case id(fix) if fix == id then Shape.id(id) else Shape.hole(id.type())
+fun shapes(ids: Slice[EggId]): Slice[Shape] {
+  var shapes = list[Shape]()
+  for id in ids do shapes.&.push(Shape.id(id))
+  shapes.to_slice()
 }
-fun merge(fixpoints: Slice[Shape], ids: Slice[EggId]): Slice[Shape] {
+
+fun merge(a: Shape, b: Shape): Shape {
+  switch a
+  case id(a_id) {
+    if b is id(b_id) then if a_id == b_id then return Shape.id(a_id)
+
+    if a.to_array_slice() is some(a_slice) then
+      if b.to_array_slice() is some(b_slice) then
+        if merge(a_slice, b_slice) is some(merged) then
+          return Shape.array_slice(merged)
+
+    Shape.hole(a_id.type())
+  }
+  case int(a_int) {
+    if b is id(b_id) then
+      if b_id.resolve() is int(b_int) then if a_int == b_int then return b
+
+    if b is int(b_int) then if a_int == b_int then return a
+
+    Shape.hole(type_int)
+  }
+  case array_slice(a_slice) {
+    if b.to_array_slice() is some(b_slice) then
+      if merge(a_slice, b_slice) is some(merged) then
+        return Shape.array_slice(merged)
+
+    Shape.hole(a_slice.array.type())
+  }
+  case hole a
+}
+fun merge(a: Slice[Shape], b: Slice[Shape]): Slice[Shape] {
   var merged = list[Shape]()
-  for both in zip(fixpoints.iter(), ids.iter()) do
+  for both in zip(a.iter(), b.iter()) do
     merged.&.push(merge(both.a, both.b))
   merged.to_slice()
+}
+fun to_array_slice(shape: Shape): Maybe[ShapeArraySlice] {
+  switch shape
+  case id(id) {
+    switch id.resolve()
+    case array(array)
+      some(ShapeArraySlice {
+        array = id,
+        start = Shape.int(0).put_on_heap(),
+        end = Shape.int(array.items.len).put_on_heap(),
+      })
+    case unchecked_array_slice(slice)
+      some(ShapeArraySlice {
+        array = slice.array,
+        start = Shape.id(slice.start).put_on_heap(),
+        end = Shape.id(slice.end).put_on_heap(),
+      })
+    default none[ShapeArraySlice]()
+  }
+  case int none[ShapeArraySlice]()
+  case array_slice(slice) some(slice)
+  case hole none[ShapeArraySlice]()
+}
+fun merge(a: ShapeArraySlice, b: ShapeArraySlice): Maybe[ShapeArraySlice] {
+  if a.array != b.array then return none[ShapeArraySlice]()
+  some(ShapeArraySlice {
+    array = a.array,
+    start = merge(a.start.*, b.start.*).put_on_heap(),
+    end = merge(a.end.*, b.end.*).put_on_heap(),
+  })
 }
 
 fun dehydrate(
@@ -257,26 +333,51 @@ fun dehydrate(
   shape: Shape, id: EggId, builder: &EggBodyBuilder, out: &List[EggId]
 ) {
   switch shape
-  case hole(type) out.push(id)
   case id(fix) if id != fix then panic("bad id")
+  case int {}
+  case array_slice(slice_shape) {
+    switch id.resolve()
+    case array(array) {
+      if slice_shape.array != id then panic("bad array")
+      slice_shape.start.dehydrate(builder.int(0), builder, out)
+      slice_shape.end.dehydrate(builder.int(array.items.len), builder, out)
+    }
+    case array_slice(slice) {
+      if slice_shape.array != slice.array then panic("mismatched array")
+      slice_shape.start.dehydrate(slice.start, builder, out)
+      slice_shape.end.dehydrate(slice.end, builder, out)
+    }
+    default unreachable()
+  }
+  case hole(type) out.push(id)
 }
 
 fun hydrate(
   fixpoint: Fixpoint, ids: Slice[EggId], builder: &EggBodyBuilder
 ): Slice[EggId] {
   var ids = ids.iter()
+  fixpoint.shapes.hydrate(ids.&, builder)
+}
+fun hydrate[I](
+  shapes: Slice[Shape], ids: &Iter[EggId, I], builder: &EggBodyBuilder
+): Slice[EggId] {
   var out = list[EggId]()
-  for shape in fixpoint.shapes do out.&.push(shape.hydrate(ids.&, builder))
+  for shape in shapes do out.&.push(shape.hydrate(ids, builder))
   out.to_slice()
 }
 fun hydrate[I](
   shape: Shape, ids: &Iter[EggId, I], builder: &EggBodyBuilder
 ): EggId {
   switch shape
-  case hole(type) ids.next().unwrap()
   case id(id) id
+  case int(int) builder.int(int)
+  case array_slice(slice_shape) {
+    var start = slice_shape.start.hydrate(ids, builder)
+    var end = slice_shape.end.hydrate(ids, builder)
+    builder.unchecked_array_slice(slice_shape.array, start, end)
+  }
+  case hole(type) ids.next().unwrap()
 }
-
 
 
 | fun union(a: Slice[TacoExpr], b: Slice[TacoExpr]): Slice[TacoExpr] {
