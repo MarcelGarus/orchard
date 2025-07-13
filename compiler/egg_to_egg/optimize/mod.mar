@@ -33,6 +33,8 @@ fun optimize_without_inlining(body: EggBody): EggBody {
   )
 }
 
+var optimized_cache = map[EggId, EggBody]().put_on_heap()
+
 struct Optimize { optimized: &Map[String, EggFun] }
 fun map(
   body: EggBody, optimize: Optimize, mapping: &Map[EggId, EggId]
@@ -46,44 +48,94 @@ fun map(
   old: EggId,
   optimize: Optimize, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
-  var namespace = namespace().&
-  stderr."Optimizing children of\n"
-  stderr.write(old, namespace, indentation(1))
-  stderr."\n"
+  if optimized_cache.get_maybe(old) is some(new) then {
+    for child in new.children do builder.push(child)
+    return new.returns
+  }
 
-  var children_optimized =
-    old.map_children(optimize, builder, mapping).create()
+  | A version of the expression with optimized children. For example, if the
+  | current expression is a switch, this will create the same switch but with
+  | optimized bodies.
+  var children_optimized = old.map_children(optimize, mapping).create()
 
-  stderr."Optimizing (children optimized)\n  {pretty(children_optimized, namespace)} = "
-  stderr.write(children_optimized, namespace, indentation(2))
-  stderr."\n"
-
-  | Compile the single expression into an optimized body (allowing it to expand
-  | to zero or multiple expressions).
-  var fully_optimized = {
+  | A body that contains:
+  | - unoptimized expressions that resulted from optimizing the current
+  |   expression
+  | - the current slightly optimized expression
+  var slightly_optimized = {
     var builder = egg_body_builder().&
     builder.finish(children_optimized.optimize(optimize, builder))
   }
 
-  stderr."Fully optimized:"
-  for child in fully_optimized.children do {
-    stderr."\n  {pretty(child, namespace)} = "
-    stderr.write(child, namespace, indentation(2))
-  }
-  stderr."\n  {pretty(fully_optimized.returns, namespace)}\n"
-
-  var new =
-    if fully_optimized.returns == children_optimized then
-      builder.push(children_optimized)
-    else {
-      for child in fully_optimized.children do {
-        var even_more_optimized = child.map(optimize, builder, mapping)
-        mapping.put(child, even_more_optimized)
-      }
-      fully_optimized.returns.map(mapping)
+  | A body that contains:
+  | - fully optimized expressions that resulted from optimizing the current
+  |   expression
+  | - the current fully optimized expression
+  var fully_optimized =
+    if slightly_optimized.returns == children_optimized then {
+      | The current expression could not be further optimized apart from
+      | optimizing its children.
+      slightly_optimized
+    } else {
+      | The current expression was broken down into some smaller expressions.
+      | Optimize those recursively.
+      var builder = egg_body_builder().&
+      for child in slightly_optimized.children do
+        mapping.put(child, child.map(optimize, builder, mapping))
+      builder.finish(slightly_optimized.returns.map(mapping))
     }
-  mapping.put(old, new)
-  new
+
+  for child in fully_optimized.children do builder.push(child)
+
+  mapping.put(old, fully_optimized.returns)
+  optimized_cache.put(old, fully_optimized)
+  fully_optimized.returns
+
+  | var total_optimized = {
+
+  | }
+
+  | | The optimize function may not be stable, i.e. it may create expressions that
+  | | can be further optimized.
+  | var new =
+  |   if self_optimized.returns == children_optimized then {
+  |     optimized_cache.put(old, self_optimized)
+  |     builder.push(children_optimized)
+  |   } else {
+  |   }
+
+  | var namespace = namespace().&
+  | | stderr."Original\n  {pretty(old, namespace)} = "
+  | | stderr.write(old, namespace, indentation(2))
+  | | stderr."\n"
+  | | stderr."Optimizing (children optimized)\n  {pretty(children_optimized, namespace)} = "
+  | | stderr.write(children_optimized, namespace, indentation(2))
+  | | stderr."\n"
+
+  | | Compile the single expression into an optimized body (allowing it to expand
+  | | to zero or multiple expressions).
+
+  | | stderr."Self optimized:"
+  | | for child in self_optimized.children do {
+  | |   stderr."\n  {pretty(child, namespace)} = "
+  | |   stderr.write(child, namespace, indentation(2))
+  | | }
+  | | stderr."\n  {pretty(self_optimized.returns, namespace)}\n"
+
+  | var new =
+  |   if self_optimized.returns == children_optimized then {
+  |     optimized_cache.put(old, self_optimized)
+  |     builder.push(children_optimized)
+  |   } else {
+  |     for child in self_optimized.children do {
+  |       var even_more_optimized = child.map(optimize, builder, mapping)
+  |       mapping.put(child, even_more_optimized)
+  |     }
+  |     self_optimized.returns.map(mapping)
+  |   }
+  | mapping.put(old, new)
+  | | optimized_cache.put(old, new)
+  | new
 }
 
 | Assuming that the dependencies of the expression are accessible in the
@@ -613,6 +665,58 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | Remove the recursive wrapper if the body doesn't recurse.
     if not(rec.body.recurses()) then return rec.body.fill(rec.initial, builder)
 
+    | If this is a recursive of a lambda, flip them around: Have a lambda that
+    | contains a recursive computation. Replace recurse expression with lambdas
+    | that internally recurse.
+    | Lambdas are a form of indirect control flow and bubbling them up allows
+    | surrounding code to optimize them away (for example, if they are
+    | immediately called).
+    | 
+    | a = ... (Iterator Int) = (\ -> (| empty more: (& item: Int rest: (^3))))
+    | ---
+    | b =
+    |   recursive a
+    |     body c:
+    |       d = lambda
+    |         e = call lambda c
+    |         f =
+    |           switch e
+    |             empty: g
+    |               e
+    |             more: h
+    |               i = member h.item
+    |               j = member h.rest
+    |               k = add i f
+    |               l = recurse j
+    |               m = & rest: l item: k
+    |               n = | more: m
+    |               n
+    |         f
+    |       d
+    | a =
+    | if rec.body.children.len == 1
+    |   and rec.body.children.get(0) == rec.body.returns
+    | then
+    |   if rec.body.returns.resolve() is lambda(lambda) then {
+    |     eprintln("Bubbling up lambda!")
+    |     return builder.lambda({
+    |       var builder = egg_body_builder().&
+    |       for param in lambda.params do builder.params.&.push(param)
+    |       builder.finish(builder.recursive(rec.initial, {
+    |         EggBody {
+    |           params = {
+    |             var params = list[EggId]()
+    |             for param in rec.body.params do params.&.push(param)
+    |             for param in lambda.params do params.&.push(param)
+    |             params.to_slice()
+    |           },
+    |           children = lambda.children,
+    |           returns = lambda.returns,
+    |         }.replace_recurses_with_lambda(lambda.params)
+    |       }))
+    |     })
+    |   }
+
     | Find fixpoint.
     var fixpoint = rec.find_fixpoint()
     if not(fixpoint.is_trivial()) then {
@@ -707,7 +811,7 @@ fun map(
   id: EggId, mapper: CallToRecurse,
   builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
-  var expr = id.map_children(mapper, builder, mapping)
+  var expr = id.map_children(mapper, mapping)
   if expr is call_fun(call) then
     if call.fun_ == mapper.called then
       return builder.recurse(call.args, mapper.return_type)
@@ -732,7 +836,7 @@ struct Fill {}
 fun map(
   expr: EggId, fill: Fill, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]
 ): EggId {
-  builder.push(expr.map_children(fill, builder, mapping))
+  builder.push(expr.map_children(fill, mapping))
 }
 
 fun without_params(body: EggBody): EggBody {
@@ -742,3 +846,24 @@ fun without_params(body: EggBody): EggBody {
     returns = body.returns,
   }
 }
+
+| fun replace_recurses_with_lambda(body: EggBody, params: Slice[EggId]): EggBody {
+|   body.map(ReplaceRecursesWithLambda { params }, map[EggId, EggId]().&)
+| }
+| struct ReplaceRecursesWithLambda { params: Slice[EggId] }
+| fun map(id: EggId, mapper: ReplaceRecursesWithLambda, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]): EggId {
+|   var expr = id.map_children(mapper, mapping)
+|   if expr is recurse(rec) then
+|     builder.lambda({
+|       var builder = egg_body_builder().&
+|       for param in mapper.params do builder.params.&.push(param)
+|       builder.finish(builder.recurse({
+|         var args = list[EggId]()
+|         for arg in rec.next do args.&.push(arg)
+|         for param in mapper.params do args.&.push(param)
+|         args.to_slice()
+|       }, rec.type.kind().lambda.unwrap().return_type))
+|     })
+|   else
+|     builder.push(expr)
+| }
