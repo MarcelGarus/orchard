@@ -9,6 +9,13 @@ fun param(builder: &EggBodyBuilder, type: EggType): EggId {
   builder.params.&.push(id)
   id
 }
+fun case_param(
+  builder: &EggBodyBuilder, switch_on: EggId, variant: String
+): EggId {
+  var id = EggExpr.case_param(EggCaseParam { switch_on, variant }).create()
+  builder.params.&.push(id)
+  id
+}
 fun push(builder: &EggBodyBuilder, id: EggId): EggId {
   builder.children.&.push(id)
   id
@@ -289,26 +296,102 @@ fun switch_on_ordering(
   ))
 }
 
-fun egg_body_taking_nothing_returning_nothing(): EggBody {
-  var builder = egg_body_builder().&
-  builder.param(type_nothing)
-  builder.finish(builder.nothing())
-}
-
-fun egg_body_taking_nothing_crashing(message: String, type: EggType): EggBody {
-  var builder = egg_body_builder().&
-  builder.param(type_nothing)
-  builder.finish(builder.crash(message, type))
-}
-
-| var egg_nothing = struct_(map[String, EggId]())
-| var egg_true = enum_(type_bool, "true", egg_nothing)
-| var egg_false = enum_(type_bool, "false", egg_nothing)
-
-| fun body(
-|   dag: &Dag[EggId], params: Slice[EggType], returns: EggId
-| ): EggBody {
-|   var body = dag.body_builder().&
-|   for param in params do body.param(param)
-|   body.finish(returns)
+| fun egg_body_taking_nothing_returning_nothing(): EggBody {
+|   var builder = egg_body_builder().&
+|   builder.param(type_nothing)
+|   builder.finish(builder.nothing())
 | }
+
+| fun egg_body_taking_nothing_crashing(message: String, type: EggType): EggBody {
+|   var builder = egg_body_builder().&
+|   builder.param(type_nothing)
+|   builder.finish(builder.crash(message, type))
+| }
+
+fun assert_is_less(left: EggId, right: EggId, message: String): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "less")
+      builder.finish(builder.nothing())
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "equal")
+      builder.finish(builder.crash(message, type_nothing))
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "greater")
+      builder.finish(builder.crash(message, type_nothing))
+    },
+  )
+}
+
+fun assert_is_less_equal(left: EggId, right: EggId, message: String): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "less")
+      builder.finish(builder.nothing())
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "equal")
+      builder.finish(builder.nothing())
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "greater")
+      builder.finish(builder.crash(message, type_nothing))
+    },
+  )
+}
+
+fun assert_is_greater(left: EggId, right: EggId, message: String): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "less")
+      builder.finish(builder.crash(message, type_nothing))
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "equal")
+      builder.finish(builder.crash(message, type_nothing))
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "greater")
+      builder.finish(builder.nothing())
+    },
+  )
+}
+
+fun assert_is_greater_equal(left: EggId, right: EggId, message: String): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "less")
+      builder.finish(builder.crash(message, type_nothing))
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "equal")
+      builder.finish(builder.nothing())
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "greater")
+      builder.finish(builder.nothing())
+    },
+  )
+}

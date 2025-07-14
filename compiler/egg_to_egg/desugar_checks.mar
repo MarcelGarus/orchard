@@ -26,19 +26,22 @@ fun map(
   switch expr
   case generate_array(args) {
     var item_type = args.generator.returns.type()
+    var cmp_length_zero = builder.compare(args.length, builder.int(0))
     builder.switch_on_ordering(
-      builder.compare(args.length, builder.int(0)),
-      egg_body_taking_nothing_crashing(
-        "negative length", type_array(item_type)
-      ),
+      cmp_length_zero,
       {
         var builder = egg_body_builder().&
-        builder.param(type_nothing)
+        builder.case_param(cmp_length_zero, "less")
+        builder.finish(builder.crash("negative length", type_array(item_type)))
+      },
+      {
+        var builder = egg_body_builder().&
+        builder.case_param(cmp_length_zero, "equal")
         builder.finish(builder.array(empty_slice[EggId](), item_type))
       },
       {
         var builder = egg_body_builder().&
-        builder.param(type_nothing)
+        builder.case_param(cmp_length_zero, "greater")
         builder.finish(
           builder.unchecked_generate_non_empty_array(
             args.length, args.generator
@@ -48,61 +51,25 @@ fun map(
     )
   }
   case array_get(args) {
-    builder.switch_on_ordering(
-      builder.compare(args.index, builder.int(0)),
-      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_returning_nothing(),
-    )
-    builder.switch_on_ordering(
-      builder.compare(args.index, builder.array_len(args.array)),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
-      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
+    builder.assert_is_greater_equal(args.index, builder.int(0), "out of bounds")
+    builder.assert_is_less(
+      args.index, builder.array_len(args.array), "out of bounds"
     )
     builder.unchecked_array_get(args.array, args.index)
   }
   case array_set(args) {
-    builder.switch_on_ordering(
-      builder.compare(args.index, builder.int(0)),
-      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_returning_nothing(),
-    )
-    builder.switch_on_ordering(
-      builder.compare(args.index, builder.array_len(args.array)),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
-      egg_body_taking_nothing_crashing("out of bounds", type_nothing),
+    builder.assert_is_greater_equal(args.index, builder.int(0), "out of bounds")
+    builder.assert_is_less(
+      args.index, builder.array_len(args.array), "out of bounds"
     )
     builder.unchecked_array_set(args.array, args.index, args.item)
   }
   case array_slice(args) {
     var length = builder.array_len(args.array)
-    builder.switch_on_ordering(
-      builder.compare(args.start, builder.int(0)),
-      egg_body_taking_nothing_crashing("bad bounds", type_nothing),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_returning_nothing(),
-    )
-    builder.switch_on_ordering(
-      builder.compare(args.start, length),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing("bad bounds", type_nothing),
-    )
-    builder.switch_on_ordering(
-      builder.compare(args.start, args.end),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing("bad bounds", type_nothing),
-    )
-    builder.switch_on_ordering(
-      builder.compare(args.end, length),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_returning_nothing(),
-      egg_body_taking_nothing_crashing("bad bounds", type_nothing),
-    )
+    builder.assert_is_greater_equal(args.start, builder.int(0), "bad bounds")
+    builder.assert_is_greater(args.start, length, "bad bounds")
+    builder.assert_is_less_equal(args.start, args.end, "bad bounds")
+    builder.assert_is_less_equal(args.end, length, "bad bounds")
     builder.unchecked_array_slice(args.array, args.start, args.end)
   }
   default builder.push(expr)

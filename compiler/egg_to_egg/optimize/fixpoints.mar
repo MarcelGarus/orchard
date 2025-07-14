@@ -169,18 +169,24 @@ enum Shape {
   int: Int,
   | struct_: Map[String, Shape], TODO
   | enum_: Tuple3[EggType, String, &Shape], TODO
+  lambda: ShapeLambda,
   | box: &Shape, TODO
   array_slice: ShapeArraySlice,
   hole: EggType, | We know nothing about the expression.
 }
+struct ShapeLambda { fun_: String, closure: &Shape, type: EggType }
 struct ShapeArraySlice { array: EggId, start: &Shape, end: &Shape }
 
 fun ==(a: Shape, b: Shape): Bool {
   switch a
   case id(a)          if b is id(b)          then a == b else false
   case int(a)         if b is int(b)         then a == b else false
-  case hole(a)        if b is hole(b)        then a == b else false
+  case lambda(a)      if b is lambda(b)      then a == b else false
   case array_slice(a) if b is array_slice(b) then a == b else false
+  case hole(a)        if b is hole(b)        then a == b else false
+}
+fun ==(a: ShapeLambda, b: ShapeLambda): Bool {
+  a.fun_ == b.fun_ and a.closure.* == b.closure.* and a.type == b.type
 }
 fun ==(a: ShapeArraySlice, b: ShapeArraySlice): Bool {
   a.array == b.array and a.start.* == b.start.* and a.end.* == b.end.*
@@ -197,6 +203,7 @@ fun write[W](writer: W, shape: Shape) {
   switch shape
   case id(id) writer."(id:{id.id.index.debug()})"
   case int(int) writer."(int {int})"
+  case lambda(lambda) writer."(lambda {lambda.fun_} {lambda.closure.*})"
   case array_slice(slice) writer."(slice {slice.array.id.index.debug()} {slice.start.*} {slice.end.*})"
   case hole writer."(?)"
 }
@@ -207,7 +214,7 @@ fun is_trivial(fixpoint: Fixpoint): Bool {
   all_holes
 }
 
-fun find_fixpoint(rec: EggRecursive): Fixpoint {
+fun find_fixpoint(rec: EggRecursive, optimize: Optimize): Fixpoint {
   var candidate = {
     var shapes = list[Shape]()
     for arg in rec.initial do shapes.&.push(Shape.id(arg))
@@ -220,6 +227,7 @@ fun find_fixpoint(rec: EggRecursive): Fixpoint {
     var rehydrated = candidate.hydrate(builder.params.iter().&, builder)
     var body = builder.finish(rec.body.fill(rehydrated, builder))
     var body = body.optimize_without_inlining()
+    | var body = body.map(optimize, map[EggId, EggId]().&)
 
     stderr."Fixpoint propagation:\n"
     stderr."  Candidate: {candidate}\n"
@@ -246,6 +254,7 @@ fun holes_to_params(shape: Shape, builder: &EggBodyBuilder) {
   switch shape
   case id {}
   case int {}
+  case lambda(lambda) lambda.closure.holes_to_params(builder)
   case array_slice(slice) {
     slice.start.holes_to_params(builder)
     slice.end.holes_to_params(builder)
@@ -295,6 +304,13 @@ fun merge(a: Shape, b: Shape): Shape {
 
     Shape.hole(type_int)
   }
+  case lambda(a_lambda) {
+    | if b.to_lambda() is some(b_lambda) then
+    |   if merge(a_slice, b_slice) is some(merged) then
+    |     return Shape.array_slice(merged)
+
+    Shape.hole(a_lambda.type)
+  }
   case array_slice(a_slice) {
     if b.to_array_slice() is some(b_slice) then
       if merge(a_slice, b_slice) is some(merged) then
@@ -328,9 +344,8 @@ fun to_array_slice(shape: Shape): Maybe[ShapeArraySlice] {
       })
     default none[ShapeArraySlice]()
   }
-  case int none[ShapeArraySlice]()
   case array_slice(slice) some(slice)
-  case hole none[ShapeArraySlice]()
+  default none[ShapeArraySlice]()
 }
 fun merge(a: ShapeArraySlice, b: ShapeArraySlice): Maybe[ShapeArraySlice] {
   if a.array != b.array then return none[ShapeArraySlice]()
@@ -355,6 +370,7 @@ fun dehydrate(
   switch shape
   case id(fix) if id != fix then panic("bad id")
   case int {}
+  case lambda todo()
   case array_slice(slice_shape) {
     switch id.resolve()
     case array(array) {
@@ -391,6 +407,7 @@ fun hydrate[I](
   switch shape
   case id(id) id
   case int(int) builder.int(int)
+  case lambda todo()
   case array_slice(slice_shape) {
     var start = slice_shape.start.hydrate(ids, builder)
     var end = slice_shape.end.hydrate(ids, builder)
