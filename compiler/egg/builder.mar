@@ -4,20 +4,16 @@ struct EggBodyBuilder { params: List[EggId], children: List[EggId] }
 fun egg_body_builder(): _ {
   EggBodyBuilder { params = list[EggId](), children = list[EggId]() }
 }
-fun param(builder: &EggBodyBuilder, type: EggType): EggId {
-  var id = EggExpr.param(type).create_with_new_identity()
-  builder.params.&.push(id)
-  id
-}
-fun case_param(
-  builder: &EggBodyBuilder, switch_on: EggId, variant: String
-): EggId {
-  var id = EggExpr.case_param(EggCaseParam { switch_on, variant }).create()
-  builder.params.&.push(id)
-  id
-}
 fun push(builder: &EggBodyBuilder, id: EggId): EggId {
-  builder.children.&.push(id)
+  var is_param =
+    switch id.resolve()
+    case param true
+    case case_param true
+    default false
+  if is_param then
+    builder.params.&.push(id)
+  else
+    builder.children.&.push(id)
   id
 }
 fun push(builder: &EggBodyBuilder, expr: EggExpr): EggId {
@@ -29,6 +25,16 @@ fun finish(builder: EggBodyBuilder, returns: EggId): EggBody {
     children = builder.children.to_slice(),
     returns,
   }
+}
+
+fun param(builder: &EggBodyBuilder, type: EggType): EggId {
+  builder.push(EggExpr.param(type).create_with_new_identity())
+}
+
+fun case_param(
+  builder: &EggBodyBuilder, switch_on: EggId, variant: String
+): EggId {
+  builder.push(EggExpr.case_param(EggCaseParam { switch_on, variant }))
 }
 
 fun byte(builder: &EggBodyBuilder, byte: Byte): EggId {
@@ -108,6 +114,8 @@ fun enum_(
 fun switch_(
   builder: &EggBodyBuilder, condition: EggId, type: EggType, cases: Map[String, EggBody]
 ): EggId {
+  for case_ in cases do
+    case_.value.params.len == 1 or panic("case with {case_.value.params.len} params")
   builder.push(EggExpr.switch_(EggSwitch { condition, type, cases }))
 }
 
@@ -296,19 +304,9 @@ fun switch_on_ordering(
   ))
 }
 
-| fun egg_body_taking_nothing_returning_nothing(): EggBody {
-|   var builder = egg_body_builder().&
-|   builder.param(type_nothing)
-|   builder.finish(builder.nothing())
-| }
-
-| fun egg_body_taking_nothing_crashing(message: String, type: EggType): EggBody {
-|   var builder = egg_body_builder().&
-|   builder.param(type_nothing)
-|   builder.finish(builder.crash(message, type))
-| }
-
-fun assert_is_less(left: EggId, right: EggId, message: String): EggId {
+fun assert_is_less(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
   var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
     ordering,
@@ -330,7 +328,9 @@ fun assert_is_less(left: EggId, right: EggId, message: String): EggId {
   )
 }
 
-fun assert_is_less_equal(left: EggId, right: EggId, message: String): EggId {
+fun assert_is_less_equal(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
   var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
     ordering,
@@ -352,7 +352,9 @@ fun assert_is_less_equal(left: EggId, right: EggId, message: String): EggId {
   )
 }
 
-fun assert_is_greater(left: EggId, right: EggId, message: String): EggId {
+fun assert_is_greater(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
   var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
     ordering,
@@ -374,7 +376,9 @@ fun assert_is_greater(left: EggId, right: EggId, message: String): EggId {
   )
 }
 
-fun assert_is_greater_equal(left: EggId, right: EggId, message: String): EggId {
+fun assert_is_greater_equal(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
   var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
     ordering,
@@ -387,6 +391,30 @@ fun assert_is_greater_equal(left: EggId, right: EggId, message: String): EggId {
       var builder = egg_body_builder().&
       builder.case_param(ordering, "equal")
       builder.finish(builder.nothing())
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "greater")
+      builder.finish(builder.nothing())
+    },
+  )
+}
+
+fun assert_is_not_equal(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "less")
+      builder.finish(builder.nothing())
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "equal")
+      builder.finish(builder.crash(message, type_nothing))
     },
     {
       var builder = egg_body_builder().&

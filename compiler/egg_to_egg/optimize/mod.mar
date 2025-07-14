@@ -18,6 +18,7 @@ fun optimize(egg: Egg): Egg {
   var funs = map[String, EggFun]()
   for signature in egg.choose_optimization_order() do {
     eprintln("Optimizing {signature}")
+    stderr.write("original", egg.funs.get(signature))
     var optimized = egg.funs.get(signature).map(Optimize { optimized = funs.& })
     eprintln("Optimized {signature}:")
     stderr.write("optimized", optimized)
@@ -85,6 +86,7 @@ fun map(
       builder.finish(slightly_optimized.returns.map(mapping))
     }
 
+  for param in fully_optimized.params do builder.push(param)
   for child in fully_optimized.children do builder.push(child)
 
   mapping.put(old, fully_optimized.returns)
@@ -354,9 +356,9 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
       if optimize.optimized.get_maybe(call.fun_) is some(fun_) then {
         var should_inline = fun_.body.num_exprs() <= 50
         if should_inline then {
-          eprintln("inlining call")
+          eprintln("inlining {call.fun_}")
           eprintln("fun:\n")
-          stderr.write(Egg { funs = map("to_inline" -> fun_), entry_point = "" })
+          stderr.write(Egg { funs = map(call.fun_ -> fun_), entry_point = "" })
           stderr."\n"
           return builder.recursive(
             call.args,
