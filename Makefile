@@ -13,3 +13,6 @@ fibonacci.ground: $(shell find workspace -type f) plum.soil
 	mv workspace/test/fibonacci.ground fibonacci.ground
 run-fibonacci: fibonacci.ground
 	ground fibonacci.ground
+
+run-pear: pear/pear.mar
+	soil ../martinaise/martinaise.soil run pear/pear.mar

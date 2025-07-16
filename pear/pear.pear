@@ -1,0 +1,103 @@
+# Pear
+#
+# goal:
+# - immutable
+# - simple compiler that can be written in Forth / asm
+#   - no optimizing compiler required
+#   - no types, uniform object syntax
+#
+# how:
+# - uniform object syntax with lots of pointer indirections
+
+# everything is data, including functions
+# data types:
+# - numbers
+# - words
+# - structs
+# - lambdas
+
+# parentheses apply:
+# & creates a struct
+# \ creates a lambda
+# : defines a variable
+# word gets a struct field
+# struct gets a struct field
+# lambda executes with args
+
+#(: core (import "core.js"))
+
+(:
+  list
+  (:
+    make_1 (\ a (& type :leaf length 1 item a))
+    make_2 (\ a b (& type :inner length 2 left (make_1 a) right (make_1 b)))
+    make_3 (\ a b c (& type :inner length 3 left (make_2 a b) right (make_1 c)))
+    get_rec (\ get_rec list index
+      (if (>= index (list :length))
+        (crash :index_too_big)
+        (if (= (list :type) :inner)
+          (list :item)
+          (:
+            left (list :left)
+            right (list :right)
+            (if (< index (left :length))
+              (get_rec get_rec left index)
+              (get_rec get_rec right (- index (left :size))))))))
+    get (\ list index (get_rec get_rec list index))
+    (&
+      make_1 make_1
+      make_2 make_2
+      make_3 make_3))
+  ((list :make_2) 1 2))
+
+(: + (builtins :add)
+  (+ 2 3))
+
+(: a (& foo 1 bar 2)
+  ((builtins :+) (a :bar) (a :foo)))
+
+#(struct :foo)
+
+# TODO: fibonacci
+
+
+
+#(let core (import "core.cj")
+#  (let + (. core :+)
+#    (let bar foo
+#      (let double (lambda a (+ a a))
+#        (& :foo foo
+#           :bar bar
+#           :double double)))))
+#
+#(if :true 3 4)
+#
+#
+#:nil
+#[1 :nil]
+#[1 [2 :nil]]
+#
+#[:let [:core [[:import ["core.cj" :nil]] ...]]]
+#
+#
+#(&
+#  :type :let
+#  :name :core
+#  :value (& :type :call :callee (& :type :import) :args )
+#)
+#
+#
+#
+#
+#fun(mem, a) {
+#  malloc(mem)
+#}
+#
+#
+#core = import("core.cj")
+#
+#malloc(mem)
+#core.foo
+#
+#
+#

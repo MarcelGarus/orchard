@@ -1,0 +1,304 @@
+| The Pear Interpreter  
+
+import ../../martinaise/stdlib.mar
+
+fun exit(status: Int, message: String): Never {
+  stderr.write(message)
+  exit(status)
+}
+
+enum Tree { leaf: String, inner: Slice[Tree] }
+
+struct Parser { input: String, cursor: Int }
+
+fun is_at_end(parser: Parser): Bool { parser.cursor == parser.input.len }
+fun current(parser: Parser): Char { parser.input.get(parser.cursor) }
+fun advance(parser: &Parser) { parser.cursor = parser.cursor + 1 }
+fun consume_whitespace(parser: &Parser) {
+  loop {
+    if parser.is_at_end() then break
+    if parser.current() == ## then
+      loop {
+        parser.advance()
+        if parser.is_at_end() then break
+        if parser.current() == newline then  break
+      }
+    if parser.is_at_end() then break
+    parser.current().is_whitespace() or break
+    parser.advance()
+  }
+}
+fun is_special(char: Char): Bool {
+  char == #( or char == #) or char.is_whitespace() or char == ##
+}
+fun parse_word(parser: &Parser): Maybe[String] {
+  if parser.is_at_end() then return none[String]()
+  if parser.current().is_special() then return none[String]()
+  var start = parser.cursor
+  loop {
+    parser.advance()
+    if parser.is_at_end() then break
+    if parser.current().is_special() then break
+  }
+  var end = parser.cursor
+  if start == end then none[String]() else some(parser.input.substr(start..end))
+}
+fun parse_tree(parser: &Parser): Maybe[Tree] {
+  parser.consume_whitespace()
+  if parser.is_at_end() then return none[Tree]()
+  if parser.current() == #) then return none[Tree]()
+  if parser.current() == #( then {
+    parser.advance()
+    var children = list[Tree]()
+    loop children.&.push(parser.parse_tree() or break)
+    if parser.is_at_end() then panic("end without closing paren")
+    parser.current() == #) or panic("expected closing paren")
+    parser.advance()
+    return some(Tree.inner(children.to_slice()))
+  }
+  some(Tree.leaf(parser.parse_word() or panic("expected word. current: <{parser.current()}>")))
+}
+fun parse_tree(input: String): Tree {
+  Parser { input, cursor = 0 }.&.parse_tree() or panic("expected tree")
+}
+
+enum Code {
+  number: Int,     | 2
+  word: String,    | foo
+  tag: String,     | :foo
+  def: Def,        | (: foo 2 (body that uses foo))
+  struct_: Struct, | (& foo 2 bar 3)
+  lambda: Lambda,  | (\ a b (+ a b))
+  apply: Apply,    | (a b c)
+  builtin: Builtin,
+}
+struct Def { name: String, value: &Code, body: &Code }
+struct Struct { fields: Map[String, Code] }
+struct Lambda { params: Slice[String], body: &Code }
+struct Apply { what: &Code, args: Slice[Code] }
+
+fun write[W](writer: W, code: Code) {
+  switch code
+  case number(number) writer."{number}"
+  case tag(tag) writer.":{tag}"
+  case word(word) writer."{word}"
+  case def(def) writer."(: {def.name} {def.value} {def.body})"
+  case struct_(struct_) {
+    writer."(&"
+    for field in struct_.fields do writer." {field.key} {field.value}"
+    writer.")"
+  }
+  case lambda(lambda) {
+    writer."(\\"
+    for param in lambda.params do writer." {param}"
+    writer." {lambda.body})"
+  }
+  case apply(apply) {
+    writer."({apply.what}"
+    for arg in apply.args do writer." {arg}"
+    writer.")"
+  }
+  case builtin(builtin) writer."(builtin {builtin.debug()})"
+}
+
+fun parse_code(tree: Tree): Code {
+  switch tree
+  case leaf(string) {
+    if string.chars().first().is_digit() then {
+      var num = 0
+      var cursor = 0
+      loop {
+        if cursor == string.len then break
+        var char = string.chars().get(cursor)
+        var digit = "0123456789".iter().&.find(char) or break
+        num = num * 10 + digit
+        cursor = cursor + 1
+      }
+      return Code.number(num)
+    }
+    if string.chars().first() == #: then
+      Code.tag(string.substr(1..string.len))
+    else
+      Code.word(string)
+  }
+  case inner(children) {
+    var first = children.first()
+    var args = children.without_first()
+    if first is leaf(name) then {
+      if name == ":" then {
+        args.len == 3 or panic("def with {args.len} args")
+        var name = args.get(0).leaf.unwrap("def needs a name")
+        var value = args.get(1).parse_code()
+        var body = args.get(2).parse_code()
+        return Code.def(Def {
+          name, value = value.put_on_heap(), body = body.put_on_heap()
+        })
+      }
+      if name == "&" then {
+        var fields = map[String, Code]()
+        args.len % 2 == 0 or panic("struct with uneven number of args")
+        for i in 0..{args.len / 2} do {
+          var name  = args.get(i * 2).leaf.unwrap("expected struct field name")
+          var value = args.get(i * 2 + 1).parse_code()
+          fields.&.put(name, value)
+        }
+        return Code.struct_(Struct { fields })
+      }
+      if name == "\\" then {
+        var body = args.last().parse_code()
+        var params = list[String]()
+        for param in args.without_last() do params.&.push(param.leaf.unwrap())
+        return Code.lambda(Lambda { params = params.to_slice(), body = body.put_on_heap() })
+      }
+    }
+    var lowered_args = list[Code]()
+    for arg in args do lowered_args.&.push(arg.parse_code())
+    Code.apply(Apply { what = first.parse_code().put_on_heap(), args = lowered_args.to_slice() })
+  }
+}
+
+fun parse(code: String): Code {
+  var tree = code.parse_tree()
+  | eprintln("tree: {tree.debug()}")
+  tree.parse_code()
+}
+
+enum Value {
+  number: Int,
+  tag: String,
+  struct_: Map[String, Value],
+  lambda: Lambda,
+  builtin: Builtin,
+}
+enum Builtin { add, subtract, multiply, divide }
+
+fun write[W](writer: W, value: Value) { writer.write(value.to_code()) }
+
+fun to_code(value: Value): Code {
+  switch value
+  case number(number) Code.number(number)
+  case tag(tag) Code.tag(tag)
+  case struct_(struct_) {
+    var fields = map[String, Code]()
+    for field in struct_ do fields.&.put(field.key, field.value.to_code())
+    Code.struct_(Struct { fields })
+  }
+  case lambda(lambda) Code.lambda(lambda)
+  case builtin(builtin) Code.builtin(builtin)
+}
+
+fun fill(code: Code, name: String, value: Value): Code {
+  switch code
+  case number code
+  case tag code
+  case word(word) if word == name then value.to_code() else code
+  case def(def)
+    if def.name == name then
+      code
+    else
+      Code.def(Def {
+        name = def.name,
+        value = def.value.fill(name, value).put_on_heap(),
+        body = def.body.fill(name, value).put_on_heap(),
+      })
+  case struct_(struct_) {
+    var fields = map[String, Code]()
+    for field in struct_.fields do
+      fields.&.put(field.key, field.value.fill(name, value))
+    Code.struct_(Struct { fields })
+  }
+  case lambda(lambda) {
+    for param in lambda.params do if param == name then return code
+    Code.lambda(Lambda {
+      params = lambda.params, body = lambda.body.fill(name, value).put_on_heap()
+    })
+  }
+  case apply(apply) {
+    var args = list[Code]()
+    for arg in apply.args do args.&.push(arg.fill(name, value))
+    Code.apply(Apply {
+      what = apply.what.fill(name, value).put_on_heap(), args = args.to_slice()
+    })
+  }
+  case builtin code
+}
+
+fun eval(code: Code): Value {
+  switch code
+  case number(number) Value.number(number)
+  case tag(tag) Value.tag(tag)
+  case word(word) panic("unbounded word {word}")
+  case def(def) def.body.fill(def.name, def.value.eval()).eval()
+  case struct_(struct_) {
+    var fields = map[String, Value]()
+    for field in struct_.fields do fields.&.put(field.key, field.value.eval())
+    Value.struct_(fields)
+  }
+  case lambda(lambda) Value.lambda(lambda)
+  case apply(apply) {
+    var what = apply.what.eval()
+    var args = list[Value]()
+    for arg in apply.args do args.&.push(arg.eval())
+    switch what
+    case struct_(struct_) {
+      args.len == 1 or panic("apply struct with {args.len} args")
+      var field = args.get(0).tag.unwrap()
+      struct_.get(field)
+    }
+    case lambda(lambda) {
+      lambda.params.len == args.len
+      var body = lambda.body.*
+      for both in zip(lambda.params.iter(), args.iter()) do
+        body = body.fill(both.a, both.b)
+      body.eval()
+    }
+    case builtin(builtin) {
+      switch builtin
+      case add {
+        args.len == 2 or panic("add needs 2 args")
+        Value.number(args.get(0).number.unwrap() + args.get(1).number.unwrap())
+      }
+      case subtract {
+        args.len == 2 or panic("subtract needs 2 args")
+        Value.number(args.get(0).number.unwrap() - args.get(1).number.unwrap())
+      }
+      case multiply {
+        args.len == 2 or panic("multiply needs 2 args")
+        Value.number(args.get(0).number.unwrap() * args.get(1).number.unwrap())
+      }
+      case divide {
+        args.len == 2 or panic("divide needs 2 args")
+        Value.number(args.get(0).number.unwrap() / args.get(1).number.unwrap())
+      }
+    }
+    default panic("applying something weird")
+  }
+  case builtin(builtin) Value.builtin(builtin)
+}
+
+fun eval_file(path: String): Value {
+  var content = read_file(path) or exit(1, "Couldn't read file from {path}")
+  var content = content.to_string()
+  var code = content.parse()
+  eprintln("code: {code}")
+  code.fill(
+    "builtins",
+    Value.struct_(map(
+      "add" -> Value.builtin(Builtin.add),
+      "subtract" -> Value.builtin(Builtin.subtract),
+      "multiply" -> Value.builtin(Builtin.multiply),
+      "divide" -> Value.builtin(Builtin.divide),
+    ))
+  ).eval()
+}
+
+fun main(): Never {
+  eprintln("Welcome to the Pear interpreter!")
+
+  var args = get_process_args()
+  var path = "pear/pear.pear" | args.get_maybe(1) or exit(1, "You didn't specify a file.\n")
+  var result = eval_file(path)
+  eprintln("{result}")
+
+  exit(0)
+}
