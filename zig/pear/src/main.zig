@@ -13,7 +13,7 @@ pub fn main() !void {
 
     var ally = std.heap.DebugAllocator(.{}){};
 
-    var mem = lib.Mem{ .ally = ally.allocator() };
+    var mem = lib.World.init(ally.allocator());
 
     const path = "../../pear/pear.pear"; // args.get_maybe(1) or exit(1, "You didn't specify a file.\n")
     const result = lib.eval_file(&mem, path);
