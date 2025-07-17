@@ -40,7 +40,27 @@ struct Optimize { optimized: &Map[String, EggFun] }
 fun map(
   body: EggBody, optimize: Optimize, mapping: &Map[EggId, EggId]
 ): EggBody {
-  body.map_children(optimize, mapping)
+  var body = {
+    | Explicitly do not map the params. We try applying optimizations again and
+    | again until the expression doesn't change anymore. As params are compared
+    | using their identity, optimizing them as well would cause infinite
+    | recursion.
+    var builder = egg_body_builder().&
+    for param in body.params do
+      mapping.put(
+        param,
+        switch param.resolve()
+        case param builder.push(param)
+        case case_param(param)
+          builder.case_param(param.switch_on.map(mapping), param.variant)
+        default unreachable(),
+      )
+    for child in body.children do
+      mapping.put(child, child.map(optimize, builder, mapping))
+    builder.finish(body.returns.map(mapping))
+  }
+
+  body
     .use_enum_flow()
     .deduplicate()
     .tree_shake()
@@ -49,15 +69,32 @@ fun map(
   old: EggId,
   optimize: Optimize, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
+  eprintln("Optimizing {old.debug()} {old.resolve().debug()}")
+  stderr."\n"
+  stderr.write(old, namespace().&, indentation(1))
+  stderr."\n"
+
+  switch old.resolve()
+  case param panic("should not be optimized")
+  case case_param panic("should not be optimized")
+  default {}
+
   if optimized_cache.get_maybe(old) is some(new) then {
+    for param in new.params do builder.push(param)
     for child in new.children do builder.push(child)
     return new.returns
   }
+
 
   | A version of the expression with optimized children. For example, if the
   | current expression is a switch, this will create the same switch but with
   | optimized bodies.
   var children_optimized = old.map_children(optimize, mapping).create()
+
+  eprintln("Children optimized: {children_optimized.debug()} {children_optimized.resolve().debug()}")
+  stderr."\n"
+  stderr.write(children_optimized, namespace().&, indentation(1))
+  stderr."\n"
 
   | A body that contains:
   | - unoptimized expressions that resulted from optimizing the current
@@ -148,8 +185,11 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   stderr."\n"
   stderr.write(id, namespace().&, indentation(1))
   stderr."\n"
+
   switch id.resolve()
   case lambda(lambda) {
+    panic("don't lambda")
+    
     | Assuming that the lambda will run often, hoisting pure expressions out of
     | it prevents recalculating them over and over every time the lambda is
     | called.
@@ -220,7 +260,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
         if not(inline) then break
         if case_.value.without_params() != common then inline = false
       }
-      eprintln("filling common")
+      eprintln("filling common? {inline}")
       if inline then return common.fill(empty_slice[EggId](), builder)
     }
 
