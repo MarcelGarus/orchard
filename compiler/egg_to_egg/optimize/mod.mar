@@ -17,12 +17,12 @@ import tree_shake.mar
 fun optimize(egg: Egg): Egg {
   var funs = map[String, EggFun]()
   for signature in egg.choose_optimization_order() do {
-    | eprintln("Optimizing {signature}")
-    | stderr.write("original", egg.funs.get(signature))
+    eprintln("Optimizing {signature}")
+    stderr.write("original", egg.funs.get(signature))
     var optimized = egg.funs.get(signature).map(Optimize { optimized = funs.& })
-    | eprintln("Optimized {signature}:")
-    | stderr.write("optimized", optimized)
-    | stderr."\n"
+    eprintln("Optimized {signature}:")
+    stderr.write("optimized", optimized)
+    stderr."\n"
     optimized.verify()
     funs.&.put(signature, optimized)
   }
@@ -263,17 +263,17 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     var reachable_cases = list[MapEntry[String, EggBody]]()
     for case_ in switch_.cases do
       if not(case_.value.is_unreachable()) then reachable_cases.&.push(case_)
-    eprintln("{reachable_cases.len} reachable cases")
+    | eprintln("{reachable_cases.len} reachable cases")
     if reachable_cases.is_empty() then return builder.unreachable(switch_.type)
     else if not(reachable_cases.get(0).value.uses_params()) then {
       var common = reachable_cases.get(0).value.without_params()
-      eprintln("common: {common.debug()}")
+      | eprintln("common: {common.debug()}")
       var inline = true
       for case_ in reachable_cases do {
         if not(inline) then break
         if case_.value.without_params() != common then inline = false
       }
-      eprintln("filling common? {inline}")
+      | eprintln("filling common? {inline}")
       if inline then return common.fill(empty_slice[EggId](), builder) else eprintln("not filling")
     }
 
@@ -417,17 +417,17 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     if call.substitutions.substitutions.size == 0 then
       if optimize.optimized.get_maybe(call.fun_) is some(fun_) then {
         if fun_.body.num_exprs() <= 50 then {
-          if not(fun_.recurses(call.fun_)) then {
+          if not(fun_.recurses(call.fun_)) and not(fun_.contains_lambda()) then {
             eprintln("inlining {call.fun_}")
-            eprintln("fun:\n")
+            | eprintln("fun:\n")
             stderr.write(Egg { funs = map(call.fun_ -> fun_), entry_point = "" })
             stderr."\n"
             return fun_.body.fill(call.args, builder)
           } else if fun_.only_recurses_in_tail_position(call.fun_) then {
-            return builder.loop_(
-              call.args,
-              fun_.body.call_to_continue_(call.fun_, call.return_type),
-            )
+            | return builder.loop_(
+            |   call.args,
+            |   fun_.body.call_to_continue_(call.fun_, call.return_type),
+            | )
           } else {
             | We don't inline general recursive functions.
           }
@@ -870,9 +870,9 @@ fun map(
 
 | Fills the body with concrete arguments for its parameters.
 fun fill(body: EggBody, args: Slice[EggId], builder: &EggBodyBuilder): EggId {
-  eprintln("Filling\n")
-  stderr.write(body, namespace().&, indentation(1))
-  stderr."\nwith {args.debug()}\n"
+  | eprintln("Filling\n")
+  | stderr.write(body, namespace().&, indentation(1))
+  | stderr."\nwith {args.debug()}\n"
   var mapping = map[EggId, EggId]().&
   for both in zip(body.params.iter(), args.iter()) do
     mapping.put(both.a, both.b)
