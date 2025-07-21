@@ -17,12 +17,12 @@ import tree_shake.mar
 fun optimize(egg: Egg): Egg {
   var funs = map[String, EggFun]()
   for signature in egg.choose_optimization_order() do {
-    eprintln("Optimizing {signature}")
-    stderr.write("original", egg.funs.get(signature))
+    | eprintln("Optimizing {signature}")
+    | stderr.write("original", egg.funs.get(signature))
     var optimized = egg.funs.get(signature).map(Optimize { optimized = funs.& })
-    eprintln("Optimized {signature}:")
-    stderr.write("optimized", optimized)
-    stderr."\n"
+    | eprintln("Optimized {signature}:")
+    | stderr.write("optimized", optimized)
+    | stderr."\n"
     optimized.verify()
     funs.&.put(signature, optimized)
   }
@@ -69,10 +69,10 @@ fun map(
   old: EggId,
   optimize: Optimize, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
-  eprintln("Optimizing {old.debug()} {old.resolve().debug()}")
-  stderr."\n"
-  stderr.write(old, namespace().&, indentation(1))
-  stderr."\n"
+  | eprintln("Optimizing {old.debug()} {old.resolve().debug()}")
+  | stderr."\n"
+  | stderr.write(old, namespace().&, indentation(1))
+  | stderr."\n"
 
   switch old.resolve()
   case param panic("should not be optimized")
@@ -91,10 +91,10 @@ fun map(
   | optimized bodies.
   var children_optimized = old.map_children(optimize, mapping).create()
 
-  eprintln("Children optimized: {children_optimized.debug()} {children_optimized.resolve().debug()}")
-  stderr."\n"
-  stderr.write(children_optimized, namespace().&, indentation(1))
-  stderr."\n"
+  | eprintln("Children optimized: {children_optimized.debug()} {children_optimized.resolve().debug()}")
+  | stderr."\n"
+  | stderr.write(children_optimized, namespace().&, indentation(1))
+  | stderr."\n"
 
   | A body that contains:
   | - unoptimized expressions that resulted from optimizing the current
@@ -104,6 +104,10 @@ fun map(
     var builder = egg_body_builder().&
     builder.finish(children_optimized.optimize(optimize, builder))
   }
+
+  | eprintln("old:      {old.debug()}")
+  | eprintln("children: {children_optimized.debug()}")
+  | eprintln("slight:   {slightly_optimized.debug()}")
 
   | A body that contains:
   | - fully optimized expressions that resulted from optimizing the current
@@ -122,6 +126,8 @@ fun map(
         mapping.put(child, child.map(optimize, builder, mapping))
       builder.finish(slightly_optimized.returns.map(mapping))
     }
+
+  | eprintln("full:     {fully_optimized.debug()}")
 
   for child in fully_optimized.children do builder.push(child)
 
@@ -180,10 +186,9 @@ fun map(
 | builder and already optimized, emit expressions that are equivalent to
 | performing the expression.
 fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
-  eprintln("Optimizing {id.debug()} {id.resolve().debug()}")
-  stderr."\n"
-  stderr.write(id, namespace().&, indentation(1))
-  stderr."\n"
+  eprintln("Optimizing {id.debug()}")
+  | stderr.write(id, namespace().&, indentation(1))
+  | stderr."\n"
 
   switch id.resolve()
   case lambda(lambda) {
@@ -204,6 +209,15 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
       for id in hoisted.hoisted do builder.push(id)
       return builder.lambda(hoisted.body)
     }
+  }
+  case raw_lambda(lambda) {
+    | We want to merge nested recursive lambdas.
+    | eprintln("Lambda")
+    | var shape = lambda.closure.shape()
+    | eprintln("Closure shape: {shape.debug()}")
+    | if shape.contains_lambda() then
+    |   if optimize.optimized.get_maybe(lambda.fun_) is some(fun_) then
+    |     fun_.specialize_for_closure_shape(shape, optimize)
   }
   case member(member) {
     | Constant fold members of known structs.
@@ -260,7 +274,7 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
         if case_.value.without_params() != common then inline = false
       }
       eprintln("filling common? {inline}")
-      if inline then return common.fill(empty_slice[EggId](), builder)
+      if inline then return common.fill(empty_slice[EggId](), builder) else eprintln("not filling")
     }
 
     | If all non-diverging cases are the same and don't depend on parameters,
@@ -402,21 +416,26 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | call + a b  |  add a b  |  int 5
     if call.substitutions.substitutions.size == 0 then
       if optimize.optimized.get_maybe(call.fun_) is some(fun_) then {
-        var should_inline = fun_.body.num_exprs() <= 50 and not(fun_.recurses(call.fun_))
-        if should_inline then {
-          eprintln("inlining {call.fun_}")
-          eprintln("fun:\n")
-          stderr.write(Egg { funs = map(call.fun_ -> fun_), entry_point = "" })
-          stderr."\n"
-          return fun_.body.fill(call.args, builder)
-          | return builder.recursive(
-          |   call.args,
-          |   fun_.body.call_to_recurse(call.fun_, call.return_type),
-          | )
+        if fun_.body.num_exprs() <= 50 then {
+          if not(fun_.recurses(call.fun_)) then {
+            eprintln("inlining {call.fun_}")
+            eprintln("fun:\n")
+            stderr.write(Egg { funs = map(call.fun_ -> fun_), entry_point = "" })
+            stderr."\n"
+            return fun_.body.fill(call.args, builder)
+          } else if fun_.only_recurses_in_tail_position(call.fun_) then {
+            return builder.loop_(
+              call.args,
+              fun_.body.call_to_continue_(call.fun_, call.return_type),
+            )
+          } else {
+            | We don't inline general recursive functions.
+          }
         }
       }
 
     | TODO: recurses only in tail position? turn into a loop!
+    
   }
   case call_lambda(call) {
     | Inline calls of lambda literals.
@@ -742,90 +761,40 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
       return builder.subtract(args.end, args.start)
     default {}
   }
-  | case recursive(rec) {
-  |   | Remove the recursive wrapper if the body doesn't recurse.
-  |   if not(rec.body.recurses()) then return rec.body.fill(rec.initial, builder)
+  case loop_(loop_) {
+    | Remove the loop if the body doesn't continue, but just runs through to
+    | completion.
+    if not(loop_.body.contains_continue())
+      then return loop_.body.fill(loop_.initial, builder)
 
-  |   | If this is a recursive of a lambda, flip them around: Have a lambda that
-  |   | contains a recursive computation. Replace recurse expression with lambdas
-  |   | that internally recurse.
-  |   | Lambdas are a form of indirect control flow and bubbling them up allows
-  |   | surrounding code to optimize them away (for example, if they are
-  |   | immediately called).
-  |   | 
-  |   | a = ... (Iterator Int) = (\ -> (| empty more: (& item: Int rest: (^3))))
-  |   | ---
-  |   | b =
-  |   |   recursive a
-  |   |     body c:
-  |   |       d = lambda
-  |   |         e = call lambda c
-  |   |         f =
-  |   |           switch e
-  |   |             empty: g
-  |   |               e
-  |   |             more: h
-  |   |               i = member h.item
-  |   |               j = member h.rest
-  |   |               k = add i f
-  |   |               l = recurse j
-  |   |               m = & rest: l item: k
-  |   |               n = | more: m
-  |   |               n
-  |   |         f
-  |   |       d
-  |   | a =
-  |   | if rec.body.children.len == 1
-  |   |   and rec.body.children.get(0) == rec.body.returns
-  |   | then
-  |   |   if rec.body.returns.resolve() is lambda(lambda) then {
-  |   |     eprintln("Bubbling up lambda!")
-  |   |     return builder.lambda({
-  |   |       var builder = egg_body_builder().&
-  |   |       for param in lambda.params do builder.params.&.push(param)
-  |   |       builder.finish(builder.recursive(rec.initial, {
-  |   |         EggBody {
-  |   |           params = {
-  |   |             var params = list[EggId]()
-  |   |             for param in rec.body.params do params.&.push(param)
-  |   |             for param in lambda.params do params.&.push(param)
-  |   |             params.to_slice()
-  |   |           },
-  |   |           children = lambda.children,
-  |   |           returns = lambda.returns,
-  |   |         }.replace_recurses_with_lambda(lambda.params)
-  |   |       }))
-  |   |     })
-  |   |   }
+    | Find fixpoint.
+    var fixpoint = loop_.find_fixpoint(optimize)
+    if not(fixpoint.is_trivial()) then {
+      var dehydrated_initial = fixpoint.dehydrate(loop_.initial, builder)
+      var new_body = {
+        var builder = egg_body_builder().&
+        var dehydrated_params = {
+          var res = list[EggId]()
+          for d in dehydrated_initial do res.&.push(builder.param(d.type()))
+          res.to_slice()
+        }
+        var rehydrated = fixpoint.hydrate(dehydrated_params, builder)
+        builder.finish(loop_.body.fill(rehydrated, builder))
+      } .optimize_without_inlining()
+        .replace_continues(fixpoint)
+      return builder.loop_(dehydrated_initial, new_body)
+    }
 
-  |   | Find fixpoint.
-  |   var fixpoint = rec.find_fixpoint(optimize)
-  |   if not(fixpoint.is_trivial()) then {
-  |     var dehydrated_initial = fixpoint.dehydrate(rec.initial, builder)
-  |     var new_body = {
-  |       var builder = egg_body_builder().&
-  |       var dehydrated_params = {
-  |         var res = list[EggId]()
-  |         for d in dehydrated_initial do res.&.push(builder.param(d.type()))
-  |         res.to_slice()
-  |       }
-  |       var rehydrated = fixpoint.hydrate(dehydrated_params, builder)
-  |       builder.finish(rec.body.fill(rehydrated, builder))
-  |     } .optimize_without_inlining()
-  |       .replace_recurses(fixpoint)
-  |     return builder.recursive(dehydrated_initial, new_body)
-  |   }
+    | TODO:
+    | Hoist expressions indepdent of the loop variables out of the loop.
+    | var hoisted = rec.body.hoist_from_body_running_at_least_once()
+    | if hoisted.hoisted.is_not_empty() then {
+    |   for id in hoisted.hoisted do builder.push(id)
+    |   return builder.recursive(rec.initial, hoisted.body)
+    | }
 
-  |   | Hoist expressions indepdent of the recursion variables out of the
-  |   | recursion.
-  |   var hoisted = rec.body.hoist_from_body_running_at_least_once()
-  |   if hoisted.hoisted.is_not_empty() then {
-  |     for id in hoisted.hoisted do builder.push(id)
-  |     return builder.recursive(rec.initial, hoisted.body)
-  |   }
-
-  |   | TODO: recursion without variables? remove and turn recurse into "halt" expressions
-  | }
+    | TODO: loop without variables? remove and turn recurse into "halt" expressions
+  }
   | case recurse(args) {
   |   | Push recurse into switch cases.
   |   if args.len == 1 then if args.get(0).resolve() is switch_(switch_) then {
@@ -883,21 +852,21 @@ fun visit(id: EggId, counter: CountExprs) {
   id.visit_children(counter)
 }
 
-| Converts calls to the given function into recurse expressions.
-| fun call_to_recurse(body: EggBody, fun_: String, return_type: EggType): EggBody {
-|   body.map(CallToRecurse { called = fun_, return_type }, map[EggId, EggId]().&)
-| }
-| struct CallToRecurse { called: String, return_type: EggType }
-| fun map(
-|   id: EggId, mapper: CallToRecurse,
-|   builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
-| ): EggId {
-|   var expr = id.map_children(mapper, mapping)
-|   if expr is call_fun(call) then
-|     if call.fun_ == mapper.called then
-|       return builder.recurse(call.args, mapper.return_type)
-|   builder.push(expr)
-| }
+| Converts calls to the given function into continue expressions.
+fun call_to_continue_(body: EggBody, fun_: String, return_type: EggType): EggBody {
+  body.map(CallToContinue { called = fun_, return_type }, map[EggId, EggId]().&)
+}
+struct CallToContinue { called: String, return_type: EggType }
+fun map(
+  id: EggId, mapper: CallToContinue,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(mapper, mapping)
+  if expr is call_fun(call) then
+    if call.fun_ == mapper.called then
+      return builder.continue_(call.args, mapper.return_type)
+  builder.push(expr)
+}
 
 | Fills the body with concrete arguments for its parameters.
 fun fill(body: EggBody, args: Slice[EggId], builder: &EggBodyBuilder): EggId {
