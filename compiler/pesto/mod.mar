@@ -5,60 +5,14 @@
 | In particular, lambdas have been removed.
 
 import ../plum.mar
+import dag.mar
 import run.mar
 
 struct Pesto { entry_point: String, funs: Map[String, PestoFun] }
 
-struct PestoFun { dag: Dag[PestoExpr], body: PestoBody }
-struct PestoBody { param: Id, exprs: Slice[Id], returns: Id }
+struct PestoFun { body: PestoBody }
+struct PestoBody { param: PestoId, exprs: Slice[PestoId], returns: PestoId }
 struct PestoExpr { op: PestoOp, type: PestoType }
-
-enum PestoOp {
-  param,
-  int: Int,
-  byte: Byte,
-  struct_: Map[String, Id],
-  member: PestoMember,
-  enum_: PestoEnum,
-  switch_: PestoSwitch,
-  function_ptr: String,
-  call: PestoCall,
-  call_indirect: PestoCallIndirect,
-  call_builtin: PestoCallBuiltin,
-  | Memory
-  new: Id,         | allocates the value on the heap, refcount 1
-  load: Id,        | loads the pointer's memory (size determined by the type)
-  free: PestoFree, | frees the pointer's memory, refcount should be 0
-  new_buffer: PestoNewBuffer,
-  get_buffer_len: Id,
-  load_buffer_item: PestoLoadBufferItem,
-  store_buffer_item: PestoStoreBufferItem,
-  store_buffer_bytes: PestoStoreBufferBytes, | assumes a Buffer(Byte)
-  free_buffer: PestoFreeBuffer, | free's the buffer's memory, refcount should be 0
-  get_reference_count: Id,
-  increment_reference_count: Id, | returns the new count
-  decrement_reference_count: Id, | returns the new count
-}
-struct PestoMember { of: Id, name: String }
-struct PestoEnum { name: String, value: Id }
-struct PestoSwitch { condition: Id, cases: Map[String, PestoBody] }
-struct PestoCall { function: String, args: Id }
-struct PestoCallIndirect { function: Id, args: Id }
-struct PestoCallBuiltin { builtin: PestoBuiltin, args: Slice[Id] }
-enum PestoBuiltin {
-  lower_byte, byte_to_int,
-  add_ints, sub_ints, mul_ints, div_ints, mod_ints, and_ints, or_ints, xor_ints,
-  compare_ints,
-  crash,
-}
-struct PestoFree { ptr: Id, type: PestoType }
-struct PestoNewBuffer { item_type: PestoType, len: Id }
-struct PestoLoadBufferItem { buffer: Id, item_type: PestoType, index: Id }
-struct PestoStoreBufferItem {
-  buffer: Id, item_type: PestoType, index: Id, item: Id
-}
-struct PestoStoreBufferBytes { buffer: Id, bytes: Slice[Byte] }
-struct PestoFreeBuffer { buffer: Id, item_type: PestoType }
 
 enum PestoType {
   byte,
@@ -68,6 +22,82 @@ enum PestoType {
   enum_: Map[String, PestoType],
   never,
 }
+
+enum PestoOp {
+  param,
+
+  | byte stuff
+  byte: Byte,
+  lower_byte: PestoId,
+  byte_to_int: PestoId,
+
+  | int stuff
+  int: Int,
+  add: Tuple2[PestoId, PestoId],
+  subtract: Tuple2[PestoId, PestoId],
+  multiply: Tuple2[PestoId, PestoId],
+  divide: Tuple2[PestoId, PestoId], | unchecked
+  modulo: Tuple2[PestoId, PestoId], | unchecked
+  and_: Tuple2[PestoId, PestoId],
+  or_: Tuple2[PestoId, PestoId],
+  xor: Tuple2[PestoId, PestoId],
+  compare: Tuple2[PestoId, PestoId],
+
+  | struct stuff
+  struct_: Map[String, PestoId],
+  member: PestoMember,
+
+  | enum stuff
+  enum_: PestoEnum,
+  switch_: PestoSwitch,
+
+  | function stuff
+  function_ptr: String,
+  call: PestoCall,
+  call_indirect: PestoCallIndirect,
+
+  | object stuff
+  new: PestoNew,   | allocates the value on the heap, refcount 1
+  load: PestoId,   | loads the pointer's memory (size determined by the type)
+  free: PestoFree, | frees the pointer's memory, refcount should be 0
+  get_refcount: PestoId,
+  increment_refcount: PestoId, | returns the new count
+  decrement_refcount: PestoId, | returns the new count
+
+  | buffer stuff
+  new_buffer: PestoNewBuffer,
+  get_buffer_len: PestoId,
+  load_buffer_item: PestoLoadBufferItem,
+  store_buffer_item: PestoStoreBufferItem,
+  store_buffer_bytes: PestoStoreBufferBytes, | assumes a Buffer(Byte)
+  free_buffer: PestoFreeBuffer, | free's the buffer's memory, refcount should be 0
+
+  | crashing
+  crash: PestoId,
+
+  | unreachable
+  unreachable,
+
+  | loop
+  | loop_: PestoLoop, 
+  | continue_: PestoId,
+}
+struct PestoMember { of: PestoId, name: String }
+struct PestoEnum { name: String, value: PestoId }
+struct PestoSwitch { condition: PestoId, cases: Map[String, PestoBody] }
+struct PestoCall { function: String, args: PestoId }
+struct PestoCallIndirect { function: PestoId, args: PestoId }
+struct PestoFree { ptr: PestoId, type: PestoType }
+struct PestoNew { value: PestoId, refcount: Int }
+struct PestoNewBuffer { item_type: PestoType, len: PestoId, refcount: Int }
+struct PestoLoadBufferItem {
+  buffer: PestoId, item_type: PestoType, index: PestoId
+}
+struct PestoStoreBufferItem {
+  buffer: PestoId, item_type: PestoType, index: PestoId, item: PestoId
+}
+struct PestoStoreBufferBytes { buffer: PestoId, bytes: Slice[Byte] }
+struct PestoFreeBuffer { buffer: PestoId, item_type: PestoType }
 
 fun ==(a: PestoType, b: PestoType): Bool {
   switch a
@@ -163,9 +193,7 @@ fun write[W](
     writer."store {store.bytes} to buffer(Byte) {store.buffer}"
   case free_buffer(free)
     writer."free buffer({free.item_type}) {free.buffer}"
-  case get_reference_count(ptr) writer."get reference count of {ptr}"
-  case increment_reference_count(ptr)
-    writer."increment reference count of {ptr}"
-  case decrement_reference_count(ptr)
-    writer."decrement reference count of {ptr}"
+  case get_refcount(ptr) writer."get refcount of {ptr}"
+  case increment_refcount(ptr) writer."increment refcount of {ptr}"
+  case decrement_refcount(ptr) writer."decrement refcount of {ptr}"
 }

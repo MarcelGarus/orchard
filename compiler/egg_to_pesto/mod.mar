@@ -1,0 +1,502 @@
+| Converting Egg to Pesto  
+
+import ../plum.mar
+import array_builtins.mar
+import builder.mar
+import dup_drop_free.mar
+import types.mar
+
+fun to_pesto(egg: Egg): Pesto {
+  var funs = map[String, PestoFun]()
+  for fun_ in egg.funs do {
+    | eprintln("Compiling {fun_.key}")
+    funs.&.put(fun_.key, fun_.value.to_pesto(funs.&))
+  }
+  Pesto { entry_point = egg.entry_point, funs }
+}
+
+fun to_pesto(fun_: EggFun, funs: &Map[String, PestoFun]): PestoFun {
+  var mapping = map[EggId, PestoId]()
+  fun_.body.visit(ReserveIds { mapping = mapping.& })
+  var body = fun_.body.to_pesto(set[PestoId]().&, mapping.&, funs)
+  PestoFun { body }
+}
+struct ReserveIds { mapping: &Map[EggId, PestoId] }
+fun visit(id: EggId, reserve: ReserveIds) {
+  if not(reserve.mapping.contains(id)) then
+    reserve.mapping.put(id, create_pesto_placeholder())
+  id.visit_children(reserve)
+}
+
+| Lowering into the Pesto is somewhat peculiar:
+| - We treat every type as having a "reference count". When an expression is
+|   created, its reference count is 1. If you want the expression to get cleaned
+|   up, you need to drop it. If you want to use the expression multiple times,
+|   you need to dup it.
+| - Lowering into the Pesto is somewhat peculiar: We iterate the expressions
+|   from the bottom (the end of functions) to the top (the start of functions).
+|   This way, we can keep track of which expressions are used later on and
+|   insert code for dropping values as soon as they are no longer used.
+
+struct Usages { map: Map[PestoId, Int] }
+
+fun used(usages: &Usages, id: PestoId) {
+  var count = usages.map.get_maybe(id) or 0
+  usages.map.&.put(id, count + 1)
+}
+
+| fun dup(id: Id): Id { create(PestoOp.dup(id) $ type_never) }
+| fun drop(id: Id): Id { create(PestoOp.drop(id) $ type_never) }
+
+fun tally(rev_body: &List[PestoId], id: PestoId, usages: Usages) {
+
+}
+
+
+fun to_pesto(
+  body: EggBody,
+  usages: &Map[PestoId, Int], mapping: &Map[EggId, PestoId],
+  funs: &Map[String, PestoFun],
+): PestoBody {
+  var rev_body = list[PestoId]()
+
+  mapping.get(body.returns).register_use(usages)
+
+  for id in body.children.rev_iter() do
+    id.to_pesto(rev_body.&, usages, funs)
+
+  var params = list[Id]()
+  for param in body.params do {
+    if not(usages.contains(param)) then
+      rev_body.&.push(update_drop(param))
+    else
+      usages.remove(param)
+    params.&.push(update(param, PestoOp.param $ egg_dag.type_of(param)))
+  }
+  var params = params.to_slice()
+
+  var exprs = list[Id]()
+  for id in rev_body.to_slice().rev_iter() do exprs.&.push(id)
+  var exprs = exprs.to_slice()
+
+  PestoBody { params, exprs, returns = body.returns }
+}
+
+fun to_pesto(
+  id: EggId, rev_body: &List[PestoId], usages: &Usages,
+  mapping: Map[EggId, PestoId], funs: &Map[String, PestoFun],
+) {
+  var expr = id.resolve()
+  var type = id.type()
+  var id = mapping.get(id)
+
+  switch expr
+  case param unreachable()
+  case byte(byte) {
+    usages.remove(id)
+    rev_body.push(update(id, PestoOp.byte(byte) $ type))
+  }
+  case lower_byte(int) {
+    usages.remove(id)
+    rev_body.push(update(id, PestoOp.lower_byte(int)))
+    if usages.get(int) == 0 then usages.used(int)
+  }
+  case byte_to_int(byte) {
+    usages.remove(id)
+    rev_body.push(update(id, PestoOp.byte_to_int(byte)))
+    if usages.get(byte) == 0 then usages.used(byte)
+  }
+  case int(int) {
+    usages.remove(id)
+    rev_body.push(update(id, PestoOp.int(int) $ type))
+  }
+  case add(args) {
+    usages.remove(id)
+    rev_body.push(update(id, PestoOp.add(args.map(mapping)) $ type))
+    if usages.get(args.a) == 0 then usages.used(args.a)
+    if usages.get(args.b) == 0 then usages.used(args.b)
+  }
+  case subtract(args) {
+    usages.remove(id)
+    rev_body.push(update(id, PestoOp.subtract(args.map(mapping)) $ type))
+    if usages.get(args.a) == 0 then usages.used(args.a)
+    if usages.get(args.b) == 0 then usages.used(args.b)
+  }
+  case multiply(args) {
+    usages.remove(id)
+    rev_body.push(update(id, PestoOp.multiply(args.map(mapping)) $ type))
+    if usages.get(args.a) == 0 then usages.used(args.a)
+    if usages.get(args.b) == 0 then usages.used(args.b)
+  }
+  case divide(args) {
+    usages.remove(id)
+    rev_body.push(update(id, PestoOp.divide(args.map(mapping)) $ type))
+    if usages.get(args.a) == 0 then usages.used(args.a)
+    if usages.get(args.b) == 0 then usages.used(args.b)
+  }
+  case modulo(args) {
+    usages.remove(id)
+    rev_body.push(update(id, PestoOp.modulo(args.map(mapping)) $ type))
+    if usages.get(args.a) == 0 then usages.used(args.a)
+    if usages.get(args.b) == 0 then usages.used(args.b)
+  }
+  case struct_(fields) {
+    | We just propagate the usages to the fields. For example, if the struct is
+    | used 2 times, it's as if every field was used two times more than it
+    | actually was.
+    rev_body.push(update(id, PestoOp.struct_(fields) $ type))
+    var count = usages.get(id)
+    for field in fields do usages.used(field.value, count)
+    usages.remove(id)
+
+
+
+    | TODO: adapt
+    var args = map[String, Id]()
+    for arg in call.args.iter().enumerate() do
+      args.&.put("{arg.index}", mapping.get(arg.item))
+    var args = builder.struct_(args)
+
+    builder.call(signature, args, type)
+  }
+  case member(member) {
+    if usages.get(mapping.get(member.of)) == 0 then {
+      | This is the last use of the struct. Just drop all the other fields.
+      for field in member.of.type().struct_.unwrap() do {
+        if field.key == member.name then
+          rev_body.adjust_refcount(id, usages.used(field.value, count - 1))
+        else {
+          var member_expr = create_pesto_placeholder()
+          rev_body.adjust_refcount(member_expr, usages)
+          rev_body.push(update(
+            member_expr,
+            PestoOp.member(PestoMember {
+              of = member.of, name = field.key
+            }) $ field.type,
+          ))
+        }
+      }
+    } else {
+      | The struct is used afterwards. Just increment the refcount of the
+      | accessed field.
+      rev_body.adjust_refcount(id, usages.get(id))
+      usages.remove(id)
+    }
+    rev_body.push(update(
+      id, PestoOp.member(PestoMember {
+        of = member.of, name = member.name
+      }) $ type
+    ))
+  }
+  case enum_(enum_) {
+    var variant = enum_.variant
+    var payload_type = type.enum_.unwrap().get(variant)
+    var payload = mapping.get(enum_.payload)
+    if payload_type is ptr then {
+      if usages.get(payload) == 0 then {
+        | We move the payload into the boxed enum.
+        usages.used(payload)
+        var boxed_payload = create_pesto_placeholder()
+        rev_body.push(update(
+          id,
+          PestoOp.enum_(PestoEnum {
+            variant, payload = boxed_payload
+          }) $ type
+        ))
+        rev_body.push(update(
+          boxed_payload,
+          PestoOp.new(PestoNew {
+            value = payload, refcount = usages.get(id)
+          }) $ payload.type
+        ))
+        usages.remove(id)
+      } else {
+        | The payload is kept around and freed afterwards, so just make it a
+        | responsibility of the code before to give it one more refcount.
+        usages.used(payload)
+        var boxed_payload = create(PestoOp.box(payload) $ payload.type)
+        rev_body.push(update(
+          id,
+          PestoOp.enum_(PestoEnum {
+            variant, payload = boxed_payload
+          }) $ type
+        ))
+        rev_body.adjust_refcount(boxed_payload, usages.get(id))
+        rev_body.push(boxed_payload)
+      }
+      payload = builder.new(payload)
+      builder.enum_(variant, payload, type)
+    } else {
+      | The payload is used in this enum without a box surrounding it. Make it
+      | the responsibility of the code before to create the payload with a
+      | refcount that also covers the uses of this wrapping enum.
+      usages.used(payload, usages.get(id))
+      usages.remove(id)
+      rev_body.push(update(
+        id,
+        PestoOp.enum_(PestoEnum {
+          variant, payload
+        }) $ type
+      ))
+    }
+  }
+  case switch_(switch_) {
+    | Lower the individual cases.
+    var cases = map[String, PestoBody]()
+    var needed_by_branches = map[String, Set[Id]]()
+    for case_ in switch_.cases do {
+      var needed_by_this_branch = set[Id]()
+      for id in usages do needed_by_this_branch.&.put(id)
+      cases.&.put(case_.key, case_.value.to_pesto(
+        egg_dag, dag, needed_by_this_branch.&
+      ))
+      needed_by_branches.&.put(case_.key, needed_by_this_branch)
+    }
+
+    | Figure out the IDs that all branches need.
+    for entry in needed_by_branches do
+      for id in entry.value do usages.&.put(id)
+
+    | If a branch doesn't use IDs that other branches use, drop those at the
+    | start of the branch body.
+    for case_ in cases do {
+      var needed_by_this_branch = needed_by_branches.get(case_.key)
+      var diff_to_other_branches = set[Id]()
+      for id in usages do
+        if not(needed_by_this_branch.contains(id)) then
+          diff_to_other_branches.&.put(id)
+
+      var drops = list(
+        update_dup(case_.value.params.get(0)),
+        update_drop(switch_.condition),
+      )
+      for id in diff_to_other_branches do drops.&.push(update_drop(id))
+
+      cases.&.put(case_.key, PestoBody {
+        params = case_.value.params,
+        exprs = {drops + case_.value.exprs.to_list()}.to_slice(),
+        returns = case_.value.returns,
+      })
+    }
+    rev_body.push(update(
+      id, PestoOp.switch_(PestoSwitch {
+        condition = switch_.condition, cases
+      }) $ type
+    ))
+    rev_body.require(switch_.condition, dag, usages)
+
+
+
+
+    var condition = mapping.get(switch_.condition)
+    var cases = map[String, PestoBody]()
+    for case_ in switch_.cases do {
+      var payload_type = builder.type_of(condition).enum_.unwrap()
+        .get(case_.key)
+      var builder = body_builder(builder.dag, payload_type).&
+      if case_.value.params.get_maybe(0) is some(binding) then {
+        var payload =
+          if payload_type is ptr then
+            builder.load(
+              builder.param, fun_.dag.type_of(binding).to_pesto()
+            )
+          else
+            builder.param
+        mapping.put(binding, payload)
+      }
+      var returns = case_.value.to_pesto(fun_, builder, mapping, pesto)
+      var body = builder.finish(returns)
+      cases.&.put(case_.key, body)
+    }
+    builder.switch_(condition, cases)
+  }
+  case lambda(lambda) {
+    rev_body.push(update(
+      id, PestoOp.lambda(PestoLambda {
+        function = lambda.function, closure = lambda.closure
+      }) $ type
+    ))
+    rev_body.require(lambda.closure, dag, usages)
+  
+
+
+
+
+
+    var closure_ptr = mapping.get(lambda.closure)
+    var lambda_body_fun_ptr = builder.function_ptr(lambda.function)
+    var free_fun_ptr = builder.function_ptr(
+      compile_free_closure_fun(
+        fun_.dag.type_of(lambda.closure).kind().box.unwrap(), pesto
+      )
+    )
+    builder.struct_(map(
+      "closure" -> closure_ptr,
+      "body" -> lambda_body_fun_ptr,
+      "free" -> free_fun_ptr,
+    ))
+  }
+  case call_fun(call) {
+    rev_body.push(update(
+      id, PestoOp.call(PestoCall {
+        callee = PestoCallee.fun_(signature), args = call.args
+      }) $ type
+    ))
+    for arg in call.args do usages.used(arg)
+  }
+  case call_lambda(call) {
+    rev_body.adjust_refcount(id, usages.get(id) - 1)
+    rev_body.push(update(
+      id, PestoOp.call(PestoCall {
+        callee = PestoCallee.lambda(lambda), args = call.args
+      }) $ type
+    ))
+    usages.remove(id)
+    usages.used(lambda)
+    for arg in call.args do usages.used(arg)
+
+
+
+    var lambda = mapping.get(lambda)
+    var closure_ptr = builder.member(lambda, "closure")
+    var body_ptr = builder.member(lambda, "body")
+
+    var args = map[String, Id]()
+    for arg in call.args.iter().enumerate() do
+      args.&.put("{arg.index}", mapping.get(arg.item))
+    args.&.put("{call.args.len}", closure_ptr)
+    var args = builder.struct_(args)
+
+    builder.call_indirect(body_ptr, args, type)
+  }
+  case box(inner) {
+    rev_body.push(update(
+      id,
+      PestoOp.new(PestoNew { value = inner, refcount = usages.get(id) }) $ type,
+    ))
+    usages.remove(id)
+    usages.used(inner)
+  }
+  case unbox(box) {
+    rev_body.adjust_refcount(id, usages.get(id))
+    rev_body.push(update(id, PestoOp.unbox(box) $ type))
+    usages.remove(id)
+    if usages.get(box) == 0 then {
+      | The box is not used afterwards. Drop it.
+      rev_body.adjust_refcount(box, -1)
+      usages.used(box)
+    } else {
+      | The box is used afterwards anyway, thus kept alive here. No need to
+      | adjust the refcount.
+    }
+
+
+    var box = call.args.get(0)
+          var box_type = fun_.dag.type_of(box)
+          var inner_type = box_type.kind().box.unwrap()
+          var inner = builder.load(mapping.get(box), inner_type.to_pesto())
+          builder.dup(inner, inner_type, pesto)
+          builder.drop(mapping.get(box), box_type, pesto)
+          return inner
+  }
+  case array(items) {
+    var buffer = create_pesto_placeholder()
+    var zero = create_pesto_placeholder()
+    var len = create_pesto_placeholder()
+
+    rev_body.push(update(
+      id,
+      PestoOp.struct_(map(
+        "buffer" -> buffer,
+        "start" -> zero,
+        "len" -> len,
+      ))
+    ))
+    for item in items.iter().enumerate() do {
+      var index = create_pesto_placeholder()
+      rev_body.&.push(create(PestoOp.store_buffer_item(PestoStoreBufferItem {
+        buffer, index, item = mapping.get(item.item)
+      })))
+      rev_body.push(create(index, PestoOp.int(item.index)))
+    }
+    rev_body.push(update(
+      buffer,
+      PestoOp.new_buffer(PestoNewBuffer {
+        item_type = expr.type.kind().array.unwrap(),
+        len,
+        refcount = usages.get(id),
+      })
+    ))
+    rev_body.push(update(len, PestoOp.int(items.len)))
+    rev_body.push(update(zero, PestoOp.int(0)))
+
+    usages.remove(id)
+    for item in items do usages.used(item)
+  }
+  case unchecked_generate_non_empty_array(gen) {
+    | TODO: compile
+    | var len       = call.args.get(0)
+    | var generator = call.args.get(1)
+    | var item_type =
+    |   fun_.dag.type_of(generator).kind().lambda.unwrap().return_type
+    | return builder.call(
+    |   compile_generate_array(item_type, pesto),
+    |   builder.struct_(map(
+    |     "len" -> mapping.get(len),
+    |     "generator" -> mapping.get(generator),
+    |   )),
+    |   type,
+    | )
+    todo("generate array")
+  }
+  case array_len(args) {
+    var array = call.args.get(0)
+    var item_type = array.type().kind().array.unwrap()
+    return builder.call(
+      compile_array_len(item_type, pesto),
+      builder.struct_(map("array" -> mapping.get(array))),
+      PestoType.int,
+    )
+  }
+  case unchecked_array_get {
+    var array = call.args.get(0)
+    var index = call.args.get(1)
+    var item_type = fun_.dag.type_of(array).kind().array.unwrap()
+    return builder.call(
+      compile_array_get(expr.type, pesto),
+      builder.struct_(map(
+        "array" -> mapping.get(array),
+        "index" -> mapping.get(index),
+      )),
+      type,
+    )
+  }
+  case unchecked_array_set {
+    var array = call.args.get(0)
+    var index = call.args.get(1)
+    var item = call.args.get(2)
+    return builder.call(
+      compile_array_set(fun_.dag.type_of(item), pesto),
+      builder.struct_(map(
+        "array" -> mapping.get(array),
+        "index" -> mapping.get(index),
+        "item" -> mapping.get(item),
+      )),
+      pesto_array_type,
+    )
+  }
+  case unchecked_array_slice {
+    var array = call.args.get(0)
+    var range = call.args.get(1)
+    var item_type = fun_.dag.type_of(array).kind().array.unwrap()
+    return builder.call(
+      compile_array_slice(item_type, pesto),
+      builder.struct_(map(
+        "array" -> mapping.get(array),
+        "range" -> mapping.get(range),
+      )),
+      pesto_array_type,
+    )
+  }
+  case type(ty) rev_body.push(update(id, PestoOp.type(ty) $ type))
+}
