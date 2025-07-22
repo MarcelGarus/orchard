@@ -1,0 +1,606 @@
+| The Pear Interpreter  
+
+import ../../martinaise/stdlib.mar
+
+fun exit(status: Int, message: String): Never {
+  stderr.write(message)
+  exit(status)
+}
+
+| Values  
+|
+| The values that exist in Pear. Some of these don't have a textual
+| representation. For example, you just use special words such as @add for
+| builtins and expect the environment to swap these out with values before
+| executing.
+enum Value {
+  number: Int,     | 2
+  word: String,    | foo
+  quoted: &Value,  | :foo
+  struct_: Struct, | (& x 2 y 3)
+  lambda: Lambda,  | (\ (a b) (+ a b))
+}
+struct Struct { fields: Map[String, Value] }
+struct Lambda { env: Env, code: &Code }
+
+fun write[W](writer: W, value: Value) {
+  switch value
+  case number(number) writer."{number}"
+  case word(word) writer."{word}"
+  case quoted(quoted) writer.":{quoted}"
+  case struct_(struct_) {
+    if value.linked_list_to_slice() is some(slice) then {
+      writer."("
+      var first = true
+      for child in slice do {
+        if first then first = false else writer." "
+        writer."{child}"
+      }
+      writer.")"
+      return {}
+    }
+    writer."(&"
+    for field in struct_.fields do writer." {field.key} {field.value}"
+    writer.")"
+  }
+  | case lambda(lambda) {
+  |   writer."(\\"
+  |   for param in lambda.params do writer." {param}"
+  |   writer." {lambda.body})"
+  | }
+}
+
+| Linked Lists  
+|
+| Linked lists are values that adhere to a special structure:
+| 
+| - they are nil to indicate an empty list or
+| - they are a struct with these fields:
+|   - "car" containing the current item
+|   - "cdr" containing the rest of the list
+
+fun linked_list(items: Slice[Value]): Value {
+  if items.is_empty() then
+    Value.quoted(Value.word("nil").put_on_heap())
+  else
+    Value.struct_(Struct {
+      fields = map(
+        "car" -> items.first(), "cdr" -> linked_list(items.without_first())
+      )
+    })
+}
+
+fun linked_list_to_slice(value: Value): Maybe[Slice[Value]] {
+  var list = list[Value]()
+  value.linked_list_to_slice(list.&) or return none[Slice[Value]]()
+  some(list.to_slice())
+}
+fun linked_list_to_slice(
+  value: Value, out: &List[Value]
+): Result[Nothing, Nothing] {
+  switch value
+  case quoted(quoted)
+    if quoted.word.unwrap() != "nil" then return error[Nothing, Nothing]({})
+  case struct_(struct_) {
+    var car = struct_.fields.get_maybe("car") or return error[Nothing, Nothing]({})
+    var cdr = struct_.fields.get_maybe("cdr") or return error[Nothing, Nothing]({})
+    out.push(car)
+    cdr.linked_list_to_slice(out)?
+  }
+  default return error[Nothing, Nothing]({})
+  ok[Nothing, Nothing]({})
+}
+
+| Parsing  
+|
+| Turning a string into a value.
+
+struct Parser { input: String, cursor: Int }
+
+fun is_at_end(parser: Parser): Bool { parser.cursor == parser.input.len }
+fun current(parser: Parser): Char { parser.input.get(parser.cursor) }
+fun advance(parser: &Parser) { parser.cursor = parser.cursor + 1 }
+fun consume_whitespace(parser: &Parser) {
+  loop {
+    if parser.is_at_end() then break
+    if parser.current() == ## then
+      loop {
+        parser.advance()
+        if parser.is_at_end() then break
+        if parser.current() == newline then  break
+      }
+    if parser.is_at_end() then break
+    parser.current().is_whitespace() or break
+    parser.advance()
+  }
+}
+
+fun parse(parser: &Parser): Maybe[Value] {
+  parser.consume_whitespace()
+  if parser.is_at_end() then return none[Value]()
+  if parser.current() == #) then return none[Value]()
+  | List
+  if parser.current() == #( then {
+    parser.advance()
+    var children = list[Value]()
+    loop children.&.push(parser.parse() or break)
+    if parser.is_at_end() then panic("list without closing paren")
+    parser.current() == #) or panic("expected closing paren")
+    parser.advance()
+    return some(linked_list(children.to_slice()))
+  }
+  | Quote
+  if parser.current() == #: then {
+    parser.advance()
+    var quoted = parser.parse() or panic("expected quoted value")
+    return some(Value.quoted(quoted.put_on_heap()))
+  }
+  | Number
+  if parser.current().is_digit() then {
+    var num = 0
+    loop {
+      var digit = "0123456789".iter().&.find(parser.current()) or break
+      num = num * 10 + digit
+      parser.advance()
+      if parser.is_at_end() then break
+    }
+    return some(Value.number(num))
+  }
+  | Word
+  var start = parser.cursor
+  loop {
+    parser.advance()
+    if parser.is_at_end() then break
+    if parser.current() == #( or parser.current() == #)
+      or parser.current().is_whitespace() or parser.current() == ##
+    then break
+  }
+  var end = parser.cursor
+  if start == end then
+    none[Value]()
+  else
+    some(Value.word(parser.input.substr(start..end)))
+}
+
+| Code  
+|
+| Code represents compiled code that can be executed.
+enum Code {
+  value: &Value,  | :foo
+  word: String, | foo
+  let: CodeLet, | (let a 2 b a (& x a y b))
+  struct_: CodeStruct, | (& x 2 y 3)
+  lambda: CodeLambda, | (\ a b (+ a b))
+  if_: CodeIf,
+  apply: CodeApply,  | (a b c)
+  builtin: CodeBuiltin,  | @add
+}
+struct CodeLet { name: String, value: &Code, body: &Code }
+struct CodeStruct { fields: Slice[Tuple2[String, Code]] }
+struct CodeLambda { params: Slice[String], body: &Code }
+struct CodeIf { condition: &Code, then_: &Code, else_: &Code }
+struct CodeApply { what: &Code, args: Slice[Code] }
+enum CodeBuiltin { add, subtract, multiply, divide }
+
+struct Env { parent: Maybe[&Env], name: String, value: Value }
+fun lookup(env: Env, word: String): Value {
+  if env.name == word then env.value else env.parent.unwrap().lookup(word)
+}
+fun also(env: Env, name: String, value: Value): Env {
+  Env { parent = some(env.put_on_heap()), name, value }
+}
+
+fun eval(code: Code, env: Env): Value {
+  switch code
+  case value(value) value.*
+  case word(word) env.lookup(word)
+  case let(let) let.body.eval(env.also(let.name, let.value.eval(env)))
+  case struct_(struct_) {
+    var fields = map[String, Value]()
+    for field in struct_ do
+      fields.&.put(field.a, field.b.eval(env))
+    Value.struct_(Struct { fields })
+  }
+  case lambda(lambda) {
+    Value.lambda(Lambda { params = lambda.params, env, body = lambda.body })
+  }
+  case if_(if_) {
+    var condition = if_.condition.eval(env).word.unwrap()
+    if condition == "true" then
+      if_.then_.eval(env)
+    else if condition == "false" then
+      if_.else_.eval(env)
+    else
+      panic("invalid if condition")
+  }
+  case apply(apply) {
+    var what = apply.what.eval(env)
+    var args = list[Value]()
+    for arg in apply.args do args.&.push(arg.eval(env))
+    var args = args.to_slice()
+
+    switch what
+    case struct_(struct_) {
+      args.len == 1 or panic("apply struct with {args.len} args")
+      var field = args.get(0).word.unwrap()
+      struct_.fields.get(field)
+    }
+    case lambda(lambda) {
+      lambda.params.len == args.len
+      var body = lambda.body.*
+      var env = env
+      for both in zip(lambda.params.iter(), args.iter()) do
+        env = env.also(both.a, both.b)
+      body.eval(env)
+    }
+    case builtin(builtin) {
+      switch builtin
+      case add {
+        args.len == 2 or panic("add needs 2 args")
+        Value.number(args.get(0).number.unwrap() + args.get(1).number.unwrap())
+      }
+      case subtract {
+        args.len == 2 or panic("subtract needs 2 args")
+        Value.number(args.get(0).number.unwrap() - args.get(1).number.unwrap())
+      }
+      case multiply {
+        args.len == 2 or panic("multiply needs 2 args")
+        Value.number(args.get(0).number.unwrap() * args.get(1).number.unwrap())
+      }
+      case divide {
+        args.len == 2 or panic("divide needs 2 args")
+        Value.number(args.get(0).number.unwrap() / args.get(1).number.unwrap())
+      }
+    }
+  }
+}
+
+fun compile(value: Value): Code {
+  eprintln("Compiling {value}")
+  switch value
+  case number Code.value(value.put_on_heap())
+  case word(word) panic("unbounded word {word.debug()}")
+  case quoted(quoted) Code.value(quoted)
+  case struct_ {
+    var slice = value.linked_list_to_slice() or panic("can't eval arbitrary struct")
+    var what = slice.first()
+    var args = slice.without_first()
+
+    switch what
+    case word(word) {
+      if word == "let" then {
+        args.len % 2 == 1 or panic("let with an even number of args")
+        var let = args.last().compile()
+        args = args.without_last()
+        loop {
+          if args.is_empty() then break
+          var name = args.get(args.len - 2).word.unwrap()
+          var value = args.get(args.len - 1).compile()
+          let = Code.let(CodeLet {
+            name, value = value.put_on_heap(), body = let.put_on_heap()
+          })
+          args = args.without_last(2)
+        }
+        return let
+      }
+      if word == "&" then {
+        var fields = map[String, Code]()
+        args.len % 2 == 0 or panic("struct with uneven number of args")
+        for i in 0..{args.len / 2} do {
+          var name  = args.get(i * 2).word.unwrap("expected struct field name")
+          var value = args.get(i * 2 + 1).compile()
+          fields.&.put(name, value)
+        }
+        return Code.struct_(CodeStruct { fields })
+      }
+      if word == "\\" then {
+        var params = list[String]()
+        for param in args.without_last() do params.&.push(param.word.unwrap())
+        var body = args.last()
+        return Code.lambda(CodeLambda {
+          params = params.to_slice(), body = body.compile().put_on_heap()
+        })
+      }
+      if word == "if" then {
+        args.len == 3 or panic("if with {args.len} args")
+        var condition = args.get(0).eval().word.unwrap()
+        return
+          if condition == "true" then
+            args.get(1).eval()
+          else if condition == "false" then
+            args.get(2).eval()
+          else
+            panic("condition is not a bool")
+      }
+      var compiled_args = list[Code]()
+      for arg in args do compiled_args.&.push(arg.compile())
+      return Code.apply(CodeApply { what, args = args.to_slice() })
+    }
+    case struct_(struct_) {
+      args.len == 1 or panic("apply struct with {args.len} args")
+      var field = args.get(0).word.unwrap()
+      struct_.fields.get(field)
+    }
+    | case lambda(lambda) {
+    | var args = list[Value]()
+    | for arg in slice.without_first() do args.&.push(arg.eval())
+    |   lambda.params.len == args.len
+    |   var body = lambda.body.*
+    |   for both in zip(lambda.params.iter(), args.iter()) do
+    |     body = body.fill(both.a, both.b)
+    |   body.eval()
+    | }
+    | case builtin(builtin) {
+    |   switch builtin
+    |   case add {
+    |     args.len == 2 or panic("add needs 2 args")
+    |     Value.number(args.get(0).number.unwrap() + args.get(1).number.unwrap())
+    |   }
+    |   case subtract {
+    |     args.len == 2 or panic("subtract needs 2 args")
+    |     Value.number(args.get(0).number.unwrap() - args.get(1).number.unwrap())
+    |   }
+    |   case multiply {
+    |     args.len == 2 or panic("multiply needs 2 args")
+    |     Value.number(args.get(0).number.unwrap() * args.get(1).number.unwrap())
+    |   }
+    |   case divide {
+    |     args.len == 2 or panic("divide needs 2 args")
+    |     Value.number(args.get(0).number.unwrap() / args.get(1).number.unwrap())
+    |   }
+    | }
+    | default panic("applying something weird: {what}")
+
+    | var fields = map[String, Value]()
+    | for field in struct_.fields do fields.&.put(field.key, field.value.eval())
+    | Value.struct_(fields)
+  }
+}
+
+
+
+| fun parse_code(tree: Tree): Value {
+|   switch tree
+|   case inner(children) {
+|     var first = children.first()
+|     var args = children.without_first()
+|     if first is leaf(name) then {
+|       if name == ":" then {
+|         args.len == 3 or panic("def with {args.len} args")
+|         var name = args.get(0).leaf.unwrap("def needs a name")
+|         var value = args.get(1).parse_code()
+|         var body = args.get(2).parse_code()
+|         return Value.def(Def {
+|           name, value = value.put_on_heap(), body = body.put_on_heap()
+|         })
+|       }
+|       if name == "\\" then {
+|         var body = args.last().parse_code()
+|         var params = list[String]()
+|         for param in args.without_last() do params.&.push(param.leaf.unwrap())
+|         return Value.lambda(Lambda { params = params.to_slice(), body = body.put_on_heap() })
+|       }
+|     }
+|     var lowered_args = list[Value]()
+|     for arg in args do lowered_args.&.push(arg.parse_code())
+|     Value.apply(Apply { what = first.parse_code().put_on_heap(), args = lowered_args.to_slice() })
+|   }
+| }
+
+fun parse(string: String): Value {
+  var value = Parser { input = string, cursor = 0 }.&.parse() or panic("no value")
+  | eprintln("value: {value.debug()}")
+  | value.parse_code()
+  value
+}
+
+fun fill(original: Value, name: String, value: Value): Value {
+  eprintln("  Filling {original} with {name} = {value}")
+  switch original
+  case number original
+  case word(word) if word == name then value else original
+  case quoted original
+  | case def(def)
+  |   if def.name == name then
+  |     original
+  |   else
+  |     Value.def(Def {
+  |       name = def.name,
+  |       value = def.value.fill(name, value).put_on_heap(),
+  |       body = def.body.fill(name, value).put_on_heap(),
+  |     })
+  case struct_(struct_) {
+    var slice = value.linked_list_to_slice() or panic("can't eval arbitrary struct")
+    var what = slice.first()
+    var args = slice.without_first()
+
+    switch what
+    case word(word) {
+      if word == "let" then {
+        args.len % 2 == 1 or panic("let with an even number of args")
+        loop {
+          if args.len == 1 then return args.get(0).eval()
+          var name = args.get(0).word.unwrap()
+          var value = args.get(1).eval()
+          for i in 0..{args.len / 2} do {
+            var index = i * 2 + 1
+            args.&.set(index, args.get(index).fill(name, value))
+          }
+          args.&.last_ref().* = args.last().fill(name, value)
+          args = args.without_first(2)
+        }
+      }
+      if word == "&" then {
+        var fields = map[String, Value]()
+        args.len % 2 == 0 or panic("struct with uneven number of args")
+        for i in 0..{args.len / 2} do {
+          var name  = args.get(i * 2).word.unwrap("expected struct field name")
+          var value = args.get(i * 2 + 1).eval()
+          fields.&.put(name, value)
+        }
+        return Value.struct_(Struct { fields })
+      }
+      if word == "\\" then todo("lambda")
+      if word == "if" then {
+        args.len == 3 or panic("if with {args.len} args")
+        var condition = args.get(0).eval().word.unwrap()
+        return
+          if condition == "true" then
+            args.get(1).eval()
+          else if condition == "false" then
+            args.get(2).eval()
+          else
+            panic("condition is not a bool")
+      }
+      panic("unbounded word {word.debug()}")
+    }
+    case struct_(struct_) {
+      args.len == 1 or panic("apply struct with {args.len} args")
+      var field = args.get(0).word.unwrap()
+      struct_.fields.get(field)
+    }
+    default panic("invalid code")
+
+    | var fields = map[String, Value]()
+    | for field in struct_.fields do
+    |   fields.&.put(field.key, field.value.fill(name, value))
+    | Value.struct_(Struct { fields })
+  }
+  | case lambda(lambda) {
+  |   for param in lambda.params do if param == name then return original
+  |   Value.lambda(Lambda {
+  |     params = lambda.params, body = lambda.body.fill(name, value).put_on_heap()
+  |   })
+  | }
+  | case apply(apply) {
+  |   var args = list[Value]()
+  |   for arg in apply.args do args.&.push(arg.fill(name, value))
+  |   Value.apply(Apply {
+  |     what = apply.what.fill(name, value).put_on_heap(), args = args.to_slice()
+  |   })
+  | }
+}
+
+fun eval(value: Value): Value {
+  eprintln("Evaluating {value}")
+  switch value
+  case number(number) Value.number(number)
+  case word(word) panic("unbounded word {word.debug()}")
+  case quoted(quoted) quoted.*
+  | case def(def) def.body.fill(def.name, def.value.eval()).eval()
+  case struct_ {
+    var slice = value.linked_list_to_slice() or panic("can't eval arbitrary struct")
+    var what = slice.first()
+    var args = slice.without_first()
+
+    switch what
+    case word(word) {
+      if word == "let" then {
+        args.len % 2 == 1 or panic("let with an even number of args")
+        loop {
+          if args.len == 1 then return args.get(0).eval()
+          var name = args.get(0).word.unwrap()
+          var value = args.get(1).eval()
+          for i in 0..{args.len / 2} do {
+            var index = i * 2 + 1
+            args.&.set(index, args.get(index).fill(name, value))
+          }
+          args.&.last_ref().* = args.last().fill(name, value)
+          args = args.without_first(2)
+        }
+      }
+      if word == "&" then {
+        var fields = map[String, Value]()
+        args.len % 2 == 0 or panic("struct with uneven number of args")
+        for i in 0..{args.len / 2} do {
+          var name  = args.get(i * 2).word.unwrap("expected struct field name")
+          var value = args.get(i * 2 + 1).eval()
+          fields.&.put(name, value)
+        }
+        return Value.struct_(Struct { fields })
+      }
+      if word == "\\" then todo("lambda")
+      if word == "if" then {
+        args.len == 3 or panic("if with {args.len} args")
+        var condition = args.get(0).eval().word.unwrap()
+        return
+          if condition == "true" then
+            args.get(1).eval()
+          else if condition == "false" then
+            args.get(2).eval()
+          else
+            panic("condition is not a bool")
+      }
+      panic("unbounded word {word.debug()}")
+    }
+    case struct_(struct_) {
+      args.len == 1 or panic("apply struct with {args.len} args")
+      var field = args.get(0).word.unwrap()
+      struct_.fields.get(field)
+    }
+    | case lambda(lambda) {
+    | var args = list[Value]()
+    | for arg in slice.without_first() do args.&.push(arg.eval())
+    |   lambda.params.len == args.len
+    |   var body = lambda.body.*
+    |   for both in zip(lambda.params.iter(), args.iter()) do
+    |     body = body.fill(both.a, both.b)
+    |   body.eval()
+    | }
+    | case builtin(builtin) {
+    |   switch builtin
+    |   case add {
+    |     args.len == 2 or panic("add needs 2 args")
+    |     Value.number(args.get(0).number.unwrap() + args.get(1).number.unwrap())
+    |   }
+    |   case subtract {
+    |     args.len == 2 or panic("subtract needs 2 args")
+    |     Value.number(args.get(0).number.unwrap() - args.get(1).number.unwrap())
+    |   }
+    |   case multiply {
+    |     args.len == 2 or panic("multiply needs 2 args")
+    |     Value.number(args.get(0).number.unwrap() * args.get(1).number.unwrap())
+    |   }
+    |   case divide {
+    |     args.len == 2 or panic("divide needs 2 args")
+    |     Value.number(args.get(0).number.unwrap() / args.get(1).number.unwrap())
+    |   }
+    | }
+    default panic("applying something weird: {what}")
+
+    | var fields = map[String, Value]()
+    | for field in struct_.fields do fields.&.put(field.key, field.value.eval())
+    | Value.struct_(fields)
+  }
+  | case lambda(lambda) Value.lambda(lambda)
+}
+
+fun eval_file(path: String): Value {
+  var content = read_file(path) or exit(1, "Couldn't read file from {path}")
+  var content = content.to_string()
+  eprintln("{content.bytes().len} bytes of content")
+  var code = content.parse()
+  eprintln("code: {code}")
+  code.eval()
+  | todo("eval")
+  | code.fill(
+  |   "builtins",
+  |   Value.struct_(map(
+  |     "add" -> Value.builtin(Builtin.add),
+  |     "subtract" -> Value.builtin(Builtin.subtract),
+  |     "multiply" -> Value.builtin(Builtin.multiply),
+  |     "divide" -> Value.builtin(Builtin.divide),
+  |   ))
+  | ).eval()
+}
+
+fun main(): Never {
+  eprintln("Welcome to the Pear interpreterssss!")
+
+  var args = get_process_args()
+  var path = "pear/pear.pear" | args.get_maybe(1) or exit(1, "You didn't specify a file.\n")
+  var result = eval_file(path)
+  eprintln("{result}")
+
+  exit(0)
+}
