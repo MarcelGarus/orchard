@@ -10,64 +10,72 @@ import builder.mar
 import format.mar
 | import run.mar
 
-struct Pudding { entry_point: String, funs: Map[String, PuddingBody] }
+struct Pudding { entry_point: String, funs: Map[String, PuddingFun] }
 
-struct PuddingBody { params: Slice[Hole], expr: PuddingExpr }
+struct PuddingId { id: Id }
+fun ==(a: PuddingId, b: PuddingId): Bool { a.id == b.id  }
+fun hash[H](hasher: H, id: PuddingId) { hasher.hash(id.id) }
+fun resolve(id: PuddingId): PuddingExpr { pudding_dag.get(id.id) }
+
+struct PuddingFun { body: PuddingBody }
+struct PuddingBody {
+  params: Slice[PuddingId], children: Slice[PuddingId], returns: PuddingId
+}
 struct PuddingExpr { op: PuddingOp, type: EggType }
 enum PuddingOp {
-  hole: Hole,
-  dup: Hole,
-  drop: Hole,
+  param,
 
-  type: EggType,
+  dup: PuddingId,
+  drop: PuddingId,
+
   byte: Byte,
-  int: Int,
-  array: Slice[PuddingExpr],
-  struct_: Map[String, PuddingExpr],
-  enum_: PuddingEnum,
-  lambda: PuddingLambda,
-  box: &PuddingExpr,
+  lower_byte: PuddingId,
+  byte_to_int: PuddingId,
 
+  int: Int,
+  add: Tuple2[PuddingId, PuddingId],
+  subtract: Tuple2[PuddingId, PuddingId],
+  multiply: Tuple2[PuddingId, PuddingId],
+  divide: Tuple2[PuddingId, PuddingId],
+  modulo: Tuple2[PuddingId, PuddingId],
+  and_: Tuple2[PuddingId, PuddingId],
+  or_:  Tuple2[PuddingId, PuddingId],
+  xor: Tuple2[PuddingId, PuddingId],
+  compare: Tuple2[PuddingId, PuddingId],
+
+  struct_: Map[String, PuddingId],
   member: PuddingMember,
+
+  enum_: PuddingEnum,
   switch_: PuddingSwitch,
+
+  lambda: PuddingLambda,
   call_fun: PuddingCallFun,
   call_lambda: PuddingCallLambda,
 
-  both: Tuple2[&PuddingExpr, &PuddingExpr],
-  let: PuddingLet,
+  box: PuddingId,
+  unbox: PuddingId,
 
-  lower_byte: &PuddingExpr,
-  byte_to_int: &PuddingExpr,
-  add_ints: Tuple2[&PuddingExpr, &PuddingExpr],
-  sub_ints: Tuple2[&PuddingExpr, &PuddingExpr],
-  mul_ints: Tuple2[&PuddingExpr, &PuddingExpr],
-  div_ints: Tuple2[&PuddingExpr, &PuddingExpr],
-  mod_ints: Tuple2[&PuddingExpr, &PuddingExpr],
-  and_ints: Tuple2[&PuddingExpr, &PuddingExpr],
-  or_ints:  Tuple2[&PuddingExpr, &PuddingExpr],
-  xor_ints: Tuple2[&PuddingExpr, &PuddingExpr],
-  compare_ints: Tuple2[&PuddingExpr, &PuddingExpr],
-  unbox: &PuddingExpr,
+  array: Slice[PuddingId],
   generate_array: PuddingGenerateArray,
-  array_get: Tuple2[&PuddingExpr, &PuddingExpr],
-  array_set: Tuple3[&PuddingExpr, &PuddingExpr, &PuddingExpr],
-  array_slice: Tuple3[&PuddingExpr, &PuddingExpr, &PuddingExpr],
-  array_len: &PuddingExpr,
-  crash,
+  array_get: Tuple2[PuddingId, PuddingId],
+  array_set: Tuple3[PuddingId, PuddingId, PuddingId],
+  array_slice: Tuple3[PuddingId, PuddingId, PuddingId],
+  array_len: PuddingId,
+
+  type: EggType,
+
+  crash: PuddingId,
+  unreachable,
 
   | recursive: PuddingRecursive,
-  | recurse: Slice[PuddingExpr],
-
-  unreachable,
+  | recurse: Slice[PuddingId],
 }
-struct PuddingEnum { variant: String, payload: &PuddingExpr }
-struct PuddingLambda { function: String, closure: &PuddingExpr }
-struct PuddingMember { of: &PuddingExpr, name: String }
-struct PuddingSwitch {
-  condition: &PuddingExpr, cases: Map[String, PuddingBody]
-}
-struct PuddingCallFun { fun_: String, args: Slice[PuddingExpr] }
-struct PuddingCallLambda { lambda: &PuddingExpr, args: Slice[PuddingExpr] }
-struct PuddingLet { def: &PuddingExpr, body: &PuddingBody }
-struct PuddingGenerateArray { length: &PuddingExpr, generator: &PuddingBody }
-struct PuddingRecursive { args: Slice[Hole], body: &PuddingExpr }
+struct PuddingMember { of: PuddingId, name: String }
+struct PuddingEnum { variant: String, payload: PuddingId }
+struct PuddingSwitch { condition: PuddingId, cases: Map[String, PuddingBody] }
+struct PuddingLambda { function: String, closure: PuddingId }
+struct PuddingCallFun { fun_: String, args: Slice[PuddingId] }
+struct PuddingCallLambda { lambda: PuddingId, args: Slice[PuddingId] }
+struct PuddingGenerateArray { length: PuddingId, generator: PuddingBody }
+| struct PuddingRecursive { args: Slice[Hole], body: PuddingId }

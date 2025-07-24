@@ -4,201 +4,153 @@ fun write[W](writer: W, pudding: Pudding) {
   var first = true
   for fun_ in pudding.funs do {
     if first then first = false else writer."\n"
-    var namespace = holes_namespace().&
+    var namespace = namespace().&
     writer."{pretty_signature_def(fun_.key)}"
-    for param in fun_.value.params do writer." {format(param, namespace)}"
+    var body = fun_.value.body
+    for param in body.params do writer." {pretty(param, namespace)}"
     writer." =\n"
-    writer.write(fun_.value.expr, namespace, indentation(1))
+    writer.write(body, namespace, indentation(1))
   }
 }
+
+fun pretty(id: PuddingId, namespace: &Namespace): _ {
+  PrettyPuddingId { id, namespace }
+}
+struct PrettyPuddingId { id: PuddingId, namespace: &Namespace }
+fun write[W](writer: W, pretty: PrettyPuddingId) {
+  writer."{pretty.namespace.get(pretty.id.id.index).styled(style_of_id)}"
+  | writer."{":{pretty.id.id.index}".styled(style_of_id)}"
+}
+
 fun write[W](
-  writer: W, expr: PuddingExpr,
-  namespace: &HolesNamespace, indentation: Indentation,
+  writer: W, body: PuddingBody, namespace: &Namespace, indentation: Indentation
+) {
+  for child in body.children do {
+    var is_dup_or_drop =
+      switch child.resolve().op
+      case dup true
+      case drop true
+      default false
+    if is_dup_or_drop then {
+      writer."{indentation}"
+      writer.write(child.resolve(), namespace, indentation)
+      writer."\n"
+    } else {
+      writer."{indentation}{pretty(child, namespace)} = "
+      writer.write(child.resolve(), namespace, indentation)
+      writer."\n"
+    }
+  }
+  writer."{indentation}{pretty(body.returns, namespace)}"
+}
+fun write[W](
+  writer: W, expr: PuddingExpr, namespace: &Namespace, indentation: Indentation
 ) {
   var type = expr.type
-  writer."{indentation}"
   switch expr.op
-  case hole(hole) {
-    if hole.is_black() then
-      writer.write(" hole ".styled(style_of_black_hole))
-    else
-      writer."{pretty_op("hole")} {format(hole, namespace)}"
+  case param writer."{pretty_op("param")}  {pretty(type)}"
+  case dup(arg) writer."{pretty_op("dup")} {pretty(arg, namespace)}"
+  case drop(arg) writer."{pretty_op("drop")} {pretty(arg, namespace)}"
+  case byte(byte) writer."{pretty_op("byte")} {byte}  {pretty(type)}"
+  case lower_byte(arg)
+    writer."{pretty_op("lower byte")} {pretty(arg, namespace)}  {pretty(type)}"
+  case byte_to_int(arg)
+    writer."{pretty_op("byte to int")} {pretty(arg, namespace)}  {pretty(type)}"
+  case int(int) writer."{pretty_op("int")} {int}  {pretty(type)}"
+  case add(args)
+    writer."{pretty_op("add")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case subtract(args)
+    writer."{pretty_op("subtract")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case multiply(args)
+    writer."{pretty_op("multiply")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case divide(args)
+    writer."{pretty_op("divide")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case modulo(args)
+    writer."{pretty_op("modulo")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case and_(args)
+    writer."{pretty_op("and")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case or_(args)
+    writer."{pretty_op("or")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case xor(args)
+    writer."{pretty_op("xor")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case compare(args)
+    writer."{pretty_op("compare")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case struct_(fields) {
+    writer."{pretty_op("&")}"
+    for field in fields do
+      writer." {field.key}: {pretty(field.value, namespace)}"
     writer."  {pretty(type)}"
   }
-  case dup(hole) writer."{pretty_op("dup")} {format(hole, namespace)}"
-  case drop(hole) writer."{pretty_op("drop")} {format(hole, namespace)}"
-  case type(type_) writer."{pretty_op("type")} {type_}  {pretty(type)}"
-  case byte(byte) writer."{pretty_op("byte")} {byte}  {pretty(type)}"
-  case int(int) writer."{pretty_op("int")} {int}  {pretty(type)}"
-  case array(items) {
-    writer."{pretty_op("array")}  {pretty(type)}"
-    for item in items do {
-      writer."\n"
-      writer.write(item, namespace, indentation + 1)
-    }
-  }
-  case struct_(fields) {
-    writer."{pretty_op("&")}  {pretty(type)}"
-    for field in fields do {
-      writer."\n{indentation + 1}{field.key}:\n"
-      writer.write(field.value, namespace, indentation + 2)
-    }
-  }
-  case enum_(enum_) {
-    writer."{pretty_op("|")} {enum_.variant}:  {pretty(type)}\n"
-    writer.write(enum_.payload.*, namespace, indentation + 1)
-  }
-  case lambda(lambda) {
-    writer."
-      '{pretty_op("lambda")} {pretty_signature(lambda.function)}
-      '  {pretty(type)}\n
-      '{indentation + 1}closure:\n"
-    writer.write(lambda.closure.*, namespace, indentation + 2)
-  }
-  case box(inner) {
-    writer."{pretty_op("box")}  {pretty(type)}\n"
-    writer.write(inner.*, namespace, indentation + 1)
-  }
-  case member(member) {
-    writer."{pretty_op("member")} {member.name}  {pretty(type)}\n"
-    writer.write(member.of.*, namespace, indentation + 1)
-  }
+  case member(member)
+    writer."{pretty_op("member")}
+      ' {pretty(member.of, namespace)}.{member.name}  {pretty(type)}"
+  case enum_(enum_)
+    writer."{pretty_op("|")} {enum_.variant}:
+      ' {pretty(enum_.payload, namespace)}  {pretty(type)}"
   case switch_(switch_) {
-    writer."{pretty_op("switch")}  {pretty(type)}\n"
-    writer.write(switch_.condition.*, namespace, indentation + 1)
+    writer."{pretty_op("switch")}
+      ' {pretty(switch_.condition, namespace)}  {pretty(type)}"
     for case_ in switch_.cases do {
       writer."
         '\n{indentation + 1}{case_.key}
-        ' {format(case_.value.params.get(0), namespace)}:\n"
-      writer.write(case_.value.expr, namespace, indentation + 2)
+        ' {pretty(case_.value.params.get(0), namespace)}:\n"
+      writer.write(case_.value, namespace, indentation + 2)
     }
   }
+  case lambda(lambda)
+    writer."{pretty_op("lambda")} {pretty_signature(lambda.function)}
+      ' {pretty(lambda.closure, namespace)}  {pretty(type)}"
   case call_fun(call) {
-    writer."{pretty_op("call")} {pretty_signature(call.fun_)}  {pretty(type)}"
-    for arg in call.args do {
-      writer."\n"
-      writer.write(arg, namespace, indentation + 1)
-    }
+    writer."{pretty_op("call")} {pretty_signature(call.fun_)}"
+    for arg in call.args do writer." {pretty(arg, namespace)}"
+    writer."  {pretty(type)}"
   }
   case call_lambda(call) {
-    writer."{pretty_op("call lambda")}  {pretty(type)}\n"
-    writer.write(call.lambda.*, namespace, indentation + 1)
-    for arg in call.args do {
-      writer."\n"
-      writer.write(arg, namespace, indentation + 1)
-    }
+    writer."{pretty_op("call lambda")} {pretty(call.lambda, namespace)} "
+    for arg in call.args do writer." {pretty(arg, namespace)}"
+    writer."  {pretty(type)}"
   }
-  case both(both) {
-    writer."{pretty_op("both")}  {pretty(type)}\n"
-    writer.write(both.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(both.b.*, namespace, indentation + 1)
-  }
-  case let(let) {
-    writer."{format(let.body.params.get(0), namespace)} =  {pretty(type)}\n"
-    writer.write(let.def.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(let.body.expr, namespace, indentation)
-  }
-  case lower_byte(int) {
-    writer."{pretty_op("lower byte")}  {pretty(type)}\n"
-    writer.write(int.*, namespace, indentation + 1)
-  }
-  case byte_to_int(byte) {
-    writer."{pretty_op("byte to int")}  {pretty(type)}\n"
-    writer.write(byte.*, namespace, indentation + 1)
-  }
-  case add_ints(args) {
-    writer."{pretty_op("add")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case sub_ints(args) {
-    writer."{pretty_op("subtract")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case mul_ints(args) {
-    writer."{pretty_op("multiply")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case div_ints(args) {
-    writer."{pretty_op("divide")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case mod_ints(args) {
-    writer."{pretty_op("modulo")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case and_ints(args) {
-    writer."{pretty_op("and")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case or_ints(args) {
-    writer."{pretty_op("or")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case xor_ints(args) {
-    writer."{pretty_op("xor")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case compare_ints(args) {
-    writer."{pretty_op("compare")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case unbox(box) {
-    writer."{pretty_op("unbox")}  {pretty(type)}\n"
-    writer.write(box.*, namespace, indentation + 1)
+  case box(inner)
+    writer."{pretty_op("box")} {pretty(inner, namespace)}  {pretty(type)}"
+  case unbox(box)
+    writer."{pretty_op("unbox")} {pretty(box, namespace)}  {pretty(type)}"
+  case array(items) {
+    writer."{pretty_op("array")}"
+    for item in items do writer." {pretty(item, namespace)}"
+    writer."  {pretty(type)}"
   }
   case generate_array(gen) {
     writer."{pretty_op("generate array")}  {pretty(type)}\n"
-    writer.write(gen.length.*, namespace, indentation + 1)
-    writer."\n{indentation + 1}generator {format(gen.generator.params.get(0), namespace)}:\n"
-    writer.write(gen.generator.expr, namespace, indentation + 2)
+    writer."{indentation + 1}length: {pretty(gen.length, namespace)}\n"
+    writer."{indentation + 1}generator {pretty(gen.generator.params.get(0), namespace)}:\n"
+    writer.write(gen.generator, namespace, indentation + 2)
   }
-  case array_get(args) {
-    writer."{pretty_op("get")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-  }
-  case array_set(args) {
-    writer."{pretty_op("set")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.c.*, namespace, indentation + 1)
-  }
-  case array_slice(args) {
-    writer."{pretty_op("slice")}  {pretty(type)}\n"
-    writer.write(args.a.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.b.*, namespace, indentation + 1)
-    writer."\n"
-    writer.write(args.c.*, namespace, indentation + 1)
-  }
-  case array_len(array) {
-    writer."{pretty_op("length")}  {pretty(type)}\n"
-    writer.write(array.*, namespace, indentation + 1)
-  }
-  case crash writer."{pretty_op("crash")}  {pretty(type)}"
+  case array_get(args)
+    writer."{pretty_op("get")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}  {pretty(type)}"
+  case array_set(args)
+    writer."{pretty_op("set")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}
+      ' {pretty(args.c, namespace)}  {pretty(type)}"
+  case array_slice(args)
+    writer."{pretty_op("slice")}
+      ' {pretty(args.a, namespace)} {pretty(args.b, namespace)}
+      ' {pretty(args.c, namespace)}  {pretty(type)}"
+  case array_len(array)
+    writer."{pretty_op("length")} {pretty(array, namespace)}  {pretty(type)}"
+  case type(type_) writer."{pretty_op("type")} {type_}  {pretty(type)}"
+  case crash(arg)
+    writer."{pretty_op("crash")} {pretty(arg, namespace)}  {pretty(type)}"
+  case unreachable writer."{pretty_op("unreachable")}"
   | case recursive(recursive) {
   |   writer."
   |     '{pretty_op("recursive")}  {pretty(expr.type)}\n
@@ -208,7 +160,7 @@ fun write[W](
   |     writer.write(arg, namespace, indentation + 2)
   |   }
   |   writer."\n{indentation + 1}body"
-  |   for param in recursive.body.params do writer." {format(param, namespace)}"
+  |   for param in recursive.body.params do writer." {pretty(param, namespace)}"
   |   writer.":\n"
   |   writer.write(recursive.body.expr, namespace, indentation + 2)
   | }
@@ -219,5 +171,4 @@ fun write[W](
   |     writer.write(arg, namespace, indentation + 1)
   |   }
   | }
-  case unreachable writer."{pretty_op("unreachable")}"
 }

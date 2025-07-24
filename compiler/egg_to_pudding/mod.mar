@@ -1,0 +1,356 @@
+| Converting Egg to Pudding  
+|
+| The Pudding is very simmilar to the Egg in terms of abstraction level, but it
+| introduces a form of ownership. Conceptually, every value in the Pudding has
+| one or multiple owners and stores a reference count of the the number of
+| owners. Every value in the Pudding is reference counted. Later on, some of the
+| reference counting operations are simplified (for example, if a type doesn't
+| require any heap allocations, no reference counting occurs because it is
+| always copied).
+| You can only use an expression if you own it. All operations take ownership
+| of the input values and give you ownership of the returned values. For
+| example, constructing a struct takes ownership of the individual fields and
+| gives you ownership of the struct. Calling a function passes ownership of the
+| arguments to the function and gives you ownership of the return value.
+| The dup expression increments the reference count and allows you to use an
+| expression more than once. The drop expression decrements the reference count
+| and frees the value's memory if the reference count reaches zero.
+
+import ../plum.mar
+
+fun to_pudding(egg: Egg): Pudding {
+  var funs = map[String, PuddingFun]()
+  for fun_ in egg.funs do funs.&.put(fun_.key, fun_.value.to_pudding())
+  Pudding { entry_point = egg.entry_point, funs }
+}
+
+fun to_pudding(fun_: EggFun): PuddingFun {
+  var mapping = map[EggId, PuddingId]()
+  fun_.body.visit(ReserveIds { mapping = mapping.& })
+  var body = fun_.body.to_pudding(set[PuddingId]().&, mapping)
+  PuddingFun { body }
+}
+struct ReserveIds { mapping: &Map[EggId, PuddingId] }
+fun visit(body: EggBody, reserve: ReserveIds) {
+  for param in body.params do param.visit(reserve)
+  for child in body.children do child.visit(reserve)
+}
+fun visit(id: EggId, reserve: ReserveIds) {
+  if not(reserve.mapping.contains(id)) then
+    reserve.mapping.put(id, create_pudding_placeholder())
+  id.visit_children(reserve)
+}
+
+fun to_pudding(
+  body: EggBody,
+  needed_later_on: &Set[PuddingId], mapping: Map[EggId, PuddingId],
+): PuddingBody {
+  var rev_body = list[PuddingId]()
+
+  rev_body.&.require(mapping.get(body.returns), needed_later_on)
+
+  for id in body.children.rev_iter() do
+    id.to_pudding(rev_body.&, needed_later_on, mapping)
+
+  var params = list[PuddingId]()
+  for param in body.params do {
+    var type = param.type()
+    var param = mapping.get(param)
+    if not(needed_later_on.contains(param)) then
+      rev_body.&.push(drop(param))
+    else
+      needed_later_on.remove(param)
+    params.&.push(update(param, PuddingOp.param, type))
+  }
+  var params = params.to_slice()
+
+  var exprs = list[PuddingId]()
+  for id in rev_body.to_slice().rev_iter() do exprs.&.push(id)
+  var exprs = exprs.to_slice()
+
+  PuddingBody { params, children = exprs, returns = mapping.get(body.returns) }
+}
+
+fun require(
+  rev_body: &List[PuddingId], id: PuddingId, needed_later_on: &Set[PuddingId]
+) {
+  if needed_later_on.contains(id) then
+    rev_body.push(dup(id))
+  else
+    needed_later_on.put(id)
+}
+
+fun to_pudding(
+  id: EggId,
+  rev_body: &List[PuddingId], needed_later_on: &Set[PuddingId],
+  mapping: Map[EggId, PuddingId],
+) {
+  var expr = id.resolve()
+  var type = id.type()
+  var id = mapping.get(id)
+
+  if not(needed_later_on.contains(id)) then
+    rev_body.&.push(drop(id))
+  else
+    needed_later_on.remove(id)
+
+  switch expr
+  case param unreachable()
+  case case_param unreachable()
+  case byte(byte) rev_body.push(update(id, PuddingOp.byte(byte), type))
+  case lower_byte(int) {
+    var int = mapping.get(int)
+    rev_body.push(update(id, PuddingOp.lower_byte(int), type))
+    rev_body.require(int, needed_later_on)
+  }
+  case byte_to_int(byte) {
+    var byte = mapping.get(byte)
+    rev_body.push(update(id, PuddingOp.byte_to_int(byte), type))
+    rev_body.require(byte, needed_later_on)
+  }
+  case int(int) rev_body.push(update(id, PuddingOp.int(int), type))
+  case add(args) {
+    var args = mapping.get(args)
+    rev_body.push(update(id, PuddingOp.add(args), type))
+    rev_body.require(args.a, needed_later_on)
+    rev_body.require(args.b, needed_later_on)
+  }
+  case subtract(args) {
+    var args = mapping.get(args)
+    rev_body.push(update(id, PuddingOp.subtract(args), type))
+    rev_body.require(args.a, needed_later_on)
+    rev_body.require(args.b, needed_later_on)
+  }
+  case multiply(args) {
+    var args = mapping.get(args)
+    rev_body.push(update(id, PuddingOp.multiply(args), type))
+    rev_body.require(args.a, needed_later_on)
+    rev_body.require(args.b, needed_later_on)
+  }
+  case divide unreachable("checked divide")
+  case unchecked_divide(args) {
+    var args = mapping.get(args)
+    rev_body.push(update(id, PuddingOp.divide(args), type))
+    rev_body.require(args.a, needed_later_on)
+    rev_body.require(args.b, needed_later_on)
+  }
+  case modulo unreachable("checked modulo")
+  case unchecked_modulo(args) {
+    var args = mapping.get(args)
+    rev_body.push(update(id, PuddingOp.modulo(args), type))
+    rev_body.require(args.a, needed_later_on)
+    rev_body.require(args.b, needed_later_on)
+  }
+  case and_(args) {
+    var args = mapping.get(args)
+    rev_body.push(update(id, PuddingOp.and_(args), type))
+    rev_body.require(args.a, needed_later_on)
+    rev_body.require(args.b, needed_later_on)
+  }
+  case or_(args) {
+    var args = mapping.get(args)
+    rev_body.push(update(id, PuddingOp.or_(args), type))
+    rev_body.require(args.a, needed_later_on)
+    rev_body.require(args.b, needed_later_on)
+  }
+  case xor(args) {
+    var args = mapping.get(args)
+    rev_body.push(update(id, PuddingOp.xor(args), type))
+    rev_body.require(args.a, needed_later_on)
+    rev_body.require(args.b, needed_later_on)
+  }
+  case compare(args) {
+    var args = mapping.get(args)
+    rev_body.push(update(id, PuddingOp.compare(args), type))
+    rev_body.require(args.a, needed_later_on)
+    rev_body.require(args.b, needed_later_on)
+  }
+  case struct_(struct_) {
+    var fields = map[String, PuddingId]()
+    for field in struct_ do fields.&.put(field.key, mapping.get(field.value))
+    rev_body.push(update(id, PuddingOp.struct_(fields), type))
+    for field in fields do rev_body.require(field.value, needed_later_on)
+  }
+  case member(member) {
+    var of = mapping.get(member.of)
+    rev_body.push(update(
+      id, PuddingOp.member(PuddingMember { of, name = member.name }), type
+    ))
+    rev_body.require(of, needed_later_on)
+  }
+  case enum_(enum_) {
+    var payload = mapping.get(enum_.payload)
+    rev_body.push(update(
+      id,
+      PuddingOp.enum_(PuddingEnum { variant = enum_.variant, payload }),
+      type,
+    ))
+    rev_body.require(payload, needed_later_on)
+  }
+  case switch_(switch_) {
+    var condition = mapping.get(switch_.condition)
+    
+    | Lower the individual cases.
+    var cases = map[String, PuddingBody]()
+    var needed_by_branches = map[String, Set[PuddingId]]()
+    for case_ in switch_.cases do {
+      var needed_by_this_branch = set[PuddingId]()
+      for id in needed_later_on do needed_by_this_branch.&.put(id)
+      cases.&.put(
+        case_.key,
+        case_.value.to_pudding(needed_by_this_branch.&, mapping),
+      )
+      needed_by_branches.&.put(case_.key, needed_by_this_branch)
+    }
+
+    | Figure out the IDs that all branches need.
+    for entry in needed_by_branches do
+      for id in entry.value do needed_later_on.&.put(id)
+
+    | If a branch doesn't use IDs that other branches use, drop those at the
+    | start of the branch body.
+    for case_ in cases do {
+      var needed_by_this_branch = needed_by_branches.get(case_.key)
+      var diff_to_other_branches = set[PuddingId]()
+      for id in needed_later_on do
+        if not(needed_by_this_branch.contains(id)) then
+          diff_to_other_branches.&.put(id)
+
+      var drops = list[PuddingId]()
+      for id in diff_to_other_branches do drops.&.push(drop(id))
+
+      cases.&.put(case_.key, PuddingBody {
+        params = case_.value.params,
+        children = {drops + case_.value.children.to_list()}.to_slice(),
+        returns = case_.value.returns,
+      })
+    }
+    rev_body.push(update(
+      id, PuddingOp.switch_(PuddingSwitch { condition, cases }), type
+    ))
+    rev_body.require(condition, needed_later_on)
+  }
+  case lambda unreachable("inline lambda")
+  case raw_lambda(lambda) {
+    var closure = mapping.get(lambda.closure)
+    rev_body.push(update(
+      id,
+      PuddingOp.lambda(PuddingLambda { function = lambda.fun_, closure }),
+      type,
+    ))
+    rev_body.require(closure, needed_later_on)
+  }
+  case call_fun(call) {
+    var args = mapping.get(call.args)
+    rev_body.push(update(
+      id, PuddingOp.call_fun(PuddingCallFun { fun_ = call.fun_, args }), type
+    ))
+    for arg in args do rev_body.require(arg, needed_later_on)
+  }
+  case call_lambda(call) {
+    var lambda = mapping.get(call.lambda)
+    var args = mapping.get(call.args)
+    rev_body.push(update(
+      id, PuddingOp.call_lambda(PuddingCallLambda { lambda, args }), type
+    ))
+    for arg in args do rev_body.require(arg, needed_later_on)
+    rev_body.require(lambda, needed_later_on)
+  }
+  case call_builtin unreachable("call builtin should be desugared")
+  case box(inner) {
+    var inner = mapping.get(inner)
+    rev_body.push(update(id, PuddingOp.box(inner), type))
+    rev_body.require(inner, needed_later_on)
+  }
+  case unbox(box) {
+    var box = mapping.get(box)
+    rev_body.push(update(id, PuddingOp.unbox(box), type))
+    rev_body.require(box, needed_later_on)
+  }
+  case array(array) {
+    var items = mapping.get(array.items)
+    rev_body.push(update(id, PuddingOp.array(items), type))
+    for item in items do rev_body.require(item, needed_later_on)
+  }
+  case generate_array unreachable("checked generate array should be desugared")
+  case unchecked_generate_non_empty_array(gen) {
+    var length = mapping.get(gen.length)
+    var last_used_in_generator = {
+      var ids = list[PuddingId]()
+      for id in gen.generator.captured() do {
+        var id = mapping.get(id)
+        if not(needed_later_on.contains(id)) then ids.&.push(id)
+      }
+      ids.to_slice()
+    }
+    for id in last_used_in_generator do {
+      needed_later_on.put(id)
+      rev_body.push(drop(id))
+    }
+    var generator = gen.generator.to_pudding(needed_later_on, mapping)
+    rev_body.push(update(
+      id,
+      PuddingOp.generate_array(PuddingGenerateArray { length, generator }),
+      type,
+    ))
+  }
+  case array_len(array) {
+    var array = mapping.get(array)
+    rev_body.push(update(id, PuddingOp.array_len(array), type))
+    rev_body.require(array, needed_later_on)
+  }
+  case array_get unreachable("checked array get should be desugared")
+  case unchecked_array_get(args) {
+    var array = mapping.get(args.array)
+    var index = mapping.get(args.index)
+    rev_body.push(update(id, PuddingOp.array_get(tuple(array, index)), type))
+  }
+  case array_set unreachable("checked array set should be desugared")
+  case unchecked_array_set(args) {
+    var array = mapping.get(args.array)
+    var index = mapping.get(args.index)
+    var item = mapping.get(args.item)
+    rev_body.push(update(
+      id, PuddingOp.array_set(tuple(array, index, item)), type
+    ))
+  }
+  case array_slice unreachable("checked array slice should be desugared")
+  case unchecked_array_slice(args) {
+    var array = mapping.get(args.array)
+    var start = mapping.get(args.start)
+    var end = mapping.get(args.end)
+    rev_body.push(update(
+      id, PuddingOp.array_slice(tuple(array, start, end)), type
+    ))
+  }
+  case string unreachable("string should be desugared")
+  case type(ty) rev_body.push(update(id, PuddingOp.type(ty), type))
+  case cast unreachable("cast should be desugared")
+  case type_info unreachable("type_info should be desugared")
+  case dynamic_to_static unreachable("dynamic_to_static should be desugared")
+  case static_to_dynamic unreachable("static_to_dynamic should be desugared")
+  case crash(crash) {
+    var message = mapping.get(crash.message)
+    rev_body.push(update(id, PuddingOp.crash(message), type))
+    rev_body.require(message, needed_later_on)
+  }
+  case unreachable {
+    rev_body.push(update(id, PuddingOp.unreachable, type))
+  }
+  case loop_ todo("loop")
+  case continue_ todo("continue")
+}
+
+fun get(
+  mapping: Map[EggId, PuddingId], tuple: Tuple2[EggId, EggId]
+): Tuple2[PuddingId, PuddingId] {
+  tuple(mapping.get(tuple.a), mapping.get(tuple.b))
+}
+
+fun get(
+  mapping: Map[EggId, PuddingId], ids: Slice[EggId],
+): Slice[PuddingId] {
+  var out = list[PuddingId]()
+  for id in ids do out.&.push(mapping.get(id))
+  out.to_slice()
+}
