@@ -1,0 +1,275 @@
+import mod.mar
+
+fun dup(
+  builder: &PestoBodyBuilder, id: PestoId, type: EggType,
+  funs: &Map[String, PestoFun],
+): PestoId {
+  if not(type.to_pesto().contains_ptr()) then return id
+  builder.call(type.compile_dup_fun(funs), id, pesto_nothing_type)
+}
+
+fun drop(
+  builder: &PestoBodyBuilder, id: PestoId, type: EggType,
+  funs: &Map[String, PestoFun],
+): PestoId {
+  if not(type.to_pesto().contains_ptr()) then return id
+  builder.call(type.compile_drop_fun(funs), id, pesto_nothing_type)
+}
+
+fun dup_buffer(
+  builder: &PestoBodyBuilder, buffer: PestoId, funs: &Map[String, PestoFun],
+): PestoId {
+  buffer.resolve().type == PestoType.ptr or panic("drop buffer of non-ptr")
+  builder.increment_refcount(buffer)
+}
+
+fun drop_buffer(
+  builder: &PestoBodyBuilder, buffer: PestoId, type: EggType,
+  funs: &Map[String, PestoFun],
+): PestoId {
+  buffer.resolve().type == PestoType.ptr or panic("drop buffer of non-ptr")
+  builder.call(type.compile_drop_buffer_fun(funs), buffer, pesto_nothing_type)
+}
+
+| Creates a function that accepts a value of the given type, traverses that
+| value, and calls dup on all inner members. If it reaches a pointer, it instead
+| just increments that pointer's reference count.
+fun compile_dup_fun(type: EggType, funs: &Map[String, PestoFun]): String {
+  var signature = "dup {type}"
+  if funs.contains(signature) then return signature
+  funs.&.put(signature, uninitialized[PestoFun]().*)
+
+  var builder = pesto_body_builder(type.to_pesto()).&
+  var value = builder.param
+
+  switch type.kind()
+  case variable unreachable()
+  case byte {}
+  case int {}
+  case type {}
+  case box builder.increment_refcount(value).ignore()
+  case array {
+    var buffer = builder.member(value, "buffer")
+    builder.dup_buffer(buffer, funs).ignore()
+  }
+  case never {}
+  case struct_
+    for field in type.kind().struct_.unwrap() do
+      builder.dup(builder.member(value, field.key), field.value, funs)
+  case enum_ {
+    var cases = map[String, PestoBody]()
+    for variant in type.kind().enum_.unwrap() do {
+      var payload_type = value.resolve().type.enum_.unwrap().get(variant.key)
+      var builder = pesto_body_builder(payload_type).&
+      | TODO: check needs extra boxing
+      if payload_type is ptr then
+        builder.increment_refcount(builder.param)
+      else
+        builder.dup(builder.param, variant.value, funs)
+      cases.&.put(variant.key, builder.finish_with_nothing())
+    }
+    builder.switch_(value, cases).ignore()
+  }
+  case lambda
+    builder.increment_refcount(builder.member(value, "closure")).ignore()
+
+  var body = builder.finish_with_nothing()
+  var fun_ = PestoFun { body }
+
+  funs.&.put(signature, fun_)
+  signature
+}
+
+| Creates a function that accepts a value of the given type, traverses that
+| value, and calls dup on all inner members. If it reaches a pointer, it instead
+| decrements that pointer's reference count. If the reference count reaches
+| zero, it drops the pointed-to value and frees the allocation. For lambdas
+| where the closure reaches a reference count of zero, it uses the free function
+| pointer to free the closure.
+fun compile_drop_fun(type: EggType, funs: &Map[String, PestoFun]): String {
+  var signature = "drop {type}"
+  if funs.contains(signature) then return signature
+  funs.&.put(signature, uninitialized[PestoFun]().*)
+
+  var builder = pesto_body_builder(type.to_pesto()).&
+  var value = builder.param
+
+  switch type.kind()
+  case variable unreachable()
+  case byte {}
+  case int {}
+  case type {}
+  case box {
+    var new_refcount = builder.decrement_refcount(value)
+    builder.switch_(builder.compare(new_refcount, builder.int(0)), map(
+      "less" -> | Never runs in practice; refcount is always >= 0.
+        pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+      "greater" ->
+        pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+      "equal" -> {
+        var builder = pesto_body_builder(pesto_nothing_type).&
+        var inner_type = type.kind().box.unwrap()
+        var inner = builder.load(value, inner_type.to_pesto())
+        builder.drop(inner, inner_type, funs)
+        builder.free(value, inner_type.to_pesto())
+        builder.finish_with_nothing()
+      },
+    )).ignore()
+  }
+  case array {
+    var buffer = builder.member(value, "buffer")
+    var item_type = type.kind().array.unwrap()
+    builder.drop_buffer(buffer, item_type, funs).ignore()
+  }
+  case never {}
+  case struct_
+    for field in type.kind().struct_.unwrap() do
+      builder.drop(builder.member(value, field.key), field.value, funs)
+  case enum_ {
+    var cases = map[String, PestoBody]()
+    for variant in type.kind().enum_.unwrap() do {
+      var payload_type = variant.value
+      var inline_type = value.resolve().type.enum_.unwrap().get(variant.key)
+      var builder = pesto_body_builder(inline_type).&
+      var payload = builder.param
+      if inline_type is ptr then {
+        var new_refcount = builder.decrement_refcount(payload)
+        builder.switch_(builder.compare(new_refcount, builder.int(0)), map(
+          "less" -> | Never runs in practice; refcount is always >= 0.
+            pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+          "greater" ->
+            pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+          "equal" -> {
+            var builder = pesto_body_builder(pesto_nothing_type).&
+            builder.call(
+              payload_type.compile_drop_fun(funs),
+              builder.load(payload, payload_type.to_pesto()),
+              pesto_nothing_type,
+            )
+            builder.free(payload, payload_type.to_pesto())
+            builder.finish_with_nothing()
+          },
+        ))
+      } else
+        builder.drop(payload, payload_type, funs)
+
+      cases.&.put(variant.key, builder.finish_with_nothing())
+    }
+    builder.switch_(value, cases).ignore()
+  }
+  case lambda {
+    var closure_ptr = builder.member(value, "closure")
+    var new_refcount = builder.decrement_refcount(closure_ptr)
+    builder.switch_(builder.compare(new_refcount, builder.int(0)), map(
+      "less" -> | Never runs in practice; refcount is always >= 0.
+        pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+      "greater" ->
+        pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+      "equal" -> {
+        var builder = pesto_body_builder(pesto_nothing_type).&
+        var free_fun_ptr = builder.member(value, "free")
+        builder.call_indirect(free_fun_ptr, closure_ptr, pesto_nothing_type)
+        builder.finish_with_nothing()
+      },
+    )).ignore()
+  }
+
+  var body = builder.finish_with_nothing()
+  var fun_ = PestoFun { body }
+
+  funs.&.put(signature, fun_)
+  signature
+}
+
+fun compile_drop_buffer_fun(item_type: EggType, funs: &Map[String, PestoFun]): String {
+  var signature = "drop (Buffer {item_type})"
+  if funs.contains(signature) then return signature
+  funs.&.put(signature, uninitialized[PestoFun]().*)
+
+  var builder = pesto_body_builder(PestoType.ptr).&
+  var buffer = builder.param
+
+  var new_refcount = builder.decrement_refcount(buffer)
+  builder.switch_(builder.compare(new_refcount, builder.int(0)), map(
+    "less" -> | Never runs in practice; refcount is always >= 0.
+        pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+    "greater" ->
+      pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+    "equal" -> {
+      var builder = pesto_body_builder(pesto_nothing_type).&
+      builder.call(
+        item_type.compile_drop_buffer_items_fun(funs),
+        builder.struct_(map("buffer" -> buffer, "cursor" -> builder.int(0))),
+        pesto_nothing_type,
+      )
+      builder.free_buffer(buffer, item_type.to_pesto())
+      builder.finish_with_nothing()
+    },
+  )).ignore()
+
+  var body = builder.finish_with_nothing()
+  var fun_ = PestoFun { body }
+
+  funs.&.put(signature, fun_)
+  signature
+}
+
+| Accepts aggregate with ptr and cursor. Calls itself recursively.
+fun compile_drop_buffer_items_fun(item_type: EggType, funs: &Map[String, PestoFun]): String {
+  var signature = "drop items of (Buffer {item_type})"
+  if funs.contains(signature) then return signature
+  funs.&.put(signature, uninitialized[PestoFun]().*)
+
+  var builder = pesto_body_builder(PestoType.struct_(map(
+    "buffer" -> PestoType.ptr, "cursor" -> PestoType.int
+  ))).&
+  var buffer = builder.member(builder.param, "buffer")
+  var cursor = builder.member(builder.param, "cursor")
+  var len = builder.get_buffer_len(buffer)
+  var ordering = 
+  builder.switch_(builder.compare(cursor, len), map(
+    "less" -> {
+      var builder = pesto_body_builder(pesto_nothing_type).&
+      var item = builder.load_buffer_item(buffer, item_type.to_pesto(), cursor)
+      builder.drop(item, item_type, funs)
+      builder.call(
+        signature,
+        builder.struct_(map(
+          "buffer" -> buffer,
+          "cursor" -> builder.add(cursor, builder.int(1)),
+        )),
+        pesto_nothing_type,
+      )
+      builder.finish(builder.nothing())
+    },
+    "greater" -> | Never runs in practice; cursor is always <= len.
+      pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+    "equal" ->
+      pesto_body_builder(pesto_nothing_type).&.finish_with_nothing(),
+  )).ignore()
+
+  var body = builder.finish_with_nothing()
+  var fun_ = PestoFun { body }
+
+  funs.&.put(signature, fun_)
+  signature
+}
+
+fun compile_free_closure_fun(inner_type: EggType, funs: &Map[String, PestoFun]): String {
+  var signature = "free (Box {inner_type})"
+  if funs.contains(signature) then return signature
+  funs.&.put(signature, uninitialized[PestoFun]().*)
+
+  var builder = pesto_body_builder(PestoType.ptr).&
+  var box = builder.param
+
+  var inner = builder.load(box, inner_type.to_pesto())
+  builder.drop(inner, inner_type, funs)
+  builder.free(box, inner_type.to_pesto())
+
+  var body = builder.finish_with_nothing()
+  var fun_ = PestoFun { body }
+
+  funs.&.put(signature, fun_)
+  signature
+}

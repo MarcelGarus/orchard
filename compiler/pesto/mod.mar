@@ -5,13 +5,15 @@
 | In particular, lambdas have been removed.
 
 import ../plum.mar
+import builder.mar
 import dag.mar
+import format.mar
 import run.mar
 
 struct Pesto { entry_point: String, funs: Map[String, PestoFun] }
 
 struct PestoFun { body: PestoBody }
-struct PestoBody { param: PestoId, exprs: Slice[PestoId], returns: PestoId }
+struct PestoBody { param: PestoId, children: Slice[PestoId], returns: PestoId }
 struct PestoExpr { op: PestoOp, type: PestoType }
 
 enum PestoType {
@@ -79,8 +81,8 @@ enum PestoOp {
   unreachable,
 
   | loop
-  | loop_: PestoLoop, 
-  | continue_: PestoId,
+  loop_: PestoLoop, 
+  continue_: PestoId,
 }
 struct PestoMember { of: PestoId, name: String }
 struct PestoEnum { variant: String, payload: PestoId }
@@ -98,6 +100,7 @@ struct PestoStoreBufferItem {
 }
 struct PestoStoreBufferBytes { buffer: PestoId, bytes: Slice[Byte] }
 struct PestoFreeBuffer { buffer: PestoId, item_type: PestoType }
+struct PestoLoop { initial: PestoId, body: PestoBody }
 
 fun ==(a: PestoType, b: PestoType): Bool {
   switch a
@@ -109,91 +112,6 @@ fun ==(a: PestoType, b: PestoType): Bool {
   case never       b is never
 }
 
-fun write[W](writer: W, pesto: Pesto) {
-  var first = true
-  for fun_ in pesto.funs do {
-    if first then first = false else writer."\n"
-    writer."{fun_.key}:"
-    writer.write(fun_.value.body, fun_.value.dag, indentation(1))
-  }
-}
-fun write[W](writer: W, type: PestoType) {
-  switch type
-  case byte writer."byte"
-  case int writer."int"
-  case ptr writer."ptr"
-  case struct_(fields) {
-    writer."(&"
-    for field in fields do writer." {field.key}: {field.value}"
-    writer.")"
-  }
-  case enum_(variants) {
-    writer."(|"
-    for variant in variants do
-      if variant.value == PestoType.struct_(map[String, PestoType]()) then
-        writer." {variant.key}"
-      else
-        writer." {variant.key}: {variant.value}"
-    writer.")"
-  }
-  case never writer."never"
-}
-fun write[W](
-  writer: W, body: PestoBody, dag: Dag[PestoExpr], indentation: Indentation
-) {
-  writer." {body.param}: {dag.type_of(body.param)}\n"
-  for id in body.exprs do {
-    var expr = dag.get(id)
-    writer."{indentation}{id}: {expr.type} = "
-    writer.write(expr.op, dag, indentation)
-    writer."\n"
-  }
-  writer."{indentation}{body.returns}"
-}
-fun write[W](
-  writer: W, op: PestoOp, dag: Dag[PestoExpr], indentation: Indentation
-) {
-  switch op
-  case param writer."param"
-  case byte(byte) writer."byte {byte}"
-  case int(int) writer."int {int}"
-  case struct_(fields) {
-    writer."&"
-    for field in fields do writer." {field.key}: {field.value}"
-  }
-  case member(member) writer."{member.of}.{member.name}"
-  case enum_(enum_) writer."| {enum_.name}: {enum_.value}"
-  case switch_(switch_) {
-    writer."switch {switch_.condition}"
-    for case_ in switch_.cases do {
-      writer."\n"
-      writer."{indentation}  {case_.key} -> "
-      writer.write(case_.value, dag, indentation + 1)
-    }
-  }
-  case function_ptr(signature) writer."&({signature})"
-  case call(call) writer."call \"{call.function}\" {call.args}"
-  case call_indirect(call) writer."call *{call.function} {call.args}"
-  case call_builtin(call) {
-    writer."call builtin {call.builtin.debug()}"
-    for arg in call.args do writer." {arg}"
-  }
-  case new(value) writer."new {value}"
-  case load(value) writer."load {value}"
-  case free(free) writer."free {free.ptr}: {free.type}"
-  case new_buffer(new) writer."new buffer({new.item_type}) of len {new.len}"
-  case get_buffer_len(buffer) writer."get len of buffer {buffer}"
-  case load_buffer_item(load)
-    writer."load item from buffer({load.item_type}) {load.buffer} 
-      'at index {load.index}"
-  case store_buffer_item(store)
-    writer."store {store.item} to buffer({store.item_type}) {store.buffer} 
-      'at index {store.index}"
-  case store_buffer_bytes(store)
-    writer."store {store.bytes} to buffer(Byte) {store.buffer}"
-  case free_buffer(free)
-    writer."free buffer({free.item_type}) {free.buffer}"
-  case get_refcount(ptr) writer."get refcount of {ptr}"
-  case increment_refcount(ptr) writer."increment refcount of {ptr}"
-  case decrement_refcount(ptr) writer."decrement refcount of {ptr}"
+fun return_type(fun_: PestoFun): PestoType {
+  fun_.body.returns.resolve().type
 }

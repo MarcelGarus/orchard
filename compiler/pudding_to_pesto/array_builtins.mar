@@ -1,45 +1,5 @@
 import mod.mar
 
-fun compile_generate_array(item_type: EggType, pesto: &Pesto): String {
-  var signature = "generate (Array {item_type})"
-  if pesto.funs.contains(signature) then return signature
-  pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
-
-  var dag = dag[PestoExpr]()
-  var builder = body_builder(dag.&, PestoType.struct_(map(
-    "len" -> PestoType.int,
-    "generator" -> pesto_lambda_type,
-  ))).&
-  var args = builder.param
-  var len = builder.member(args, "len")
-  var generator = builder.member(args, "generator")
-
-  var buffer = builder.new_buffer(item_type.to_pesto(), len)
-  builder.call(
-    compile_init_array_fun(item_type, pesto),
-    builder.struct_(map(
-      "buffer" -> buffer,
-      "cursor" -> builder.int(0),
-      "len" -> len,
-      "generator" -> generator,
-    )),
-    pesto_nothing.type,
-  )
-  builder.drop(
-    generator, type_lambda(list(type_int).to_slice(), item_type), pesto
-  )
-  var array = builder.struct_(map(
-    "buffer" -> buffer,
-    "start" -> builder.int(0),
-    "len" -> len,
-  ))
-
-  var body = builder.finish(array)
-  var fun_ = PestoFun { dag, body }
-
-  pesto.funs.&.put(signature, fun_)
-  signature
-}
 fun compile_init_array_fun(item_type: EggType, pesto: &Pesto): String {
   var signature = "initialize (Array {item_type})"
   if pesto.funs.contains(signature) then return signature
@@ -49,16 +9,16 @@ fun compile_init_array_fun(item_type: EggType, pesto: &Pesto): String {
   var builder = body_builder(dag.&, PestoType.struct_(map(
     "buffer" -> PestoType.ptr,
     "cursor" -> PestoType.int,
-    "len" -> PestoType.int,
+    "length" -> PestoType.int,
     "generator" -> pesto_lambda_type,
   ))).&
   var args       = builder.param
   var buffer = builder.member(args, "buffer")
   var cursor     = builder.member(args, "cursor")
-  var len        = builder.member(args, "len")
+  var length        = builder.member(args, "length")
   var generator  = builder.member(args, "generator")
 
-  builder.switch_(builder.compare_ints(cursor, len), map(
+  builder.switch_(builder.compare_ints(cursor, length), map(
     "less" -> {
       var builder = body_builder(dag.&, pesto_nothing.type).&
       var closure_ptr = builder.member(generator, "closure")
@@ -74,7 +34,7 @@ fun compile_init_array_fun(item_type: EggType, pesto: &Pesto): String {
         builder.struct_(map(
           "buffer" -> buffer,
           "cursor" -> builder.add_ints(cursor, builder.int(1)),
-          "len" -> len,
+          "length" -> length,
           "generator" -> generator,
         )),
         pesto_nothing.type,
@@ -88,78 +48,6 @@ fun compile_init_array_fun(item_type: EggType, pesto: &Pesto): String {
   ))
 
   var body = builder.finish_with_nothing()
-  var fun_ = PestoFun { dag, body }
-
-  pesto.funs.&.put(signature, fun_)
-  signature
-}
-
-fun compile_array_len(item_type: EggType, pesto: &Pesto): String {
-  var signature = "length (Array {item_type})"
-  if pesto.funs.contains(signature) then return signature
-  pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
-
-  var dag = dag[PestoExpr]()
-  var builder = body_builder(dag.&, PestoType.struct_(map(
-    "array" -> pesto_array_type,
-  ))).&
-  var args = builder.param
-  var array = builder.member(args, "array")
-
-  var buffer = builder.member(array, "buffer")
-  builder.drop_buffer(buffer, item_type, pesto)
-  var len = builder.member(array, "len")
-
-  var body = builder.finish(len)
-  var fun_ = PestoFun { dag, body }
-
-  pesto.funs.&.put(signature, fun_)
-  signature
-}
-
-fun compile_array_get(item_type: EggType, pesto: &Pesto): String {
-  var signature = "get (Array {item_type})"
-  if pesto.funs.contains(signature) then return signature
-  pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
-
-  var dag = dag[PestoExpr]()
-  var builder = body_builder(dag.&, PestoType.struct_(map(
-    "array" -> pesto_array_type,
-    "index" -> PestoType.int,
-  ))).&
-  var args = builder.param
-  var array = builder.member(args, "array")
-  var index = builder.member(args, "index")
-
-  | Check that the index is within bounds.
-  builder.switch_(builder.compare_ints(index, builder.int(0)), map(
-    "less" ->
-      body_builder(dag.&, pesto_nothing.type)
-        .finish_with_crash("Index out of bounds."),
-    "equal" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
-    "greater" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
-  ))
-  builder.switch_(
-    builder.compare_ints(index, builder.member(array, "len")),
-    map(
-      "less" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
-      "equal" ->
-        body_builder(dag.&, pesto_nothing.type)
-          .finish_with_crash("Index out of bounds."),
-      "greater" ->
-        body_builder(dag.&, pesto_nothing.type)
-          .finish_with_crash("Index out of bounds."),
-    ),
-  )
-
-  | Get the item.
-  var buffer = builder.member(array, "buffer")
-  var offset = builder.add_ints(builder.member(array, "start"), index)
-  var item = builder.load_buffer_item(buffer, item_type.to_pesto(), offset)
-  builder.dup(item, item_type, pesto)
-  builder.drop_buffer(buffer, item_type, pesto)
-
-  var body = builder.finish(item)
   var fun_ = PestoFun { dag, body }
 
   pesto.funs.&.put(signature, fun_)
@@ -183,7 +71,7 @@ fun compile_array_set(item_type: EggType, pesto: &Pesto): String {
   var item = builder.member(args, "item")
   var buffer = builder.member(array, "buffer")
   var start = builder.member(array, "start")
-  var len = builder.member(array, "len")
+  var length = builder.member(array, "length")
 
   | Check that the index is within bounds.
   builder.switch_(builder.compare_ints(index, builder.int(0)), map(
@@ -194,7 +82,7 @@ fun compile_array_set(item_type: EggType, pesto: &Pesto): String {
     "greater" ->
       body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
   ))
-  builder.switch_(builder.compare_ints(index, len), map(
+  builder.switch_(builder.compare_ints(index, length), map(
     "less" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
     "equal" ->
       body_builder(dag.&, pesto_nothing.type)
@@ -218,7 +106,7 @@ fun compile_array_set(item_type: EggType, pesto: &Pesto): String {
         body_builder(dag.&, pesto_nothing.type).finish(array),
       "greater" -> {
         var builder = body_builder(dag.&, pesto_nothing.type).&
-        var buffer_copy = builder.new_buffer(item_type.to_pesto(), len)
+        var buffer_copy = builder.new_buffer(item_type.to_pesto(), length)
         builder.call(
           compile_copy_buffer_fun(item_type, pesto),
           builder.struct_(map(
@@ -226,7 +114,7 @@ fun compile_array_set(item_type: EggType, pesto: &Pesto): String {
             "from_cursor" -> start,
             "to_buffer" -> buffer_copy,
             "to_cursor" -> builder.int(0),
-            "len" -> len,
+            "length" -> length,
           )),
           pesto_nothing.type,
         )
@@ -234,7 +122,7 @@ fun compile_array_set(item_type: EggType, pesto: &Pesto): String {
         var array = builder.struct_(map(
           "buffer" -> buffer_copy,
           "start" -> builder.int(0),
-          "len" -> len,
+          "length" -> length,
         ))
         builder.finish(array)
       },
@@ -264,16 +152,16 @@ fun compile_copy_buffer_fun(item_type: EggType, pesto: &Pesto): String {
     "from_cursor" -> PestoType.int,
     "to_buffer" -> PestoType.ptr,
     "to_cursor" -> PestoType.int,
-    "len" -> PestoType.int,
+    "length" -> PestoType.int,
   ))).&
   var args        = builder.param
   var from_buffer = builder.member(args, "from_buffer")
   var from_cursor = builder.member(args, "from_cursor")
   var to_buffer   = builder.member(args, "to_buffer")
   var to_cursor   = builder.member(args, "to_cursor")
-  var len         = builder.member(args, "len")
+  var length         = builder.member(args, "length")
 
-  builder.switch_(builder.compare_ints(len, builder.int(0)), map(
+  builder.switch_(builder.compare_ints(length, builder.int(0)), map(
     "less" -> | can't happen
       body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
     "equal" ->
@@ -292,7 +180,7 @@ fun compile_copy_buffer_fun(item_type: EggType, pesto: &Pesto): String {
           "from_cursor" -> builder.add_ints(from_cursor, builder.int(1)),
           "to_buffer" -> to_buffer,
           "to_cursor" -> builder.add_ints(to_cursor, builder.int(1)),
-          "len" -> builder.sub_ints(len, builder.int(1)),
+          "length" -> builder.sub_ints(length, builder.int(1)),
         )),
         pesto_nothing.type,
       )
@@ -301,58 +189,6 @@ fun compile_copy_buffer_fun(item_type: EggType, pesto: &Pesto): String {
   ))
 
   var body = builder.finish_with_nothing()
-  var fun_ = PestoFun { dag, body }
-
-  pesto.funs.&.put(signature, fun_)
-  signature
-}
-
-fun compile_array_slice(item_type: EggType, pesto: &Pesto): String {
-  var signature = "array_slice of (Array {item_type})"
-  if pesto.funs.contains(signature) then return signature
-  pesto.funs.&.put(signature, uninitialized[PestoFun]().*)
-
-  var dag = dag[PestoExpr]()
-  var builder = body_builder(dag.&, PestoType.struct_(map(
-    "array" -> pesto_array_type,
-    "range" -> PestoType.struct_(map(
-      "start" -> PestoType.int, | inclusive
-      "end" -> PestoType.int,   | exclusive
-    )),
-  ))).&
-  var args = builder.param
-  var array = builder.member(args, "array")
-  var range = builder.member(args, "range")
-  var range_start = builder.member(range, "start")
-  var range_end   = builder.member(range, "end")
-
-  | Check that the index is within bounds.
-  builder.switch_(builder.compare_ints(range_start, builder.int(0)), map(
-    "less" ->
-      body_builder(dag.&, pesto_nothing.type)
-        .finish_with_crash("Range start out of bounds."),
-    "equal" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
-    "greater" ->
-      body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
-  ))
-  builder.switch_(
-    builder.compare_ints(range_end, builder.member(array, "len")),
-    map(
-      "less" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
-      "equal" -> body_builder(dag.&, pesto_nothing.type).finish_with_nothing(),
-      "greater" ->
-        body_builder(dag.&, pesto_nothing.type)
-          .finish_with_crash("Range end out of bounds."),
-    ),
-  )
-
-  var new_array = builder.struct_(map(
-    "buffer" -> builder.member(array, "buffer"),
-    "start" -> builder.add_ints(builder.member(array, "start"), range_start),
-    "len" -> builder.sub_ints(range_end, range_start),
-  ))
-
-  var body = builder.finish(new_array)
   var fun_ = PestoFun { dag, body }
 
   pesto.funs.&.put(signature, fun_)
