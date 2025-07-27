@@ -1,0 +1,328 @@
+| Ground Builder  
+|
+| In order to make it easy to generate Ground byte code and for this to not get
+| out of sync with our comptime model of the stack, we have a GroundBuilder. Its
+| emit function pushes an instruction to the instruction buffer and also updates
+| the stack model (except some instructions where you have to manually adjust
+| the stack).
+
+import mod.mar
+
+struct SushiFlowBuilder {
+  section: SushiSectionBuilder,
+  stack: StackModel,
+}
+
+enum StackModel { diverged, not_diverged: &NonDivergedStack }
+struct NonDivergedStack { mapping: Map[WaffleId, Int], size: Int }
+
+fun empty_stack_model(): StackModel {
+  StackModel.not_diverged(NonDivergedStack {
+    mapping = map[WaffleId, Int](), size = 0
+  }.put_on_heap())
+}
+
+fun push(builder: &SushiFlowBuilder, instruction: SushiInstruction) {
+  builder.section.&.push(instruction)
+}
+
+fun finish(builder: SushiFlowBuilder) { builder.section.finish() }
+
+| fun section(builder: &SushiBuilder, name: String): SushiFlowBuilder {
+|   var index = SectionIndex { index = builder.sections.len }
+|   builder.sections.push(uninitialized[SushiSection]())
+|   SushiFlowBuilder { parent = builder, index, instructions }
+| }
+
+fun mark(builder: &SushiFlowBuilder, id: WaffleId) {
+  var stack = builder.stack.not_diverged.unwrap()
+  stack.mapping.&.put(id, stack.size)
+}
+
+fun split(builder: SushiFlowBuilder, name: String): SushiFlowBuilder {
+  SushiFlowBuilder {
+    section = builder.section.sushi.section(name),
+    stack =
+      switch builder.stack
+      case diverged StackModel.diverged
+      case not_diverged(stack)
+        StackModel.not_diverged(NonDivergedStack {
+          mapping = stack.mapping.copy(), size = stack.size
+        }.put_on_heap()),
+  }
+}
+fun join(builder: &SushiFlowBuilder, case_builders: Slice[SushiFlowBuilder]) {
+  var common_stack_size = none[Int]()
+  for case_ in case_builders do
+    if case_.stack is not_diverged(stack) then {
+      switch common_stack_size
+      case some(s) if s != stack.size then panic("inconsistent stack sizes")
+      case none common_stack_size = some(stack.size)
+    }
+
+  switch common_stack_size
+  case some(size) builder.stack.not_diverged.unwrap().size = size
+  case none builder.stack = StackModel.diverged
+}
+fun join(builder: &SushiFlowBuilder, inner_body: SushiFlowBuilder) {
+  switch inner_body.stack
+  case diverged builder.stack = StackModel.diverged
+  case not_diverged(stack) builder.stack.not_diverged.unwrap().size = stack.size
+}
+
+fun assert_8_bytes_aligned(builder: &SushiFlowBuilder) {
+  if not(builder.stack.not_diverged.unwrap().size.is_multiple_of(8)) then
+    panic("stack is not aligned to 8 bytes")
+}
+
+fun stack_size_changed(builder: &SushiFlowBuilder, diff: Int) {
+  var stack = builder.stack.not_diverged.unwrap()
+  stack.size = stack.size + diff
+}
+
+| Functions for all instructions.
+
+fun add_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.add_8)
+  builder.stack_size_changed(-8 -8 +8)
+}
+fun sub_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.sub_8)
+  builder.stack_size_changed(-8 -8 +8)
+}
+fun signed_mul_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.signed_mul_8)
+  builder.stack_size_changed(-8 -8 +8)
+}
+fun signed_div_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.signed_div_8)
+  builder.stack_size_changed(-8 -8 +8)
+}
+fun signed_mod_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.signed_mod_8)
+  builder.stack_size_changed(-8 -8 +8)
+}
+fun compare_zero_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.compare_zero_8)
+  builder.stack_size_changed(-8 +1)
+}
+fun and_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.and_8)
+  builder.stack_size_changed(-8 -8 +8)
+}
+fun or_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.or_8)
+  builder.stack_size_changed(-8 -8 +8)
+}
+fun xor_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.xor_8)
+  builder.stack_size_changed(-8 -8 +8)
+}
+fun lower_byte(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.lower_byte)
+  builder.stack_size_changed(-8 +1)
+}
+fun byte_to_int(builder: &SushiFlowBuilder) {
+  builder.push(SushiInstruction.byte_to_int)
+  builder.stack_size_changed(-1 +8)
+  builder.assert_8_bytes_aligned()
+}
+fun push_padding(builder: &SushiFlowBuilder, amount: Byte) {
+  if amount.to_int() == 0 then return {}
+  builder.push(SushiInstruction.push_padding(amount))
+  builder.stack_size_changed(amount.to_int())
+}
+fun push_1(builder: &SushiFlowBuilder, value: Byte) {
+  builder.push(SushiInstruction.push_1(value))
+  builder.stack_size_changed(1)
+}
+fun push_8(builder: &SushiFlowBuilder, value: Int) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.push_8(value))
+  builder.stack_size_changed(8)
+}
+fun push_1_from_stack(builder: &SushiFlowBuilder, start: Int) {
+  builder.push(SushiInstruction.push_1_from_stack(
+    builder.stack.not_diverged.unwrap().size - start - 1
+  ))
+  builder.stack_size_changed(1)
+}
+fun push_8_from_stack(builder: &SushiFlowBuilder, start: Int) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.push_8_from_stack(
+    builder.stack.not_diverged.unwrap().size - start - 8
+  ))
+  builder.stack_size_changed(8)
+}
+fun pop(builder: &SushiFlowBuilder, amount: Byte) {
+  if amount.to_int() == 0 then return {}
+  builder.push(SushiInstruction.pop(amount))
+  builder.stack_size_changed(0 - amount.to_int())
+}
+fun pop_below_top(builder: &SushiFlowBuilder, skip: Int, amount: Byte) {
+  if amount.to_int() == 0 then return {}
+  if skip == 0 then return builder.pop(amount)
+  builder.push(SushiInstruction.pop_below_top(tuple(skip, amount)))
+  builder.stack_size_changed(0 - amount.to_int())
+}
+fun malloc_8_aligned(builder: &SushiFlowBuilder) {
+  builder.push(SushiInstruction.malloc_8_aligned)
+  builder.stack_size_changed(-8 +8)
+  builder.assert_8_bytes_aligned()
+}
+fun free_8_aligned(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.free_8_aligned)
+  builder.stack_size_changed(-8 -8)
+}
+fun store_1(builder: &SushiFlowBuilder) {
+  builder.push(SushiInstruction.store_1)
+  builder.stack_size_changed(-1 -8)
+  builder.assert_8_bytes_aligned()
+}
+fun store_8(builder: &SushiFlowBuilder) {
+  builder.push(SushiInstruction.store_8)
+  builder.stack_size_changed(-8 -8)
+  builder.assert_8_bytes_aligned()
+}
+fun load_1(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.load_1)
+  builder.stack_size_changed(-8 +1)
+}
+fun load_8(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.load_8)
+  builder.stack_size_changed(-8 +8)
+}
+fun store_bytes(builder: &SushiFlowBuilder, bytes: Slice[Byte]) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.store_bytes(bytes))
+  builder.stack_size_changed(-8)
+}
+fun crash(builder: &SushiFlowBuilder) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.crash)
+  builder.stack = StackModel.diverged
+}
+fun jump(builder: &SushiFlowBuilder, target: SectionIndex) {
+  if builder.stack is diverged then panic("we have already diverged")
+  builder.push(SushiInstruction.jump(target))
+}
+fun jump_table(builder: &SushiFlowBuilder, targets: Slice[SectionIndex]) {
+  builder.push(SushiInstruction.jump_table(targets))
+  builder.stack_size_changed(-1)
+}
+fun jump_table(builder: &SushiFlowBuilder, num_targets: Int): Slice[SushiFlowBuilder] {
+  builder.stack_size_changed(-1)
+  var case_builders = list[SushiFlowBuilder]()
+  var case_sections = list[SectionIndex]()
+  for i in 0..num_targets do {
+    var case_builder = builder.split("case {i}")
+    case_builders.&.push(case_builder)
+    case_sections.&.push(case_builder.section.index)
+  }
+  builder.push(SushiInstruction.jump_table(case_sections.to_slice()))
+  case_builders.to_slice()
+}
+fun call(builder: &SushiFlowBuilder, section: SectionIndex, fun_stack_diff: Int) {
+  builder.push(SushiInstruction.call(section))
+  builder.stack_size_changed(fun_stack_diff)
+}
+fun push_indirect(builder: &SushiFlowBuilder, section: SectionIndex) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.push_indirect(section))
+  builder.stack_size_changed(8)
+}
+fun call_indirect(
+  builder: &SushiFlowBuilder, pop_amount: Byte, fun_stack_diff: Int
+) {
+  builder.assert_8_bytes_aligned()
+  builder.push(SushiInstruction.call_indirect(pop_amount))
+  builder.stack_size_changed(-8 - pop_amount.to_int() + fun_stack_diff)
+}
+fun return_(builder: &SushiFlowBuilder) {
+  builder.push(SushiInstruction.return_)
+  builder.stack = StackModel.diverged
+}
+fun unreachable(builder: &SushiFlowBuilder) {
+  builder.stack = StackModel.diverged
+}
+
+| Macro instructions that actually consist of multiple instructions
+
+fun push_padding(builder: &SushiFlowBuilder, amount: Int) {
+  loop if amount < 256 then break else {
+    builder.push_padding(255.lower_byte())
+    amount = amount -255
+  }
+  builder.push_padding(amount.lower_byte())
+}
+fun pop(builder: &SushiFlowBuilder, amount: Int) {
+  loop if amount < 256 then break else {
+    builder.pop(255.lower_byte())
+    amount = amount -255
+  }
+  builder.pop(amount.lower_byte())
+}
+fun pop_below_top(builder: &SushiFlowBuilder, skip: Int, amount: Int) {
+  loop if amount < 256 then break else {
+    builder.pop_below_top(skip, 255.lower_byte())
+    amount = amount -255
+  }
+  builder.pop_below_top(skip, amount.lower_byte())
+}
+
+fun align_to(builder: &SushiFlowBuilder, alignment: Int): Int {
+  var stack = builder.stack.not_diverged.unwrap()
+  var padding = stack.size.round_up_to_multiple_of(alignment) - stack.size
+  builder.push_padding(padding)
+  padding
+}
+
+fun copy_from_stack(builder: &SushiFlowBuilder, start: Int, size: Int) {
+  if start + size > builder.stack.not_diverged.unwrap().size then
+    panic(
+      "called copy_from_stack, but
+      ' {start} + {size} > {builder.stack.not_diverged.unwrap().size}"
+    )
+  var cursor = 0
+  | If possible, copy 8 bytes at once.
+  loop {
+    var can_copy_8_at_once = 
+      cursor +8 <= size
+      and (start +cursor).is_multiple_of(8)
+      and builder.stack.not_diverged.unwrap().size.is_multiple_of(8)
+    if can_copy_8_at_once then {
+      builder.push_8_from_stack(start +cursor)
+      cursor = cursor +8
+    } else break
+  }
+  loop if cursor == size then break else {
+    builder.push_1_from_stack(start +cursor)
+    cursor = cursor +1
+  }
+}
+
+fun copy_from_stack(builder: &SushiFlowBuilder, id: WaffleId, size: Int) {
+  builder.copy_from_stack(
+    builder.stack.not_diverged.unwrap().mapping.get(id), size
+  )
+}
+
+fun add_8(builder: &SushiFlowBuilder, immediate: Int) {
+  if immediate != 0 then {
+    builder.push_8(immediate)
+    builder.add_8()
+  }
+}

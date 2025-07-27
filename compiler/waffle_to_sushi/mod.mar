@@ -1,0 +1,317 @@
+import ../plum.mar
+import builder.mar
+
+fun to_sushi(waffle: Waffle): Sushi {
+  var builder = sushi_builder().&
+
+  var fun_builders = map[String, SushiSectionBuilder]()
+  for fun_ in waffle.funs do
+    fun_builders.&.put(fun_.key, builder.section(fun_.key))
+
+  var fun_sections = map[String, SectionIndex]()
+  for entry in fun_builders do fun_sections.&.put(entry.key, entry.value.index)
+
+  for fun_ in waffle.funs do {
+    fun_.value.compile(fun_builders.get(fun_.key), fun_sections)
+  }
+
+  builder.finish(fun_sections.get(waffle.entry_point))
+}
+
+fun compile(
+  fun_: WaffleFun, builder: SushiSectionBuilder, funs: Map[String, SectionIndex]
+) {
+  var builder = SushiFlowBuilder {
+    section = builder, stack = empty_stack_model()
+  }.&
+  fun_.body.compile(builder, funs, none[OngoingLoop]())
+  if builder.stack is not_diverged then builder.return_()
+  builder.finish()
+}
+
+struct OngoingLoop {
+  stack_size_at_body_start: Int, param_size: Int, section: SectionIndex
+}
+
+fun compile(
+  body: WaffleBody, builder: &SushiFlowBuilder, funs: Map[String, SectionIndex],
+  surrounding_loop: Maybe[OngoingLoop],
+) {
+  var stack_size_at_body_start = builder.stack.not_diverged.unwrap().size
+
+  for local in body.locals do {
+    | if builder.has_diverged then return {}
+    var expr = local.resolve()
+    builder.align_to(expr.alignment())
+    builder.mark(local)
+    expr.compile(builder, funs, surrounding_loop)
+    if builder.stack is not_diverged(stack) then {
+      var expected_size = stack.mapping.get(local) + expr.size()
+      if stack.size != expected_size then
+        panic("wrong stack size: expected {stack.mapping.get(local)} + {expr.size()}, is {stack.size}")
+    } else
+      panic("diverging expression is not last of body")
+  }
+
+  | if builder.has_diverged then return {}
+  builder.align_to(body.returns.alignment())
+  var locals_size =
+    builder.stack.not_diverged.unwrap().size - stack_size_at_body_start
+  body.returns.compile(builder, funs, surrounding_loop)
+
+  if builder.stack is not_diverged then
+    builder.pop_below_top(body.returns.size(), locals_size)
+}
+
+| Compiles an expression. Assumes that the stack is already aligned for the
+| expression.
+fun compile(
+  expr: WaffleExpr, builder: &SushiFlowBuilder, funs: Map[String, SectionIndex],
+  surrounding_loop: Maybe[OngoingLoop],
+) {
+  eprintln("Compiling {expr.debug()}")
+  {
+    var stack_size = builder.stack.not_diverged.unwrap().size
+    if not(stack_size.is_multiple_of(expr.alignment())) then
+      panic("stack not aligned for expr (stack size is {stack_size})")
+  }
+
+  switch expr
+  case param(param) builder.stack.not_diverged.unwrap().size.& += param.size
+  case padding(amount) builder.push_padding(amount)
+  case byte(byte) builder.push_1(byte)
+  case int(int) builder.push_8(int)
+  case local(local) builder.copy_from_stack(local, expr.size())
+  case aggregate(aggregate) {
+    for field in aggregate.iter().enumerate() do
+      field.item.compile(builder, funs, surrounding_loop)
+  }
+  case member(member) {
+    | Quite often, you see things like @0.0:8 in the Waffle – for example, if
+    | we have an aggregate representing the arguments of a function and we want
+    | to get a single argument, we extract that argument.
+    | Lowering this in a naive way (first lowering @0, then lowering the member
+    | access) leads to crazy amounts of copying: We copy the entire local
+    | aggregate to the top of the stack, just to then discard the majority to
+    | extract the field we want.
+    | So, here, we special-case that pattern.
+    if member.of.* is local(local) then {
+      builder.copy_from_stack(
+        builder.stack.not_diverged.unwrap().mapping.get(local) + member.offset,
+        expr.size(),
+      )
+    } else {
+      var padding = builder.align_to(member.of.alignment())
+      member.of.compile(builder, funs, surrounding_loop)
+      var amount_before_member = padding + member.offset
+      var amount_after_member  = member.of.size() - expr.size() - member.offset
+      builder.pop(amount_after_member)
+      builder.pop_below_top(expr.size(), amount_before_member)
+    }
+  }
+  case switch_(switch_) {
+    switch_.byte.compile(builder, funs, surrounding_loop)
+
+    var case_builders = builder.jump_table(switch_.cases.len)
+    var after_switch_builder = builder.split("after switch")
+
+    for i in 0..switch_.cases.len do {
+      var case_ = switch_.cases.get(i)
+      var builder = case_builders.get(i)
+      case_.compile(builder.&, funs, surrounding_loop)
+      if builder.stack is not_diverged then
+        builder.&.jump(after_switch_builder.section.index)
+      case_builders.&.set(i, builder)
+      builder.finish()
+    }
+
+    after_switch_builder.&.join(case_builders)
+    builder.finish()
+    builder.* = after_switch_builder
+  }
+  case call(call) {
+    var padding = builder.align_to(call.args.alignment())
+    call.args.compile(builder, funs, surrounding_loop)
+    builder.call(funs.get(call.function), 0 - call.args.size() + expr.size())
+    builder.pop_below_top(expr.size(), padding)
+  }
+  case call_indirect(call) {
+    var padding = builder.align_to(call.args.alignment())
+    call.args.compile(builder, funs, surrounding_loop)
+    var more_padding = builder.align_to(8)
+    call.function_ptr.compile(builder, funs, surrounding_loop)
+    var fun_stack_diff = 0
+      - call.args.size() | as well as the arguments
+      + expr.size()      | and pushes its result
+    builder.call_indirect(more_padding.lower_byte(), fun_stack_diff)
+    builder.pop_below_top(expr.size(), padding)
+  }
+  case function_ptr(signature) builder.push_indirect(funs.get(signature))
+  case add(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.add_8()
+  }
+  case subtract(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.sub_8()
+  }
+  case multiply(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.signed_mul_8()
+  }
+  case divide(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.signed_div_8()
+  }
+  case modulo(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.signed_mod_8()
+  }
+  case compare_zero(arg) {
+    var padding = builder.align_to(8)
+    arg.compile(builder, funs, surrounding_loop)
+    builder.compare_zero_8()
+    builder.pop_below_top(1, padding)
+  }
+  case and_(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.and_8()
+  }
+  case or_(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.or_8()
+  }
+  case xor(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.xor_8()
+  }
+  case lower_byte(arg) {
+    var padding = builder.align_to(8)
+    arg.compile(builder, funs, surrounding_loop)
+    builder.lower_byte()
+    builder.pop_below_top(1, padding)
+  }
+  case byte_to_int(arg) {
+    arg.compile(builder, funs, surrounding_loop)
+    builder.byte_to_int()
+  }
+  case malloc(size) {
+    size.compile(builder, funs, surrounding_loop)
+    builder.malloc_8_aligned()
+  }
+  case free(free) {
+    var padding = builder.align_to(8)
+    free.compile(builder, funs, surrounding_loop) | aggregate of pointer and size
+    builder.free_8_aligned()
+    builder.pop_below_top(8, padding)
+  }
+  case load(load) {
+    var padding = builder.align_to(8)
+    | Compute the pointer to be unboxed.
+    var ptr_start = builder.stack.not_diverged.unwrap().size
+    load.ptr.compile(builder, funs, surrounding_loop)
+
+    | Copy the data from the heap.
+    var data_start = ptr_start + 8
+    var cursor = 0
+    loop if cursor + 8 > load.size then break else {
+      builder.push_8_from_stack(ptr_start)
+      builder.push_8(cursor)
+      builder.add_8()
+      builder.load_8() | TODO: alignment
+      cursor = cursor + 8
+    }
+    loop if cursor == load.size then break else {
+      var padding = builder.align_to(8)
+      builder.push_8_from_stack(ptr_start)
+      builder.push_8(cursor)
+      builder.add_8()
+      builder.load_1()
+      builder.pop_below_top(1, padding)
+      cursor = cursor + 1
+    }
+    builder.pop_below_top(load.size, 8 + padding)
+  }
+  case store(store) {
+    | Compute the pointer.
+    var padding_before_ptr = builder.align_to(8)
+    var ptr_start = builder.stack.not_diverged.unwrap().size
+    store.ptr.compile(builder, funs, surrounding_loop)
+
+    | Compute the data to be boxed.
+    var data_start = ptr_start + 8
+    store.value.compile(builder, funs, surrounding_loop)
+
+    if store.value.size() == 1 then {
+      builder.store_1()
+    } else if store.value.size() == 8 then {
+      builder.store_8()
+    } else {
+      | Store data piece by piece.
+      var padding_before_work = builder.align_to(8)
+      var cursor = 0
+      loop if cursor + 8 > store.value.size() then break else {
+        builder.push_8_from_stack(ptr_start)
+        builder.add_8(cursor)
+        builder.push_8_from_stack(data_start + cursor)
+        builder.store_8()
+        cursor = cursor + 8
+      }
+      loop if cursor == store.value.size() then break else {
+        builder.push_8_from_stack(ptr_start)
+        builder.add_8(cursor)
+        builder.push_1_from_stack(data_start + cursor)
+        builder.store_1()
+        cursor = cursor + 1
+      }
+      builder.pop(
+        padding_before_ptr + 8 + store.value.size() + padding_before_work
+      )
+    }
+  }
+  case store_bytes(store) {
+    var padding_before_ptr = builder.align_to(8)
+    store.ptr.compile(builder, funs, surrounding_loop)
+    builder.store_bytes(store.bytes)
+    builder.pop(padding_before_ptr)
+  }
+  case crash(message) {
+    message.compile(builder, funs, surrounding_loop)
+    builder.crash()
+  }
+  case unreachable {
+    builder.unreachable()
+  }
+  case loop_(loop_) {
+    builder.mark(loop_.param)
+    loop_.initial.compile(builder, funs, surrounding_loop)
+    var body = builder.split("loop").&
+    var stack_size_at_body_start = body.stack.not_diverged.unwrap().size
+    builder.jump(body.section.index)
+    builder.finish()
+    loop_.body.compile(
+      body,
+      funs,
+      some(OngoingLoop {
+        stack_size_at_body_start,
+        param_size = loop_.param.resolve().param.unwrap().size,
+        section = body.section.index,
+      }),
+    )
+    var after_body = builder.split("after loop").&
+    body.jump(after_body.section.index)
+    after_body.join(body.*)
+    builder.* = after_body.*
+  }
+  case continue_(continue_) {
+    continue_.next.compile(builder, funs, surrounding_loop)
+    var loop_ = surrounding_loop.unwrap()
+    builder.pop_below_top(
+      loop_.param_size,
+      builder.stack.not_diverged.unwrap().size - loop_.stack_size_at_body_start,
+    )
+    builder.jump(loop_.section)
+    builder.finish()
+    builder.stack = StackModel.diverged
+  }
+}
