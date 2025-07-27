@@ -1,0 +1,131 @@
+import mod.mar
+
+fun definitely_diverges(expr: WaffleExpr): Bool {
+  switch expr
+  case param false
+  case padding false
+  case byte false
+  case int false
+  case local(id) id.resolve().definitely_diverges()
+  case aggregate false
+  case member false
+  case switch_(switch_) {
+    var all_diverge = true
+    for case_ in switch_.cases do
+      if not(case_.returns.definitely_diverges()) then all_diverge = false
+    all_diverge
+  }
+  case call false
+  case call_indirect false
+  case function_ptr false
+  case lower_byte false
+  case byte_to_int false
+  case add false
+  case subtract false
+  case multiply false
+  case divide false
+  case modulo false
+  case and_ false
+  case or_ false
+  case xor false
+  case compare_zero false
+  case malloc false
+  case free false
+  case load false
+  case store false
+  case store_bytes false
+  case crash true
+  case unreachable true
+  case loop_ false
+  case continue_ false
+}
+
+| Must not be called with a definitely diverging expression.
+fun size(expr: WaffleExpr): Int {
+  switch expr
+  case param(param) param.size
+  case padding(amount) amount
+  case byte 1
+  case int 8
+  case local(id) id.resolve().size()
+  case aggregate(parts) {
+    var size = 0
+    for part in parts do size = size + part.size()
+    size
+  }
+  case member(member) member.size
+  case switch_(switch_) {
+    for case_ in switch_.cases do
+      if not(case_.returns.definitely_diverges()) then
+        return case_.returns.size()
+    unreachable()
+  }
+  case call(call) call.size
+  case call_indirect(call) call.size
+  case function_ptr 8
+  case lower_byte 1
+  case byte_to_int 8
+  case add 8
+  case subtract 8
+  case multiply 8
+  case divide 8
+  case modulo 8
+  case and_ 8
+  case or_ 8
+  case xor 8
+  case compare_zero 1
+  case malloc 8
+  case free 0
+  case load(load) load.size
+  case store 0
+  case store_bytes 0
+  case crash unreachable()
+  case unreachable unreachable()
+  case loop_(loop_) loop_.body.returns.size()
+  case continue_(continue_) continue_.size
+}
+
+| Must not be called with a definitely diverging expression.
+fun alignment(expr: WaffleExpr): Int {
+  switch expr
+  case param(param) param.alignment
+  case padding 1
+  case byte 1
+  case int 8
+  case local(id) id.resolve().alignment()
+  case aggregate(parts) {
+    var alignment = 1
+    for part in parts do alignment = max(alignment, part.alignment())
+    alignment
+  }
+  case member(member) member.alignment
+  case switch_(switch_) {
+    for case_ in switch_.cases do
+      if not(case_.returns.definitely_diverges()) then
+        return case_.returns.alignment()
+    unreachable()
+  }
+  case call(call) call.alignment
+  case call_indirect(call) call.alignment
+  case function_ptr 8
+  case lower_byte 1
+  case byte_to_int 8
+  case add 8
+  case subtract 8
+  case multiply 8
+  case divide 8
+  case modulo 8
+  case and_ 8
+  case or_ 8
+  case xor 8
+  case compare_zero 1
+  case malloc 8
+  case free 1
+  case load(load) load.alignment
+  case store 1
+  case store_bytes 1
+  case crash unreachable()
+  case unreachable unreachable()
+  case loop_(loop_) loop_.body.returns.alignment()
+  case continue_(continue_) continue_.alignment
+}

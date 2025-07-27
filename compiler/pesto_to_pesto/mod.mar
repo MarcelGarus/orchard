@@ -1,0 +1,50 @@
+import ../plum.mar
+import tree_shake.mar
+
+fun optimize(pesto: Pesto): Pesto {
+  var funs = map[String, PestoFun]()
+  for fun_ in pesto.funs do {
+    var signature = fun_.key
+    var fun_ = fun_.value
+    eprintln("Optimizing {signature}")
+    var optimized = fun_.map(Optimize { optimized = funs.& })
+    eprintln("Optimized {signature}:")
+    stderr.write("optimized", optimized)
+    stderr."\n"
+    funs.&.put(signature, optimized)
+  }
+  Pesto { funs, entry_point = pesto.entry_point }.tree_shake()
+}
+
+struct Optimize { optimized: &Map[String, PestoFun] }
+fun map(
+  body: PestoBody, optimize: Optimize, mapping: &Map[PestoId, PestoId]
+): PestoBody {
+  var body = {
+    | Explicitly do not map the params. We try applying optimizations again and
+    | again until the expression doesn't change anymore. As params are compared
+    | using their identity, optimizing them as well would cause infinite
+    | recursion.
+    var builder = pesto_body_builder(body.param.type).&
+    mapping.put(body.param, builder.param)
+    for child in body.children do
+      mapping.put(child, child.optimize(optimize, builder, mapping))
+    builder.finish(body.returns.map(mapping))
+  }
+
+  body.tree_shake()
+}
+fun map(
+  old: PestoId,
+  optimize: Optimize, builder: &PestoBodyBuilder, mapping: &Map[PestoId, PestoId],
+): PestoId {
+  | eprintln("Optimizing {old.debug()} {old.resolve().debug()}")
+  | stderr."\n"
+  | stderr.write(old, namespace().&, indentation(1))
+  | stderr."\n"
+
+  switch old.resolve()
+  default {}
+
+  builder.push(id)
+}

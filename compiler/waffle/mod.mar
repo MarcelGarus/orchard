@@ -23,192 +23,84 @@
 |     1 -> {5:8 1:1}
 
 import ../plum.mar
+import builder.mar
+import dag.mar
+import format.mar
+import properties.mar
 import run.mar
 
 struct Waffle { entry_point: String, funs: Map[String, WaffleFun] }
 
-| Here, functions have explicit parameters. Instead, the local @0 represents the
-| parameters. @0 is guaranteed to exist and be on the stack when the function
-| starts executing.
-struct WaffleFun { dag: Dag[WaffleExpr], body: WaffleBody }
-struct WaffleBody { locals: Slice[Id], returns: WaffleExpr }
+| Here, functions have implicit parameters: The local @0 is guaranteed to exist
+| and contain the parameters when the function starts executing.
+struct WaffleFun { body: WaffleBody }
+struct WaffleBody { locals: Slice[WaffleId], returns: WaffleExpr }
 
-struct WaffleExpr { size: Int, alignment: Int, kind: WaffleExprKind }
-enum WaffleExprKind {
-  param,
-  padding: Int,
+struct WaffleId { id: Id }
+
+fun ==(a: WaffleId, b: WaffleId): Bool { a.id == b.id }
+fun hash[H](hasher: &H, id: WaffleId) { hasher.hash(id.id) }
+
+enum WaffleExpr {
+  param: WaffleParam,
+  padding: Int, | amount
+  local: WaffleId,
+
+  | byte stuff
   byte: Byte, | 8 bits
-  int: Int,  | 64 bits
-  local: Id,
-  aggregate: Slice[WaffleExpr],
-  member: WaffleMember,
-  switch_: WaffleSwitch,
-  | Call stuff
-  call: WaffleCall,
-  call_indirect: WaffleCallIndirect,
-  function_ptr: String,
-  | Byte/Int conversions
   lower_byte: &WaffleExpr,
   byte_to_int: &WaffleExpr,
-  | Arithmetics
+
+  | int stuff
+  int: Int,  | 64 bits
   add: &WaffleExpr,
-  sub: &WaffleExpr,
-  mul: &WaffleExpr,
-  div: &WaffleExpr,
-  mod: &WaffleExpr,
-  compare_zero: &WaffleExpr,
-  | Bitwise operations
+  subtract: &WaffleExpr,
+  multiply: &WaffleExpr,
+  divide: &WaffleExpr,
+  modulo: &WaffleExpr,
   and_: &WaffleExpr,
   or_: &WaffleExpr,
   xor: &WaffleExpr,
-  | Memory
+  compare_zero: &WaffleExpr,
+
+  | struct stuff
+  aggregate: Slice[WaffleExpr],
+  member: WaffleMember,
+
+  | enum stuff
+  switch_: WaffleSwitch,
+
+  | calls
+  call: WaffleCall,
+  call_indirect: WaffleCallIndirect,
+  function_ptr: String,
+
+  | memory stuff
   malloc: &WaffleExpr,
   free: &WaffleExpr,
-  load: &WaffleExpr,
+  load: WaffleLoad,
   store: WaffleStore,
   store_bytes: WaffleStoreBytes,
-  | Error
+
+  | diverging stuff
   crash: &WaffleExpr,
+  unreachable,
+
+  | loopy stuff
+  loop_: WaffleLoop,
+  continue_: WaffleContinue,
 }
-struct WaffleMember { of: &WaffleExpr, offset: Int }
+struct WaffleParam { size: Int, alignment: Int }
+struct WaffleMember { of: &WaffleExpr, offset: Int, size: Int, alignment: Int }
 struct WaffleSwitch { byte: &WaffleExpr, cases: Slice[WaffleBody] }
-struct WaffleCall { function: String, args: &WaffleExpr }
-struct WaffleCallIndirect { function_ptr: &WaffleExpr, args: &WaffleExpr }
+struct WaffleCall {
+  function: String, args: &WaffleExpr, size: Int, alignment: Int
+}
+struct WaffleCallIndirect {
+  function_ptr: &WaffleExpr, args: &WaffleExpr, size: Int, alignment: Int
+}
+struct WaffleLoad { ptr: &WaffleExpr, size: Int, alignment: Int }
 struct WaffleStore { ptr: &WaffleExpr, value: &WaffleExpr }
 struct WaffleStoreBytes { ptr: &WaffleExpr, bytes: Slice[Byte] }
-
-fun write[W](writer: W, waffle: Waffle) {
-  var first = true
-  for fun_ in waffle.funs do {
-    if first then first = false else writer."\n"
-
-    var signature = fun_.key
-    var fun_ = fun_.value
-
-    writer."{signature}:"
-    writer.write(fun_.body, fun_.dag, indentation(1))
-  }
-}
-fun write[W](
-  writer: W, body: WaffleBody, dag: Dag[WaffleExpr], indentation: Indentation
-) {
-  for id in body.locals do {
-    var expr = dag.get(id)
-    writer."\n{indentation}local {id}:{expr.size} =\n"
-    writer.write(expr, dag, indentation + 1)
-  }
-  writer."\n"
-  writer.write(body.returns, dag, indentation)
-}
-fun write[W](
-  writer: W, expr: WaffleExpr, dag: Dag[WaffleExpr], indentation: Indentation
-) {
-  writer."{indentation}"
-  switch expr.kind
-  case param writer."param"
-  case padding(amount) writer."padding:{amount}"
-  case byte(byte) writer."byte {byte}"
-  case int(int) writer."int {int}"
-  case local(id) writer."{id}"
-  case aggregate(aggregate) {
-    writer."aggregate"
-    for field in aggregate do {
-      writer."\n"
-      writer.write(field, dag, indentation + 1)
-    }
-  }
-  case member(member) {
-    writer."member at {member.offset}:{expr.size}\n"
-    writer.write(member.of.*, dag, indentation + 1)
-  }
-  case switch_(switch_) {
-    writer."switch\n"
-    writer.write(switch_.byte.*, dag, indentation + 1)
-    for case_ in switch_.cases.iter().enumerate() do {
-      writer."\n{indentation + 1}case {case_.index} ->"
-      writer.write(case_.item, dag, indentation + 2)
-    }
-  }
-  case call(call) {
-    writer."call \"{call.function}\"\n"
-    writer.write(call.args.*, dag, indentation + 1)
-  }
-  case call_indirect(call) {
-    writer."call_indirect\n"
-    writer.write(call.function_ptr.*, dag, indentation + 1)
-    writer."\n"
-    writer.write(call.args.*, dag, indentation + 1)
-  }
-  case function_ptr(signature) writer."function_ptr of \"{signature}\""
-  case add(ops) {
-    writer."add\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case sub(ops) {
-    writer."sub\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case mul(ops) {
-    writer."mul\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case div(ops) {
-    writer."div\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case mod(ops) {
-    writer."mod\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case compare_zero(op) {
-    writer."compare_zero\n"
-    writer.write(op.*, dag, indentation + 1)
-  }
-  case and_(ops) {
-    writer."and\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case or_(ops) {
-    writer."or\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case xor(ops) {
-    writer."xor\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case lower_byte(ops) {
-    writer."lower_byte\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case byte_to_int(ops) {
-    writer."byte_to_int\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-  case malloc(size) {
-    writer."malloc\n"
-    writer.write(size.*, dag, indentation + 1)
-  }
-  case free(ptr) {
-    writer."free\n"
-    writer.write(ptr.*, dag, indentation + 1)
-  }
-  case load(ptr) {
-    writer."load {expr.size}\n"
-    writer.write(ptr.*, dag, indentation + 1)
-  }
-  case store(store) {
-    writer."store\n"
-    writer.write(store.ptr.*, dag, indentation + 1)
-    writer."\n"
-    writer.write(store.value.*, dag, indentation + 1)
-  }
-  case store_bytes(store) {
-    writer."store_bytes\n"
-    writer.write(store.ptr.*, dag, indentation + 1)
-    writer."\n{indentation}{store.bytes}"
-  }
-  case crash(ops) {
-    writer."crash\n"
-    writer.write(ops.*, dag, indentation + 1)
-  }
-}
+struct WaffleLoop { param: WaffleId, initial: &WaffleExpr, body: &WaffleBody }
+struct WaffleContinue { next: &WaffleExpr, size: Int, alignment: Int }

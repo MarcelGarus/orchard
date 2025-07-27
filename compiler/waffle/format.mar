@@ -1,0 +1,171 @@
+import mod.mar
+
+fun write[W](writer: W, waffle: Waffle) {
+  var first = true
+  for fun_ in waffle.funs do {
+    if first then first = false else writer."\n"
+
+    var signature = fun_.key
+    var fun_ = fun_.value
+
+    writer."{pretty_signature_def(signature)}:"
+    writer.write(fun_.body, namespace().&, indentation(1))
+  }
+}
+
+fun pretty(id: WaffleId, namespace: &Namespace): _ {
+  PrettyWaffleId { id, namespace }
+}
+struct PrettyWaffleId { id: WaffleId, namespace: &Namespace }
+fun write[W](writer: W, pretty: PrettyWaffleId) {
+  writer."{pretty.namespace.get(pretty.id.id.index).styled(style_of_id)}"
+  | writer."{":{pretty.id.id.index}".styled(style_of_id)}"
+}
+
+fun styled_type(expr: WaffleExpr): _ {
+  if expr.definitely_diverges() then
+    "diverges".styled(style_of_type)
+  else
+    "{expr.size()}:{expr.alignment()}".styled(style_of_type)
+
+}
+
+fun write[W](
+  writer: W, body: WaffleBody, namespace: &Namespace, indentation: Indentation
+) {
+  for id in body.locals do {
+    var expr = id.resolve()
+    writer."\n{indentation}"
+    if expr.size() == 0 then writer."_" else writer."{pretty(id, namespace)}"
+    writer." {expr.styled_type()} =\n"
+    writer.write(expr, namespace, indentation + 1)
+  }
+  writer."\n"
+  writer.write(body.returns, namespace, indentation)
+}
+
+fun write[W](
+  writer: W, expr: WaffleExpr, namespace: &Namespace, indentation: Indentation
+) {
+  var type = expr.styled_type()
+  writer."{indentation}"
+  switch expr
+  case param writer."{pretty_op("param")} {type}"
+  case padding(amount) writer."{pretty_op("padding")} {type}"
+  case byte(byte) writer."{pretty_op("byte")} {byte} {type}"
+  case int(int) writer."{pretty_op("int")} {int} {type}"
+  case local(id) writer."{pretty(id, namespace)} {type}"
+  case aggregate(aggregate) {
+    writer."{pretty_op("aggregate")} {type}"
+    for field in aggregate do {
+      writer."\n"
+      writer.write(field, namespace, indentation + 1)
+    }
+  }
+  case member(member) {
+    writer."{pretty_op("member")} {type} at {member.offset}\n"
+    writer.write(member.of.*, namespace, indentation + 1)
+  }
+  case switch_(switch_) {
+    writer."{pretty_op("switch")} {type}\n"
+    writer.write(switch_.byte.*, namespace, indentation + 1)
+    for case_ in switch_.cases.iter().enumerate() do {
+      writer."\n{indentation + 1}case {case_.index} ->"
+      writer.write(case_.item, namespace, indentation + 2)
+    }
+  }
+  case call(call) {
+    writer."{pretty_op("call")} {pretty_signature(call.function)} {type}\n"
+    writer.write(call.args.*, namespace, indentation + 1)
+  }
+  case call_indirect(call) {
+    writer."{pretty_op("call indirect")} {type}\n"
+    writer.write(call.function_ptr.*, namespace, indentation + 1)
+    writer."\n"
+    writer.write(call.args.*, namespace, indentation + 1)
+  }
+  case function_ptr(signature)
+    writer."{pretty_op("function ptr")} {pretty_signature(signature)} {type}"
+  case add(ops) {
+    writer."{pretty_op("add")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case subtract(ops) {
+    writer."{pretty_op("subtract")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case multiply(ops) {
+    writer."{pretty_op("multiply")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case divide(ops) {
+    writer."{pretty_op("divide")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case modulo(ops) {
+    writer."{pretty_op("modulo")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case compare_zero(op) {
+    writer."{pretty_op("compare")} with zero {type}\n"
+    writer.write(op.*, namespace, indentation + 1)
+  }
+  case and_(ops) {
+    writer."{pretty_op("and")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case or_(ops) {
+    writer."{pretty_op("or")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case xor(ops) {
+    writer."{pretty_op("xor")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case lower_byte(ops) {
+    writer."{pretty_op("lower byte")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case byte_to_int(ops) {
+    writer."{pretty_op("byte to int")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case malloc(size) {
+    writer."{pretty_op("malloc")} {type}\n"
+    writer.write(size.*, namespace, indentation + 1)
+  }
+  case free(ptr) {
+    writer."{pretty_op("free")} {type}\n"
+    writer.write(ptr.*, namespace, indentation + 1)
+  }
+  case load(load) {
+    writer."{pretty_op("load")} {type}\n"
+    writer.write(load.ptr.*, namespace, indentation + 1)
+  }
+  case store(store) {
+    writer."{pretty_op("store")} {type}\n"
+    writer.write(store.ptr.*, namespace, indentation + 1)
+    writer."\n"
+    writer.write(store.value.*, namespace, indentation + 1)
+  }
+  case store_bytes(store) {
+    writer."{pretty_op("store bytes")} {type}\n"
+    writer.write(store.ptr.*, namespace, indentation + 1)
+    writer."\n{indentation + 1}{store.bytes}"
+  }
+  case crash(ops) {
+    writer."{pretty_op("crash")} {type}\n"
+    writer.write(ops.*, namespace, indentation + 1)
+  }
+  case unreachable writer."{pretty_op("unreachable")} {type}"
+  case loop_(loop_) {
+    writer."{pretty_op("loop")}\n{indentation + 1}initial value:\n"
+    writer.write(loop_.initial.*, namespace, indentation + 2)
+    writer."\n{indentation + 1} generator {pretty(loop_.param, namespace)}:\n"
+    writer.write(loop_.body.*, namespace, indentation + 2)
+  }
+  case continue_(continue_) {
+    writer."{pretty_op("continue")}\n"
+    writer.write(continue_.next.*, namespace, indentation + 1)
+  }
+}

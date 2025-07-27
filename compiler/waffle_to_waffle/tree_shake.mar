@@ -1,7 +1,7 @@
 import mod.mar
 
 fun is_pure(expr: WaffleExpr): Bool {
-  switch expr.kind
+  switch expr
   case param false
   case padding true
   case byte true
@@ -23,10 +23,10 @@ fun is_pure(expr: WaffleExpr): Bool {
   case lower_byte(arg)  arg.is_pure()
   case byte_to_int(arg) arg.is_pure()
   case add(args) args.is_pure()
-  case sub(args) args.is_pure()
-  case mul(args) args.is_pure()
-  case div(args) args.is_pure()
-  case mod(args) args.is_pure()
+  case subtract(args) args.is_pure()
+  case multiply(args) args.is_pure()
+  case divide(args) args.is_pure()
+  case modulo(args) args.is_pure()
   case compare_zero(arg) arg.is_pure()
   case and_(args) args.is_pure()
   case or_(args)  args.is_pure()
@@ -37,73 +37,83 @@ fun is_pure(expr: WaffleExpr): Bool {
   case store false
   case store_bytes false
   case crash false
+  case unreachable false
+  case loop_ false
+  case continue_ false
 }
 
-fun collect_referenced(expr: WaffleExpr, dag: Dag[WaffleExpr], out: &Set[Id]) {
-  switch expr.kind
+fun collect_referenced(expr: WaffleExpr, out: &Set[WaffleId]) {
+  switch expr
   case param {}
   case padding {}
   case byte {}
   case int {}
   case local(id) out.put(id)
   case aggregate(aggregate)
-    for part in aggregate do part.collect_referenced(dag, out)
-  case member(member) member.of.collect_referenced(dag, out)
+    for part in aggregate do part.collect_referenced(out)
+  case member(member) member.of.collect_referenced(out)
   case switch_(switch_) {
-    switch_.byte.collect_referenced(dag, out)
-    for case_ in switch_.cases do case_.collect_referenced(dag, out)
+    switch_.byte.collect_referenced(out)
+    for case_ in switch_.cases do case_.collect_referenced(out)
   }
-  case call(call) call.args.collect_referenced(dag, out)
+  case call(call) call.args.collect_referenced(out)
   case call_indirect(call) {
-    call.function_ptr.collect_referenced(dag, out)
-    call.args.collect_referenced(dag, out)
+    call.function_ptr.collect_referenced(out)
+    call.args.collect_referenced(out)
   }
   case function_ptr(signature) {}
-  case lower_byte(arg)  arg.collect_referenced(dag, out)
-  case byte_to_int(arg) arg.collect_referenced(dag, out)
-  case add(args) args.collect_referenced(dag, out)
-  case sub(args) args.collect_referenced(dag, out)
-  case mul(args) args.collect_referenced(dag, out)
-  case div(args) args.collect_referenced(dag, out)
-  case mod(args) args.collect_referenced(dag, out)
-  case compare_zero(arg) arg.collect_referenced(dag, out)
-  case and_(args) args.collect_referenced(dag, out)
-  case or_(args)  args.collect_referenced(dag, out)
-  case xor(args)  args.collect_referenced(dag, out)
-  case malloc(size) size.collect_referenced(dag, out)
-  case free(args) args.collect_referenced(dag, out)
-  case load(ptr) ptr.collect_referenced(dag, out)
+  case lower_byte(arg)  arg.collect_referenced(out)
+  case byte_to_int(arg) arg.collect_referenced(out)
+  case add(args) args.collect_referenced(out)
+  case subtract(args) args.collect_referenced(out)
+  case multiply(args) args.collect_referenced(out)
+  case divide(args) args.collect_referenced(out)
+  case modulo(args) args.collect_referenced(out)
+  case compare_zero(arg) arg.collect_referenced(out)
+  case and_(args) args.collect_referenced(out)
+  case or_(args)  args.collect_referenced(out)
+  case xor(args)  args.collect_referenced(out)
+  case malloc(size) size.collect_referenced(out)
+  case free(args) args.collect_referenced(out)
+  case load(load) load.ptr.collect_referenced(out)
   case store(store) {
-    store.ptr.collect_referenced(dag, out)
-    store.value.collect_referenced(dag, out)
+    store.ptr.collect_referenced(out)
+    store.value.collect_referenced(out)
   }
-  case store_bytes(store) store.ptr.collect_referenced(dag, out)
-  case crash(args) args.collect_referenced(dag, out)
+  case store_bytes(store) store.ptr.collect_referenced(out)
+  case crash(message) message.collect_referenced(out)
+  case unreachable {}
+  case loop_(loop_) {
+    loop_.initial.collect_referenced(out)
+    loop_.body.collect_referenced(out)
+  }
+  case continue_(continue_) continue_.next.collect_referenced(out)
 }
-fun collect_referenced(body: WaffleBody, dag: Dag[WaffleExpr], out: &Set[Id]) {
-  for local in body.locals do dag.get(local).collect_referenced(dag, out)
+fun collect_referenced(body: WaffleBody, out: &Set[WaffleId]) {
+  for local in body.locals do local.resolve().collect_referenced(out)
+  body.returns.collect_referenced(out)
 }
 
 | Tree shakes the body. Assumes that expressions within this body are already
 | optimized. This function is shallow, only removing unnecessary locals from the
 | current body (not inner bodies).
-fun tree_shake(body: WaffleBody, dag: Dag[WaffleExpr]): WaffleBody {
+fun tree_shake(body: WaffleBody): WaffleBody {
   | We go through the body from the bottom to the top, tracking which locals are
   | used referenced later in the body. This way, when we encounter an
   | expression, we know immediately whether we can throw it away.
-  var referenced_later_on = set[Id]()
-  body.returns.collect_referenced(dag, referenced_later_on.&)
+  var referenced_later_on = set[WaffleId]()
+  body.returns.collect_referenced(referenced_later_on.&)
 
-  var rev_locals = list[Id]()
+  var rev_locals = list[WaffleId]()
   for local in body.locals.rev_iter() do {
-    var expr = dag.get(local)
+    var expr = local.resolve()
 
     if not(referenced_later_on.contains(local)) and expr.is_pure() then continue
 
-    expr.collect_referenced(dag, referenced_later_on.&)
+    expr.collect_referenced(referenced_later_on.&)
     rev_locals.&.push(local)
   }
-  var locals = list[Id]()
+  var locals = list[WaffleId]()
   for id in rev_locals.to_slice().rev_iter() do locals.&.push(id)
 
   WaffleBody { locals = locals.to_slice(), returns = body.returns }
