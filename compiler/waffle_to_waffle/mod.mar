@@ -13,8 +13,8 @@ fun optimize(waffle: Waffle): Waffle {
 
 fun optimize(fun_: WaffleFun): WaffleFun {
   var mapping = map[WaffleId, WaffleId]()
-  var body = fun_.body.optimize()
-  WaffleFun { body } | .nest_param()
+  var body = fun_.body.optimize().nest_locals()
+  WaffleFun { body } .nest_param()
 }
 
 fun optimize(body: WaffleBody): WaffleBody {
@@ -37,8 +37,8 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
   case local(id) {
     var referenced = id.resolve()
     if referenced.is_cheap() then return referenced
-    if referenced.size() == 0 then
-      return waffle_aggregate(empty_slice[WaffleExpr]())
+    | if referenced.size() == 0 then
+    |   return waffle_aggregate(empty_slice[WaffleExpr]())
     expr
   }
   case lower_byte(arg) waffle_lower_byte(arg.optimize())
@@ -50,6 +50,8 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
         var a = parts.get(0)
         var b = parts.get(1)
         if a is int(a) then if b is int(b) then return waffle_int(a + b)
+        if a is int(a) then if a == 0 then return b
+        if b is int(b) then if b == 0 then return a
       }
     }
     waffle_add(args)
@@ -61,6 +63,7 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
         var a = parts.get(0)
         var b = parts.get(1)
         if a is int(a) then if b is int(b) then return waffle_int(a - b)
+        if b is int(b) then if b == 0 then return a
       }
     }
     waffle_subtract(args)
@@ -72,6 +75,8 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
         var a = parts.get(0)
         var b = parts.get(1)
         if a is int(a) then if b is int(b) then return waffle_int(a * b)
+        if a is int(a) then if a == 1 then return b
+        if b is int(b) then if b == 1 then return a
       }
     }
     waffle_multiply(args)
@@ -128,6 +133,11 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
       member.offset == 0 or panic("weird member")
       return of
     }
+    if of is member(inner) then {
+      return waffle_member(
+        inner.of.*, member.offset + inner.offset, member.size, member.alignment
+      ).optimize()
+    }
     waffle_member(of, member.offset, member.size, member.alignment)
   }
   case switch_(switch_) {
@@ -136,12 +146,7 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
     waffle_switch(switch_.byte.optimize(), cases.to_slice())
   }
   case call(call)
-    waffle_call(
-      call.function,
-      call.args.optimize(),
-      call.size,
-      call.alignment,
-    )
+    waffle_call(call.function, call.args.optimize(), call.size, call.alignment)
   case call_indirect(call)
     waffle_call_indirect(
       call.function_ptr.optimize(),
