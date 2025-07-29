@@ -22,10 +22,13 @@ fun compile(
   fun_: WaffleFun, builder: SushiSectionBuilder, funs: Map[String, SectionIndex]
 ) {
   var builder = SushiFlowBuilder {
-    section = builder, stack = empty_stack_model()
+    section = builder, stack = stack_model(fun_.param.size)
   }.&
   fun_.body.compile(builder, funs, none[OngoingLoop]())
-  if builder.stack is not_diverged then builder.return_()
+  if builder.stack is not_diverged then {
+    builder.pop_below_top(fun_.body.returns.size(), fun_.param.size)
+    builder.return_()
+  }
   builder.finish()
 }
 
@@ -69,7 +72,6 @@ fun compile(
   expr: WaffleExpr, builder: &SushiFlowBuilder, funs: Map[String, SectionIndex],
   surrounding_loop: Maybe[OngoingLoop],
 ) {
-  eprintln("Compiling {expr.debug()}")
   {
     var stack_size = builder.stack.not_diverged.unwrap().size
     if not(stack_size.is_multiple_of(expr.alignment())) then
@@ -300,7 +302,9 @@ fun compile(
     )
     var after_body = builder.split("after loop").&
     body.jump(after_body.section.index)
+    body.finish()
     after_body.join(body.*)
+    after_body.pop_below_top(loop_.body.returns.size(), loop_.initial.size())
     builder.* = after_body.*
   }
   case continue_(continue_) {
