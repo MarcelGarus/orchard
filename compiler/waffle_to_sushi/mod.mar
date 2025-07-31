@@ -22,11 +22,17 @@ fun compile(
   fun_: WaffleFun, builder: SushiSectionBuilder, funs: Map[String, SectionIndex]
 ) {
   var builder = SushiFlowBuilder {
-    section = builder, stack = stack_model(fun_.param.size)
+    section = builder, stack = stack_model(0)
   }.&
+
+  builder.mark(fun_.param)
+  var param_size = fun_.param.resolve().param.unwrap().size
+  builder.stack_size_changed(param_size)
+
   fun_.body.compile(builder, funs, none[OngoingLoop]())
+
   if builder.stack is not_diverged then {
-    builder.pop_below_top(fun_.body.returns.size(), fun_.param.size)
+    builder.pop_below_top(fun_.body.returns.size(), param_size)
     builder.return_()
   }
   builder.finish()
@@ -51,7 +57,8 @@ fun compile(
     if builder.stack is not_diverged(stack) then {
       var expected_size = stack.mapping.get(local) + expr.size()
       if stack.size != expected_size then
-        panic("wrong stack size: expected {stack.mapping.get(local)} + {expr.size()}, is {stack.size}")
+        panic("wrong stack size:
+          ' expected {stack.mapping.get(local)} + {expr.size()}, is {stack.size}")
     } else
       panic("diverging expression is not last of body")
   }
@@ -79,7 +86,7 @@ fun compile(
   }
 
   switch expr
-  case param(param) builder.stack.not_diverged.unwrap().size.& += param.size
+  case param unreachable()
   case padding(amount) builder.push_padding(amount)
   case byte(byte) builder.push_1(byte)
   case int(int) builder.push_8(int)
