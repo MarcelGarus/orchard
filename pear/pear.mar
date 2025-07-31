@@ -13,87 +13,132 @@ fun exit(status: Int, message: String): Never {
 | representation. For example, you just use special words such as @add for
 | builtins and expect the environment to swap these out with values before
 | executing.
+
 enum Value {
   number: Int,     | 2
-  word: String,    | foo
-  quoted: &Value,  | :foo
+  tag: String,     | :foo
+  builtin: String, | @add
   struct_: Struct, | (& x 2 y 3)
   lambda: Lambda,  | (\ (a b) (+ a b))
 }
 struct Struct { fields: Map[String, Value] }
-struct Lambda { env: Env, code: &Code }
+struct Lambda { env: &Env, params: Slice[String], body: &Code }
+
+enum Code {
+  value: Value,        | 2, :foo
+  word: String,        | foo
+  struct_: CodeStruct, | (& x 2 y 3)
+  lambda: CodeLambda,  | (\ a b (+ a b))
+  let: CodeLet,        | (let a 2 b a (& x a y b))
+  if_: CodeIf,         | (if :true 2 3)
+  apply: CodeApply,    | (a b c)
+}
+struct CodeStruct { fields: Map[String, Code] }
+struct CodeLambda { params: Slice[String], body: &Code }
+struct CodeLet { name: String, value: &Code, body: &Code }
+struct CodeIf { condition: &Code, then_: &Code, else_: &Code }
+struct CodeApply { what: &Code, args: Slice[Code] }
+
+struct Env { parent: Maybe[&Env], name: String, value: Value }
+
+var ansi_escape = AnsiEscape {}
+struct AnsiEscape {}
+fun write[W](writer: W, ansi_escape: AnsiEscape) {
+  writer.write_byte(27.lower_byte())
+}
+
+var style_of_type = "36"
+var style_of_black_hole = "40;37"
+
+fun styled[T](content: T, style: String): Styled[T] {
+  Styled { content, style }
+}
+struct Styled[T] { style: String, content: T }
+fun write[W, T](writer: W, styled: Styled[T]) {
+  writer."{ansi_escape}[{styled.style}m{styled.content}{ansi_escape}[0m"
+}
+
 
 fun write[W](writer: W, value: Value) {
   switch value
-  case number(number) writer."{number}"
-  case word(word) writer."{word}"
-  case quoted(quoted) writer.":{quoted}"
+  case number(number) writer."{number.styled("32")}"
+  case tag(tag) {
+    var str = ":{tag}"
+    writer."{str.styled("34")}"
+  }
   case struct_(struct_) {
-    if value.linked_list_to_slice() is some(slice) then {
-      writer."("
-      var first = true
-      for child in slice do {
-        if first then first = false else writer." "
-        writer."{child}"
-      }
-      writer.")"
-      return {}
-    }
     writer."(&"
     for field in struct_.fields do writer." {field.key} {field.value}"
     writer.")"
   }
-  | case lambda(lambda) {
-  |   writer."(\\"
-  |   for param in lambda.params do writer." {param}"
-  |   writer." {lambda.body})"
-  | }
-}
-
-| Linked Lists  
-|
-| Linked lists are values that adhere to a special structure:
-| 
-| - they are nil to indicate an empty list or
-| - they are a struct with these fields:
-|   - "car" containing the current item
-|   - "cdr" containing the rest of the list
-
-fun linked_list(items: Slice[Value]): Value {
-  if items.is_empty() then
-    Value.quoted(Value.word("nil").put_on_heap())
-  else
-    Value.struct_(Struct {
-      fields = map(
-        "car" -> items.first(), "cdr" -> linked_list(items.without_first())
-      )
-    })
-}
-
-fun linked_list_to_slice(value: Value): Maybe[Slice[Value]] {
-  var list = list[Value]()
-  value.linked_list_to_slice(list.&) or return none[Slice[Value]]()
-  some(list.to_slice())
-}
-fun linked_list_to_slice(
-  value: Value, out: &List[Value]
-): Result[Nothing, Nothing] {
-  switch value
-  case quoted(quoted)
-    if quoted.word.unwrap() != "nil" then return error[Nothing, Nothing]({})
-  case struct_(struct_) {
-    var car = struct_.fields.get_maybe("car") or return error[Nothing, Nothing]({})
-    var cdr = struct_.fields.get_maybe("cdr") or return error[Nothing, Nothing]({})
-    out.push(car)
-    cdr.linked_list_to_slice(out)?
+  case lambda(lambda) {
+    writer."(\\"
+    for param in lambda.params do writer." {param}"
+    writer." {lambda.body})"
   }
-  default return error[Nothing, Nothing]({})
-  ok[Nothing, Nothing]({})
+  case builtin(builtin) writer."@{builtin}"
 }
+
+fun write[W](writer: W, code: Code) {
+  switch code
+  case value(value) writer."{value}"
+  case word(word) writer."{word}"
+  case let(let) writer."({"let".styled("35")} {let.name} {let.value} {let.body})"
+  case struct_(struct_) {
+    writer."(&"
+    for field in struct_.fields do writer." {field.key} {field.value}"
+    writer.")"
+  }
+  case lambda(lambda) {
+    writer."(\\"
+    for param in lambda.params do writer." {param}"
+    writer." {lambda.body})"
+  }
+  case if_(if_) writer."({"if".styled("35")} {if_.condition} {if_.then_} {if_.else_})"
+  case apply(apply) {
+    writer."({apply.what.*}"
+    for arg in apply.args do writer." {arg}"
+    writer.")"
+  }
+}
+
+fun ==(a: Value, b: Value): Bool {
+  switch a
+  case number(a)  if b is number(b)  then a == b else false
+  case tag(a)     if b is tag(b)     then a == b else false
+  case builtin(a) if b is builtin(b) then a == b else false
+  case struct_(a) if b is struct_(b) then a == b else false
+  case lambda(a)  if b is lambda(b)  then a == b else false
+}
+fun ==(a: Struct, b: Struct): Bool { a.fields == b.fields }
+fun ==(a: Lambda, b: Lambda): Bool {
+  a.env.to_address() == b.env.to_address()
+    and a.params == b.params and a.body.* == b.body.*
+}
+
+fun ==(a: Code, b: Code): Bool {
+  switch a
+  case value(a) if b is value(b) then a == b else false
+  case word(a) if b is word(b) then a == b else false
+  case struct_(a) if b is struct_(b) then a == b else false
+  case lambda(a) if b is lambda(b) then a == b else false
+  case let(a) if b is let(b) then a == b else false
+  case if_(a) if b is if_(b) then a == b else false
+  case apply(a) if b is apply(b) then a == b else false
+}
+fun ==(a: CodeStruct, b: CodeStruct): Bool { a.fields == b.fields }
+fun ==(a: CodeLambda, b: CodeLambda): Bool { a.params == b.params and a.body.* == b.body.* }
+fun ==(a: CodeLet, b: CodeLet): Bool { a.name == b.name and a.value.* == b.value.* and a.body.* == b.body.* }
+fun ==(a: CodeIf, b: CodeIf): Bool { a.condition.* == b.condition.* and a.then_.* == b.then_.* and a.else_.* == b.else_.* }
+fun ==(a: CodeApply, b: CodeApply): Bool { a.what.* == b.what.* and a.args == b.args }
 
 | Parsing  
 |
-| Turning a string into a value.
+| Turning a string into code.
+
+fun parse(code: String): Code {
+  Parser { input = code, cursor = 0 }.&.parse().unwrap()
+}
 
 struct Parser { input: String, cursor: Int }
 
@@ -114,27 +159,22 @@ fun consume_whitespace(parser: &Parser) {
     parser.advance()
   }
 }
-
-fun parse(parser: &Parser): Maybe[Value] {
+fun parse_word(parser: &Parser): Maybe[String] {
+  var start = parser.cursor
+  loop {
+    if parser.is_at_end() then break
+    if parser.current() == #( or parser.current() == #)
+      or parser.current().is_whitespace() or parser.current() == ##
+    then break
+    parser.advance()
+  }
+  var end = parser.cursor
+  if start == end then none[String]() else some(parser.input.substr(start..end))
+}
+fun parse(parser: &Parser): Maybe[Code] {
   parser.consume_whitespace()
-  if parser.is_at_end() then return none[Value]()
-  if parser.current() == #) then return none[Value]()
-  | List
-  if parser.current() == #( then {
-    parser.advance()
-    var children = list[Value]()
-    loop children.&.push(parser.parse() or break)
-    if parser.is_at_end() then panic("list without closing paren")
-    parser.current() == #) or panic("expected closing paren")
-    parser.advance()
-    return some(linked_list(children.to_slice()))
-  }
-  | Quote
-  if parser.current() == #: then {
-    parser.advance()
-    var quoted = parser.parse() or panic("expected quoted value")
-    return some(Value.quoted(quoted.put_on_heap()))
-  }
+  if parser.is_at_end() then return none[Code]()
+  if parser.current() == #) then return none[Code]()
   | Number
   if parser.current().is_digit() then {
     var num = 0
@@ -144,68 +184,149 @@ fun parse(parser: &Parser): Maybe[Value] {
       parser.advance()
       if parser.is_at_end() then break
     }
-    return some(Value.number(num))
+    return some(Code.value(Value.number(num)))
+  }
+  | Tag
+  if parser.current() == #: then {
+    parser.advance()
+    var tag = parser.parse_word() or panic("expected tag")
+    return some(Code.value(Value.tag(tag)))
+  }
+  | Builtin
+  if parser.current() == #@ then {
+    parser.advance()
+    var builtin = parser.parse_word() or panic("expected builtin")
+    return some(Code.value(Value.builtin(builtin)))
   }
   | Word
-  var start = parser.cursor
-  loop {
+  if parser.parse_word() is some(word) then return some(Code.word(word))
+  | Stuff with parentheses
+  if parser.current() == #( then {
     parser.advance()
-    if parser.is_at_end() then break
-    if parser.current() == #( or parser.current() == #)
-      or parser.current().is_whitespace() or parser.current() == ##
-    then break
+    var children = list[Code]()
+    loop children.&.push(parser.parse() or break)
+    if parser.is_at_end() then panic("list without closing paren")
+    parser.current() == #) or panic("expected closing paren")
+    parser.advance()
+    var children = children.to_slice()
+    if children.is_empty() then panic("empty parens")
+    var first = children.first()
+    var rest = children.without_first()
+    | Struct
+    if first == Code.word("&") then {
+      var fields = map[String, Code]()
+      if rest.len % 2 == 1 then panic("invalid struct")
+      for i in 0..{rest.len / 2} do
+        fields.&.put(rest.get(2 * i).word.unwrap(), rest.get(2 * i))
+      return some(Code.struct_(CodeStruct { fields }))
+    }
+    | Lambda
+    if first == Code.word("\\") then {
+      var params = list[String]()
+      for param in rest.without_last() do params.&.push(param.word.unwrap())
+      return some(Code.lambda(CodeLambda {
+        params = params.to_slice(), body = children.last().put_on_heap()
+      }))
+    }
+    | Let
+    if first == Code.word("let") then {
+      if rest.len % 2 == 0 then panic("invalid let")
+      var result = rest.last()
+      rest = rest.without_last()
+      loop {
+        if rest.is_empty() then break
+        var name = rest.get(rest.len - 2).word.unwrap()
+        var value = rest.get(rest.len - 1)
+        rest = rest.without_last(2)
+        result = Code.let(CodeLet {
+          name, value = value.put_on_heap(), body = result.put_on_heap()
+        })
+      }
+      return some(result)
+    }
+    | If
+    if first == Code.word("if") then
+      return some(Code.if_(CodeIf {
+        condition = rest.get(0).put_on_heap(),
+        then_ = rest.get(1).put_on_heap(),
+        else_ = rest.get(2).put_on_heap(),
+      }))
+    | Apply
+    return some(Code.apply(CodeApply {
+      what = children.first().put_on_heap(), args = children.without_first()
+    }))
   }
-  var end = parser.cursor
-  if start == end then
-    none[Value]()
-  else
-    some(Value.word(parser.input.substr(start..end)))
+  none[Code]()
 }
 
-| Code  
-|
-| Code represents compiled code that can be executed.
-enum Code {
-  value: &Value,  | :foo
-  word: String, | foo
-  let: CodeLet, | (let a 2 b a (& x a y b))
-  struct_: CodeStruct, | (& x 2 y 3)
-  lambda: CodeLambda, | (\ a b (+ a b))
-  if_: CodeIf,
-  apply: CodeApply,  | (a b c)
-  builtin: CodeBuiltin,  | @add
+fun empty_env(): Env {
+  Env { parent = none[&Env](), name = "", value = Value.number(42) }
 }
-struct CodeLet { name: String, value: &Code, body: &Code }
-struct CodeStruct { fields: Slice[Tuple2[String, Code]] }
-struct CodeLambda { params: Slice[String], body: &Code }
-struct CodeIf { condition: &Code, then_: &Code, else_: &Code }
-struct CodeApply { what: &Code, args: Slice[Code] }
-enum CodeBuiltin { add, subtract, multiply, divide }
-
-struct Env { parent: Maybe[&Env], name: String, value: Value }
-fun lookup(env: Env, word: String): Value {
-  if env.name == word then env.value else env.parent.unwrap().lookup(word)
-}
-fun also(env: Env, name: String, value: Value): Env {
+fun bind(env: Env, name: String, value: Value): Env {
   Env { parent = some(env.put_on_heap()), name, value }
 }
+fun lookup(env: Env, name: String): Value {
+  if env.name == name then return env.value
+  if env.parent is some(parent) then return parent.lookup(name)
+  panic("{name} is not defined")
+}
+
+| fun fill(code: Code, name: String, value: Value): Code {
+|   switch code
+|   case value code
+|   case word(word) if word == name then Code.value(value) else code
+|   case let(let)
+|     if let.name == name then
+|       code
+|     else
+|       Code.let(CodeLet {
+|         name = let.name,
+|         value = let.value.fill(name, value),
+|         body = let.body.fill(name, value),
+|       })
+|   case struct_(struct_) {
+|     var fields = map[String, Code]()
+|     for field in struct_ do
+|       fields.&.put(field.key, field.value.fill(name, value))
+|     Code.struct_(fields)
+|   }
+|   case lambda(lambda) {
+|     for param in lambda.params do if param == name then return code
+|     Code.lambda(CodeLambda {
+|       params = lambda.params, body = lambda.body.fill(name, value)
+|     })
+|   }
+|   case if_(if_)
+|     Code.if_(CodeIf {
+|       condition = if_.condition.fill(name, value),
+|       then_ = if_.then_.fill(name, value),
+|       else_ = if_.else_.fill(name, value),
+|     })
+|   case apply(apply) {
+|     var args = list[Code]()
+|     for arg in apply.args do args.&.push(arg.fill(name, value))
+|     Code.apply(CodeApply { what = apply.what.fill(name, value), args = args.to_slice() })
+|   }
+| }
 
 fun eval(code: Code, env: Env): Value {
   switch code
-  case value(value) value.*
+  case value(value) value
   case word(word) env.lookup(word)
-  case let(let) let.body.eval(env.also(let.name, let.value.eval(env)))
+  case let(let) let.body.eval(env.bind(let.name, let.value.eval(env)))
   case struct_(struct_) {
     var fields = map[String, Value]()
-    for field in struct_ do
-      fields.&.put(field.a, field.b.eval(env))
+    for field in struct_.fields do
+      fields.&.put(field.key, field.value.eval(env))
     Value.struct_(Struct { fields })
   }
   case lambda(lambda) {
-    Value.lambda(Lambda { params = lambda.params, env, body = lambda.body })
+    Value.lambda(Lambda {
+      env = env.put_on_heap(), params = lambda.params, body = lambda.body
+    })
   }
   case if_(if_) {
-    var condition = if_.condition.eval(env).word.unwrap()
+    var condition = if_.condition.eval(env).tag.unwrap()
     if condition == "true" then
       if_.then_.eval(env)
     else if condition == "false" then
@@ -222,7 +343,7 @@ fun eval(code: Code, env: Env): Value {
     switch what
     case struct_(struct_) {
       args.len == 1 or panic("apply struct with {args.len} args")
-      var field = args.get(0).word.unwrap()
+      var field = args.get(0).tag.unwrap()
       struct_.fields.get(field)
     }
     case lambda(lambda) {
@@ -230,349 +351,30 @@ fun eval(code: Code, env: Env): Value {
       var body = lambda.body.*
       var env = env
       for both in zip(lambda.params.iter(), args.iter()) do
-        env = env.also(both.a, both.b)
+        env = env.bind(both.a, both.b)
       body.eval(env)
     }
     case builtin(builtin) {
-      switch builtin
-      case add {
+      if builtin == "add" then {
         args.len == 2 or panic("add needs 2 args")
-        Value.number(args.get(0).number.unwrap() + args.get(1).number.unwrap())
+        return Value.number(args.get(0).number.unwrap() + args.get(1).number.unwrap())
       }
-      case subtract {
+      if builtin == "subtract" then {
         args.len == 2 or panic("subtract needs 2 args")
-        Value.number(args.get(0).number.unwrap() - args.get(1).number.unwrap())
+        return Value.number(args.get(0).number.unwrap() - args.get(1).number.unwrap())
       }
-      case multiply {
+      if builtin == "multiply" then {
         args.len == 2 or panic("multiply needs 2 args")
-        Value.number(args.get(0).number.unwrap() * args.get(1).number.unwrap())
+        return Value.number(args.get(0).number.unwrap() * args.get(1).number.unwrap())
       }
-      case divide {
+      if builtin == "divide" then {
         args.len == 2 or panic("divide needs 2 args")
-        Value.number(args.get(0).number.unwrap() / args.get(1).number.unwrap())
+        return Value.number(args.get(0).number.unwrap() / args.get(1).number.unwrap())
       }
+      panic("unknown builtin {builtin}")
     }
+    default panic("invalid apply")
   }
-}
-
-fun compile(value: Value): Code {
-  eprintln("Compiling {value}")
-  switch value
-  case number Code.value(value.put_on_heap())
-  case word(word) panic("unbounded word {word.debug()}")
-  case quoted(quoted) Code.value(quoted)
-  case struct_ {
-    var slice = value.linked_list_to_slice() or panic("can't eval arbitrary struct")
-    var what = slice.first()
-    var args = slice.without_first()
-
-    switch what
-    case word(word) {
-      if word == "let" then {
-        args.len % 2 == 1 or panic("let with an even number of args")
-        var let = args.last().compile()
-        args = args.without_last()
-        loop {
-          if args.is_empty() then break
-          var name = args.get(args.len - 2).word.unwrap()
-          var value = args.get(args.len - 1).compile()
-          let = Code.let(CodeLet {
-            name, value = value.put_on_heap(), body = let.put_on_heap()
-          })
-          args = args.without_last(2)
-        }
-        return let
-      }
-      if word == "&" then {
-        var fields = map[String, Code]()
-        args.len % 2 == 0 or panic("struct with uneven number of args")
-        for i in 0..{args.len / 2} do {
-          var name  = args.get(i * 2).word.unwrap("expected struct field name")
-          var value = args.get(i * 2 + 1).compile()
-          fields.&.put(name, value)
-        }
-        return Code.struct_(CodeStruct { fields })
-      }
-      if word == "\\" then {
-        var params = list[String]()
-        for param in args.without_last() do params.&.push(param.word.unwrap())
-        var body = args.last()
-        return Code.lambda(CodeLambda {
-          params = params.to_slice(), body = body.compile().put_on_heap()
-        })
-      }
-      if word == "if" then {
-        args.len == 3 or panic("if with {args.len} args")
-        var condition = args.get(0).eval().word.unwrap()
-        return
-          if condition == "true" then
-            args.get(1).eval()
-          else if condition == "false" then
-            args.get(2).eval()
-          else
-            panic("condition is not a bool")
-      }
-      var compiled_args = list[Code]()
-      for arg in args do compiled_args.&.push(arg.compile())
-      return Code.apply(CodeApply { what, args = args.to_slice() })
-    }
-    case struct_(struct_) {
-      args.len == 1 or panic("apply struct with {args.len} args")
-      var field = args.get(0).word.unwrap()
-      struct_.fields.get(field)
-    }
-    | case lambda(lambda) {
-    | var args = list[Value]()
-    | for arg in slice.without_first() do args.&.push(arg.eval())
-    |   lambda.params.len == args.len
-    |   var body = lambda.body.*
-    |   for both in zip(lambda.params.iter(), args.iter()) do
-    |     body = body.fill(both.a, both.b)
-    |   body.eval()
-    | }
-    | case builtin(builtin) {
-    |   switch builtin
-    |   case add {
-    |     args.len == 2 or panic("add needs 2 args")
-    |     Value.number(args.get(0).number.unwrap() + args.get(1).number.unwrap())
-    |   }
-    |   case subtract {
-    |     args.len == 2 or panic("subtract needs 2 args")
-    |     Value.number(args.get(0).number.unwrap() - args.get(1).number.unwrap())
-    |   }
-    |   case multiply {
-    |     args.len == 2 or panic("multiply needs 2 args")
-    |     Value.number(args.get(0).number.unwrap() * args.get(1).number.unwrap())
-    |   }
-    |   case divide {
-    |     args.len == 2 or panic("divide needs 2 args")
-    |     Value.number(args.get(0).number.unwrap() / args.get(1).number.unwrap())
-    |   }
-    | }
-    | default panic("applying something weird: {what}")
-
-    | var fields = map[String, Value]()
-    | for field in struct_.fields do fields.&.put(field.key, field.value.eval())
-    | Value.struct_(fields)
-  }
-}
-
-
-
-| fun parse_code(tree: Tree): Value {
-|   switch tree
-|   case inner(children) {
-|     var first = children.first()
-|     var args = children.without_first()
-|     if first is leaf(name) then {
-|       if name == ":" then {
-|         args.len == 3 or panic("def with {args.len} args")
-|         var name = args.get(0).leaf.unwrap("def needs a name")
-|         var value = args.get(1).parse_code()
-|         var body = args.get(2).parse_code()
-|         return Value.def(Def {
-|           name, value = value.put_on_heap(), body = body.put_on_heap()
-|         })
-|       }
-|       if name == "\\" then {
-|         var body = args.last().parse_code()
-|         var params = list[String]()
-|         for param in args.without_last() do params.&.push(param.leaf.unwrap())
-|         return Value.lambda(Lambda { params = params.to_slice(), body = body.put_on_heap() })
-|       }
-|     }
-|     var lowered_args = list[Value]()
-|     for arg in args do lowered_args.&.push(arg.parse_code())
-|     Value.apply(Apply { what = first.parse_code().put_on_heap(), args = lowered_args.to_slice() })
-|   }
-| }
-
-fun parse(string: String): Value {
-  var value = Parser { input = string, cursor = 0 }.&.parse() or panic("no value")
-  | eprintln("value: {value.debug()}")
-  | value.parse_code()
-  value
-}
-
-fun fill(original: Value, name: String, value: Value): Value {
-  eprintln("  Filling {original} with {name} = {value}")
-  switch original
-  case number original
-  case word(word) if word == name then value else original
-  case quoted original
-  | case def(def)
-  |   if def.name == name then
-  |     original
-  |   else
-  |     Value.def(Def {
-  |       name = def.name,
-  |       value = def.value.fill(name, value).put_on_heap(),
-  |       body = def.body.fill(name, value).put_on_heap(),
-  |     })
-  case struct_(struct_) {
-    var slice = value.linked_list_to_slice() or panic("can't eval arbitrary struct")
-    var what = slice.first()
-    var args = slice.without_first()
-
-    switch what
-    case word(word) {
-      if word == "let" then {
-        args.len % 2 == 1 or panic("let with an even number of args")
-        loop {
-          if args.len == 1 then return args.get(0).eval()
-          var name = args.get(0).word.unwrap()
-          var value = args.get(1).eval()
-          for i in 0..{args.len / 2} do {
-            var index = i * 2 + 1
-            args.&.set(index, args.get(index).fill(name, value))
-          }
-          args.&.last_ref().* = args.last().fill(name, value)
-          args = args.without_first(2)
-        }
-      }
-      if word == "&" then {
-        var fields = map[String, Value]()
-        args.len % 2 == 0 or panic("struct with uneven number of args")
-        for i in 0..{args.len / 2} do {
-          var name  = args.get(i * 2).word.unwrap("expected struct field name")
-          var value = args.get(i * 2 + 1).eval()
-          fields.&.put(name, value)
-        }
-        return Value.struct_(Struct { fields })
-      }
-      if word == "\\" then todo("lambda")
-      if word == "if" then {
-        args.len == 3 or panic("if with {args.len} args")
-        var condition = args.get(0).eval().word.unwrap()
-        return
-          if condition == "true" then
-            args.get(1).eval()
-          else if condition == "false" then
-            args.get(2).eval()
-          else
-            panic("condition is not a bool")
-      }
-      panic("unbounded word {word.debug()}")
-    }
-    case struct_(struct_) {
-      args.len == 1 or panic("apply struct with {args.len} args")
-      var field = args.get(0).word.unwrap()
-      struct_.fields.get(field)
-    }
-    default panic("invalid code")
-
-    | var fields = map[String, Value]()
-    | for field in struct_.fields do
-    |   fields.&.put(field.key, field.value.fill(name, value))
-    | Value.struct_(Struct { fields })
-  }
-  | case lambda(lambda) {
-  |   for param in lambda.params do if param == name then return original
-  |   Value.lambda(Lambda {
-  |     params = lambda.params, body = lambda.body.fill(name, value).put_on_heap()
-  |   })
-  | }
-  | case apply(apply) {
-  |   var args = list[Value]()
-  |   for arg in apply.args do args.&.push(arg.fill(name, value))
-  |   Value.apply(Apply {
-  |     what = apply.what.fill(name, value).put_on_heap(), args = args.to_slice()
-  |   })
-  | }
-}
-
-fun eval(value: Value): Value {
-  eprintln("Evaluating {value}")
-  switch value
-  case number(number) Value.number(number)
-  case word(word) panic("unbounded word {word.debug()}")
-  case quoted(quoted) quoted.*
-  | case def(def) def.body.fill(def.name, def.value.eval()).eval()
-  case struct_ {
-    var slice = value.linked_list_to_slice() or panic("can't eval arbitrary struct")
-    var what = slice.first()
-    var args = slice.without_first()
-
-    switch what
-    case word(word) {
-      if word == "let" then {
-        args.len % 2 == 1 or panic("let with an even number of args")
-        loop {
-          if args.len == 1 then return args.get(0).eval()
-          var name = args.get(0).word.unwrap()
-          var value = args.get(1).eval()
-          for i in 0..{args.len / 2} do {
-            var index = i * 2 + 1
-            args.&.set(index, args.get(index).fill(name, value))
-          }
-          args.&.last_ref().* = args.last().fill(name, value)
-          args = args.without_first(2)
-        }
-      }
-      if word == "&" then {
-        var fields = map[String, Value]()
-        args.len % 2 == 0 or panic("struct with uneven number of args")
-        for i in 0..{args.len / 2} do {
-          var name  = args.get(i * 2).word.unwrap("expected struct field name")
-          var value = args.get(i * 2 + 1).eval()
-          fields.&.put(name, value)
-        }
-        return Value.struct_(Struct { fields })
-      }
-      if word == "\\" then todo("lambda")
-      if word == "if" then {
-        args.len == 3 or panic("if with {args.len} args")
-        var condition = args.get(0).eval().word.unwrap()
-        return
-          if condition == "true" then
-            args.get(1).eval()
-          else if condition == "false" then
-            args.get(2).eval()
-          else
-            panic("condition is not a bool")
-      }
-      panic("unbounded word {word.debug()}")
-    }
-    case struct_(struct_) {
-      args.len == 1 or panic("apply struct with {args.len} args")
-      var field = args.get(0).word.unwrap()
-      struct_.fields.get(field)
-    }
-    | case lambda(lambda) {
-    | var args = list[Value]()
-    | for arg in slice.without_first() do args.&.push(arg.eval())
-    |   lambda.params.len == args.len
-    |   var body = lambda.body.*
-    |   for both in zip(lambda.params.iter(), args.iter()) do
-    |     body = body.fill(both.a, both.b)
-    |   body.eval()
-    | }
-    | case builtin(builtin) {
-    |   switch builtin
-    |   case add {
-    |     args.len == 2 or panic("add needs 2 args")
-    |     Value.number(args.get(0).number.unwrap() + args.get(1).number.unwrap())
-    |   }
-    |   case subtract {
-    |     args.len == 2 or panic("subtract needs 2 args")
-    |     Value.number(args.get(0).number.unwrap() - args.get(1).number.unwrap())
-    |   }
-    |   case multiply {
-    |     args.len == 2 or panic("multiply needs 2 args")
-    |     Value.number(args.get(0).number.unwrap() * args.get(1).number.unwrap())
-    |   }
-    |   case divide {
-    |     args.len == 2 or panic("divide needs 2 args")
-    |     Value.number(args.get(0).number.unwrap() / args.get(1).number.unwrap())
-    |   }
-    | }
-    default panic("applying something weird: {what}")
-
-    | var fields = map[String, Value]()
-    | for field in struct_.fields do fields.&.put(field.key, field.value.eval())
-    | Value.struct_(fields)
-  }
-  | case lambda(lambda) Value.lambda(lambda)
 }
 
 fun eval_file(path: String): Value {
@@ -581,7 +383,7 @@ fun eval_file(path: String): Value {
   eprintln("{content.bytes().len} bytes of content")
   var code = content.parse()
   eprintln("code: {code}")
-  code.eval()
+  code.eval(empty_env())
   | todo("eval")
   | code.fill(
   |   "builtins",
@@ -598,7 +400,7 @@ fun main(): Never {
   eprintln("Welcome to the Pear interpreterssss!")
 
   var args = get_process_args()
-  var path = "pear/pear.pear" | args.get_maybe(1) or exit(1, "You didn't specify a file.\n")
+  var path = "pear.pear" | args.get_maybe(1) or exit(1, "You didn't specify a file.\n")
   var result = eval_file(path)
   eprintln("{result}")
 
