@@ -1,0 +1,302 @@
+import ../mod.mar
+import dup_drop_free.mar
+
+fun mem_layout_high_level(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  for fun_ in egg.funs do {
+    | eprintln("mem_layout_high_level {fun_.key}")
+    funs.&.put(fun_.key, fun_.value.mem_layout_high_level(funs.&))
+  }
+  Egg { entry_point = egg.entry_point }
+}
+
+fun mem_layout_high_level(fun_: EggFun): EggFun {
+  | TODO: Turn this into a separate pass?
+  | From now on, functions accept a struct containing all arguments. So here,
+  | we build a type for that.
+  | var param_type = {
+  |   var param_types = map[String, EggType]()
+  |   for param in fun_.body.params.iter().enumerate() do
+  |     param_types.&.put("{param.index}", param.item.resolve().type)
+  |   type_struct(param_types)
+  | }
+
+  var builder = pesto_body_builder(param_type).&
+  var mapping = map[EggId, EggId]().&
+  for param in fun_.body.params.iter().enumerate() do
+    mapping.put(param.item, builder.member(builder.param, "{param.index}"))
+  var body = builder.finish(fun_.body.map(MemLayoutHighLevel {}, builder, mapping))
+
+  EggFun { body }
+}
+
+struct MemLayoutHighLevel {}
+
+| Converts a body to Egg. Assumes that mappings for the parameters have
+| already been added.
+| fun map(
+|   body: EggBody,
+|   layout: MemLayoutHighLevel,
+|   builder: &EggBodyBuilder,
+|   mapping: &Map[EggId, EggId],
+| ): EggId {
+|   for id in body.children do
+|     mapping.put(id, id.map(layout, builder, mapping))
+|   mapping.get(body.returns)
+| }
+
+fun map(
+  id: EggId,
+  layout: MemLayoutHighLevel,
+  builder: &EggBodyBuilder,
+  mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.resolve()
+
+  switch expr
+  case param unreachable()
+  | case dup(value) builder.dup(mapping.get(value), value.resolve().type)
+  | case drop(value) builder.drop(mapping.get(value), value.resolve().type)
+  case enum_(enum_) {
+    var payload = mapping.get(enum_.payload)
+    if type.enum_.unwrap().get(enum_.variant).is_unboxed_recursive() then
+      payload = builder.new(payload)
+    builder.enum_(enum_.variant, payload, enum_.type)
+  }
+  case switch_(switch_) {
+    var condition = mapping.get(switch_.condition)
+    var cases = map[String, PestoBody]()
+    for case_ in switch_.cases do {
+      var variant = case_.key
+      var case_ = case_.value
+      var builder = egg_body_builder().&
+
+      var payload_type = condition.resolve().type.enum_.unwrap().get(variant)
+      var payload = builder.param(payload_type)
+      if payload_type.is_unboxed_recursive() then
+        payload = builder.load(payload, payload_type)
+      mapping.put(case_.params.get(0), payload)
+
+      var body = builder.finish(case_.map(layout, builder, mapping))
+      cases.&.put(variant, body)
+    }
+    builder.switch_(condition, cases)
+  }
+  | case lambda(lambda) {
+  |   var closure_ptr = mapping.get(lambda.closure)
+  |   var lambda_body_fun_ptr = builder.function_ptr(lambda.function)
+  |   var free_fun_ptr = builder.function_ptr(
+  |     compile_free_closure_fun(
+  |       lambda.closure.resolve().type.kind().box.unwrap()
+  |     )
+  |   )
+  |   builder.struct_(map(
+  |     "closure" -> closure_ptr,
+  |     "body" -> lambda_body_fun_ptr,
+  |     "free" -> free_fun_ptr,
+  |   ))
+  | }
+  | case call_fun(call) {
+  |   var args = map[String, EggId]()
+  |   for arg in call.args.iter().enumerate() do
+  |     args.&.put("{arg.index}", mapping.get(arg.item))
+  |   var args = builder.struct_(args)
+
+  |   builder.call(call.fun_, args, type)
+  | }
+  | case call_lambda(call) {
+  |   var lambda = mapping.get(call.lambda)
+  |   var closure_ptr = builder.member(lambda, "closure")
+  |   var body_ptr = builder.member(lambda, "body")
+
+  |   var args = map[String, EggId]()
+  |   for arg in call.args.iter().enumerate() do
+  |     args.&.put("{arg.index}", mapping.get(arg.item))
+  |   args.&.put("{call.args.len}", closure_ptr)
+  |   var args = builder.struct_(args)
+
+  |   builder.call_indirect(body_ptr, args, type)
+  | }
+  | case unbox(box) {
+  |   var box_type = box.resolve().type
+  |   var inner_type = box_type.kind().box.unwrap()
+  |   var inner = builder.load(mapping.get(box), inner_type.mem_layout_high_level())
+  |   builder.dup(inner, inner_type)
+  |   builder.drop(mapping.get(box), box_type)
+  |   inner
+  | }
+  | case array(items) {
+  |   | Special case byte arrays.
+  |   var all_bytes = true
+  |   for item in items do
+  |     if not(item.resolve().op is byte) then all_bytes = false
+  |   if all_bytes then {
+  |     var buffer = builder.new_buffer(PestoType.byte, builder.int(items.len))
+  |     var bytes = list[Byte]()
+  |     for byte in items do bytes.&.push(byte.resolve().op.byte.unwrap())
+  |     builder.store_buffer_bytes(buffer, bytes.to_slice())
+  |     return builder.struct_(map(
+  |       "buffer" -> buffer,
+  |       "start" -> builder.int(0),
+  |       "end" -> builder.int(items.len),
+  |     ))
+  |   }
+    
+  |   var item_type = expr.type.kind().array.unwrap()
+  |   var buffer = builder.new_buffer(
+  |     item_type.mem_layout_high_level(), builder.int(items.len)
+  |   )
+  |   for item in items.iter().enumerate() do
+  |     builder.store_buffer_item(
+  |       buffer, builder.int(item.index), mapping.get(item.item)
+  |     )
+  |   builder.struct_(map(
+  |     "buffer" -> buffer,
+  |     "start" -> builder.int(0),
+  |     "end" -> builder.int(items.len),
+  |   ))
+  | }
+  | case generate_array(gen) {
+  |   var length = mapping.get(gen.length)
+  |   var item_type = gen.generator.returns.resolve().type
+  |   var buffer = builder.new_buffer(item_type.mem_layout_high_level(), length)
+  |   builder.loop_(builder.int(0), {
+  |     var builder = pesto_body_builder(PestoType.int).&
+  |     var cursor = builder.param
+  |     builder.finish(builder.switch_(builder.compare(cursor, length), map(
+  |       "less" -> {
+  |         var builder = pesto_body_builder(pesto_nothing_type).&
+  |         mapping.put(gen.generator.params.get(0), cursor)
+  |         var item = gen.generator.mem_layout_high_level(builder, mapping)
+  |         builder.store_buffer_item(buffer, cursor, item)
+  |         builder.finish(
+  |           builder.continue_(
+  |             builder.add(cursor, builder.int(1)), pesto_nothing_type
+  |           )
+  |         )
+  |       },
+  |       "equal" ->
+  |         pesto_body_builder(pesto_nothing_type).finish_with_nothing(),
+  |       "greater" ->
+  |         pesto_body_builder(pesto_nothing_type)
+  |           .finish_with_unreachable(pesto_nothing_type),
+  |     )))
+  |   })
+  |   builder.struct_(map(
+  |     "buffer" -> buffer,
+  |     "start" -> builder.int(0),
+  |     "end" -> length,
+  |   ))
+  | }
+  | case array_len(array) {
+  |   var array_type = array.resolve().type
+  |   var array = mapping.get(array)
+  |   var length = builder.subtract(
+  |     builder.member(array, "end"),
+  |     builder.member(array, "start"),
+  |   )
+  |   builder.drop(array, array_type)
+  |   return length
+  | }
+  | case array_get(args) {
+  |   var array_type = args.a.resolve().type
+  |   var item_type = array_type.kind().array.unwrap()
+  |   var array = mapping.get(args.a)
+  |   var index = mapping.get(args.b)
+  |   var item = builder.load_buffer_item(
+  |     builder.member(array, "buffer"),
+  |     type,
+  |     builder.add(builder.member(array, "start"), index),
+  |   )
+  |   builder.dup(item, item_type)
+  |   builder.drop(array, array_type)
+  |   item
+  | }
+  | case array_set(args) {
+  |   var item_type = args.a.resolve().type.kind().array.unwrap()
+  |   var array = mapping.get(args.a)
+  |   var index = mapping.get(args.b)
+  |   var item = mapping.get(args.c)
+  |   var buffer = builder.member(array, "buffer")
+  |   var start = builder.member(array, "start")
+  |   var end = builder.member(array, "end")
+
+  |   | If the buffer's reference count is 1, we have exclusive ownership and can
+  |   | mutate the buffer in place. Otherwise, we copy the part of the buffer that
+  |   | this array points to, and then we set the item in that copy.
+  |   var owned_array = builder.switch_(
+  |     builder.compare(builder.get_refcount(buffer), builder.int(1)),
+  |     map(
+  |       "less" ->
+  |         pesto_body_builder(pesto_nothing_type)
+  |           .finish_with_unreachable(pesto_array_type),
+  |       "equal" ->
+  |         pesto_body_builder(pesto_nothing_type).finish(array),
+  |       "greater" -> {
+  |         var builder = pesto_body_builder(pesto_nothing_type).&
+  |         var length = builder.subtract(end, start)
+  |         var copy = builder.new_buffer(item_type.mem_layout_high_level(), length)
+  |         builder.decrement_refcount(buffer)
+  |         builder.loop_(builder.int(0), {
+  |           var builder = pesto_body_builder(PestoType.int).&
+  |           var cursor = builder.param
+  |           builder.finish(builder.switch_(
+  |             builder.compare(cursor, length),
+  |             map(
+  |               "less" -> {
+  |                 var builder = pesto_body_builder(pesto_nothing_type).&
+  |                 var item = builder.load_buffer_item(
+  |                   buffer, item_type.mem_layout_high_level(), builder.add(start, cursor)
+  |                 )
+  |                 builder.store_buffer_item(copy, cursor, item)
+  |                 builder.finish(builder.continue_(
+  |                   builder.add(cursor, builder.int(1)), PestoType.ptr
+  |                 ))
+  |               },
+  |               "equal" ->
+  |                 pesto_body_builder(pesto_nothing_type).finish(copy),
+  |               "greater" ->
+  |                 pesto_body_builder(pesto_nothing_type)
+  |                   .finish_with_unreachable(PestoType.ptr),
+  |             )
+  |           ))
+  |         })
+  |         builder.finish(builder.struct_(map(
+  |           "buffer" -> copy,
+  |           "start" -> builder.int(0),
+  |           "length" -> length,
+  |         )))
+  |       },
+  |     ),
+  |   )
+
+  |   var offset = builder.add(start, index)
+  |   var previous = builder.load_buffer_item(
+  |     buffer, item_type.mem_layout_high_level(), offset
+  |   )
+  |   builder.drop(previous, item_type)
+  |   builder.store_buffer_item(buffer, offset, item)
+  |   owned_array
+  | }
+  | case array_slice(args) {
+  |   var array = mapping.get(args.a)
+  |   var start = mapping.get(args.b)
+  |   var end = mapping.get(args.c)
+  |   var old_start = builder.member(array, "start")
+  |   builder.struct_(map(
+  |     "buffer" -> builder.member(array, "buffer"),
+  |     "start" -> builder.add(old_start, start),
+  |     "end" -> builder.add(old_start, end),
+  |   ))
+  | }
+  | case type builder.nothing()
+  default {
+    id.map_children(builder, mapping)
+  }
+}
+
+fun get(
+  mapping: Map[EggId, EggId], tuple: Tuple2[EggId, EggId]
+): Tuple2[EggId, EggId] {
+  tuple(mapping.get(tuple.a), mapping.get(tuple.b))
+}
