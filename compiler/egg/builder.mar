@@ -282,44 +282,67 @@ fun continue_(
 }
 
 fun dup(builder: &EggBodyBuilder, id: EggId): EggId {
-  builder.push(EggExpr.dup(id))
+  builder.push(EggExpr.dup(EggDup { id, type = id.type() }))
 }
 
 fun drop(builder: &EggBodyBuilder, id: EggId): EggId {
-  builder.push(EggExpr.drop(id))
+  builder.push(EggExpr.drop(EggDrop { id, type = id.type() }))
 }
 
-fun function_ptr(signature: String): EggId {
+fun function_ptr(builder: &EggBodyBuilder, signature: String): EggId {
   builder.push(EggExpr.function_ptr(signature))
 }
 
-fun new(value: EggId): EggId { builder.push(EggExpr.new(value)) }
+fun call_indirect(
+  builder: &EggBodyBuilder,
+  function_ptr: EggId,
+  args: Slice[EggId],
+  return_type: EggType,
+): EggId {
+  builder.push(EggExpr.call_indirect(EggCallIndirect {
+    function_ptr, args, return_type
+  }))
+}
 
-fun load(ptr: EggId): EggId { builder.push(EggExpr.load(ptr)) }
+fun new(builder: &EggBodyBuilder, value: EggId): EggId {
+  builder.push(EggExpr.new(value))
+}
 
-fun free(ptr: EggId, type: EggType): EggId {
+fun load(builder: &EggBodyBuilder, ptr: EggId, type: EggType): EggId {
+  builder.push(EggExpr.load(EggLoad { ptr, type }))
+}
+
+fun free(builder: &EggBodyBuilder, ptr: EggId, type: EggType): EggId {
   builder.push(EggExpr.free(EggFree { ptr, type }))
 }
 
-fun get_refcount(ptr: EggId): EggId { builder.push(EggExpr.get_refcount(ptr)) }
+fun get_refcount(builder: &EggBodyBuilder, ptr: EggId): EggId {
+  builder.push(EggExpr.get_refcount(ptr))
+}
 
-fun set_refcount(ptr: EggId): EggId { builder.push(EggExpr.set_refcount(ptr)) }
+fun set_refcount(builder: &EggBodyBuilder, ptr: EggId, refcount: EggId): EggId {
+  builder.push(EggExpr.set_refcount(EggSetRefcount { ptr, refcount }))
+}
 
-fun new_buffer(item_type: EggType, length: EggId): EggId {
+fun new_buffer(
+  builder: &EggBodyBuilder, item_type: EggType, length: EggId
+): EggId {
   builder.push(EggExpr.new_buffer(EggNewBuffer { item_type, length }))
 }
 
-fun get_buffer_length(buffer: EggId): EggId {
+fun get_buffer_length(builder: &EggBodyBuilder, buffer: EggId): EggId {
   builder.push(EggExpr.get_buffer_length(buffer))
 }
 
-fun load_buffer_item(buffer: EggId, item_type: EggType, index: EggId): EggId {
+fun load_buffer_item(
+  builder: &EggBodyBuilder, buffer: EggId, item_type: EggType, index: EggId
+): EggId {
   builder.push(EggExpr.load_buffer_item(EggLoadBufferItem {
     buffer, item_type, index
   }))
 }
 
-fun store_buffer_item(
+fun store_buffer_item(builder: &EggBodyBuilder, 
   buffer: EggId, item_type: EggType, index: EggId, item: EggId
 ): EggId {
   builder.push(EggExpr.store_buffer_item(EggStoreBufferItem {
@@ -327,11 +350,17 @@ fun store_buffer_item(
   }))
 }
 
-fun store_buffer_bytes(buffer: EggId, bytes: Slice[Byte]): EggId {
-  builder.push(EggExpr.store_buffer_item(EggStoreBufferBytes { buffer, bytes }))
+fun store_buffer_bytes(
+  builder: &EggBodyBuilder, buffer: EggId, bytes: Slice[Byte]
+): EggId {
+  builder.push(EggExpr.store_buffer_bytes(EggStoreBufferBytes {
+    buffer, bytes
+  }))
 }
 
-fun free_buffer(buffer: EggId, item_type: EggType): EggId {
+fun free_buffer(
+  builder: &EggBodyBuilder, buffer: EggId, item_type: EggType
+): EggId {
   builder.push(EggExpr.free_buffer(EggFreeBuffer { buffer, item_type }))
 }
 
@@ -347,6 +376,20 @@ fun true(builder: &EggBodyBuilder): EggId {
 
 fun false(builder: &EggBodyBuilder): EggId {
   builder.enum_(type_bool, "false", builder.nothing())
+}
+
+fun finish_with_nothing(builder: EggBodyBuilder): EggBody {
+  builder.finish(builder.&.nothing())
+}
+
+fun finish_with_unreachable(builder: EggBodyBuilder, type: EggType): EggBody {
+  builder.finish(builder.&.unreachable(type))
+}
+
+fun finish_with_crash(
+  builder: EggBodyBuilder, message: String, type: EggType
+): EggBody {
+  builder.finish(builder.&.crash(message, type))
 }
 
 fun expect_variant_or_crash(
@@ -375,8 +418,18 @@ fun if_(
   builder: &EggBodyBuilder, condition: EggId, then_: EggBody, else_: EggBody
 ): EggId {
   builder.switch_(condition, then_.returns.type(), map(
-    "true" -> then_,
-    "false" -> else_,
+    "true" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(condition, "true")
+      for child in then_.children do builder.push(child)
+      builder.finish(then_.returns)
+    },
+    "false" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(condition, "false")
+      for child in else_.children do builder.push(child)
+      builder.finish(else_.returns)
+    },
   ))
 }
 
@@ -385,33 +438,35 @@ fun switch_on_ordering(
   ordering: EggId, less: EggBody, equal: EggBody, greater: EggBody,
 ): EggId {
   builder.switch_(ordering, less.returns.type(), map(
-    "less" -> less,
-    "equal" -> equal,
-    "greater" -> greater,
+    "less" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "less")
+      for child in less.children do builder.push(child)
+      builder.finish(less.returns)
+    },
+    "equal" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "equal")
+      for child in equal.children do builder.push(child)
+      builder.finish(equal.returns)
+    },
+    "greater" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "greater")
+      for child in greater.children do builder.push(child)
+      builder.finish(greater.returns)
+    },
   ))
 }
 
 fun assert_is_equal(
   builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
 ): EggId {
-  var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
-    ordering,
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "less")
-      builder.finish(builder.crash(message, type_nothing))
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "equal")
-      builder.finish(builder.nothing())
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "greater")
-      builder.finish(builder.crash(message, type_nothing))
-    },
+    builder.compare(left, right),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_crash(message, type_nothing),
   )
 }
 
@@ -421,21 +476,9 @@ fun assert_is_less(
   var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
     ordering,
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "less")
-      builder.finish(builder.nothing())
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "equal")
-      builder.finish(builder.crash(message, type_nothing))
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "greater")
-      builder.finish(builder.crash(message, type_nothing))
-    },
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_crash(message, type_nothing),
   )
 }
 
@@ -445,21 +488,9 @@ fun assert_is_less_equal(
   var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
     ordering,
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "less")
-      builder.finish(builder.nothing())
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "equal")
-      builder.finish(builder.nothing())
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "greater")
-      builder.finish(builder.crash(message, type_nothing))
-    },
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_crash(message, type_nothing),
   )
 }
 
@@ -469,21 +500,9 @@ fun assert_is_greater(
   var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
     ordering,
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "less")
-      builder.finish(builder.crash(message, type_nothing))
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "equal")
-      builder.finish(builder.crash(message, type_nothing))
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "greater")
-      builder.finish(builder.nothing())
-    },
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_nothing(),
   )
 }
 
@@ -493,21 +512,9 @@ fun assert_is_greater_equal(
   var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
     ordering,
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "less")
-      builder.finish(builder.crash(message, type_nothing))
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "equal")
-      builder.finish(builder.nothing())
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "greater")
-      builder.finish(builder.nothing())
-    },
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_nothing(),
   )
 }
 
@@ -517,21 +524,9 @@ fun assert_is_not_equal(
   var ordering = builder.compare(left, right)
   builder.switch_on_ordering(
     ordering,
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "less")
-      builder.finish(builder.nothing())
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "equal")
-      builder.finish(builder.crash(message, type_nothing))
-    },
-    {
-      var builder = egg_body_builder().&
-      builder.case_param(ordering, "greater")
-      builder.finish(builder.nothing())
-    },
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_nothing(),
   )
 }
 
@@ -543,18 +538,15 @@ fun check_if_equal_else_false(
     ordering,
     {
       var builder = egg_body_builder().&
-      builder.case_param(ordering, "less")
       builder.finish(builder.false())
     },
     {
       var builder = egg_body_builder().&
-      builder.case_param(ordering, "equal")
       for child in if_equal.children do builder.push(child)
       builder.finish(if_equal.returns)
     },
     {
       var builder = egg_body_builder().&
-      builder.case_param(ordering, "greater")
       builder.finish(builder.false())
     },
   )
@@ -595,14 +587,40 @@ fun compare_strings(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
                 var builder = egg_body_builder().&
                 builder.finish(builder.true())
               },
-              {
-                var builder = egg_body_builder().&
-                builder.finish(builder.unreachable(type_bool))
-              }
+              egg_body_builder().finish_with_unreachable(type_bool),
             )
           )
         })
       )
     },
   )
+}
+
+fun increment_refcount(builder: &EggBodyBuilder, ptr: EggId): EggId {
+  var refcount = builder.get_refcount(ptr)
+  var new_refcount = builder.add(refcount, builder.int(1))
+  builder.set_refcount(ptr, new_refcount)
+  new_refcount
+}
+
+fun decrement_refcount(builder: &EggBodyBuilder, ptr: EggId): EggId {
+  var refcount = builder.get_refcount(ptr)
+  var new_refcount = builder.subtract(refcount, builder.int(1))
+  builder.set_refcount(ptr, new_refcount)
+  new_refcount
+}
+
+fun if_refcount_zero(
+  builder: &EggBodyBuilder, refcount: EggId, then_: EggBody
+) {
+  builder.switch_on_ordering(
+    builder.compare(refcount, builder.int(0)),
+    egg_body_builder().finish_with_unreachable(type_nothing),
+    {
+      var builder = egg_body_builder().&
+      for child in then_.children do builder.push(child)
+      builder.finish(then_.returns)
+    },
+    egg_body_builder().finish_with_nothing(),
+  ).ignore()
 }
