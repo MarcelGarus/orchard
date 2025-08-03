@@ -9,6 +9,7 @@ fun push(builder: &EggBodyBuilder, id: EggId): EggId {
     switch id.resolve()
     case param true
     case case_param true
+    case pesto_param true
     default false
   if is_param then
     builder.params.&.push(id)
@@ -114,13 +115,12 @@ fun enum_(
 fun switch_(
   builder: &EggBodyBuilder,
   condition: EggId,
-  type: EggType,
   cases: Map[String, EggBody],
 ): EggId {
   for case_ in cases do
     if case_.value.params.len != 1 then
       panic("case with {case_.value.params.len} params")
-  builder.push(EggExpr.switch_(EggSwitch { condition, type, cases }))
+  builder.push(EggExpr.switch_(EggSwitch { condition, cases }))
 }
 
 fun inline_lambda(builder: &EggBodyBuilder, body: EggBody): EggId {
@@ -281,23 +281,38 @@ fun continue_(
   builder.push(EggExpr.continue_(EggContinue { next, type }))
 }
 
-fun dup(builder: &EggBodyBuilder, id: EggId): EggId {
-  builder.push(EggExpr.dup(EggDup { id, type = id.type() }))
+fun dup(builder: &EggBodyBuilder, id: EggId, type: EggType): EggId {
+  builder.push(EggExpr.dup(EggDup { id, type }))
 }
 
-fun drop(builder: &EggBodyBuilder, id: EggId): EggId {
-  builder.push(EggExpr.drop(EggDrop { id, type = id.type() }))
+fun drop(builder: &EggBodyBuilder, id: EggId, type: EggType): EggId {
+  builder.push(EggExpr.drop(EggDrop { id, type }))
+}
+
+fun param(builder: &EggBodyBuilder, type: PestoType): EggId {
+  builder.push(EggExpr.pesto_param(type).create_with_new_identity())
 }
 
 fun function_ptr(builder: &EggBodyBuilder, signature: String): EggId {
   builder.push(EggExpr.function_ptr(signature))
 }
 
+fun call(
+  builder: &EggBodyBuilder, 
+  fun_: String,
+  args: Slice[EggId],
+  return_type: PestoType,
+): EggId {
+  builder.push(EggExpr.pesto_call_fun(EggPestoCallFun {
+    fun_, args, return_type
+  }))
+}
+
 fun call_indirect(
   builder: &EggBodyBuilder,
   function_ptr: EggId,
   args: Slice[EggId],
-  return_type: EggType,
+  return_type: PestoType,
 ): EggId {
   builder.push(EggExpr.call_indirect(EggCallIndirect {
     function_ptr, args, return_type
@@ -308,11 +323,11 @@ fun new(builder: &EggBodyBuilder, value: EggId): EggId {
   builder.push(EggExpr.new(value))
 }
 
-fun load(builder: &EggBodyBuilder, ptr: EggId, type: EggType): EggId {
+fun load(builder: &EggBodyBuilder, ptr: EggId, type: PestoType): EggId {
   builder.push(EggExpr.load(EggLoad { ptr, type }))
 }
 
-fun free(builder: &EggBodyBuilder, ptr: EggId, type: EggType): EggId {
+fun free(builder: &EggBodyBuilder, ptr: EggId, type: PestoType): EggId {
   builder.push(EggExpr.free(EggFree { ptr, type }))
 }
 
@@ -325,7 +340,7 @@ fun set_refcount(builder: &EggBodyBuilder, ptr: EggId, refcount: EggId): EggId {
 }
 
 fun new_buffer(
-  builder: &EggBodyBuilder, item_type: EggType, length: EggId
+  builder: &EggBodyBuilder, item_type: PestoType, length: EggId
 ): EggId {
   builder.push(EggExpr.new_buffer(EggNewBuffer { item_type, length }))
 }
@@ -335,15 +350,19 @@ fun get_buffer_length(builder: &EggBodyBuilder, buffer: EggId): EggId {
 }
 
 fun load_buffer_item(
-  builder: &EggBodyBuilder, buffer: EggId, item_type: EggType, index: EggId
+  builder: &EggBodyBuilder, buffer: EggId, item_type: PestoType, index: EggId
 ): EggId {
   builder.push(EggExpr.load_buffer_item(EggLoadBufferItem {
     buffer, item_type, index
   }))
 }
 
-fun store_buffer_item(builder: &EggBodyBuilder, 
-  buffer: EggId, item_type: EggType, index: EggId, item: EggId
+fun store_buffer_item(
+  builder: &EggBodyBuilder, 
+  buffer: EggId,
+  item_type: PestoType,
+  index: EggId,
+  item: EggId,
 ): EggId {
   builder.push(EggExpr.store_buffer_item(EggStoreBufferItem {
     buffer, item_type, index, item
@@ -359,9 +378,23 @@ fun store_buffer_bytes(
 }
 
 fun free_buffer(
-  builder: &EggBodyBuilder, buffer: EggId, item_type: EggType
+  builder: &EggBodyBuilder, buffer: EggId, item_type: PestoType
 ): EggId {
   builder.push(EggExpr.free_buffer(EggFreeBuffer { buffer, item_type }))
+}
+
+fun crash(builder: &EggBodyBuilder, message: EggId, type: PestoType): EggId {
+  builder.push(EggExpr.pesto_crash(EggPestoCrash { message, type }))
+}
+
+fun unreachable(builder: &EggBodyBuilder, type: PestoType): EggId {
+  builder.push(EggExpr.pesto_unreachable(type))
+}
+
+fun continue_(
+  builder: &EggBodyBuilder, next: Slice[EggId], type: PestoType
+): EggId {
+  builder.push(EggExpr.pesto_continue(EggPestoContinue { next, type }))
 }
 
 | More advanced helpers.
@@ -382,14 +415,24 @@ fun finish_with_nothing(builder: EggBodyBuilder): EggBody {
   builder.finish(builder.&.nothing())
 }
 
-fun finish_with_unreachable(builder: EggBodyBuilder, type: EggType): EggBody {
-  builder.finish(builder.&.unreachable(type))
-}
-
 fun finish_with_crash(
   builder: EggBodyBuilder, message: String, type: EggType
 ): EggBody {
   builder.finish(builder.&.crash(message, type))
+}
+
+fun finish_with_crash(
+  builder: EggBodyBuilder, message: String, type: PestoType
+): EggBody {
+  builder.finish(builder.&.crash(message, type))
+}
+
+fun finish_with_unreachable(builder: EggBodyBuilder, type: EggType): EggBody {
+  builder.finish(builder.&.unreachable(type))
+}
+
+fun finish_with_unreachable(builder: EggBodyBuilder, type: PestoType): EggBody {
+  builder.finish(builder.&.unreachable(type))
 }
 
 fun expect_variant_or_crash(
@@ -397,7 +440,7 @@ fun expect_variant_or_crash(
 ): EggId {
   var variant_types = enum_.type().kind().enum_.unwrap()
   var variant_type = variant_types.get(expected_variant)
-  builder.switch_(enum_, variant_type, {
+  builder.switch_(enum_, {
     var cases = map[String, EggBody]()
     for variant in variant_types do
       cases.&.put(variant.key, {
@@ -417,7 +460,7 @@ fun expect_variant_or_crash(
 fun if_(
   builder: &EggBodyBuilder, condition: EggId, then_: EggBody, else_: EggBody
 ): EggId {
-  builder.switch_(condition, then_.returns.type(), map(
+  builder.switch_(condition, map(
     "true" -> {
       var builder = egg_body_builder().&
       builder.case_param(condition, "true")
@@ -437,7 +480,7 @@ fun switch_on_ordering(
   builder: &EggBodyBuilder,
   ordering: EggId, less: EggBody, equal: EggBody, greater: EggBody,
 ): EggId {
-  builder.switch_(ordering, less.returns.type(), map(
+  builder.switch_(ordering, map(
     "less" -> {
       var builder = egg_body_builder().&
       builder.case_param(ordering, "less")
@@ -615,7 +658,7 @@ fun if_refcount_zero(
 ) {
   builder.switch_on_ordering(
     builder.compare(refcount, builder.int(0)),
-    egg_body_builder().finish_with_unreachable(type_nothing),
+    egg_body_builder().finish_with_unreachable(type_nothing.to_pesto()),
     {
       var builder = egg_body_builder().&
       for child in then_.children do builder.push(child)

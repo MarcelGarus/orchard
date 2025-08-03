@@ -26,9 +26,9 @@
 
 import mod.mar
 
-struct MemoryLayout { size: Int, alignment: Int }
-
 | Layouting arbitrary types  
+
+struct MemoryLayout { size: Int, alignment: Int }
 
 fun memory_layout(type: PestoType): MemoryLayout {
   switch type
@@ -49,37 +49,37 @@ fun stride_size(layout: MemoryLayout): Int {
   layout.size.round_up_to_multiple_of(layout.alignment)
 }
 
-| Layouting structs  
+| Layouting arguments  
+| When passing multiple arguments to a function, we want to place them in an
+| efficient constellation on the stack. The layouting of structs reuses this
+| logic.
 
-struct StructLayout {
-  size: Int, alignment: Int,
-  parts: Slice[StructPart],
-  field_to_offset: Map[String, Int],
+struct ArgsLayout {
+  size: Int, alignment: Int, parts: Slice[ArgsPart], offsets: Slice[Int]
 }
-enum StructPart { field: String, padding: Int }
+enum ArgsPart { arg: Int, padding: Int }
 
-struct FieldMemoryLayout { size: Int, alignment: Int, name: String }
-fun evenness(layout: FieldMemoryLayout): Int {
+struct ArgMemoryLayout { size: Int, alignment: Int, index: Int }
+fun evenness(layout: ArgMemoryLayout): Int {
   if layout.size.is_multiple_of(8) then return 8
   if layout.size.is_multiple_of(4) then return 4
   if layout.size.is_multiple_of(2) then return 2
   1
 }
-fun <=>(a: FieldMemoryLayout, b: FieldMemoryLayout): Ordering {
-  | We layout fields in this order:
-  | - first, by the "evenness" of the field's size
-  |   - fields where the size is a multiple of 8
-  |   - fields where the size is a multiple of 4
-  |   - fields where the size is a multiple of 2
-  |   - fields where the size is a multiple of 1
+fun <=>(a: ArgMemoryLayout, b: ArgMemoryLayout): Ordering {
+  | We layout args in this order:
+  | - first, by the "evenness" of the args' size
+  |   - args where the size is a multiple of 8
+  |   - args where the size is a multiple of 4
+  |   - args where the size is a multiple of 2
+  |   - args where the size is a multiple of 1
   | - second, by decreasing size
-  | - third, by increasing name (this makes the sort and memory layout
-  |   deterministic, even if multiple definitions of the struct use different
-  |   field orderings)
+  | - third, by increasing index to make the sort and memory layout
+  |   deterministic
   if a.evenness() != b.evenness() then
     return {a.evenness() <=> b.evenness()}.flip()
   if a.size != b.size then return {a.size <=> b.size}.flip()
-  a.name <=> b.name
+  a.index <=> b.index
 }
 
 fun is_all_minus_one(list: Slice[Int]): Bool {
@@ -87,50 +87,47 @@ fun is_all_minus_one(list: Slice[Int]): Bool {
   true
 }
 
-| TODO: think about recursive structs. error? allow but like never?
-fun memory_layout_struct(type: PestoType): StructLayout {
-  var fields = type.struct_.unwrap()
-
-  | Layout the individual fields.
-  var layouts = list[FieldMemoryLayout]()
-  for field in fields do {
-    var layout = field.value.memory_layout()
-    layouts.&.push(FieldMemoryLayout {
-      name = field.key, size = layout.size, alignment = layout.alignment
+fun memory_layout_args(args: Slice[PestoType]): ArgsLayout {
+  | Layout the individual args.
+  var layouts = list[ArgMemoryLayout]()
+  for arg in args.iter().&.enumerate() do {
+    var layout = arg.item.memory_layout()
+    layouts.&.push(ArgMemoryLayout {
+      index = arg.index, size = layout.size, alignment = layout.alignment
     })
   }
   var layouts = layouts.to_slice()
 
-  | Choose in which order to place the fields:
+  | Choose in which (temporal) order to place the args:
   layouts.&.sort()
 
-  | Place the fields.
-  var bytes = list[Int]() | every item is one byte, index into layouts, -1 is padding
-  for field in layouts.iter().enumerate() do {
-    var index = field.index
-    var field = field.item
+  | Place the args.
+  var bytes = list[Int]() | every item is one byte, the index into layouts, -1 is padding
+  for arg in layouts.iter().enumerate() do {
+    var index = arg.index
+    var arg = arg.item
 
-    | See if the field fits in a padding.
+    | See if the arg fits in a padding.
     var offset = 0
     var was_placed_in_padding = loop {
-      if offset + field.size > bytes.len then break(false)
-      if bytes.to_slice().subslice(offset ..+ field.size).is_all_minus_one()
+      if offset + arg.size > bytes.len then break(false)
+      if bytes.to_slice().subslice(offset ..+ arg.size).is_all_minus_one()
       then {
-        for i in offset ..+ field.size do bytes.&.set(i, index)
+        for i in offset ..+ arg.size do bytes.&.set(i, index)
         break(true)
       }
-      offset = offset + field.alignment
+      offset = offset + arg.alignment
     }
     if not(was_placed_in_padding) then {
-      | Add the field to the end.
-      var padding = bytes.len.round_up_to_multiple_of(field.alignment) - bytes.len
+      | Add the arg to the end.
+      var padding = bytes.len.round_up_to_multiple_of(arg.alignment) - bytes.len
       for i in 0..padding    do bytes.&.push(-1)
-      for i in 0..field.size do bytes.&.push(index)
+      for i in 0..arg.size do bytes.&.push(index)
     }
   }
 
-  var parts = list[StructPart]()
-  var field_to_offset = map[String, Int]()
+  var parts = list[ArgsPart]()
+  var offsets = uninitialized_slice[Int](args.len)
   var offset = 0
   loop {
     if offset >= bytes.len then break
@@ -142,25 +139,67 @@ fun memory_layout_struct(type: PestoType): StructLayout {
       end = end + 1
     }
     if value == -1 then
-      parts.&.push(StructPart.padding(end - offset))
+      parts.&.push(ArgsPart.padding(end - offset))
     else {
-      var name = layouts.get(value).name
-      parts.&.push(StructPart.field(name))
-      field_to_offset.&.put(name, offset)
+      parts.&.push(ArgsPart.arg(value))
+      offsets.&.set(value, offset)
     }
     offset = end
   }
-  | For the purpose of accessing zero-sized fields, claim that they are at the
-  | beginning of the struct.
+  | For the purpose of accessing zero-sized args, claim that they are at the
+  | beginning.
   for field in layouts do
     if field.size == 0 then
-      field_to_offset.&.put(field.name, 0)
+      offsets.&.set(field.index, 0)
 
   var size = bytes.len
   var alignment = 1
   for field in layouts do alignment = max(alignment, field.alignment)
 
-  StructLayout { size, alignment, parts = parts.to_slice(), field_to_offset }
+  ArgsLayout { size, alignment, parts = parts.to_slice(), offsets }
+}
+
+| Layouting structs  
+
+struct StructLayout {
+  size: Int, alignment: Int,
+  parts: Slice[StructPart],
+  field_to_offset: Map[String, Int],
+}
+enum StructPart { field: String, padding: Int }
+
+| TODO: think about recursive structs. error? allow but like never?
+fun memory_layout_struct(type: PestoType): StructLayout {
+  var fields = type.struct_.unwrap()
+
+  | Sort the field names alphabetically.
+  var field_names = list[String]()
+  for field in type.struct_.unwrap() do field_names.&.push(field.key)
+  var field_names = field_names.to_slice()
+  field_names.&.sort()
+
+  | Layout the fields like we would layout arguments.
+  var field_types = list[PestoType]()
+  for field in field_names do field_types.&.push(fields.get(field))
+  var layout = field_types.to_slice().memory_layout_args()
+
+  | Map the result back to struct semantics.
+  var parts = list[StructPart]()
+  for part in layout.parts do
+    parts.&.push(
+      switch part
+      case arg(index) StructPart.field(field_names.get(index))
+      case padding(padding) StructPart.padding(padding)
+    )
+  var offsets = map[String, Int]()
+  for offset in layout.offsets.iter().enumerate() do
+    offsets.&.put(field_names.get(offset.index), offset.item)
+  StructLayout {
+    size = layout.size,
+    alignment = layout.alignment,
+    parts = parts.to_slice(),
+    field_to_offset = offsets,
+  }
 }
 
 | Layouting enums  

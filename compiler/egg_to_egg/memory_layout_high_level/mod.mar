@@ -54,17 +54,31 @@ fun map(
   var expr = id.resolve()
 
   switch expr
-  case param(type) builder.param(type)
+  case param(type) builder.param(type.to_pesto())
+  case unchecked_divide(args) {
+    eprintln("mapping {pretty(id, namespace().&)}: {id.resolve().debug()}:")
+    eprint("mapping:")
+    for entry in mapping do eprint(" {pretty(entry.key, namespace().&)}: {pretty(entry.value, namespace().&)}")
+    eprintln()
+    builder.push(id.map_children(layout, mapping))
+  }
+  case multiply(args) {
+    eprintln("mapping {pretty(id, namespace().&)}: {id.resolve().debug()}")
+    eprint("mapping:")
+    for entry in mapping do eprint(" {pretty(entry.key, namespace().&)}: {pretty(entry.value, namespace().&)}")
+    eprintln()
+    builder.push(id.map_children(layout, mapping))
+  }
   case dup(dup) {
-    builder.desugared_dup(mapping.get(dup.id), dup.type)
+    builder.desugared_dup(dup.id.map(mapping.*), dup.type)
     builder.nothing()
   }
-  case drop(dup) {
-    builder.desugared_drop(mapping.get(dup.id), dup.type, layout.funs)
+  case drop(drop) {
+    builder.desugared_drop(drop.id.map(mapping.*), drop.type, layout.funs)
     builder.nothing()
   }
   case enum_(enum_) {
-    var payload = mapping.get(enum_.payload)
+    var payload = enum_.payload.map(mapping.*)
     if enum_.type.kind().enum_.unwrap().get(enum_.variant)
       .is_unboxed_recursive()
     then
@@ -72,7 +86,7 @@ fun map(
     builder.enum_(enum_.type, enum_.variant, payload)
   }
   case switch_(switch_) {
-    var condition = mapping.get(switch_.condition)
+    var condition = switch_.condition.map(mapping.*)
     var cases = map[String, EggBody]()
     for case_ in switch_.cases do {
       var variant = case_.key
@@ -82,7 +96,7 @@ fun map(
       var payload_type = condition.type().kind().enum_.unwrap().get(variant)
       var payload = builder.param(payload_type)
       if payload_type.is_unboxed_recursive() then
-        payload = builder.load(payload, payload_type)
+        payload = builder.load(payload, payload_type.to_pesto())
       mapping.put(case_.params.get(0), payload)
 
       for child in case_.children do
@@ -91,30 +105,28 @@ fun map(
       var body = builder.finish(case_.returns.map(mapping.*))
       cases.&.put(variant, body)
     }
-    builder.switch_(condition, switch_.type, cases)
+    builder.switch_(condition, cases)
   }
-  case raw_lambda(lambda) {
-    var closure_ptr = mapping.get(lambda.closure)
-    var lambda_body_fun_ptr = builder.function_ptr(lambda.fun_)
-    var free_fun_ptr = builder.function_ptr(
-      free_box_fun(lambda.closure.type().kind().box.unwrap(), layout.funs)
-    )
+  case raw_lambda(lambda)
     builder.struct_(map(
-      "closure" -> closure_ptr,
-      "body" -> lambda_body_fun_ptr,
-      "free" -> free_fun_ptr,
+      "closure" -> lambda.closure.map(mapping.*),
+      "body" -> builder.function_ptr(lambda.fun_),
+      "free" -> builder.function_ptr(
+        free_box_fun(lambda.closure.type().kind().box.unwrap(), layout.funs)
+      ),
     ))
-  }
   case call_fun(call) {
     | var args = map[String, EggId]()
     | for arg in call.args.iter().enumerate() do
     |   args.&.put("{arg.index}", mapping.get(arg.item))
     | var args = builder.struct_(args)
 
-    builder.call(call.fun_, call.substitutions, call.args, call.return_type)
+    builder.call(
+      call.fun_, call.args.map(mapping.*), call.return_type.to_pesto()
+    )
   }
   case call_lambda(call) {
-    var lambda = mapping.get(call.lambda)
+    var lambda = call.lambda.map(mapping.*)
     var closure_ptr = builder.member(lambda, "closure")
     var body_ptr = builder.member(lambda, "body")
 
@@ -127,26 +139,30 @@ fun map(
     builder.call_indirect(
       body_ptr,
       call.args.map(mapping.*),
-      call.lambda.type().kind().lambda.unwrap().return_type,
+      call.lambda.type().kind().lambda.unwrap().return_type.to_pesto(),
     )
+  }
+  case box(value) {
+    builder.new(value.map(mapping.*))
   }
   case unbox(box) {
     var box_type = box.type()
+    var box = box.map(mapping.*)
     var inner_type = box_type.kind().box.unwrap()
-    var inner = builder.load(
-      mapping.get(box), inner_type
-    )
+    var inner = builder.load(box, inner_type.to_pesto())
     builder.desugared_dup(inner, inner_type)
-    builder.desugared_drop(mapping.get(box), box_type, layout.funs)
+    builder.desugared_drop(box, box_type, layout.funs)
     inner
   }
   case array(array) {
-    | Special case arrays of byte literals.
+    | Special case byte arrays.
     var all_bytes = true
     for item in array.items do
       if not(item.resolve() is byte) then all_bytes = false
     if all_bytes then {
-      var buffer = builder.new_buffer(type_byte, builder.int(array.items.len))
+      var buffer = builder.new_buffer(
+        type_byte.to_pesto(), builder.int(array.items.len)
+      )
       var bytes = list[Byte]()
       for byte in array.items do bytes.&.push(byte.resolve().byte.unwrap())
       builder.store_buffer_bytes(buffer, bytes.to_slice())
@@ -156,13 +172,17 @@ fun map(
         "end" -> builder.int(array.items.len),
       ))
     }
-    
+
+    var item_type = id.type().kind().array.unwrap()
     var buffer = builder.new_buffer(
-      array.item_type, builder.int(array.items.len)
+      item_type.to_pesto(), builder.int(array.items.len)
     )
     for item in array.items.iter().enumerate() do
       builder.store_buffer_item(
-        buffer, array.item_type, builder.int(item.index), mapping.get(item.item)
+        buffer,
+        item.item.type().to_pesto(),
+        builder.int(item.index),
+        item.item.map(mapping.*),
       )
     builder.struct_(map(
       "buffer" -> buffer,
@@ -170,69 +190,69 @@ fun map(
       "end" -> builder.int(array.items.len),
     ))
   }
-  case generate_array(gen) {
-    var length = mapping.get(gen.length)
-    var item_type = gen.generator.returns.type()
-    var buffer = builder.new_buffer(item_type, length)
+  case unchecked_generate_non_empty_array(gen) {
+    var length = gen.length.map(mapping.*)
+    var generator = gen.generator
+    var item_type = generator.returns.type()
+    var buffer = builder.new_buffer(item_type.to_pesto(), length)
     builder.loop_(list(builder.int(0)).to_slice(), {
       var builder = egg_body_builder().&
       var cursor = builder.param(type_int)
-      mapping.put(gen.generator.params.get(0), cursor)
-      builder.finish(builder.switch_on_ordering(
-        builder.compare(cursor, length),
-        {
-          var builder = egg_body_builder().&
-          var generated = gen.generator.map(layout, mapping)
-          for child in generated.children do builder.push(child)
-          var item = generated.returns
-          builder.store_buffer_item(buffer, item_type, cursor, item)
-          builder.finish(
-            builder.continue_(
-              list(builder.add(cursor, builder.int(1))).to_slice(),
-              type_nothing,
+      builder.finish(
+        builder.switch_on_ordering(
+          builder.compare(cursor, length),
+          {
+            var builder = egg_body_builder().&
+            mapping.put(generator.params.get(0), cursor)
+            for child in generator.children do
+              mapping.put(child, child.map(layout, builder, mapping))
+            var item = generator.returns.map(mapping.*)
+            builder.store_buffer_item(buffer, item_type.to_pesto(), cursor, item)
+            builder.finish(
+              builder.continue_(
+                list(builder.add(cursor, builder.int(1))).to_slice(),
+                type_nothing.to_pesto(),
+              )
             )
-          )
-        },
-        egg_body_builder().finish_with_nothing(),
-        egg_body_builder().finish_with_unreachable(type_nothing),
-      ))
+          },
+          egg_body_builder().finish_with_nothing(),
+          egg_body_builder().finish_with_unreachable(type_nothing.to_pesto()),
+        )
+      )
     })
     builder.struct_(map(
-      "buffer" -> buffer,
-      "start" -> builder.int(0),
-      "end" -> length,
+      "buffer" -> buffer, "start" -> builder.int(0), "end" -> length
     ))
   }
   case array_len(array) {
     var array_type = array.type()
-    var array = mapping.get(array)
+    var array = array.map(mapping.*)
     var length = builder.subtract(
-      builder.member(array, "end"),
-      builder.member(array, "start"),
+      builder.member(array, "end"), builder.member(array, "start")
     )
-    builder.desugared_drop(array, array_type, layout.funs)
+    builder.drop(array, array_type)
     return length
   }
-  case array_get(args) {
+  case unchecked_array_get(args) {
     var array_type = args.array.type()
     var item_type = array_type.kind().array.unwrap()
-    var array = mapping.get(args.array)
-    var index = mapping.get(args.index)
+    var array = args.array.map(mapping.*)
+    var index = args.index.map(mapping.*)
     var item = builder.load_buffer_item(
       builder.member(array, "buffer"),
-      item_type,
+      item_type.to_pesto(),
       builder.add(builder.member(array, "start"), index),
     )
-    builder.desugared_dup(item, item_type)
-    builder.desugared_drop(array, array_type, layout.funs)
+    builder.dup(item, item_type)
+    builder.drop(array, array_type)
     item
   }
-  case array_set(args) {
+  case unchecked_array_set(args) {
     var array_type = args.array.type()
     var item_type = array_type.kind().array.unwrap()
-    var array = mapping.get(args.array)
-    var index = mapping.get(args.index)
-    var item = mapping.get(args.item)
+    var array = args.array.map(mapping.*)
+    var index = args.index.map(mapping.*)
+    var item = args.item.map(mapping.*)
     var buffer = builder.member(array, "buffer")
     var start = builder.member(array, "start")
     var end = builder.member(array, "end")
@@ -242,14 +262,14 @@ fun map(
     | this array points to, and then we set the item in that copy.
     var owned_array = builder.switch_on_ordering(
       builder.compare(builder.get_refcount(buffer), builder.int(1)),
-      egg_body_builder().finish_with_unreachable(array_type),
+      egg_body_builder().finish_with_unreachable(array_type.to_pesto()),
       egg_body_builder().finish(array),
       {
         var builder = egg_body_builder().&
         var length = builder.subtract(end, start)
-        var copy = builder.new_buffer(item_type, length)
+        var copy = builder.new_buffer(item_type.to_pesto(), length)
         builder.decrement_refcount(buffer)
-        builder.loop_(builder.int(0), {
+        builder.loop_(list(builder.int(0)).to_slice(), {
           var builder = egg_body_builder().&
           var cursor = builder.param(type_int)
           builder.finish(builder.switch_on_ordering(
@@ -257,36 +277,38 @@ fun map(
             {
               var builder = egg_body_builder().&
               var item = builder.load_buffer_item(
-                buffer, item_type, builder.add(start, cursor)
+                buffer, item_type.to_pesto(), builder.add(start, cursor)
               )
-              builder.store_buffer_item(copy, item_type, cursor, item)
+              builder.store_buffer_item(
+                copy, item_type.to_pesto(), cursor, item
+              )
               builder.finish(builder.continue_(
                 list(builder.add(cursor, builder.int(1))).to_slice(),
-                array_type,
+                PestoType.ptr,
               ))
             },
             egg_body_builder().finish(copy),
-            egg_body_builder().finish_with_unreachable(array_type),
+            egg_body_builder().finish_with_unreachable(PestoType.ptr),
           ))
         })
         builder.finish(builder.struct_(map(
-          "buffer" -> copy,
-          "start" -> builder.int(0),
-          "length" -> length,
+          "buffer" -> copy, "start" -> builder.int(0), "length" -> length
         )))
       },
     )
 
     var offset = builder.add(start, index)
-    var previous = builder.load_buffer_item(buffer, item_type, offset)
+    var previous = builder.load_buffer_item(
+      buffer, item_type.to_pesto(), offset
+    )
     builder.drop(previous, item_type)
-    builder.store_buffer_item(buffer, offset, item)
+    builder.store_buffer_item(buffer, item_type.to_pesto(), offset, item)
     owned_array
   }
   case array_slice(args) {
-    var array = mapping.get(args.a)
-    var start = mapping.get(args.b)
-    var end = mapping.get(args.c)
+    var array = args.array.map(mapping.*)
+    var start = args.start.map(mapping.*)
+    var end = args.end.map(mapping.*)
     var old_start = builder.member(array, "start")
     builder.struct_(map(
       "buffer" -> builder.member(array, "buffer"),
@@ -295,230 +317,15 @@ fun map(
     ))
   }
   case type builder.nothing()
-  default builder.push(id.map_children(layout, mapping))
+  case crash(crash)
+    builder.crash(crash.message.map(mapping.*), crash.type.to_pesto())
+  case unreachable(type) builder.unreachable(type.to_pesto())
+  case continue_(continue_)
+    builder.continue_(continue_.next.map(mapping.*), continue_.type.to_pesto())
+  default {
+    builder.push(id.map_children(layout, mapping))
+  }
 }
-
-
-
-
-
-
-
-
-
-
-fun lower_arrays(egg: Egg): Egg {
-  var funs = map[String, EggFun]()
-  for fun_ in egg.funs do {
-    funs.&.put(fun_.key, fun_.value.lower_arrays())
-  }
-  Egg { entry_point = egg.entry_point, funs }
-}
-
-fun lower_arrays(fun_: EggFun): EggFun { fun_.map(LowerArrays {}) }
-
-struct LowerArrays {}
-
-fun map(
-  id: EggId,
-  lower: LowerArrays,
-  builder: &EggBodyBuilder,
-  mapping: &Map[EggId, EggId],
-): EggId {
-  var expr = id.resolve()
-  switch expr
-  case array(array) {
-    | Special case byte arrays.
-    var all_bytes = true
-    for item in array.items do
-      if not(item.resolve() is byte) then all_bytes = false
-    if all_bytes then {
-      var buffer = builder.new_buffer(type_byte, builder.int(array.items.len))
-      var bytes = list[Byte]()
-      for byte in array.items do bytes.&.push(byte.resolve().byte.unwrap())
-      builder.store_buffer_bytes(buffer, bytes.to_slice())
-      return builder.struct_(map(
-        "buffer" -> buffer,
-        "start" -> builder.int(0),
-        "end" -> builder.int(array.items.len),
-      ))
-    }
-    
-    var item_type = id.type().kind().array.unwrap()
-    var buffer = builder.new_buffer(item_type, builder.int(array.items.len))
-    for item in array.items.iter().enumerate() do
-      builder.store_buffer_item(
-        buffer,
-        item.item.type(),
-        builder.int(item.index),
-        mapping.get(item.item),
-      )
-    builder.struct_(map(
-      "buffer" -> buffer,
-      "start" -> builder.int(0),
-      "end" -> builder.int(array.items.len),
-    ))
-  }
-  case generate_array(gen) {
-    var length = mapping.get(gen.length)
-    var generator = gen.generator
-    var item_type = generator.returns.type()
-    var buffer = builder.new_buffer(item_type, length)
-    builder.loop_(list(builder.int(0)).to_slice(), {
-      var builder = egg_body_builder().&
-      var cursor = builder.param(type_int)
-      builder.finish(builder.switch_(builder.compare(cursor, length), type_nothing, map(
-        "less" -> {
-          var builder = egg_body_builder().&
-          builder.param(type_nothing)
-          mapping.put(generator.params.get(0), cursor)
-          for child in generator.children do child.map(lower, builder, mapping)
-          var item = generator.returns.map(mapping.*)
-          builder.store_buffer_item(buffer, item_type, cursor, item)
-          builder.finish(
-            builder.continue_(
-              list(builder.add(cursor, builder.int(1))).to_slice(),
-              type_nothing,
-            )
-          )
-        },
-        "equal" -> {
-          var builder = egg_body_builder().&
-          builder.param(type_nothing)
-          builder.finish(builder.nothing())
-        },
-        "greater" -> {
-          var builder = egg_body_builder().&
-          builder.param(type_nothing)
-          builder.finish(builder.unreachable(type_nothing))
-        },
-      )))
-    })
-    builder.struct_(map(
-      "buffer" -> buffer,
-      "start" -> builder.int(0),
-      "end" -> length,
-    ))
-  }
-  case array_len(array) {
-    var array_type = array.type()
-    var array = mapping.get(array)
-    var length = builder.subtract(
-      builder.member(array, "end"),
-      builder.member(array, "start"),
-    )
-    builder.drop(array, array_type)
-    return length
-  }
-  case array_get(args) {
-    var array_type = args.a.type()
-    var item_type = array_type.kind().array.unwrap()
-    var array = mapping.get(args.a)
-    var index = mapping.get(args.b)
-    var item = builder.load_buffer_item(
-      builder.member(array, "buffer"),
-      type,
-      builder.add(builder.member(array, "start"), index),
-    )
-    builder.dup(item, item_type)
-    builder.drop(array, array_type)
-    item
-  }
-  case array_set(args) {
-    var item_type = args.a.type().kind().array.unwrap()
-    var array = mapping.get(args.a)
-    var index = mapping.get(args.b)
-    var item = mapping.get(args.c)
-    var buffer = builder.member(array, "buffer")
-    var start = builder.member(array, "start")
-    var end = builder.member(array, "end")
-
-    | If the buffer's reference count is 1, we have exclusive ownership and can
-    | mutate the buffer in place. Otherwise, we copy the part of the buffer that
-    | this array points to, and then we set the item in that copy.
-    var owned_array = builder.switch_(
-      builder.compare(builder.get_refcount(buffer), builder.int(1)),
-      map(
-        "less" -> {
-          var builder = egg_body_builder().&
-          builder.param(type_nothing)
-          builder.finish(builder.unreachable(pesto_array_type))
-        },
-        "equal" -> {
-          var builder = egg_body_builder().&
-          builder.param(type_nothing)
-          builder.finish(array)
-        },
-        "greater" -> {
-          var builder = egg_body_builder().&
-          builder.param(type_nothing)
-          var length = builder.subtract(end, start)
-          var copy = builder.new_buffer(item_type.lower_arrays(), length)
-          builder.decrement_refcount(buffer)
-          builder.loop_(list(builder.int(0)).to_slice(), {
-            var builder = egg_body_builder(PestoType.int).&
-            var cursor = builder.param
-            builder.finish(builder.switch_(
-              builder.compare(cursor, length),
-              map(
-                "less" -> {
-                  var builder = egg_body_builder(type_nothing).&
-                  var item = builder.load_buffer_item(
-                    buffer, item_type.lower_arrays(), builder.add(start, cursor)
-                  )
-                  builder.store_buffer_item(copy, cursor, item)
-                  builder.finish(builder.continue_(
-                    list(builder.add(cursor, builder.int(1))).to_slice(), PestoType.ptr
-                  ))
-                },
-                "equal" ->
-                  egg_body_builder(type_nothing).finish(copy),
-                "greater" ->
-                  egg_body_builder(type_nothing)
-                    .finish_with_unreachable(PestoType.ptr),
-              )
-            ))
-          })
-          builder.finish(builder.struct_(map(
-            "buffer" -> copy,
-            "start" -> builder.int(0),
-            "length" -> length,
-          )))
-        },
-      ),
-    )
-
-    var offset = builder.add(start, index)
-    var previous = builder.load_buffer_item(
-      buffer, item_type.lower_arrays(), offset
-    )
-    builder.drop(previous, item_type)
-    builder.store_buffer_item(buffer, offset, item)
-    owned_array
-  }
-  case array_slice(args) {
-    var array = mapping.get(args.a)
-    var start = mapping.get(args.b)
-    var end = mapping.get(args.c)
-    var old_start = builder.member(array, "start")
-    builder.struct_(map(
-      "buffer" -> builder.member(array, "buffer"),
-      "start" -> builder.add(old_start, start),
-      "end" -> builder.add(old_start, end),
-    ))
-  }
-  default builder.push(id.map_children(lower, mapping))
-}
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -526,5 +333,5 @@ fun map(
 fun get(
   mapping: Map[EggId, EggId], tuple: Tuple2[EggId, EggId]
 ): Tuple2[EggId, EggId] {
-  tuple(mapping.get(tuple.a), mapping.get(tuple.b))
+  tuple(tuple.a.map(mapping.*), tuple.b.map(mapping.*))
 }

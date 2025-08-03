@@ -1,0 +1,57 @@
+import mod.mar
+
+enum PestoType {
+  byte,
+  int,
+  ptr,
+  struct_: Map[String, PestoType],
+  enum_: Map[String, PestoType],
+  never,
+}
+
+var pesto_nothing_type = PestoType.struct_(map[String, PestoType]())
+
+var pesto_array_type = PestoType.struct_(map[String, PestoType](
+  "buffer" -> PestoType.ptr,
+  "start" -> PestoType.int,
+  "len" -> PestoType.int,
+))
+
+var pesto_lambda_type = PestoType.struct_(map(
+  "closure" -> PestoType.ptr,
+  "body" -> PestoType.ptr,
+  "free" -> PestoType.ptr,
+))
+
+var pesto_ordering_type = PestoType.enum_(map(
+  "less" -> pesto_nothing_type,
+  "equal" -> pesto_nothing_type,
+  "greater" -> pesto_nothing_type,
+))
+
+fun write[W](writer: W, type: PestoType) {
+  switch type
+  case byte writer."(Byte)"
+  case int writer."(Int)"
+  case ptr writer."(Ptr)"
+  case struct_(struct_) {
+    writer."(&"
+    for field in struct_ do writer." {field.key}: {field.value}"
+    writer.")"
+  }
+  case enum_(enum_) {
+    writer."(|"
+    for variant in enum_ do writer." {variant.key}: {variant.value}" 
+  }
+  case never writer."(Never)"
+}
+
+fun ==(a: PestoType, b: PestoType): Bool {
+  switch a
+  case byte        b is byte
+  case int         b is int
+  case ptr         b is ptr
+  case struct_(aa) if b is struct_(bb) then aa == bb else false
+  case enum_(aa)   if b is enum_(bb)   then aa == bb else false
+  case never       b is never
+}

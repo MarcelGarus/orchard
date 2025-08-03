@@ -1,6 +1,5 @@
 import mod.mar
 
-
 fun write[W](writer: W, egg: Egg) {
   var first = true
   for fun_ in egg.funs do {
@@ -15,7 +14,7 @@ fun pretty(id: EggId, names: &Namespace): _ {
 struct PrettyEggId { id: EggId, names: &Namespace }
 fun write[W](writer: W, pretty: PrettyEggId) {
   writer."{pretty.names.get(pretty.id.id.index).styled(style_of_id)}"
-  | writer."{":{pretty.id.id.index}".styled(style_of_id)}"
+  writer."{":{pretty.id.id.index}".styled(style_of_id)}"
 }
 
 fun write[W](writer: W, signature: String, fun_: EggFun) {
@@ -65,8 +64,7 @@ fun write[W](
     writer."{pretty_op("member")} {pretty(member.of, names)}.{member.name}"
   case switch_(switch_) {
     writer."\n
-      '{indentation}{pretty_op("switch")} {pretty(switch_.condition, names)}
-      '  {pretty(switch_.type)}"
+      '{indentation}{pretty_op("switch")} {pretty(switch_.condition, names)}"
     for case_ in switch_.cases do {
       writer."
         '\n{indentation + 1}{case_.key}:
@@ -184,7 +182,7 @@ fun write[W](
   case crash(crash)
     writer."{pretty_op("crash")} {pretty(crash.message, names)}
       ' {pretty(crash.type)}"
-  case unreachable(type) writer."{pretty_op("unreachable")}  {pretty(type)}"
+  case unreachable(type) writer."{pretty_op("unreachable")} {pretty(type)}"
   case loop_(loop_) {
     writer."\n{indentation}{pretty_op("loop")}"
     for arg in loop_.initial do writer." {pretty(arg, names)}"
@@ -202,6 +200,12 @@ fun write[W](
     writer."{pretty_op("dup")} {pretty(dup.type)} {pretty(dup.id, names)}"
   case drop(drop)
     writer."{pretty_op("drop")} {pretty(drop.type)} {pretty(drop.id, names)}"
+  case pesto_param(type) writer."{pretty_op("param")}  {pretty(type)}"
+  case pesto_call_fun(call) {
+    writer."{pretty_op("call")} {pretty_signature(call.fun_)}"
+    for arg in call.args do writer." {pretty(arg, names)}"
+    writer."  {pretty(call.return_type)}"
+  }
   case function_ptr(signature)
     writer."{pretty_op("function ptr")} {pretty_signature(signature)}"
   case call_indirect(call) {
@@ -215,9 +219,10 @@ fun write[W](
   case get_refcount(ptr)
     writer."{pretty_op("get refcount")} {pretty(ptr, names)}"
   case set_refcount(set)
-    writer."{pretty_op("set refcount")} {pretty(set.ptr, names)}"
+    writer."{pretty_op("set refcount")}
+      ' {pretty(set.ptr, names)} {pretty(set.refcount, names)}"
   case new_buffer(new)
-    writer."{pretty_op("new buffer")} of {new.item_type},
+    writer."{pretty_op("new buffer")} of {pretty(new.item_type)},
       ' length {pretty(new.length, names)}"
   case get_buffer_length(buffer)
     writer."{pretty_op("buffer length")} {pretty(buffer, names)}"
@@ -247,5 +252,15 @@ fun write[W](
   case free_buffer(free)
     writer."{pretty_op("free buffer")}
       ' {pretty(free.buffer, names)} {pretty(free.item_type)}"
+  case pesto_crash(crash)
+    writer."{pretty_op("crash")} {pretty(crash.message, names)}
+      ' {pretty(crash.type)}"
+  case pesto_unreachable(type)
+    writer."{pretty_op("unreachable")} {pretty(type)}"
+  case pesto_continue(continue_) {
+    writer."{pretty_op("continue")}"
+    for arg in continue_.next do writer." {pretty(arg, names)}"
+    writer." {pretty(continue_.type)}"
+  }
 }
 fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }

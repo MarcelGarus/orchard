@@ -10,15 +10,19 @@ fallback fun map[M](
   body.map_children(mapper, mapping)
 }
 
-| TODO: keep param identities
+| TODO: keep param identities?
 fun map_children[M](
   body: EggBody, mapper: M, mapping: &Map[EggId, EggId]
 ): EggBody {
   var builder = egg_body_builder().&
   for param in body.params do
     mapping.put(param, param.map(mapper, builder, mapping))
-  for child in body.children do
-    mapping.put(child, child.map(mapper, builder, mapping))
+  for child in body.children do {
+    eprintln("mapping {pretty(child, namespace().&)}")
+    var mapped = child.map(mapper, builder, mapping)
+    mapping.put(child, mapped)
+    eprintln("mapped to {pretty(mapped, namespace().&)}")
+  }
   builder.finish(body.returns.map(mapping.*))
 }
 
@@ -61,7 +65,7 @@ fun map_children[M](
     var cases = map[String, EggBody]()
     for case_ in switch_.cases do
       cases.&.put(case_.key, case_.value.map(mapper, mapping))
-    EggExpr.switch_(EggSwitch { condition, type = switch_.type, cases })
+    EggExpr.switch_(EggSwitch { condition, cases })
   }
   case call_fun(call)
     EggExpr.call_fun(EggCallFun {
@@ -175,7 +179,14 @@ fun map_children[M](
     EggExpr.dup(EggDup { id = dup.id.map(mapping.*), type = dup.type })
   case drop(drop)
     EggExpr.drop(EggDrop { id = drop.id.map(mapping.*), type = drop.type })
+  case pesto_param(type) EggExpr.pesto_param(type)
   case function_ptr(signature) EggExpr.function_ptr(signature)
+  case pesto_call_fun(call)
+    EggExpr.pesto_call_fun(EggPestoCallFun {
+      fun_ = call.fun_,
+      args = call.args.map(mapping.*),
+      return_type = call.return_type,
+    })
   case call_indirect(call)
     EggExpr.call_indirect(EggCallIndirect {
       function_ptr = call.function_ptr.map(mapping.*),
@@ -217,6 +228,15 @@ fun map_children[M](
   case free_buffer(free)
     EggExpr.free_buffer(EggFreeBuffer {
       buffer = free.buffer.map(mapping.*), item_type = free.item_type
+    })  
+  case pesto_crash(crash)
+    EggExpr.pesto_crash(EggPestoCrash {
+      message = crash.message.map(mapping.*), type = crash.type
+    })
+  case pesto_unreachable(type) EggExpr.pesto_unreachable(type)
+  case pesto_continue(continue_)
+    EggExpr.pesto_continue(EggPestoContinue {
+      next = continue_.next.map(mapping.*), type = continue_.type
     })
 }
 

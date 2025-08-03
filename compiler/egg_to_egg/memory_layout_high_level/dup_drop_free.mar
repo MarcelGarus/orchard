@@ -31,7 +31,7 @@ fun desugared_dup(
         builder.desugared_dup(payload, variant.value)
       cases.&.put(variant.key, builder.finish_with_nothing())
     }
-    builder.switch_(value, type_nothing, cases).ignore()
+    builder.switch_(value, cases).ignore()
   }
   case lambda
     builder.increment_refcount(builder.member(value, "closure")).ignore()
@@ -57,9 +57,8 @@ fun desugared_drop(
       var builder = egg_body_builder().&
       builder.call(
         free_box_fun(inner_type, funs),
-        no_substitutions,
         list(value).to_slice(),
-        type_nothing,
+        type_nothing.to_pesto(),
       )
       builder.finish_with_nothing()
     })
@@ -70,9 +69,8 @@ fun desugared_drop(
       var builder = egg_body_builder().&
       builder.call(
         free_array_fun(item_type, funs),
-        no_substitutions,
         list(value).to_slice(),
-        type_nothing,
+        type_nothing.to_pesto(),
       )
       builder.finish_with_nothing()
     })
@@ -92,9 +90,8 @@ fun desugared_drop(
           var builder = egg_body_builder().&
           builder.call(
             free_box_fun(payload_type, funs),
-            no_substitutions,
             list(payload).to_slice(),
-            type_nothing,
+            type_nothing.to_pesto(),
           )
           builder.finish_with_nothing()
         })
@@ -103,7 +100,7 @@ fun desugared_drop(
 
       cases.&.put(variant.key, builder.finish_with_nothing())
     }
-    builder.switch_(value, type_nothing, cases).ignore()
+    builder.switch_(value, cases).ignore()
   }
   case lambda {
     var closure_ptr = builder.member(value, "closure")
@@ -112,7 +109,7 @@ fun desugared_drop(
       var builder = egg_body_builder().&
       var free_fun_ptr = builder.member(value, "free")
       builder.call_indirect(
-        free_fun_ptr, list(closure_ptr).to_slice(), type_nothing
+        free_fun_ptr, list(closure_ptr).to_slice(), type_nothing.to_pesto()
       )
       builder.finish_with_nothing()
     })
@@ -128,9 +125,9 @@ fun free_box_fun(inner_type: EggType, funs: &Map[String, EggFun]): String {
     body = {
       var builder = egg_body_builder().&
       var box = builder.param(type_box(inner_type))
-      var inner = builder.load(box, inner_type)
+      var inner = builder.load(box, inner_type.to_pesto())
       builder.desugared_drop(inner, inner_type, funs)
-      builder.free(box, inner_type)
+      builder.free(box, inner_type.to_pesto())
       builder.finish_with_nothing()
     }
   })
@@ -154,34 +151,28 @@ fun free_array_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
         var builder = egg_body_builder().&
         var cursor = builder.param(type_int)
         var cmp = builder.compare(cursor, len)
-        builder.switch_(cmp, type_nothing, map(
-          "greater" -> {
+        builder.switch_on_ordering(
+          cmp,
+          egg_body_builder().finish_with_unreachable(type_nothing.to_pesto()),
+          egg_body_builder().finish_with_nothing(),
+          {
             var builder = egg_body_builder().&
-            builder.case_param(cmp, "greater")
-            builder.finish(builder.unreachable(type_nothing))
-          },
-          "equal" -> {
-            var builder = egg_body_builder().&
-            builder.case_param(cmp, "equal")
-            builder.finish_with_nothing()
-          },
-          "less" -> {
-            var builder = egg_body_builder().&
-            builder.case_param(cmp, "less")
-            var item = builder.load_buffer_item(buffer, item_type, cursor)
+            var item = builder.load_buffer_item(
+              buffer, item_type.to_pesto(), cursor
+            )
             builder.desugared_drop(item, item_type, funs)
             builder.finish(
               builder.continue_(
                 list(builder.add(cursor, builder.int(1))).to_slice(),
-                type_nothing,
+                type_nothing.to_pesto(),
               )
             )
           },
-        )).ignore()
+        ).ignore()
         builder.finish_with_nothing()
       })
 
-      builder.free_buffer(buffer, item_type)
+      builder.free_buffer(buffer, item_type.to_pesto())
       builder.finish_with_nothing()
     }
   })
