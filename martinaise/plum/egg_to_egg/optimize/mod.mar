@@ -6,6 +6,17 @@
 | analyzing fixpoints of recursive expressions, and pulling impure operations
 | out of the tree.
 
+| TODO: more optimizations? see https://llvm.org/docs/Passes.html
+| - dead argment elimination
+| - dead store elimination
+| - canonicalize comparisons
+| - (x + a) + b = x + (a + b)
+| - delete dead loops that are finite and don't have side effects
+| - unroll loops
+| - unroll and jam
+| - code sinking of int constants into lambdas
+| - simple loop unswitch: loop (if a then b else c; d) = if a then loop(b; d) else loop (c; d)
+
 import ../mod.mar
 import choose_order.mar
 import deduplicate.mar
@@ -53,6 +64,7 @@ fun map(
         case param builder.push(param)
         case case_param(param)
           builder.case_param(param.switch_on.map(mapping.*), param.variant)
+        case pesto_param builder.push(param)
         default unreachable(),
       )
     for child in body.children do
@@ -145,35 +157,6 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   | stderr."\n"
 
   switch id.resolve()
-  case inline_lambda(lambda) {
-    panic("don't lambda")
-    
-    | TODO: remove
-    | Assuming that the lambda will run often, hoisting pure expressions out of
-    | it prevents recalculating them over and over every time the lambda is
-    | called.
-    |
-    | a = ...
-    | ---------------------------------------
-    | lambda c:           |  b = multiply a a
-    |   d = multiply a a  |  lambda d:
-    |   e = add c d       |    e = add b d
-    |   e                 |    e
-    var hoisted = lambda.hoist_from_body_running_often()
-    if hoisted.hoisted.is_not_empty() then {
-      for id in hoisted.hoisted do builder.push(id)
-      return builder.inline_lambda(hoisted.body)
-    }
-  }
-  case raw_lambda(lambda) {
-    | We want to merge nested recursive lambdas.
-    | eprintln("Lambda")
-    | var shape = lambda.closure.shape()
-    | eprintln("Closure shape: {shape.debug()}")
-    | if shape.contains_lambda() then
-    |   if optimize.optimized.get_maybe(lambda.fun_) is some(fun_) then
-    |     fun_.specialize_for_closure_shape(shape, optimize)
-  }
   case member(member) {
     | Constant fold members of known structs.
     |
@@ -341,12 +324,6 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     |     }
     |   }
     | }
-
-    | TODO: Inner switch but one variant of the outer switch is never chosen;
-    | case could be optimized to unreachable.
-
-    | TODO: If a switch diverges in a case, when switching on the same
-    | expression later, the diverging case is unreachable.
   }
   case call_fun(call) {
     | TODO: Try to run the function at compile time.
