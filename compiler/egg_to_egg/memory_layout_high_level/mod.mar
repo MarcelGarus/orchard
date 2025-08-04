@@ -11,39 +11,10 @@ fun mem_layout_high_level(egg: Egg): Egg {
 }
 
 fun mem_layout_high_level(fun_: EggFun, funs: &Map[String, EggFun]): EggFun {
-  | TODO: Turn this into a separate pass?
-  | From now on, functions accept a struct containing all arguments. So here,
-  | we build a type for that.
-  | var param_type = {
-  |   var param_types = map[String, EggType]()
-  |   for param in fun_.body.params.iter().enumerate() do
-  |     param_types.&.put("{param.index}", param.item.type())
-  |   type_struct(param_types)
-  | }
-
-  | var builder = egg_body_builder().&
-  | var mapping = map[EggId, EggId]().&
   fun_.map(MemLayoutHighLevel { funs })
-
-  | for param in fun_.body.params.iter().enumerate() do
-  |   mapping.put(param.item, builder.member(builder.param, "{param.index}"))
-  | var body = builder.finish(fun_.body.map(MemLayoutHighLevel {}, builder, mapping))
 }
 
 struct MemLayoutHighLevel { funs: &Map[String, EggFun] }
-
-| Converts a body to Egg. Assumes that mappings for the parameters have
-| already been added.
-| fun map(
-|   body: EggBody,
-|   layout: MemLayoutHighLevel,
-|   builder: &EggBodyBuilder,
-|   mapping: &Map[EggId, EggId],
-| ): EggId {
-|   for id in body.children do
-|     mapping.put(id, id.map(layout, builder, mapping))
-|   mapping.get(body.returns)
-| }
 
 fun map(
   id: EggId,
@@ -55,20 +26,6 @@ fun map(
 
   switch expr
   case param(type) builder.param(type.to_pesto())
-  case unchecked_divide(args) {
-    eprintln("mapping {pretty(id, namespace().&)}: {id.resolve().debug()}:")
-    eprint("mapping:")
-    for entry in mapping do eprint(" {pretty(entry.key, namespace().&)}: {pretty(entry.value, namespace().&)}")
-    eprintln()
-    builder.push(id.map_children(layout, mapping))
-  }
-  case multiply(args) {
-    eprintln("mapping {pretty(id, namespace().&)}: {id.resolve().debug()}")
-    eprint("mapping:")
-    for entry in mapping do eprint(" {pretty(entry.key, namespace().&)}: {pretty(entry.value, namespace().&)}")
-    eprintln()
-    builder.push(id.map_children(layout, mapping))
-  }
   case dup(dup) {
     builder.desugared_dup(dup.id.map(mapping.*), dup.type)
     builder.nothing()
@@ -94,7 +51,7 @@ fun map(
       var builder = egg_body_builder().&
 
       var payload_type = condition.type().kind().enum_.unwrap().get(variant)
-      var payload = builder.param(payload_type)
+      var payload = builder.param(payload_type.to_pesto())
       if payload_type.is_unboxed_recursive() then
         payload = builder.load(payload, payload_type.to_pesto())
       mapping.put(case_.params.get(0), payload)
@@ -197,7 +154,7 @@ fun map(
     var buffer = builder.new_buffer(item_type.to_pesto(), length)
     builder.loop_(list(builder.int(0)).to_slice(), {
       var builder = egg_body_builder().&
-      var cursor = builder.param(type_int)
+      var cursor = builder.param(PestoType.int)
       builder.finish(
         builder.switch_on_ordering(
           builder.compare(cursor, length),
@@ -271,7 +228,7 @@ fun map(
         builder.decrement_refcount(buffer)
         builder.loop_(list(builder.int(0)).to_slice(), {
           var builder = egg_body_builder().&
-          var cursor = builder.param(type_int)
+          var cursor = builder.param(PestoType.int)
           builder.finish(builder.switch_on_ordering(
             builder.compare(cursor, length),
             {

@@ -68,8 +68,8 @@ fun desugared_drop(
     builder.if_refcount_zero(new_refcount, {
       var builder = egg_body_builder().&
       builder.call(
-        free_array_fun(item_type, funs),
-        list(value).to_slice(),
+        free_buffer_fun(item_type, funs),
+        list(buffer).to_slice(),
         type_nothing.to_pesto(),
       )
       builder.finish_with_nothing()
@@ -124,7 +124,7 @@ fun free_box_fun(inner_type: EggType, funs: &Map[String, EggFun]): String {
   funs.put(signature, EggFun {
     body = {
       var builder = egg_body_builder().&
-      var box = builder.param(type_box(inner_type))
+      var box = builder.param(PestoType.ptr)
       var inner = builder.load(box, inner_type.to_pesto())
       builder.desugared_drop(inner, inner_type, funs)
       builder.free(box, inner_type.to_pesto())
@@ -136,15 +136,14 @@ fun free_box_fun(inner_type: EggType, funs: &Map[String, EggFun]): String {
 
 | Expects an array with refcount 0. Drops the inner values and frees the
 | allocation.
-fun free_array_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
-  var signature = "drop (Array {item_type})"
+fun free_buffer_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
+  var signature = "drop (Buffer {item_type})"
   if funs.contains(signature) then return signature
   funs.put(signature, uninitialized[EggFun]().*)
   funs.put(signature, EggFun {
     body = {
       var builder = egg_body_builder().&
-      var array = builder.param(type_array(item_type))
-      var buffer = builder.member(array, "buffer")
+      var buffer = builder.param(item_type.to_pesto())
       var len = builder.get_buffer_length(buffer)
 
       builder.loop_(list(builder.int(0)).to_slice(), {
