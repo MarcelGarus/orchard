@@ -20,7 +20,7 @@ fun map(
 }
 
 fun compile_and_call_cast_fun(
-  builder: &EggBodyBuilder, what: EggId, type: PlumType,
+  builder: &EggBodyBuilder, what: EggId, type: EggType,
   funs: &Map[String, EggFun],
 ): EggId {
   builder.call(
@@ -32,7 +32,7 @@ fun compile_and_call_cast_fun(
 }
 
 fun compile_cast_fun(
-  from: PlumType, to: PlumType, funs: &Map[String, EggFun]
+  from: EggType, to: EggType, funs: &Map[String, EggFun]
 ): String {
   var signature = "cast {from} to {to}"
   if funs.contains(signature) then return signature
@@ -42,10 +42,10 @@ fun compile_cast_fun(
       var builder = egg_body_builder().&
       var value = builder.param(from)
       builder.finish(
-        if from.internal_kind() is never then builder.unreachable(to)
+        if from.is_never() then builder.unreachable(to)
         else if from == to then value | This cast is the identity fun!
         else
-          switch to.kind()
+          switch to.plum()
           case type unreachable()
           case byte unreachable()
           case int unreachable()
@@ -74,7 +74,7 @@ fun compile_cast_fun(
           case enum_(to_variant_types)
             builder.switch_(value, {
               var cases = map[String, EggBody]()
-              for variant in from.kind().enum_.unwrap() do
+              for variant in from.enum_() do
                 cases.&.put(variant.key, {
                   var builder = egg_body_builder().&
                   var payload = builder.case_param(value, variant.key)
@@ -91,7 +91,7 @@ fun compile_cast_fun(
               cases
             })
           case lambda(to_lambda_type) {
-            var from_lambda_type = from.kind().lambda.unwrap()
+            var from_lambda_type = from.plum().lambda.unwrap()
             builder.inline_lambda({
               var builder = egg_body_builder().&
               var outer_params = list[EggId]()

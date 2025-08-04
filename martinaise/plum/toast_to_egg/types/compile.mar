@@ -1,7 +1,7 @@
 | Compiling Types  
 |
 | Types from multiple modules may refer to each other. So, we first build a map
-| from module-prefixed type names to the PlumType, a structural representation
+| from module-prefixed type names to the EggType, a structural representation
 | of types.
 
 import mod.mar
@@ -118,7 +118,7 @@ fun specialize(
   ok[ToastType, Error](type)
 }
 
-struct EggTypeDef { params: Slice[String], type: PlumType }
+struct EggTypeDef { params: Slice[String], type: EggType }
 
 struct OngoingTypeCall { name: String, args: Slice[ToastType], depth: Int }
 
@@ -130,24 +130,24 @@ fun write[W](writer: W, call: OngoingTypeCall) {
 fun compile(
   type: ToastType,
   stack: &List[OngoingTypeCall], depth: Int, defs: Map[String, ToastTypeDef],
-): Result[PlumType, Error] {
+): Result[EggType, Error] {
   switch type
   case primitive(primitive) {
-    if primitive.name == "Byte"  then return ok[PlumType, Error](type_byte)
-    if primitive.name == "Int"   then return ok[PlumType, Error](type_int)
-    if primitive.name == "Never" then return ok[PlumType, Error](type_never)
-    if primitive.name == "Type"  then return ok[PlumType, Error](type_type)
+    if primitive.name == "Byte"  then return ok[EggType, Error](type_byte)
+    if primitive.name == "Int"   then return ok[EggType, Error](type_int)
+    if primitive.name == "Never" then return ok[EggType, Error](type_never)
+    if primitive.name == "Type"  then return ok[EggType, Error](type_type)
     if primitive.name == "Box" then {
       var inner_type = primitive.args.get(0).compile(stack, depth + 1, defs)?
-      return ok[PlumType, Error](type_box_without_canonicalizing(inner_type))
+      return ok[EggType, Error](type_box_without_canonicalizing(inner_type))
     }
     if primitive.name == "Array" then {
       var item_type = primitive.args.get(0).compile(stack, depth + 1, defs)?
-      return ok[PlumType, Error](type_array_without_canonicalizing(item_type))
+      return ok[EggType, Error](type_array_without_canonicalizing(item_type))
     }
     unreachable()
   }
-  case variable(variable) ok[PlumType, Error](type_variable(variable.string))
+  case variable(variable) ok[EggType, Error](type_variable(variable.string))
   case call(call) {
     var name = call.name
 
@@ -155,17 +155,17 @@ fun compile(
     | type instead of endlessly digging down into the type.
     for parent in stack do
       if parent.name == call.name.string and parent.args == call.args then
-        return ok[PlumType, Error](type_recursive(depth - parent.depth))
+        return ok[EggType, Error](type_recursive(depth - parent.depth))
 
     | Look for a type with the name.
     var called_def = defs.get_maybe(name.string) or
-      return error[PlumType, Error](error(
+      return error[EggType, Error](error(
         "Tried to use {name.string}, but that type doesn't exist. (call)",
         name.src
       ))
 
     called_def.params.len == call.args.len or
-      return error[PlumType, Error](error(
+      return error[EggType, Error](error(
         "Tried to use {name.string} with {call.args.len} arguments, but it 
         'needs {called_def.params.len}.",
         name.src
@@ -184,13 +184,13 @@ fun compile(
     var type = called.compile(stack, depth, defs)?
     stack.&.pop()
 
-    ok[PlumType, Error](type)
+    ok[EggType, Error](type)
   }
   case struct_(struct_) {
-    var fields = map[String, PlumType]()
+    var fields = map[String, EggType]()
     for field in struct_ do {
       if fields.contains(field.name.string) then
-        return error[PlumType, Error](error(
+        return error[EggType, Error](error(
           "Struct contains multiple fields named {field.name.string}.",
           field.name.src,
         ))
@@ -198,13 +198,13 @@ fun compile(
         field.name.string, field.type.compile(stack, depth + 1, defs)?
       )
     }
-    ok[PlumType, Error](type_struct_without_canonicalizing(fields))
+    ok[EggType, Error](type_struct_without_canonicalizing(fields))
   }
   case enum_(enum_) {
-    var variants = map[String, PlumType]()
+    var variants = map[String, EggType]()
     for variant in enum_ do {
       if variants.contains(variant.name.string) then
-        return error[PlumType, Error](error(
+        return error[EggType, Error](error(
           "Enum contains multiple variants named {variant.name.string}.",
           variant.name.src,
         ))
@@ -213,10 +213,10 @@ fun compile(
         variant.type.compile(stack, depth + 1, defs)?
       )
     }
-    ok[PlumType, Error](type_enum_without_canonicalizing(variants))
+    ok[EggType, Error](type_enum_without_canonicalizing(variants))
   }
   case lambda(lambda) {
-    var args = list[PlumType]()
+    var args = list[EggType]()
     for arg in lambda.args do
       args.&.push(arg.compile(stack, depth + 1, defs)?)
     var args = args.to_slice()
@@ -224,7 +224,7 @@ fun compile(
     var return_type =
       lambda.return_type.compile(stack, depth + 1, defs)?
 
-    ok[PlumType, Error](type_lambda_without_canonicalizing(args, return_type))
+    ok[EggType, Error](type_lambda_without_canonicalizing(args, return_type))
   }
 }
 
@@ -338,94 +338,94 @@ fun compile_all_types(
 | duplication. Simplify this!
 fun compile(
   type: ToastType, defs: Map[String, EggTypeDef]
-): Result[PlumType, Error] {
+): Result[EggType, Error] {
   switch type
   case primitive(primitive) {
-    if primitive.name == "Byte" then return ok[PlumType, Error](type_byte)
-    if primitive.name == "Int" then return ok[PlumType, Error](type_int)
-    if primitive.name == "Type" then return ok[PlumType, Error](type_type)
-    if primitive.name == "Never" then return ok[PlumType, Error](type_never)
+    if primitive.name == "Byte" then return ok[EggType, Error](type_byte)
+    if primitive.name == "Int" then return ok[EggType, Error](type_int)
+    if primitive.name == "Type" then return ok[EggType, Error](type_type)
+    if primitive.name == "Never" then return ok[EggType, Error](type_never)
     if primitive.name == "Box" then {
       var inner_type = primitive.args.get(0).compile(defs)?
-      return ok[PlumType, Error](type_box_without_canonicalizing(inner_type))
+      return ok[EggType, Error](type_box_without_canonicalizing(inner_type))
     }
     if primitive.name == "Array" then {
       var item_type = primitive.args.get(0).compile(defs)?
-      return ok[PlumType, Error](type_array_without_canonicalizing(item_type))
+      return ok[EggType, Error](type_array_without_canonicalizing(item_type))
     }
     unreachable()
   }
   case variable(variable) {
-    ok[PlumType, Error](type_variable(variable.string))
+    ok[EggType, Error](type_variable(variable.string))
   }
   case call(call) {
     var name = call.name
 
-    var args = list[PlumType]()
+    var args = list[EggType]()
     for arg in call.args do args.&.push(arg.compile(defs)?)
     var args = args.to_slice()
 
     var called_def = defs.get_maybe(name.string) or
-      return error[PlumType, Error](error(
+      return error[EggType, Error](error(
         "Tried to use {name.string}, but that type doesn't exist.",
         name.src
       ))
 
     called_def.params.len == call.args.len or
-      return error[PlumType, Error](error(
+      return error[EggType, Error](error(
         "Tried to use {name.string} with {call.args.len} arguments, but it 
         'needs {called_def.params.len}.",
         name.src
       ))
 
-    var inner_env = map[String, PlumType]()
+    var inner_env = map[String, EggType]()
     for arg in zip(called_def.params.iter(), args.iter()) do
       inner_env.&.put(arg.a, arg.b)
     var type = called_def.type.specialize(Substitutions {
       substitutions = inner_env
     })
 
-    ok[PlumType, Error](type)
+    ok[EggType, Error](type)
   }
   case struct_(struct_) {
-    var fields = map[String, PlumType]()
+    var fields = map[String, EggType]()
     for field in struct_ do {
       if fields.contains(field.name.string) then
-        return error[PlumType, Error](error(
+        return error[EggType, Error](error(
           "Field {field.name.string} is in the struct type multiple times.",
           field.name.src,
         ))
       fields.&.put(field.name.string, field.type.compile(defs)?)
     }
-    ok[PlumType, Error](type_struct_without_canonicalizing(fields))
+    ok[EggType, Error](type_struct_without_canonicalizing(fields))
   }
   case enum_(enum_) {
-    var variants = map[String, PlumType]()
+    var variants = map[String, EggType]()
     for variant in enum_ do {
       if variants.contains(variant.name.string) then
-        return error[PlumType, Error](error(
+        return error[EggType, Error](error(
           "Variant {variant.name.string} is in the enum type multiple times.",
           variant.name.src,
         ))
       variants.&.put(variant.name.string, variant.type.compile(defs)?)
     }
-    ok[PlumType, Error](type_enum_without_canonicalizing(variants))
+    ok[EggType, Error](type_enum_without_canonicalizing(variants))
   }
   case lambda(lambda) {
-    var args = list[PlumType]()
+    var args = list[EggType]()
     for arg in lambda.args do args.&.push(arg.compile(defs)?)
     var args = args.to_slice()
 
     var return_type = lambda.return_type.compile(defs)?
 
-    ok[PlumType, Error](type_lambda_without_canonicalizing(args, return_type))
+    ok[EggType, Error](type_lambda_without_canonicalizing(args, return_type))
   }
 }
 
 fun compile(
   type: ToastType, module: Module, defs: Map[String, EggTypeDef]
-): Result[PlumType, Error] {
-  ok[PlumType, Error](
+): Result[EggType, Error] {
+  ok[EggType, Error](
     type.prefix_calls_with_module(module).compile(defs)?.canonicalize()
   )
 }

@@ -15,8 +15,8 @@ fun to_waffle(fun_: EggFun): WaffleFun {
   var mapping = map[EggId, WaffleExpr]()
 
   var param_types = {
-    var types = list[PestoType]()
-    for param in fun_.body.params do types.&.push(param.pesto_type())
+    var types = list[EggType]()
+    for param in fun_.body.params do types.&.push(param.type())
     types.to_slice()
   }
   var param_layout = param_types.memory_layout_args()
@@ -79,21 +79,8 @@ fun to_waffle(
     waffle_compare_zero(
       waffle_subtract(mapping.get(args.a), mapping.get(args.b))
     )
-  case pesto_crash(crash) {
-    | Convert the Plum String to bytes ptr + len.
-    |
-    | String layout: [buffer][end][start]
-    |                 |
-    |                 v
-    |                [refcount][len][bytes]
-    var message = mapping.get(crash.message)
-    var ptr_to_buffer = waffle_member(message, 0, 8, 8)
-    var ptr_to_bytes = waffle_add(ptr_to_buffer, waffle_int(16))
-    var len = waffle_member(message, 8, 8, 8)
-    waffle_crash(waffle_aggregate(list(ptr_to_bytes, len).to_slice()))
-  }
   case struct_(struct_) {
-    var layout = id.pesto_type().memory_layout_struct()
+    var layout = id.type().memory_layout_struct()
     var parts = list[WaffleExpr]()
     for part in layout.parts do
       parts.&.push(
@@ -104,8 +91,8 @@ fun to_waffle(
     waffle_aggregate(parts.to_slice())
   }
   case member(member) {
-    var struct_layout = member.of.pesto_type().memory_layout_struct()
-    var field_layout = id.pesto_type().memory_layout()
+    var struct_layout = member.of.type().memory_layout_struct()
+    var field_layout = id.type().memory_layout()
     mapping.get(member.of).waffle_member(
       struct_layout.field_to_offset.get(member.name),
       field_layout.size,
@@ -113,7 +100,7 @@ fun to_waffle(
     )
   }
   case enum_(enum_) {
-    var enum_layout = id.pesto_type().memory_layout_enum()
+    var enum_layout = id.type().memory_layout_enum()
     var variant_layout = enum_layout.variants.get(enum_.variant)
     var parts = list[WaffleExpr]()
     for part in variant_layout.parts do
@@ -130,11 +117,11 @@ fun to_waffle(
   }
   case switch_(switch_) {
     var condition = mapping.get(switch_.condition)
-    var layout = switch_.condition.pesto_type().memory_layout_enum()
+    var layout = switch_.condition.type().memory_layout_enum()
 
     for variant_layout in layout.variants do {
       var payload = switch_.cases.get(variant_layout.key).params.get(0)
-      var layout = payload.pesto_type().memory_layout()
+      var layout = payload.type().memory_layout()
       mapping.put(
         payload, condition.waffle_member(0, layout.size, layout.alignment)
       )
@@ -170,10 +157,9 @@ fun to_waffle(
     for local in case_body.locals do builder.locals.&.push(local)
     case_body.returns
   }
-  case function_ptr(signature) waffle_function_ptr(signature)
-  case pesto_call_fun(call) {
-    var arg_types = list[PestoType]()
-    for arg in call.args do arg_types.&.push(arg.pesto_type())
+  case call_fun(call) {
+    var arg_types = list[EggType]()
+    for arg in call.args do arg_types.&.push(arg.type())
     var arg_layout = arg_types.to_slice().memory_layout_args()
     var parts = list[WaffleExpr]()
     for part in arg_layout.parts do
@@ -183,12 +169,13 @@ fun to_waffle(
         case padding(amount) waffle_padding(amount)
       )
     var args = waffle_aggregate(parts.to_slice())
-    var return_layout = id.pesto_type().memory_layout()
+    var return_layout = id.type().memory_layout()
     waffle_call(call.fun_, args, return_layout.size, return_layout.alignment)
   }
+  case function_ptr(signature) waffle_function_ptr(signature)
   case call_indirect(call) {
-    var arg_types = list[PestoType]()
-    for arg in call.args do arg_types.&.push(arg.pesto_type())
+    var arg_types = list[EggType]()
+    for arg in call.args do arg_types.&.push(arg.type())
     var arg_layout = arg_types.to_slice().memory_layout_args()
     var parts = list[WaffleExpr]()
     for part in arg_layout.parts do
@@ -198,7 +185,7 @@ fun to_waffle(
         case padding(amount) waffle_padding(amount)
       )
     var args = waffle_aggregate(parts.to_slice())
-    var return_layout = id.pesto_type().memory_layout()
+    var return_layout = id.type().memory_layout()
     waffle_call_indirect(
       mapping.get(call.function_ptr), args,
       return_layout.size, return_layout.alignment,
@@ -213,7 +200,7 @@ fun to_waffle(
     ptr
   }
   case load(load) {
-    var layout = id.pesto_type().memory_layout()
+    var layout = id.type().memory_layout()
     builder.local(waffle_load(
       waffle_add(mapping.get(load.ptr), waffle_int(8)),
       layout.size, layout.alignment
@@ -280,17 +267,30 @@ fun to_waffle(
     )
     builder.local(waffle_free(ptr, size))
   }
-  case get_refcount(ptr)
-    builder.&.local(waffle_load(mapping.get(ptr), 8, 8))
+  case get_refcount(get)
+    builder.&.local(waffle_load(mapping.get(get.ptr), 8, 8))
   case set_refcount(set) {
     var ptr = mapping.get(set.ptr)
     var refcount = mapping.get(set.refcount)
     builder.local(waffle_store(ptr, refcount))
   }
-  case pesto_unreachable waffle_unreachable
+  case crash(crash) {
+    | Convert the Plum String to bytes ptr + len.
+    |
+    | String layout: [buffer][end][start]
+    |                 |
+    |                 v
+    |                [refcount][len][bytes]
+    var message = mapping.get(crash.message)
+    var ptr_to_buffer = waffle_member(message, 0, 8, 8)
+    var ptr_to_bytes = waffle_add(ptr_to_buffer, waffle_int(16))
+    var len = waffle_member(message, 8, 8, 8)
+    waffle_crash(waffle_aggregate(list(ptr_to_bytes, len).to_slice()))
+  }
+  case unreachable waffle_unreachable
   case loop_(loop_) {
-    var var_types = list[PestoType]()
-    for var_ in loop_.body.params do var_types.&.push(var_.pesto_type())
+    var var_types = list[EggType]()
+    for var_ in loop_.body.params do var_types.&.push(var_.type())
     var var_layout = var_types.to_slice().memory_layout_args()
 
     var param = create(waffle_param(var_layout.size, var_layout.alignment))
@@ -306,7 +306,7 @@ fun to_waffle(
 
     var body = {
       for var_ in loop_.body.params.iter().enumerate() do {
-        var layout = var_.item.pesto_type().memory_layout()
+        var layout = var_.item.type().memory_layout()
         mapping.&.put(
           var_.item,
           waffle_member(
@@ -323,9 +323,9 @@ fun to_waffle(
 
     waffle_loop(param, initial, body)
   }
-  case pesto_continue(continue_) {
-    var arg_types = list[PestoType]()
-    for arg in continue_.next do arg_types.&.push(arg.pesto_type())
+  case continue_(continue_) {
+    var arg_types = list[EggType]()
+    for arg in continue_.next do arg_types.&.push(arg.type())
     var next_layout = arg_types.to_slice().memory_layout_args()
     var parts = list[WaffleExpr]()
     for part in next_layout.parts do
@@ -336,7 +336,7 @@ fun to_waffle(
       )
     var next = waffle_aggregate(parts.to_slice())
 
-    var layout = id.pesto_type().memory_layout()
+    var layout = id.type().memory_layout()
 
     waffle_continue(next, layout.size, layout.alignment)
   }

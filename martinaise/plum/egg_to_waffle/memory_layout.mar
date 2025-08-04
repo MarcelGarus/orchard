@@ -30,11 +30,11 @@ import mod.mar
 
 struct MemoryLayout { size: Int, alignment: Int }
 
-fun memory_layout(type: PestoType): MemoryLayout {
-  switch type
+fun memory_layout(type: EggType): MemoryLayout {
+  switch type.pesto()
+  case never MemoryLayout { size = 0, alignment = 1 }
   case byte MemoryLayout { size = 1,  alignment = 1 }
   case int MemoryLayout { size = 8,  alignment = 8 }
-  case ptr MemoryLayout { size = 8,  alignment = 8 }
   case struct_ {
     var layout = type.memory_layout_struct()
     MemoryLayout { size = layout.size, alignment = layout.alignment }
@@ -43,7 +43,7 @@ fun memory_layout(type: PestoType): MemoryLayout {
     var layout = type.memory_layout_enum()
     MemoryLayout { size = layout.size, alignment = layout.alignment }
   }
-  case never MemoryLayout { size = 0, alignment = 1 }
+  case ptr MemoryLayout { size = 8,  alignment = 8 }
 }
 fun stride_size(layout: MemoryLayout): Int {
   layout.size.round_up_to_multiple_of(layout.alignment)
@@ -87,7 +87,7 @@ fun is_all_minus_one(list: Slice[Int]): Bool {
   true
 }
 
-fun memory_layout_args(args: Slice[PestoType]): ArgsLayout {
+fun memory_layout_args(args: Slice[EggType]): ArgsLayout {
   | Layout the individual args.
   var layouts = list[ArgMemoryLayout]()
   for arg in args.iter().&.enumerate() do {
@@ -162,24 +162,25 @@ fun memory_layout_args(args: Slice[PestoType]): ArgsLayout {
 | Layouting structs  
 
 struct StructLayout {
-  size: Int, alignment: Int,
+  size: Int,
+  alignment: Int,
   parts: Slice[StructPart],
   field_to_offset: Map[String, Int],
 }
 enum StructPart { field: String, padding: Int }
 
 | TODO: think about recursive structs. error? allow but like never?
-fun memory_layout_struct(type: PestoType): StructLayout {
-  var fields = type.struct_.unwrap()
+fun memory_layout_struct(type: EggType): StructLayout {
+  var fields = type.struct_()
 
   | Sort the field names alphabetically.
   var field_names = list[String]()
-  for field in type.struct_.unwrap() do field_names.&.push(field.key)
+  for field in fields do field_names.&.push(field.key)
   var field_names = field_names.to_slice()
   field_names.&.sort()
 
   | Layout the fields like we would layout arguments.
-  var field_types = list[PestoType]()
+  var field_types = list[EggType]()
   for field in field_names do field_types.&.push(fields.get(field))
   var layout = field_types.to_slice().memory_layout_args()
 
@@ -217,8 +218,8 @@ struct EnumLayout {
 struct VariantLayout { parts: Slice[VariantPart] }
 enum VariantPart { payload, padding: Int, tag: Int }
 
-fun memory_layout_enum(type: PestoType): EnumLayout {
-  var variants = type.enum_.unwrap()
+fun memory_layout_enum(type: EggType): EnumLayout {
+  var variants = type.enum_()
 
   | Choose the tag size.
   var tag_size = 0

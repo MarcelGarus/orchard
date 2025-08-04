@@ -35,9 +35,7 @@ fun map(
   }
   case enum_(enum_) {
     var payload = enum_.payload.map(mapping.*)
-    if enum_.type.kind().enum_.unwrap().get(enum_.variant)
-      .is_unboxed_recursive()
-    then
+    if enum_.type.variant(enum_.variant).is_unboxed_recursive() then
       payload = builder.new(payload)
     builder.enum_(enum_.type, enum_.variant, payload)
   }
@@ -49,7 +47,7 @@ fun map(
       var case_ = case_.value
       var builder = egg_body_builder().&
 
-      var payload_type = condition.type().kind().enum_.unwrap().get(variant)
+      var payload_type = condition.type().variant(variant)
       var payload = builder.param(payload_type.to_pesto())
       if payload_type.is_unboxed_recursive() then
         payload = builder.load(payload, payload_type.to_pesto())
@@ -68,7 +66,7 @@ fun map(
       "closure" -> lambda.closure.map(mapping.*),
       "body" -> builder.function_ptr(lambda.fun_),
       "free" -> builder.function_ptr(
-        free_box_fun(lambda.closure.type().kind().box.unwrap(), layout.funs)
+        free_box_fun(lambda.closure.type().plum().box.unwrap(), layout.funs)
       ),
     ))
   case call_fun(call) {
@@ -78,7 +76,7 @@ fun map(
     | var args = builder.struct_(args)
 
     builder.call(
-      call.fun_, call.args.map(mapping.*), call.return_type.to_pesto()
+      call.fun_, no_substitutions, call.args.map(mapping.*), call.return_type.to_pesto()
     )
   }
   case call_lambda(call) {
@@ -95,7 +93,7 @@ fun map(
     builder.call_indirect(
       body_ptr,
       call.args.map(mapping.*),
-      call.lambda.type().kind().lambda.unwrap().return_type.to_pesto(),
+      call.lambda.type().plum().lambda.unwrap().return_type.to_pesto(),
     )
   }
   case box(value) {
@@ -104,7 +102,7 @@ fun map(
   case unbox(box) {
     var box_type = box.type()
     var box = box.map(mapping.*)
-    var inner_type = box_type.kind().box.unwrap()
+    var inner_type = box_type.plum().box.unwrap()
     var inner = builder.load(box, inner_type.to_pesto())
     builder.desugared_dup(inner, inner_type)
     builder.desugared_drop(box, box_type, layout.funs)
@@ -129,7 +127,7 @@ fun map(
       ))
     }
 
-    var item_type = id.type().kind().array.unwrap()
+    var item_type = id.type().plum().array.unwrap()
     var buffer = builder.new_buffer(
       item_type.to_pesto(), builder.int(array.items.len)
     )
@@ -153,7 +151,7 @@ fun map(
     var buffer = builder.new_buffer(item_type.to_pesto(), length)
     builder.loop_(list(builder.int(0)).to_slice(), {
       var builder = egg_body_builder().&
-      var cursor = builder.param(PestoType.int)
+      var cursor = builder.param(type_int)
       builder.finish(
         builder.switch_on_ordering(
           builder.compare(cursor, length),
@@ -191,7 +189,7 @@ fun map(
   }
   case unchecked_array_get(args) {
     var array_type = args.array.type()
-    var item_type = array_type.kind().array.unwrap()
+    var item_type = array_type.plum().array.unwrap()
     var array = args.array.map(mapping.*)
     var index = args.index.map(mapping.*)
     var item = builder.load_buffer_item(
@@ -205,7 +203,7 @@ fun map(
   }
   case unchecked_array_set(args) {
     var array_type = args.array.type()
-    var item_type = array_type.kind().array.unwrap()
+    var item_type = array_type.plum().array.unwrap()
     var array = args.array.map(mapping.*)
     var index = args.index.map(mapping.*)
     var item = args.item.map(mapping.*)
@@ -227,7 +225,7 @@ fun map(
         builder.decrement_refcount(buffer)
         builder.loop_(list(builder.int(0)).to_slice(), {
           var builder = egg_body_builder().&
-          var cursor = builder.param(PestoType.int)
+          var cursor = builder.param(type_int)
           builder.finish(builder.switch_on_ordering(
             builder.compare(cursor, length),
             {
@@ -239,12 +237,11 @@ fun map(
                 copy, item_type.to_pesto(), cursor, item
               )
               builder.finish(builder.continue_(
-                list(builder.add(cursor, builder.int(1))).to_slice(),
-                PestoType.ptr,
+                list(builder.add(cursor, builder.int(1))).to_slice(), type_ptr
               ))
             },
             egg_body_builder().finish(copy),
-            egg_body_builder().finish_with_unreachable(PestoType.ptr),
+            egg_body_builder().finish_with_unreachable(type_ptr),
           ))
         })
         builder.finish(builder.struct_(map(
@@ -286,11 +283,11 @@ fun map(
 | Traverses the value and dups all inner values. If it reaches a pointer, it
 | just increments that pointer's reference count instead of traversing further.
 fun desugared_dup(
-  builder: &EggBodyBuilder, value: EggId, type: PlumType
+  builder: &EggBodyBuilder, value: EggId, type: EggType
 ) {
   if not(type.to_pesto().contains_ptr()) then return {}
 
-  switch type.kind()
+  switch type.plum()
   case variable unreachable()
   case byte {}
   case int {}
@@ -300,13 +297,13 @@ fun desugared_dup(
     builder.increment_refcount(builder.member(value, "buffer")).ignore()
   case never builder.unreachable(type_nothing).ignore()
   case struct_
-    for field in type.kind().struct_.unwrap() do
+    for field in type.plum().struct_.unwrap() do
       builder.desugared_dup(builder.member(value, field.key), field.value)
   case enum_ {
     var cases = map[String, EggBody]()
-    for variant in type.kind().enum_.unwrap() do {
+    for variant in type.enum_() do {
       var builder = egg_body_builder().&
-      var payload_type = value.type().kind().enum_.unwrap().get(variant.key)
+      var payload_type = value.type().variant(variant.key)
       var payload = builder.param(payload_type)
       if payload_type.is_unboxed_recursive() then
         builder.increment_refcount(payload).ignore()
@@ -325,12 +322,12 @@ fun desugared_dup(
 | the reference count reaches zero, it drops the pointed-to value and frees the
 | allocation.
 fun desugared_drop(
-  builder: &EggBodyBuilder, value: EggId, type: PlumType,
+  builder: &EggBodyBuilder, value: EggId, type: EggType,
   funs: &Map[String, EggFun],
 ) {
   if not(type.to_pesto().contains_ptr()) then return {}
 
-  switch type.kind()
+  switch type.plum()
   case variable unreachable()
   case byte {}
   case int {}
@@ -340,6 +337,7 @@ fun desugared_drop(
       var builder = egg_body_builder().&
       builder.call(
         free_box_fun(inner_type, funs),
+        no_substitutions,
         list(value).to_slice(),
         type_nothing.to_pesto(),
       )
@@ -352,6 +350,7 @@ fun desugared_drop(
       var builder = egg_body_builder().&
       builder.call(
         free_buffer_fun(item_type, funs),
+        no_substitutions,
         list(buffer).to_slice(),
         type_nothing.to_pesto(),
       )
@@ -360,7 +359,7 @@ fun desugared_drop(
   }
   case never {}
   case struct_
-    for field in type.kind().struct_.unwrap() do
+    for field in type.plum().struct_.unwrap() do
       builder.desugared_drop(
         builder.member(value, field.key), field.value, funs
       )
@@ -375,6 +374,7 @@ fun desugared_drop(
           var builder = egg_body_builder().&
           builder.call(
             free_box_fun(payload_type, funs),
+            no_substitutions,
             list(payload).to_slice(),
             type_nothing.to_pesto(),
           )
@@ -402,14 +402,14 @@ fun desugared_drop(
 }
 
 | Expects a box with refcount 0. Drops the inner value and frees the allocation.
-fun free_box_fun(inner_type: PlumType, funs: &Map[String, EggFun]): String {
+fun free_box_fun(inner_type: EggType, funs: &Map[String, EggFun]): String {
   var signature = "free (Box {inner_type})"
   if funs.contains(signature) then return signature
   funs.put(signature, uninitialized[EggFun]().*)
   funs.put(signature, EggFun {
     body = {
       var builder = egg_body_builder().&
-      var box = builder.param(PestoType.ptr)
+      var box = builder.param(type_ptr)
       var inner = builder.load(box, inner_type.to_pesto())
       builder.desugared_drop(inner, inner_type, funs)
       builder.free(box, inner_type.to_pesto())
@@ -421,7 +421,7 @@ fun free_box_fun(inner_type: PlumType, funs: &Map[String, EggFun]): String {
 
 | Expects an array with refcount 0. Drops the inner values and frees the
 | allocation.
-fun free_buffer_fun(item_type: PlumType, funs: &Map[String, EggFun]): String {
+fun free_buffer_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
   var signature = "drop (Buffer {item_type})"
   if funs.contains(signature) then return signature
   funs.put(signature, uninitialized[EggFun]().*)
@@ -461,4 +461,88 @@ fun free_buffer_fun(item_type: PlumType, funs: &Map[String, EggFun]): String {
     }
   })
   signature
+}
+
+var type_pesto_array = type_struct(map(
+  "buffer" -> type_ptr,
+  "start" -> type_ptr,
+  "length" -> type_ptr,
+))
+
+var type_pesto_lambda = type_struct(map(
+  "closure" -> type_ptr,
+  "body" -> type_ptr,
+  "free" -> type_ptr,
+))
+
+fun to_pesto(type: EggType): EggType {
+  switch type.plum_not_extended()
+  case variable unreachable()
+  case byte type_byte
+  case int type_int
+  case type type_nothing
+  case box type_ptr
+  case array type_pesto_array
+  case never type_never
+  case struct_(struct_) {
+    var fields = map[String, EggType]()
+    for field in struct_ do fields.&.put(field.key, field.value.to_pesto())
+    type_struct(fields)
+  }
+  case enum_(enum_) {
+    var variants = map[String, EggType]()
+    for variant in enum_ do {
+      var payload = variant.value
+      variants.&.put(
+        variant.key,
+        if payload.is_unboxed_recursive() then
+          type_ptr
+        else
+          payload.to_pesto(),
+      )
+    }
+    type_enum(variants)
+  }
+  case lambda type_pesto_lambda
+  case recursive unreachable() | TODO: panics for recursive structs
+}
+
+fun is_unboxed_recursive(type: EggType): Bool { type.is_unboxed_recursive(1) }
+fun is_unboxed_recursive(type: EggType, depth: Int): Bool {
+  switch type.plum_not_extended()
+  case variable unreachable()
+  case never false
+  case byte false
+  case int false
+  case type false
+  case box false
+  case array false
+  case struct_(struct_) {
+    for field in struct_ do
+      if field.value.is_unboxed_recursive(depth + 1) then return true
+    false
+  }
+  case enum_(enum_) {
+    for variant in enum_ do
+      if variant.value.is_unboxed_recursive(depth + 1) then return true
+    false
+  }
+  case lambda false
+  case recursive(level) level >= depth
+}
+
+fun contains_ptr(type: EggType): Bool {
+  switch type.pesto()
+  case never false
+  case byte false
+  case int false
+  case struct_(fields) {
+    for field in fields do if field.value.contains_ptr() then return true
+    false
+  }
+  case enum_(variants) {
+    for variant in variants do if variant.value.contains_ptr() then return true
+    false
+  }
+  case ptr true
 }

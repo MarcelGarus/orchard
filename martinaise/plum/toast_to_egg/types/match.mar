@@ -16,41 +16,41 @@
 import mod.mar
 
 fun match_against(
-  concrete: PlumType, generic: PlumType, constraints: &TypeVariableConstraints
+  concrete: EggType, generic: EggType, constraints: &TypeVariableConstraints
 ): Bool {
   concrete.match_against(
-    generic, constraints, list[Tuple2[PlumType, PlumType]]().&
+    generic, constraints, list[Tuple2[EggType, EggType]]().&
   )
 }
 fun match_against(
-  concrete: Slice[PlumType], generic: Slice[PlumType],
+  concrete: Slice[EggType], generic: Slice[EggType],
   constraints: &TypeVariableConstraints
 ): Bool {
   concrete.match_against(
-    generic, constraints, list[Tuple2[PlumType, PlumType]]().&
+    generic, constraints, list[Tuple2[EggType, EggType]]().&
   )
 }
 | TODO: replace with a simple map
 | A mapping from type variables (lowercase) to concrete types that they need to
 | be replaced with.
-struct Substitutions { substitutions: Map[String, PlumType] }
-var no_substitutions = Substitutions { substitutions = map[String, PlumType]() }
+struct Substitutions { substitutions: Map[String, EggType] }
+var no_substitutions = Substitutions { substitutions = map[String, EggType]() }
 struct TypeVariableConstraints {
-  constraints: List[Tuple2[String, PlumType]]
+  constraints: List[Tuple2[String, EggType]]
 }
 
 fun constraints(): TypeVariableConstraints {
   TypeVariableConstraints {
-    constraints = list[Tuple2[String, PlumType]]()
+    constraints = list[Tuple2[String, EggType]]()
   }
 }
-fun add(constraints: &TypeVariableConstraints, name: String, type: PlumType) {
+fun add(constraints: &TypeVariableConstraints, name: String, type: EggType) {
   constraints.constraints.&.push(tuple(name, type))
 }
 fun check_coherency(
   constraints: TypeVariableConstraints
 ): Maybe[Substitutions] {
-  var substitutions = map[String, PlumType]()
+  var substitutions = map[String, EggType]()
   for constraint in constraints.constraints do {
     var variable = constraint.a
     var concrete = constraint.b
@@ -64,9 +64,9 @@ fun check_coherency(
   some(Substitutions { substitutions })
 }
 fun match_against(
-  concrete: PlumType, generic: PlumType,
+  concrete: EggType, generic: EggType,
   constraints: &TypeVariableConstraints,
-  currently_matching: &List[Tuple2[PlumType, PlumType]],
+  currently_matching: &List[Tuple2[EggType, EggType]],
 ): Bool {
   if currently_matching.iter().&.find(tuple(concrete, generic)) is some(index)
   then return true
@@ -81,13 +81,13 @@ fun match_against(
   result
 }
 fun match_against_logic(
-  concrete: PlumType, generic: PlumType,
+  concrete: EggType, generic: EggType,
   constraints: &TypeVariableConstraints,
-  currently_matching: &List[Tuple2[PlumType, PlumType]],
+  currently_matching: &List[Tuple2[EggType, EggType]],
 ): Bool {
   var original_concrete = concrete
-  var generic  = generic.kind()
-  var concrete = concrete.kind()
+  var generic  = generic.plum()
+  var concrete = concrete.plum()
 
   if concrete is never then return true
 
@@ -141,9 +141,9 @@ fun match_against_logic(
   }
 }
 fun match_against(
-  concrete: Slice[PlumType], generic: Slice[PlumType],
+  concrete: Slice[EggType], generic: Slice[EggType],
   constraints: &TypeVariableConstraints,
-  currently_matching: &List[Tuple2[PlumType, PlumType]],
+  currently_matching: &List[Tuple2[EggType, EggType]],
 ): Bool {
   concrete.len == generic.len or return false
   for both in zip(concrete.iter(), generic.iter()) do
@@ -164,16 +164,15 @@ fun write[W](writer: W, substitutions: Substitutions) {
 | Specializing types  
 | For example, specializing (List t) using {t -> Int} to (List Int).
 
-
 fun specialize(
-  type: PlumType, substitutions: Substitutions
-): PlumType {
+  type: EggType, substitutions: Substitutions
+): EggType {
   type.specialize_rec(substitutions).canonicalize()
 }
 fun specialize_rec(
-  type: PlumType, substitutions: Substitutions
-): PlumType {
-  switch type.internal_kind()
+  type: EggType, substitutions: Substitutions
+): EggType {
+  switch type.plum_not_extended()
   case variable(name)
     substitutions.substitutions.get_maybe(name) or
       panic("substitution for {name} missing: {substitutions.substitutions}")
@@ -197,23 +196,23 @@ fun specialize_rec(
   case recursive type
 }
 fun specialize_rec(
-  types: Map[String, PlumType], substitutions: Substitutions
-): Map[String, PlumType] {
-  var specialized = map[String, PlumType]()
+  types: Map[String, EggType], substitutions: Substitutions
+): Map[String, EggType] {
+  var specialized = map[String, EggType]()
   for entry in types do
     specialized.&.put(entry.key, entry.value.specialize_rec(substitutions))
   specialized
 }
 fun specialize_rec(
-  types: Slice[PlumType], substitutions: Substitutions
-): Slice[PlumType] {
-  var specialized = list[PlumType]()
+  types: Slice[EggType], substitutions: Substitutions
+): Slice[EggType] {
+  var specialized = list[EggType]()
   for type in types do specialized.&.push(type.specialize_rec(substitutions))
   specialized.to_slice()
 }
 
 fun specialize(a: Substitutions, b: Substitutions): Substitutions {
-  var result = map[String, PlumType]()
+  var result = map[String, EggType]()
   for entry in a.substitutions do
     result.&.put(entry.key, entry.value.specialize(b))
   Substitutions { substitutions = result }

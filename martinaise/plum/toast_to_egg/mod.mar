@@ -38,7 +38,7 @@ fun compile(
   var visible = visible()
   var builder = egg_body_builder().&
 
-  var param_types = list[PlumType]()
+  var param_types = list[EggType]()
   for param in fun_.params do {
     var type = param.type.compile(module, types)?
     visible.&.define(param.name.string, builder.param(type))
@@ -116,7 +116,7 @@ fun compile(
     case switch_(switch_) {
       | Compile the condition.
       var condition = switch_.condition.compile(builder, module, visible, context)?
-      var variant_types = condition.type().kind().enum_
+      var variant_types = condition.type().plum().enum_
         or return error[EggId, Error](error(
           "Switched on non-enum: {condition.type()}", switch_.percent.src
         ))
@@ -145,7 +145,7 @@ fun compile(
 
       | Compile the individual cases.
       var case_compilers = map[String, Tuple2[EggBodyBuilder, EggId]]()
-      var case_types = list[PlumType]()
+      var case_types = list[EggType]()
       for case_ in switch_.cases do {
         var symbol = case_.symbol.string
         var snapshot = visible.snapshot()
@@ -213,16 +213,11 @@ fun compile(
         case name(name) {
           | Check if the call is actually a struct access.
           if args.len == 1 then
-            if args.get(0).type().internal_kind() is struct_(fields) then
-              if fields.contains(name.string) then {
-                | This is a struct access!
-                var struct_ = args.get(0)
-                var field_type = struct_.type().kind()
-                  .struct_.unwrap().get(name.string)
+            if args.get(0).type().plum_not_extended() is struct_(fields) then
+              if fields.contains(name.string) then
                 return ok[EggId, Error](
-                  builder.member(struct_, name.string)
+                  builder.member(args.get(0), name.string)
                 )
-              }
 
           switch visible.lookup(name.string)
           case some none[StringAndSrc]()
@@ -247,7 +242,7 @@ fun compile(
                   ))
               FunArg { value = some(type_value), type = type_type }
             } else
-              FunArg { value = none[PlumType](), type = arg.type() }
+              FunArg { value = none[EggType](), type = arg.type() }
           )
         }
         var arg_values = arg_values.to_slice()
@@ -273,7 +268,7 @@ fun compile(
       case none { | lambda
         var lambda = call.function.compile(builder, module, visible, context)?
         var lambda_type = lambda.type()
-        var lambda_type = lambda_type.kind().lambda or
+        var lambda_type = lambda_type.plum().lambda or
           return return error[EggId, Error](error(
             "Tried to call non-lambda: {lambda_type}", call.function.src()
           ))
@@ -329,7 +324,7 @@ fun compile_pattern(
       "Type literals can't be in patterns.", pattern.src()
     ))
   case struct_(pattern) {
-    var field_types = matched.type().kind().struct_ or
+    var field_types = matched.type().plum().struct_ or
       return error[Nothing, Error](error(
         "Tried to use a struct pattern to match on {matched.type()}.",
         pattern.ampersand.src,

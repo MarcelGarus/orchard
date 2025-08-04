@@ -19,6 +19,7 @@ import dag.mar
 import equivalent.mar
 import format.mar
 | import run.mar
+import types.mar
 
 | All EggExprs are allocated and managed by the DAG in dag.mar. This allows
 | using EggIds everywhere instead of having to use references.
@@ -27,7 +28,7 @@ struct Egg { entry_point: String, funs: Map[String, EggFun] }
 struct EggFun { body: EggBody }
 struct EggBody { params: Slice[EggId], children: Slice[EggId], returns: EggId }
 enum EggExpr {
-  param: PlumType,
+  param: EggType,
   case_param: EggCaseParam,
 
   | byte stuff
@@ -84,7 +85,7 @@ enum EggExpr {
   string: String,
 
   | type stuff
-  type: PlumType,
+  type: EggType,
   cast: EggCast,
   type_info: EggId,
   static_to_dynamic: EggId,
@@ -92,7 +93,7 @@ enum EggExpr {
 
   | diverging stuff
   crash: EggCrash,
-  unreachable: PlumType,
+  unreachable: EggType,
   | TODO: add halt
 
   | loop stuff
@@ -104,14 +105,12 @@ enum EggExpr {
   drop: EggDrop,
 
   | heap stuff
-  pesto_param: PestoType,
   function_ptr: String,
-  pesto_call_fun: EggPestoCallFun,
   call_indirect: EggCallIndirect,
   new: EggId,
   load: EggLoad,
   free: EggFree,
-  get_refcount: EggId,
+  get_refcount: EggGetRefcount,
   set_refcount: EggSetRefcount,
   new_buffer: EggNewBuffer,
   get_buffer_length: EggId,
@@ -119,65 +118,58 @@ enum EggExpr {
   store_buffer_item: EggStoreBufferItem,
   store_buffer_bytes: EggStoreBufferBytes,
   free_buffer: EggFreeBuffer,
-  pesto_crash: EggPestoCrash,
-  pesto_unreachable: PestoType,
-  pesto_continue: EggPestoContinue,
 }
 struct EggCaseParam { switch_on: EggId, variant: String }
 struct EggMember { of: EggId, name: String }
-struct EggEnum { type: PlumType, variant: String, payload: EggId }
+struct EggEnum { type: EggType, variant: String, payload: EggId }
 struct EggSwitch { condition: EggId, cases: Map[String, EggBody] }
-struct EggRawLambda { fun_: String, closure: EggId, type: PlumType }
+struct EggRawLambda { fun_: String, closure: EggId, type: EggType }
 | TODO: have generic_call with substitutions
 struct EggCallFun {
   fun_: String,
   substitutions: Substitutions,
   args: Slice[EggId],
-  return_type: PlumType,
+  return_type: EggType,
 }
 struct EggCallBuiltin {
   builtin: EggBuiltin, substitutions: Substitutions, args: Slice[EggId]
 }
 struct EggCallLambda { lambda: EggId, args: Slice[EggId] }
-struct EggArray { items: Slice[EggId], item_type: PlumType }
+struct EggArray { items: Slice[EggId], item_type: EggType }
 struct EggGenerateArray { length: EggId, generator: EggBody }
 struct EggArrayGet { array: EggId, index: EggId }
 struct EggArraySet { array: EggId, index: EggId, item: EggId }
 struct EggArraySlice { array: EggId, start: EggId, end: EggId }
-struct EggDynamicToStatic { dynamic: EggId, static: PlumType }
-struct EggCast { what: EggId, type: PlumType }
-struct EggCrash { message: EggId, type: PlumType }
+struct EggDynamicToStatic { dynamic: EggId, static: EggType }
+struct EggCast { what: EggId, type: EggType }
+struct EggCrash { message: EggId, type: EggType }
 struct EggLoop { initial: Slice[EggId], body: EggBody }
-struct EggContinue { next: Slice[EggId], type: PlumType }
-struct EggDup { id: EggId, type: PlumType }
-struct EggDrop { id: EggId, type: PlumType }
-struct EggLoad { ptr: EggId, type: PestoType }
-struct EggFree { ptr: EggId, type: PestoType }
+struct EggContinue { next: Slice[EggId], type: EggType }
+struct EggDup { id: EggId, type: EggType }
+struct EggDrop { id: EggId, type: EggType }
+struct EggCallIndirect {
+  function_ptr: EggId, args: Slice[EggId], return_type: EggType
+}
+struct EggLoad { ptr: EggId, type: EggType }
+struct EggFree { ptr: EggId, type: EggType }
+struct EggGetRefcount { ptr: EggId }
 struct EggSetRefcount { ptr: EggId, refcount: EggId }
-struct EggNewBuffer { item_type: PestoType, length: EggId }
-struct EggLoadBufferItem { buffer: EggId, item_type: PestoType, index: EggId }
+struct EggNewBuffer { item_type: EggType, length: EggId }
+struct EggLoadBufferItem { buffer: EggId, item_type: EggType, index: EggId }
 struct EggStoreBufferItem {
-  buffer: EggId, item_type: PestoType, index: EggId, item: EggId
+  buffer: EggId, item_type: EggType, index: EggId, item: EggId
 }
 struct EggStoreBufferBytes { buffer: EggId, bytes: Slice[Byte] }
-struct EggFreeBuffer { buffer: EggId, item_type: PestoType }
-struct EggPestoCallFun {
-  fun_: String, args: Slice[EggId], return_type: PestoType
-}
-struct EggCallIndirect {
-  function_ptr: EggId, args: Slice[EggId], return_type: PestoType
-}
-struct EggPestoCrash { message: EggId, type: PestoType }
-struct EggPestoContinue { next: Slice[EggId], type: PestoType }
+struct EggFreeBuffer { buffer: EggId, item_type: EggType }
 
-fun signature(module: Module, name: String, params: Slice[PlumType]): String {
+fun signature(module: Module, name: String, params: Slice[EggType]): String {
   var b = string_builder().&
   b."{module}.{name}"
   for param in params do b." {param}"
   b.to_string()
 }
 
-fun return_type(fun_: EggFun): PlumType { fun_.body.returns.type() }
+fun return_type(fun_: EggFun): EggType { fun_.body.returns.type() }
 
 fun verify(fun_: EggFun) {
   if fun_.body.captured().is_not_empty() then
