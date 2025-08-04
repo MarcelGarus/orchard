@@ -29,20 +29,20 @@
 
 import mod.mar
 
-fun union(types: Slice[EggType]): Result[EggType, String] {
+fun union(types: Slice[PlumType]): Result[PlumType, String] {
   var common = types.get(0)
   for type in types.without_first() do
     common = union(common, type)?
-  ok[EggType, String](common)
+  ok[PlumType, String](common)
 }
-fun union(a: EggType, b: EggType): Result[EggType, String] {
+fun union(a: PlumType, b: PlumType): Result[PlumType, String] {
   | eprint("Unioning {a} and {b}")
-  var stack = list[Tuple3[JoinMode, EggType, EggType]]()
+  var stack = list[Tuple3[JoinMode, PlumType, PlumType]]()
   var result = join(JoinMode.union, a, b, stack.&)
   | eprintln(" done")
   switch result
-  case some(type) ok[EggType, String](type.canonicalize())
-  case none error[EggType, String]({
+  case some(type) ok[PlumType, String](type.canonicalize())
+  case none error[PlumType, String]({
     var b = string_builder().&
     b."Unioning types failed. This is the unioning stack:\n"
     for entry in stack do b."{entry.a.debug()}\n  {entry.b}\n  {entry.c}"
@@ -59,9 +59,9 @@ fun ==(a: JoinMode, b: JoinMode): Bool {
   case intersection b is intersection
 }
 fun join(
-  mode: JoinMode, a: EggType, b: EggType,
-  currently_joining: &List[Tuple3[JoinMode, EggType, EggType]],
-): Maybe[EggType] {
+  mode: JoinMode, a: PlumType, b: PlumType,
+  currently_joining: &List[Tuple3[JoinMode, PlumType, PlumType]],
+): Maybe[PlumType] {
   if a == b then return some(a)
   if currently_joining.iter().&.find(tuple(mode, a, b)) is some(index) then {
     var level = currently_joining.len - index
@@ -69,14 +69,14 @@ fun join(
   }
   currently_joining.push(tuple(mode, a, b))
   var result = join_logic(mode, a, b, currently_joining)
-    or return none[EggType]()
+    or return none[PlumType]()
   currently_joining.pop()
   some(result)
 }
 fun join_logic(
-  mode: JoinMode, a: EggType, b: EggType,
-  currently_joining: &List[Tuple3[JoinMode, EggType, EggType]],
-): Maybe[EggType] {
+  mode: JoinMode, a: PlumType, b: PlumType,
+  currently_joining: &List[Tuple3[JoinMode, PlumType, PlumType]],
+): Maybe[PlumType] {
   if a.internal_kind() is never then
     return some(switch mode case union b case intersection a)
   if b.internal_kind() is never then
@@ -87,38 +87,38 @@ fun join_logic(
 
   switch a
   case variable(a_name) {
-    var b_name = b.variable or return none[EggType]()
-    a_name == b_name or return none[EggType]()
+    var b_name = b.variable or return none[PlumType]()
+    a_name == b_name or return none[PlumType]()
     some(type_variable(a_name))
   }
-  case byte if b is byte then some(type_byte) else none[EggType]()
-  case int if b is int then some(type_int) else none[EggType]()
+  case byte if b is byte then some(type_byte) else none[PlumType]()
+  case int if b is int then some(type_int) else none[PlumType]()
   case never unreachable()
-  case type if b is type then some(type_type) else none[EggType]()
+  case type if b is type then some(type_type) else none[PlumType]()
   case box(a_inner) {
-    var b_inner = b.box or return none[EggType]()
+    var b_inner = b.box or return none[PlumType]()
     var item =
-      join(mode, a_inner, b_inner, currently_joining) or return none[EggType]()
+      join(mode, a_inner, b_inner, currently_joining) or return none[PlumType]()
     some(type_box_without_canonicalizing(item))
   }
   case array(a_item) {
-    var b_item = b.array or return none[EggType]()
+    var b_item = b.array or return none[PlumType]()
     var item =
-      join(mode, a_item, b_item, currently_joining) or return none[EggType]()
+      join(mode, a_item, b_item, currently_joining) or return none[PlumType]()
     some(type_array_without_canonicalizing(item))
   }
   case struct_(a_fields) {
-    var b_fields = b.struct_ or return none[EggType]()
-    var fields = map[String, EggType]()
-    a_fields.size == b_fields.size or return none[EggType]()
+    var b_fields = b.struct_ or return none[PlumType]()
+    var fields = map[String, PlumType]()
+    a_fields.size == b_fields.size or return none[PlumType]()
     for a_field in a_fields do {
       var key = a_field.key
       var a_type = a_field.value
-      var b_type = b_fields.get_maybe(key) or return none[EggType]()
+      var b_type = b_fields.get_maybe(key) or return none[PlumType]()
       fields.&.put(
         key,
         join(mode, a_type, b_type, currently_joining)
-          or return none[EggType](),
+          or return none[PlumType](),
       )
     }
     some(type_struct_without_canonicalizing(fields))
@@ -126,8 +126,8 @@ fun join_logic(
   case enum_(a_variants) {
     switch mode
     case union {
-      var b_variants = b.enum_ or return none[EggType]()
-      var variants = map[String, EggType]()
+      var b_variants = b.enum_ or return none[PlumType]()
+      var variants = map[String, PlumType]()
       for variant in a_variants do variants.&.put(variant.key, variant.value)
       for variant in b_variants do {
         var key = variant.key
@@ -135,7 +135,7 @@ fun join_logic(
         variants.&.put(key, {
           if variants.get_maybe(key) is some(a_arg) then
             join(mode, a_arg, b_arg, currently_joining)
-              or return none[EggType]()
+              or return none[PlumType]()
           else
             b_arg
         })
@@ -143,39 +143,39 @@ fun join_logic(
       some(type_enum_without_canonicalizing(variants))
     }
     case intersection {
-      var b_variants = b.enum_ or return none[EggType]()
-      var variants = map[String, EggType]()
+      var b_variants = b.enum_ or return none[PlumType]()
+      var variants = map[String, PlumType]()
       for variant in a_variants do {
         var name = variant.key
         var a_arg = variant.value
         var b_arg = b_variants.get_maybe(name) or continue
         var arg = join(mode, a_arg, b_arg, currently_joining)
-          or return none[EggType]()
+          or return none[PlumType]()
         variants.&.put(variant.key, variant.value)
       }
       some(type_enum_without_canonicalizing(variants))
     }
   }
   case lambda(a_lambda) {
-    var b_lambda = b.lambda or return none[EggType]()
+    var b_lambda = b.lambda or return none[PlumType]()
 
     | Lambda parameters are contravariant, the return type is covariant:
     | foo: (\ (| b c) -> (| x y z)) =
     |   condition
     |   % true ->  \ a: (| a b c) -> (| x z) = ...
     |     false -> \ a: (| b c d) -> (| y z) = ...
-    var args = list[EggType]()
-    a_lambda.args.len == b_lambda.args.len or return none[EggType]()
+    var args = list[PlumType]()
+    a_lambda.args.len == b_lambda.args.len or return none[PlumType]()
     for both in zip(a_lambda.args.iter(), b_lambda.args.iter()) do
       args.&.push(
         join(mode.flip(), both.a, both.b, currently_joining)
-          or return none[EggType]()
+          or return none[PlumType]()
       )
     var args = args.to_slice()
 
     var return_type = join(
       mode, a_lambda.return_type, b_lambda.return_type, currently_joining
-    ) or return none[EggType]()
+    ) or return none[PlumType]()
 
     some(type_lambda_without_canonicalizing(args, return_type))
   }

@@ -1,11 +1,9 @@
-| TODO: rename to PlumType
-
 | Types  
 |
-| The Plum compiler represents EggTypes as Strings. That might sound like it's
-| more difficult to work with than an enum, but an enum actually provides us
-| with a false sense of security: Because types can be recursive, you can't
-| naively traverse down into types. For example, consider this linked list type:
+| The Plum compiler represents types as Strings. That might sound like it's more
+| difficult to work with than an enum, but an enum actually provides us with a
+| false sense of security: Because types can be recursive, you can't naively
+| traverse down into types. For example, consider this linked list type:
 |
 | LinkedList t = | empty more: (& item: t rest: (LinkedList t))
 |
@@ -45,8 +43,8 @@
 | Because I chose to represent recursive types as levels, I can no longer
 | naively traverse down into types (as seen in the linked list example above).
 |
-| For a long time, the Plum compiler had an enum that represented EggTypes. One
-| of the variants was "recursive: Int" with a level of how many layers up in the
+| For a long time, the Plum compiler had an enum that represented types. One of
+| the variants was "recursive: Int" with a level of how many layers up in the
 | type tree to continue. Whenever you wanted to switch on a type, you would have
 | to call an extend_one_level() function on the type, which extends it a the
 | bottom so that the types in the branches of the switch are still
@@ -79,10 +77,13 @@
 | them. That is not the case for Plum's structural types! We have to take
 | special care when working with them and strings are both more memory efficient
 | and simplify some of the algorithms.
+|
+| This file is organized in a bottom-up fashion, so you can read it from top to
+| bottom.
 
 import mod.mar
 
-struct EggType {
+struct PlumType {
   string: String
   | This string allows the following patterns (brackets for literals):
   |
@@ -102,12 +103,9 @@ struct EggType {
   | to work with.
 }
 
-fun ==(a: EggType, b: EggType): Bool { a.string == b.string }
-fun hash(hasher: &Hasher, type: EggType) { hasher.hash(type.string) }
-fun write[W](writer: W, type: EggType) { writer.write(type.string) }
-
-| This file is organized in a bottom-up fashion, so you can read it from top to
-| bottom.
+fun ==(a: PlumType, b: PlumType): Bool { a.string == b.string }
+fun hash(hasher: &Hasher, type: PlumType) { hasher.hash(type.string) }
+fun write[W](writer: W, type: PlumType) { writer.write(type.string) }
 
 struct ConsumedName { name: String, rest: String }
 fun consume_name(string: String): ConsumedName {
@@ -137,7 +135,7 @@ fun consume_type(string: String): ConsumedType {
 }
 
 | Checks that no recursive type points out of the type.
-fun is_self_contained(type: EggType): Bool {
+fun is_self_contained(type: PlumType): Bool {
   var cursor = 0
   var nesting = 0
   loop {
@@ -157,14 +155,22 @@ fun is_self_contained(type: EggType): Bool {
 | two types are equivalent:
 | (| a: (&) b: (^1))
 | (| a: (&) b: (| a b: (^1)))
-fun is_equivalent(a: EggType, b: EggType): Bool {
+fun is_equivalent(a: PlumType, b: PlumType): Bool {
   if a == b then return true
 
-  | Proving that two types are equivalent sounds difficult. But rather than
-  | showing that one type can be transformed into the other, we only need to
-  | show that there are no incompatibilities between them. We do that by doing a
-  | breadth-first search for incompatiblities. A single item in the search space
-  | is a tuple of two cursors into the type strings.
+  | Proving that two types are equivalent sounds difficult. But we don't need to
+  | prove _how_ one type representation can be transformed into the other, only
+  | _that_ it can be transformed.
+  | We do that using a breadth-first search for incompatiblities between both
+  | types. A single item in the search space is a tuple of two cursors into the
+  | type strings. We start with cursors (0, 0) and for each tuple that we want
+  | to prove equal, we only do a shallow comparison (structs with same field
+  | names, enums with same variant names, etc.) and append more cursor tuples to
+  | our queue (for the comparison of the inner types). Because of the
+  | first-class representation of types as strings, we don't need to "wrap types
+  | around" – if we encounter a recursive type, we just move the cursor to the
+  | left by the appropriate amount. Because both type strings are finite and we
+  | make sure to not revisit pairs of cursors, this terminates.
 
   | The visited list contains all cursor pairs that we have visited. We don't
   | need to revisit them since the search queue already contains its children,
@@ -277,13 +283,13 @@ fun is_equivalent(a: EggType, b: EggType): Bool {
   }
 }
 
-fun count_recursions(type: EggType): Int {
+fun count_recursions(type: PlumType): Int {
   var count = 0
   for char in type.string.chars() do if char == #^ then count = count + 1
   count
 }
 
-fun bubble_up_recursion(type: EggType, index: Int): EggType {
+fun bubble_up_recursion(type: PlumType, index: Int): PlumType {
   var string = type.string
   var chars = string.chars()
 
@@ -336,7 +342,7 @@ fun bubble_up_recursion(type: EggType, index: Int): EggType {
   | Now, tick points to the ^ char of the recursive type. Opening and closing
   | point to the parentheses of the recursive type. parent_opening and
   | parent_closing point to the parentheses of the surrounding type.
-  EggType {
+  PlumType {
     string =
       "{string.substr(0..parent_opening)}
       '{string.substr(opening..closing)}
@@ -348,14 +354,14 @@ fun bubble_up_recursion(type: EggType, index: Int): EggType {
 |
 | Input  = (| a b: (| a b: (^1)))
 | Output = (| a b: (^1))
-fun canonicalize(type: EggType): EggType {
+fun canonicalize(type: PlumType): PlumType {
   if canonicalized.get_maybe(type) is some(canon) then return canon
   var canon = type.canonicalize_uncached()
   canonicalized.&.put(type, canon)
   canon
 }
-var canonicalized = map[EggType, EggType]()
-fun canonicalize_uncached(type: EggType): EggType {
+var canonicalized = map[PlumType, PlumType]()
+fun canonicalize_uncached(type: PlumType): PlumType {
   var counter = 0
   var i = 0
   loop {
@@ -381,7 +387,7 @@ fun canonicalize_uncached(type: EggType): EggType {
 |   (| a: (&) b: (^1))
 |   (| a: (&) b: (Root))
 | = (| a: (&) b: (| a: (&) b: (^2)))
-fun extend_recursive_types(type: EggType, extension: EggType): EggType {
+fun extend_recursive_types(type: PlumType, extension: PlumType): PlumType {
   var b = string_builder().&
 
   var nesting = 0
@@ -406,40 +412,40 @@ fun extend_recursive_types(type: EggType, extension: EggType): EggType {
     b."{c}"
     cursor = cursor + 1
   }
-  EggType { string = b.to_string() }
+  PlumType { string = b.to_string() }
 }
 
-enum InternalEggTypeKind {
+enum InternalPlumTypeKind {
   variable: String,
   never,
   byte,
   int,
   type,
-  box: EggType,
-  array: EggType,
-  struct_: Map[String, EggType],
-  enum_: Map[String, EggType],
-  lambda: EggLambdaType,
+  box: PlumType,
+  array: PlumType,
+  struct_: Map[String, PlumType],
+  enum_: Map[String, PlumType],
+  lambda: PlumLambdaType,
   recursive: Int,
 }
 
-fun internal_kind(type: EggType): InternalEggTypeKind {
+fun internal_kind(type: PlumType): InternalPlumTypeKind {
   var string = type.string.without_first(1).without_last(1) | cut parentheses
-  if string == "Never" then return InternalEggTypeKind.never
-  if string == "Byte" then return InternalEggTypeKind.byte
-  if string == "Int" then return InternalEggTypeKind.int
-  if string == "Type" then return InternalEggTypeKind.type
+  if string == "Never" then return InternalPlumTypeKind.never
+  if string == "Byte" then return InternalPlumTypeKind.byte
+  if string == "Int" then return InternalPlumTypeKind.int
+  if string == "Type" then return InternalPlumTypeKind.type
   if string.starts_with("Box ") then
-    return InternalEggTypeKind.box(EggType {
+    return InternalPlumTypeKind.box(PlumType {
       string = string.without_first("Box ".len)
     })
   if string.starts_with("Array ") then
-    return InternalEggTypeKind.array(EggType {
+    return InternalPlumTypeKind.array(PlumType {
       string = string.without_first("Array ".len)
     })
   if string.starts_with("&") then {
     var rest = string.without_first("&".len)
-    var fields = map[String, EggType]()
+    var fields = map[String, PlumType]()
     loop {
       if rest.is_empty() then break
       var name = rest.without_first(" ".len).consume_name()
@@ -447,14 +453,14 @@ fun internal_kind(type: EggType): InternalEggTypeKind {
       var name = name.name
       var type = rest.without_first(": ".len).consume_type()
       rest = type.rest
-      var type = EggType { string = type.type }
+      var type = PlumType { string = type.type }
       fields.&.put(name, type)
     }
-    return InternalEggTypeKind.struct_(fields)
+    return InternalPlumTypeKind.struct_(fields)
   }
   if string.starts_with("|") then {
     var rest = string.without_first("|".len)
-    var variants = map[String, EggType]()
+    var variants = map[String, PlumType]()
     loop {
       if rest.is_empty() then break
       var name = rest.without_first(" ".len).consume_name()
@@ -462,32 +468,32 @@ fun internal_kind(type: EggType): InternalEggTypeKind {
       var name = name.name
       var type = rest.without_first(": ".len).consume_type()
       rest = type.rest
-      var type = EggType { string = type.type }
+      var type = PlumType { string = type.type }
       variants.&.put(name, type)
     }
-    return InternalEggTypeKind.enum_(variants)
+    return InternalPlumTypeKind.enum_(variants)
   }
   if string.starts_with("\\ ") then {
     var rest = string.without_first("\\ ".len)
-    var args = list[EggType]()
+    var args = list[PlumType]()
     loop {
       if rest.starts_with("->") then break
       var arg = rest.consume_type()
       rest = arg.rest.without_first(" ".len)
       var arg = arg.type
-      args.&.push(EggType { string = arg })
+      args.&.push(PlumType { string = arg })
     }
-    var return_type = EggType { string = rest.without_first("-> ".len) }
-    return InternalEggTypeKind.lambda(EggLambdaType {
+    var return_type = PlumType { string = rest.without_first("-> ".len) }
+    return InternalPlumTypeKind.lambda(PlumLambdaType {
       args = args.to_slice(), return_type
     })
   }
   if string.starts_with("^") then {
-    return InternalEggTypeKind.recursive(
+    return InternalPlumTypeKind.recursive(
       string.without_first("^".len).parse_int().unwrap()
     )
   }
-  InternalEggTypeKind.variable(string)
+  InternalPlumTypeKind.variable(string)
 }
 
 | Navigating into types  
@@ -512,68 +518,68 @@ fun internal_kind(type: EggType): InternalEggTypeKind {
 | reference the root with this extension, replacing (Root) with the level that
 | we are currently at.
 
-enum EggTypeKind {
+enum PlumTypeKind {
   variable: String,
   never,
   byte,
   int,
   type,
-  box: EggType,
-  array: EggType,
-  struct_: Map[String, EggType],
-  enum_: Map[String, EggType],
-  lambda: EggLambdaType,
+  box: PlumType,
+  array: PlumType,
+  struct_: Map[String, PlumType],
+  enum_: Map[String, PlumType],
+  lambda: PlumLambdaType,
 }
-struct EggLambdaType { args: Slice[EggType], return_type: EggType }
+struct PlumLambdaType { args: Slice[PlumType], return_type: PlumType }
 
 | This function wraps the type around so you never encounter recursive types.
-fun kind(type: EggType): EggTypeKind {
+fun kind(type: PlumType): PlumTypeKind {
   switch type.internal_kind()
-  case variable(name) EggTypeKind.variable(name)
-  case never EggTypeKind.never
-  case byte EggTypeKind.byte
-  case int EggTypeKind.int
-  case type EggTypeKind.type
+  case variable(name) PlumTypeKind.variable(name)
+  case never PlumTypeKind.never
+  case byte PlumTypeKind.byte
+  case int PlumTypeKind.int
+  case type PlumTypeKind.type
   case box(inner) {
-    var extension = EggType { string = "(Box (Root))" }
-    EggTypeKind.box(inner.extend_recursive_types(extension).canonicalize())
+    var extension = PlumType { string = "(Box (Root))" }
+    PlumTypeKind.box(inner.extend_recursive_types(extension).canonicalize())
   }
   case array(item) {
-    var extension = EggType { string = "(Array (Root))" }
-    EggTypeKind.array(item.extend_recursive_types(extension).canonicalize())
+    var extension = PlumType { string = "(Array (Root))" }
+    PlumTypeKind.array(item.extend_recursive_types(extension).canonicalize())
   }
   case struct_(struct_) {
-    var fields = map[String, EggType]()
+    var fields = map[String, PlumType]()
     for field in struct_ do {
       | Type that is the original struct except the field that we navigate
       | into. This field has been replaced with a recursive type.
       var extension = {
-        var ext_fields = map[String, EggType]()
+        var ext_fields = map[String, PlumType]()
         for ext_field in struct_ do
           ext_fields.&.put(
             ext_field.key,
             if ext_field.key == field.key
-            then EggType { string = "(Root)" }
+            then PlumType { string = "(Root)" }
             else ext_field.value
           )
         type_struct_without_canonicalizing(ext_fields)
       }
       fields.&.put(field.key, field.value.extend_recursive_types(extension).canonicalize())
     }
-    EggTypeKind.struct_(fields)
+    PlumTypeKind.struct_(fields)
   }
   case enum_(enum_) {
-    var variants = map[String, EggType]()
+    var variants = map[String, PlumType]()
     for variant in enum_ do {
       | Type that is the original struct except the variant that we navigate
       | into. This variant has been replaced with a recursive type.
       var extension = {
-        var ext_variants = map[String, EggType]()
+        var ext_variants = map[String, PlumType]()
         for ext_variant in enum_ do
           ext_variants.&.put(
             ext_variant.key,
             if ext_variant.key == variant.key
-            then EggType { string = "(Root)" }
+            then PlumType { string = "(Root)" }
             else ext_variant.value
           )
         type_enum_without_canonicalizing(ext_variants)
@@ -582,12 +588,12 @@ fun kind(type: EggType): EggTypeKind {
         variant.key, variant.value.extend_recursive_types(extension).canonicalize()
       )
     }
-    EggTypeKind.enum_(variants)
+    PlumTypeKind.enum_(variants)
   }
   case lambda(lambda)
-    EggTypeKind.lambda(EggLambdaType {
+    PlumTypeKind.lambda(PlumLambdaType {
       args = {
-        var args = list[EggType]()
+        var args = list[PlumType]()
         for arg in lambda.args do args.&.push(arg.extend_recursive_types(type).canonicalize())
         args.to_slice()
       },
@@ -598,30 +604,30 @@ fun kind(type: EggType): EggTypeKind {
 
 
 
-fun type_variable(name: String): EggType {
+fun type_variable(name: String): PlumType {
   if not(name.get(0).is_lower()) then panic("invalid type variable")
-  EggType { string = "({name})" }
+  PlumType { string = "({name})" }
 }
-var type_never = EggType { string = "(Never)" }
-var type_byte = EggType { string = "(Byte)" }
-var type_int = EggType { string = "(Int)" }
-var type_type = EggType { string = "(Type)" }
-fun type_box(inner: EggType): EggType {
+var type_never = PlumType { string = "(Never)" }
+var type_byte = PlumType { string = "(Byte)" }
+var type_int = PlumType { string = "(Int)" }
+var type_type = PlumType { string = "(Type)" }
+fun type_box(inner: PlumType): PlumType {
   type_box_without_canonicalizing(inner).canonicalize()
 }
-fun type_box_without_canonicalizing(inner: EggType): EggType {
-  EggType { string = "(Box {inner})" }
+fun type_box_without_canonicalizing(inner: PlumType): PlumType {
+  PlumType { string = "(Box {inner})" }
 }
-fun type_array(item: EggType): EggType {
+fun type_array(item: PlumType): PlumType {
   type_array_without_canonicalizing(item).canonicalize()
 }
-fun type_array_without_canonicalizing(item: EggType): EggType {
-  EggType { string = "(Array {item})" }
+fun type_array_without_canonicalizing(item: PlumType): PlumType {
+  PlumType { string = "(Array {item})" }
 }
-fun type_struct(fields: Map[String, EggType]): EggType {
+fun type_struct(fields: Map[String, PlumType]): PlumType {
   type_struct_without_canonicalizing(fields).canonicalize()
 }
-fun type_struct_without_canonicalizing(fields: Map[String, EggType]): EggType {
+fun type_struct_without_canonicalizing(fields: Map[String, PlumType]): PlumType {
   var keys = list[String]()
   for field in fields do keys.&.push(field.key)
   var keys = keys.to_slice()
@@ -630,12 +636,12 @@ fun type_struct_without_canonicalizing(fields: Map[String, EggType]): EggType {
   b."(&"
   for key in keys do b." {key}: {fields.get(key)}"
   b.")"
-  EggType { string = b.to_string() }
+  PlumType { string = b.to_string() }
 }
-fun type_enum(variants: Map[String, EggType]): EggType {
+fun type_enum(variants: Map[String, PlumType]): PlumType {
   type_enum_without_canonicalizing(variants).canonicalize()
 }
-fun type_enum_without_canonicalizing(variants: Map[String, EggType]): EggType {
+fun type_enum_without_canonicalizing(variants: Map[String, PlumType]): PlumType {
   var keys = list[String]()
   for variant in variants do keys.&.push(variant.key)
   var keys = keys.to_slice()
@@ -644,20 +650,20 @@ fun type_enum_without_canonicalizing(variants: Map[String, EggType]): EggType {
   b."(|"
   for key in keys do b." {key}: {variants.get(key)}"
   b.")"
-  EggType { string = b.to_string() }
+  PlumType { string = b.to_string() }
 }
-fun type_lambda(args: Slice[EggType], return_type: EggType): EggType {
+fun type_lambda(args: Slice[PlumType], return_type: PlumType): PlumType {
   type_lambda_without_canonicalizing(args, return_type).canonicalize()
 }
-fun type_lambda_without_canonicalizing(args: Slice[EggType], return_type: EggType): EggType {
+fun type_lambda_without_canonicalizing(args: Slice[PlumType], return_type: PlumType): PlumType {
   var b = string_builder().&
   b."(\\ "
   for arg in args do b."{arg} "
   b."-> {return_type})"
-  EggType { string = b.to_string() }
+  PlumType { string = b.to_string() }
 }
-fun type_recursive(level: Int): EggType {
-  EggType { string = "(^{level})" }
+fun type_recursive(level: Int): PlumType {
+  PlumType { string = "(^{level})" }
 }
 
 
@@ -668,7 +674,7 @@ fun indented[T](value: T): IndentedLimited[T] {
 fun indented_limited[T](value: T, indentation: Indentation, limit: Int): IndentedLimited[T] {
   IndentedLimited { value, indentation, limit }
 }
-fun write[W](writer: W, type: IndentedLimited[EggType]) {
+fun write[W](writer: W, type: IndentedLimited[PlumType]) {
   var indentation = type.indentation
   var limit = type.limit
   writer."{indentation}"
