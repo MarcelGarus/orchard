@@ -1,6 +1,6 @@
-plum.soil: $(shell find compiler -type f)
-	soil ../martinaise/martinaise.soil compile compiler/plum.mar
-	mv compiler/plum.soil plum.soil
+plum.soil: $(shell find martinaise/plum -type f)
+	soil ../martinaise/martinaise.soil compile martinaise/plum/plum.mar
+	mv martinaise/plum/plum.soil plum.soil
 
 playground.ground: $(shell find plum -type f) plum.soil
 	soil plum.soil plum/test/playground
