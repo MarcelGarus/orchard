@@ -15,7 +15,7 @@
 | expression more than once. The drop expression decrements the reference count
 | and frees the value's memory if the reference count reaches zero.
 
-import ../plum.mar
+import mod.mar
 
 fun introduce_ownership(egg: Egg): Egg {
   var funs = map[String, EggFun]()
@@ -36,7 +36,15 @@ fun visit(body: EggBody, reserve: ReserveIds) {
 }
 fun visit(id: EggId, reserve: ReserveIds) {
   if not(reserve.mapping.contains(id)) then
-    reserve.mapping.put(id, create_egg_placeholder())
+    reserve.mapping.put(
+      id,
+      create_with_new_identity(EggExpr.param(
+        if {id.resolve() is dup} or {id.resolve() is drop} then
+          type_nothing
+        else
+          id.type()
+      )),
+    )
   id.visit_children(reserve)
 }
 
@@ -46,7 +54,7 @@ fun introduce_ownership(
 ): EggBody {
   var rev_body = list[EggId]()
 
-  rev_body.&.require(mapping.get(body.returns), needed_later_on)
+  rev_body.&.require(body.returns.map(mapping), needed_later_on)
 
   for id in body.children.rev_iter() do
     id.introduce_ownership(rev_body.&, needed_later_on, mapping)
@@ -54,9 +62,9 @@ fun introduce_ownership(
   var params = list[EggId]()
   for param in body.params do {
     var type = param.type()
-    var param = mapping.get(param)
+    var param = param.map(mapping)
     if not(needed_later_on.contains(param)) then
-      rev_body.&.push(EggExpr.drop(param).create())
+      rev_body.&.push(EggExpr.drop(EggDrop { id = param, type }).create())
     else
       needed_later_on.remove(param)
     params.&.push(update(param, EggExpr.param(type)))
@@ -67,14 +75,14 @@ fun introduce_ownership(
   for id in rev_body.to_slice().rev_iter() do exprs.&.push(id)
   var exprs = exprs.to_slice()
 
-  EggBody { params, children = exprs, returns = mapping.get(body.returns) }
+  EggBody { params, children = exprs, returns = body.returns.map(mapping) }
 }
 
 fun require(
   rev_body: &List[EggId], id: EggId, needed_later_on: &Set[EggId]
 ) {
   if needed_later_on.contains(id) then
-    rev_body.push(EggExpr.dup(id).create())
+    rev_body.push(EggExpr.dup(EggDup { id, type = id.type() }).create())
   else
     needed_later_on.put(id)
 }
@@ -85,95 +93,95 @@ fun introduce_ownership(
   mapping: Map[EggId, EggId],
 ) {
   var expr = id.resolve()
-  var id = mapping.get(id)
+  var id = id.map(mapping)
 
   if not(needed_later_on.contains(id)) then
-    rev_body.&.push(EggExpr.drop(id).create())
+    rev_body.&.push(EggExpr.drop(EggDrop { id, type = id.type() }).create())
   else
     needed_later_on.remove(id)
 
   switch expr
   case byte(byte) rev_body.push(update(id, EggExpr.byte(byte)))
   case lower_byte(int) {
-    var int = mapping.get(int)
+    var int = int.map(mapping)
     rev_body.push(update(id, EggExpr.lower_byte(int)))
     rev_body.require(int, needed_later_on)
   }
   case byte_to_int(byte) {
-    var byte = mapping.get(byte)
+    var byte = byte.map(mapping)
     rev_body.push(update(id, EggExpr.byte_to_int(byte)))
     rev_body.require(byte, needed_later_on)
   }
   case int(int) rev_body.push(update(id, EggExpr.int(int)))
   case add(args) {
-    var args = mapping.get(args)
+    var args = args.map(mapping)
     rev_body.push(update(id, EggExpr.add(args)))
     rev_body.require(args.a, needed_later_on)
     rev_body.require(args.b, needed_later_on)
   }
   case subtract(args) {
-    var args = mapping.get(args)
+    var args = args.map(mapping)
     rev_body.push(update(id, EggExpr.subtract(args)))
     rev_body.require(args.a, needed_later_on)
     rev_body.require(args.b, needed_later_on)
   }
   case multiply(args) {
-    var args = mapping.get(args)
+    var args = args.map(mapping)
     rev_body.push(update(id, EggExpr.multiply(args)))
     rev_body.require(args.a, needed_later_on)
     rev_body.require(args.b, needed_later_on)
   }
   case unchecked_divide(args) {
-    var args = mapping.get(args)
-    rev_body.push(update(id, EggExpr.divide(args)))
+    var args = args.map(mapping)
+    rev_body.push(update(id, EggExpr.unchecked_divide(args)))
     rev_body.require(args.a, needed_later_on)
     rev_body.require(args.b, needed_later_on)
   }
   case unchecked_modulo(args) {
-    var args = mapping.get(args)
-    rev_body.push(update(id, EggExpr.modulo(args)))
+    var args = args.map(mapping)
+    rev_body.push(update(id, EggExpr.unchecked_modulo(args)))
     rev_body.require(args.a, needed_later_on)
     rev_body.require(args.b, needed_later_on)
   }
   case and_(args) {
-    var args = mapping.get(args)
+    var args = args.map(mapping)
     rev_body.push(update(id, EggExpr.and_(args)))
     rev_body.require(args.a, needed_later_on)
     rev_body.require(args.b, needed_later_on)
   }
   case or_(args) {
-    var args = mapping.get(args)
+    var args = args.map(mapping)
     rev_body.push(update(id, EggExpr.or_(args)))
     rev_body.require(args.a, needed_later_on)
     rev_body.require(args.b, needed_later_on)
   }
   case xor(args) {
-    var args = mapping.get(args)
+    var args = args.map(mapping)
     rev_body.push(update(id, EggExpr.xor(args)))
     rev_body.require(args.a, needed_later_on)
     rev_body.require(args.b, needed_later_on)
   }
   case compare(args) {
-    var args = mapping.get(args)
+    var args = args.map(mapping)
     rev_body.push(update(id, EggExpr.compare(args)))
     rev_body.require(args.a, needed_later_on)
     rev_body.require(args.b, needed_later_on)
   }
   case struct_(struct_) {
     var fields = map[String, EggId]()
-    for field in struct_ do fields.&.put(field.key, mapping.get(field.value))
+    for field in struct_ do fields.&.put(field.key, field.value.map(mapping))
     rev_body.push(update(id, EggExpr.struct_(fields)))
     for field in fields do rev_body.require(field.value, needed_later_on)
   }
   case member(member) {
-    var of = mapping.get(member.of)
+    var of = member.of.map(mapping)
     rev_body.push(update(
       id, EggExpr.member(EggMember { of, name = member.name })
     ))
     rev_body.require(of, needed_later_on)
   }
   case enum_(enum_) {
-    var payload = mapping.get(enum_.payload)
+    var payload = enum_.payload.map(mapping)
     rev_body.push(update(
       id,
       EggExpr.enum_(EggEnum {
@@ -183,7 +191,7 @@ fun introduce_ownership(
     rev_body.require(payload, needed_later_on)
   }
   case switch_(switch_) {
-    var condition = mapping.get(switch_.condition)
+    var condition = switch_.condition.map(mapping)
 
     | Lower the individual cases.
     var cases = map[String, EggBody]()
@@ -213,7 +221,7 @@ fun introduce_ownership(
 
       var drops = list[EggId]()
       for id in diff_to_other_branches do
-        drops.&.push(EggExpr.drop(id).create())
+        drops.&.push(EggExpr.drop(EggDrop { id, type = id.type() }).create())
 
       cases.&.put(case_.key, EggBody {
         params = case_.value.params,
@@ -221,13 +229,11 @@ fun introduce_ownership(
         returns = case_.value.returns,
       })
     }
-    rev_body.push(update(
-      id, EggExpr.switch_(EggSwitch { condition, type = switch_.type, cases })
-    ))
+    rev_body.push(update(id, EggExpr.switch_(EggSwitch { condition, cases })))
     rev_body.require(condition, needed_later_on)
   }
   case raw_lambda(lambda) {
-    var closure = mapping.get(lambda.closure)
+    var closure = lambda.closure.map(mapping)
     rev_body.push(update(
       id,
       EggExpr.raw_lambda(EggRawLambda {
@@ -237,7 +243,7 @@ fun introduce_ownership(
     rev_body.require(closure, needed_later_on)
   }
   case call_fun(call) {
-    var args = mapping.get(call.args)
+    var args = call.args.map(mapping)
     rev_body.push(update(
       id,
       EggExpr.call_fun(EggCallFun {
@@ -250,8 +256,8 @@ fun introduce_ownership(
     for arg in args do rev_body.require(arg, needed_later_on)
   }
   case call_lambda(call) {
-    var lambda = mapping.get(call.lambda)
-    var args = mapping.get(call.args)
+    var lambda = call.lambda.map(mapping)
+    var args = call.args.map(mapping)
     rev_body.push(update(
       id, EggExpr.call_lambda(EggCallLambda { lambda, args })
     ))
@@ -259,70 +265,73 @@ fun introduce_ownership(
     rev_body.require(lambda, needed_later_on)
   }
   case box(inner) {
-    var inner = mapping.get(inner)
+    var inner = inner.map(mapping)
     rev_body.push(update(id, EggExpr.box(inner)))
     rev_body.require(inner, needed_later_on)
   }
   case unbox(box) {
-    var box = mapping.get(box)
+    var box = box.map(mapping)
     rev_body.push(update(id, EggExpr.unbox(box)))
     rev_body.require(box, needed_later_on)
   }
   case array(array) {
-    var items = mapping.get(array.items)
+    var items = array.items.map(mapping)
     rev_body.push(update(
       id, EggExpr.array(EggArray { items, item_type = array.item_type })
     ))
     for item in items do rev_body.require(item, needed_later_on)
   }
   case unchecked_generate_non_empty_array(gen) {
-    var length = mapping.get(gen.length)
+    var length = gen.length.map(mapping)
     var last_used_in_generator = {
       var ids = list[EggId]()
       for id in gen.generator.captured() do {
-        var id = mapping.get(id)
+        var id = id.map(mapping)
         if not(needed_later_on.contains(id)) then ids.&.push(id)
       }
       ids.to_slice()
     }
     for id in last_used_in_generator do {
       needed_later_on.put(id)
-      rev_body.push(EggExpr.drop(id).create())
+      rev_body.push(EggExpr.drop(EggDrop { id, type = id.type() }).create())
     }
     var generator = gen.generator.introduce_ownership(needed_later_on, mapping)
     rev_body.push(update(
-      id, EggExpr.generate_array(EggGenerateArray { length, generator })
+      id,
+      EggExpr.unchecked_generate_non_empty_array(EggGenerateArray {
+        length, generator
+      }),
     ))
   }
   case array_len(array) {
-    var array = mapping.get(array)
+    var array = array.map(mapping)
     rev_body.push(update(id, EggExpr.array_len(array)))
     rev_body.require(array, needed_later_on)
   }
   case unchecked_array_get(args) {
-    var array = mapping.get(args.array)
-    var index = mapping.get(args.index)
-    rev_body.push(update(id, EggExpr.array_get(EggArrayGet { array, index })))
+    var array = args.array.map(mapping)
+    var index = args.index.map(mapping)
+    rev_body.push(update(id, EggExpr.unchecked_array_get(EggArrayGet { array, index })))
   }
   case unchecked_array_set(args) {
-    var array = mapping.get(args.array)
-    var index = mapping.get(args.index)
-    var item = mapping.get(args.item)
+    var array = args.array.map(mapping)
+    var index = args.index.map(mapping)
+    var item = args.item.map(mapping)
     rev_body.push(update(
-      id, EggExpr.array_set(EggArraySet { array, index, item })
+      id, EggExpr.unchecked_array_set(EggArraySet { array, index, item })
     ))
   }
   case unchecked_array_slice(args) {
-    var array = mapping.get(args.array)
-    var start = mapping.get(args.start)
-    var end = mapping.get(args.end)
+    var array = args.array.map(mapping)
+    var start = args.start.map(mapping)
+    var end = args.end.map(mapping)
     rev_body.push(update(
-      id, EggExpr.array_slice(EggArraySlice { array, start, end })
+      id, EggExpr.unchecked_array_slice(EggArraySlice { array, start, end })
     ))
   }
   case type(ty) rev_body.push(update(id, EggExpr.type(ty)))
   case crash(crash) {
-    var message = mapping.get(crash.message)
+    var message = crash.message.map(mapping)
     rev_body.push(update(
       id, EggExpr.crash(EggCrash { message, type = crash.type })
     ))
@@ -332,18 +341,4 @@ fun introduce_ownership(
   case loop_ todo("loop")
   case continue_ todo("continue")
   default unreachable("{expr.debug()} should not occur")
-}
-
-fun get(
-  mapping: Map[EggId, EggId], tuple: Tuple2[EggId, EggId]
-): Tuple2[EggId, EggId] {
-  tuple(mapping.get(tuple.a), mapping.get(tuple.b))
-}
-
-fun get(
-  mapping: Map[EggId, EggId], ids: Slice[EggId],
-): Slice[EggId] {
-  var out = list[EggId]()
-  for id in ids do out.&.push(mapping.get(id))
-  out.to_slice()
 }

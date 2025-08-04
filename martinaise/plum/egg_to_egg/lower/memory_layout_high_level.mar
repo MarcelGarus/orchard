@@ -1,5 +1,4 @@
-import ../mod.mar
-import dup_drop_free.mar
+import mod.mar
 
 fun mem_layout_high_level(egg: Egg): Egg {
   var funs = map[String, EggFun]()
@@ -284,11 +283,182 @@ fun map(
   }
 }
 
+| Traverses the value and dups all inner values. If it reaches a pointer, it
+| just increments that pointer's reference count instead of traversing further.
+fun desugared_dup(
+  builder: &EggBodyBuilder, value: EggId, type: PlumType
+) {
+  if not(type.to_pesto().contains_ptr()) then return {}
 
+  switch type.kind()
+  case variable unreachable()
+  case byte {}
+  case int {}
+  case type {}
+  case box builder.increment_refcount(value).ignore()
+  case array
+    builder.increment_refcount(builder.member(value, "buffer")).ignore()
+  case never builder.unreachable(type_nothing).ignore()
+  case struct_
+    for field in type.kind().struct_.unwrap() do
+      builder.desugared_dup(builder.member(value, field.key), field.value)
+  case enum_ {
+    var cases = map[String, EggBody]()
+    for variant in type.kind().enum_.unwrap() do {
+      var builder = egg_body_builder().&
+      var payload_type = value.type().kind().enum_.unwrap().get(variant.key)
+      var payload = builder.param(payload_type)
+      if payload_type.is_unboxed_recursive() then
+        builder.increment_refcount(payload).ignore()
+      else
+        builder.desugared_dup(payload, variant.value)
+      cases.&.put(variant.key, builder.finish_with_nothing())
+    }
+    builder.switch_(value, cases).ignore()
+  }
+  case lambda
+    builder.increment_refcount(builder.member(value, "closure")).ignore()
+}
 
+| Traverses the value and drops all inner values. If it reaches a pointer, it
+| just decrements pointer's reference count instead of traversing further. If
+| the reference count reaches zero, it drops the pointed-to value and frees the
+| allocation.
+fun desugared_drop(
+  builder: &EggBodyBuilder, value: EggId, type: PlumType,
+  funs: &Map[String, EggFun],
+) {
+  if not(type.to_pesto().contains_ptr()) then return {}
 
-fun get(
-  mapping: Map[EggId, EggId], tuple: Tuple2[EggId, EggId]
-): Tuple2[EggId, EggId] {
-  tuple(tuple.a.map(mapping.*), tuple.b.map(mapping.*))
+  switch type.kind()
+  case variable unreachable()
+  case byte {}
+  case int {}
+  case type {}
+  case box(inner_type)
+    builder.if_refcount_zero(builder.decrement_refcount(value), {
+      var builder = egg_body_builder().&
+      builder.call(
+        free_box_fun(inner_type, funs),
+        list(value).to_slice(),
+        type_nothing.to_pesto(),
+      )
+      builder.finish_with_nothing()
+    })
+  case array(item_type) {
+    var buffer = builder.member(value, "buffer")
+    var new_refcount = builder.decrement_refcount(buffer)
+    builder.if_refcount_zero(new_refcount, {
+      var builder = egg_body_builder().&
+      builder.call(
+        free_buffer_fun(item_type, funs),
+        list(buffer).to_slice(),
+        type_nothing.to_pesto(),
+      )
+      builder.finish_with_nothing()
+    })
+  }
+  case never {}
+  case struct_
+    for field in type.kind().struct_.unwrap() do
+      builder.desugared_drop(
+        builder.member(value, field.key), field.value, funs
+      )
+  case enum_(variant_types) {
+    var cases = map[String, EggBody]()
+    for variant in variant_types do {
+      var payload_type = variant.value
+      var builder = egg_body_builder().&
+      var payload = builder.param(payload_type)
+      if payload_type.is_unboxed_recursive() then
+        builder.if_refcount_zero(builder.decrement_refcount(payload), {
+          var builder = egg_body_builder().&
+          builder.call(
+            free_box_fun(payload_type, funs),
+            list(payload).to_slice(),
+            type_nothing.to_pesto(),
+          )
+          builder.finish_with_nothing()
+        })
+      else
+        builder.desugared_drop(payload, payload_type, funs)
+
+      cases.&.put(variant.key, builder.finish_with_nothing())
+    }
+    builder.switch_(value, cases).ignore()
+  }
+  case lambda {
+    var closure_ptr = builder.member(value, "closure")
+    var new_refcount = builder.decrement_refcount(closure_ptr)
+    builder.if_refcount_zero(new_refcount, {
+      var builder = egg_body_builder().&
+      var free_fun_ptr = builder.member(value, "free")
+      builder.call_indirect(
+        free_fun_ptr, list(closure_ptr).to_slice(), type_nothing.to_pesto()
+      )
+      builder.finish_with_nothing()
+    })
+  }
+}
+
+| Expects a box with refcount 0. Drops the inner value and frees the allocation.
+fun free_box_fun(inner_type: PlumType, funs: &Map[String, EggFun]): String {
+  var signature = "free (Box {inner_type})"
+  if funs.contains(signature) then return signature
+  funs.put(signature, uninitialized[EggFun]().*)
+  funs.put(signature, EggFun {
+    body = {
+      var builder = egg_body_builder().&
+      var box = builder.param(PestoType.ptr)
+      var inner = builder.load(box, inner_type.to_pesto())
+      builder.desugared_drop(inner, inner_type, funs)
+      builder.free(box, inner_type.to_pesto())
+      builder.finish_with_nothing()
+    }
+  })
+  signature
+}
+
+| Expects an array with refcount 0. Drops the inner values and frees the
+| allocation.
+fun free_buffer_fun(item_type: PlumType, funs: &Map[String, EggFun]): String {
+  var signature = "drop (Buffer {item_type})"
+  if funs.contains(signature) then return signature
+  funs.put(signature, uninitialized[EggFun]().*)
+  funs.put(signature, EggFun {
+    body = {
+      var builder = egg_body_builder().&
+      var buffer = builder.param(item_type.to_pesto())
+      var len = builder.get_buffer_length(buffer)
+
+      builder.loop_(list(builder.int(0)).to_slice(), {
+        var builder = egg_body_builder().&
+        var cursor = builder.param(type_int)
+        var cmp = builder.compare(cursor, len)
+        builder.switch_on_ordering(
+          cmp,
+          egg_body_builder().finish_with_unreachable(type_nothing.to_pesto()),
+          egg_body_builder().finish_with_nothing(),
+          {
+            var builder = egg_body_builder().&
+            var item = builder.load_buffer_item(
+              buffer, item_type.to_pesto(), cursor
+            )
+            builder.desugared_drop(item, item_type, funs)
+            builder.finish(
+              builder.continue_(
+                list(builder.add(cursor, builder.int(1))).to_slice(),
+                type_nothing.to_pesto(),
+              )
+            )
+          },
+        ).ignore()
+        builder.finish_with_nothing()
+      })
+
+      builder.free_buffer(buffer, item_type.to_pesto())
+      builder.finish_with_nothing()
+    }
+  })
+  signature
 }
