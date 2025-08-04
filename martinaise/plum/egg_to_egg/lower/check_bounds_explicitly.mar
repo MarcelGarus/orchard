@@ -1,47 +1,31 @@
 import mod.mar
 
-fun is_unchecked(id: EggId): Bool {
-  switch id.resolve()
-  case unchecked_divide true
-  case unchecked_modulo true
-  case unchecked_generate_non_empty_array true
-  case unchecked_array_get true
-  case unchecked_array_set true
-  case unchecked_array_slice true
-  default false
-}
-
-fun desugar_checks_of_array_ops(egg: Egg): Egg {
+fun check_bounds_explicitly(egg: Egg): Egg {
   var funs = map[String, EggFun]()
   for fun_ in egg.funs do
-    funs.&.put(fun_.key, fun_.value.map(DesugarBoundsChecks {}))
+    funs.&.put(fun_.key, fun_.value.map(CheckBounds {}))
   Egg { funs, entry_point = egg.entry_point }
 }
-struct DesugarBoundsChecks {}
+struct CheckBounds {}
 fun map(
-  id: EggId, desugar: DesugarBoundsChecks,
+  id: EggId, mapper: CheckBounds,
   builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
-  var expr = id.map_children(desugar, mapping)
+  var expr = id.map_children(mapper, mapping)
   switch expr
   case generate_array(args) {
     var item_type = args.generator.returns.type()
     var cmp_length_zero = builder.compare(args.length, builder.int(0))
     builder.switch_on_ordering(
       cmp_length_zero,
+      egg_body_builder()
+        .finish_with_crash("negative length", type_array(item_type)),
       {
         var builder = egg_body_builder().&
-        builder.case_param(cmp_length_zero, "less")
-        builder.finish(builder.crash("negative length", type_array(item_type)))
-      },
-      {
-        var builder = egg_body_builder().&
-        builder.case_param(cmp_length_zero, "equal")
         builder.finish(builder.array(empty_slice[EggId](), item_type))
       },
       {
         var builder = egg_body_builder().&
-        builder.case_param(cmp_length_zero, "greater")
         builder.finish(
           builder.unchecked_generate_non_empty_array(
             args.length, args.generator
@@ -70,32 +54,6 @@ fun map(
     builder.assert_is_less_equal(args.start, args.end, "bad bounds")
     builder.assert_is_less_equal(args.end, length, "bad bounds")
     builder.unchecked_array_slice(args.array, args.start, args.end)
-  }
-  default builder.push(expr)
-}
-
-
-fun desugar_checks_of_divide_and_modulo(egg: Egg): Egg {
-  var funs = map[String, EggFun]()
-  for fun_ in egg.funs do
-    funs.&.put(fun_.key, fun_.value.map(DesugarDivideAndModulo {}))
-  Egg { funs, entry_point = egg.entry_point }
-}
-
-struct DesugarDivideAndModulo {}
-fun map(
-  id: EggId, desugar: DesugarDivideAndModulo,
-  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
-): EggId {
-  var expr = id.map_children(desugar, mapping)
-  switch expr
-  case divide(args) {
-    builder.assert_is_not_equal(args.b, builder.int(0), "divide by zero")
-    builder.unchecked_divide(args.a, args.b)
-  }
-  case modulo(args) {
-    builder.assert_is_not_equal(args.b, builder.int(0), "modulo by zero")
-    builder.unchecked_modulo(args.a, args.b)
   }
   default builder.push(expr)
 }
