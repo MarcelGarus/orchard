@@ -97,10 +97,12 @@ fun map(
     )
   }
   case box(value) {
+    | TODO: If the type has at most one inhabitant, just create a null ptr
     builder.object_new(value.map(mapping.*))
   }
   case unbox(box) {
     var box_type = box.type()
+    | TODO: If the type has at most one inhabitant, just create it (the ptr is null)
     var box = box.map(mapping.*)
     var inner_type = box_type.plum().box.unwrap()
     var inner = builder.object_load(box, inner_type.to_pesto())
@@ -109,7 +111,15 @@ fun map(
     inner
   }
   case array(array) {
+    if array.items.len == 0 then
+      return builder.struct_(map(
+        "buffer" -> builder.null_ptr(),
+        "start" -> builder.int(0),
+        "end" -> builder.int(0),
+      ))
+
     | Special case byte arrays.
+    | TODO: do this later in the compilation
     var all_bytes = true
     for item in array.items do
       if not(item.resolve() is byte) then all_bytes = false
@@ -293,8 +303,13 @@ fun desugared_dup(
   case int {}
   case type {}
   case box builder.increment_refcount(value).ignore()
-  case array
-    builder.increment_refcount(builder.member(value, "buffer")).ignore()
+  case array {
+    var buffer = builder.member(value, "buffer")
+    builder.if_not_null_ptr(buffer, {
+      var builder = egg_body_builder().&
+      builder.finish(builder.increment_refcount(buffer))
+    })
+  }
   case never builder.unreachable(type_nothing).ignore()
   case struct_
     for field in type.plum().struct_.unwrap() do
@@ -345,15 +360,19 @@ fun desugared_drop(
     })
   case array(item_type) {
     var buffer = builder.member(value, "buffer")
-    var new_refcount = builder.decrement_refcount(buffer)
-    builder.if_refcount_zero(new_refcount, {
+    builder.if_not_null_ptr(buffer, {
       var builder = egg_body_builder().&
-      builder.call(
-        free_buffer_fun(item_type, funs),
-        no_substitutions,
-        list(buffer).to_slice(),
-        type_nothing.to_pesto(),
-      )
+      var new_refcount = builder.decrement_refcount(buffer)
+      builder.if_refcount_zero(new_refcount, {
+        var builder = egg_body_builder().&
+        builder.call(
+          free_buffer_fun(item_type, funs),
+          no_substitutions,
+          list(buffer).to_slice(),
+          type_nothing.to_pesto(),
+        )
+        builder.finish_with_nothing()
+      })
       builder.finish_with_nothing()
     })
   }
