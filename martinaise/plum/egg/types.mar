@@ -99,6 +99,7 @@ struct EggType {
   | - [(\] ([ ] <type>)* [ -> ] <type> [)]
   | - [(^] level [)]
   | - [(Ptr)]
+  | - [(Bytes ]) <num bytes> [)]
   |
   | Note that all types have parentheses around them, making the string easier
   | to work with.
@@ -431,6 +432,7 @@ enum InternalEggType {
   lambda: PlumLambdaType,
   recursive: Int,
   ptr,
+  bytes: Int,
 }
 
 fun internal_kind(type: EggType): InternalEggType {
@@ -498,6 +500,11 @@ fun internal_kind(type: EggType): InternalEggType {
     )
   }
   if string == "Ptr" then return InternalEggType.ptr
+  if string.starts_with("Bytes ") then {
+    return InternalEggType.bytes(
+      string.without_first("Bytes ".len).parse_int().unwrap()
+    )
+  }
   InternalEggType.variable(string)
 }
 
@@ -535,6 +542,7 @@ fun plum_not_extended(type: EggType): UnsafePlumType {
   case lambda(lambda) UnsafePlumType.lambda(lambda)
   case recursive(level) UnsafePlumType.recursive(level)
   case ptr unreachable()
+  case bytes unreachable()
 }
 
 | Safe Plum Types  
@@ -640,8 +648,9 @@ fun plum(type: EggType): PlumType {
       },
       return_type = lambda.return_type.extend_recursive_types(type).canonicalize(),
     })
-  case recursive unreachable()
-  case ptr unreachable()
+  case recursive panic("Disallowed: {type}")
+  case ptr panic("Disallowed: {type}")
+  case bytes panic("Disallowed: {type}")
 }
 
 | Pesto Types  
@@ -657,18 +666,38 @@ enum PestoType {
 
 fun pesto(type: EggType): PestoType {
   switch type.internal_kind()
-  case variable unreachable()
+  case variable panic("Disallowed: {type}")
   case never PestoType.never
   case byte PestoType.byte
   case int PestoType.int
-  case type unreachable()
-  case box unreachable()
-  case array unreachable()
+  case type panic("Disallowed: {type}")
+  case box panic("Disallowed: {type}")
+  case array panic("Disallowed: {type}")
   case struct_(fields) PestoType.struct_(fields)
   case enum_(variants) PestoType.enum_(variants)
-  case lambda unreachable()
-  case recursive unreachable()
+  case lambda panic("Disallowed: {type}")
+  case recursive panic("Disallowed: {type}")
   case ptr PestoType.ptr
+  case bytes panic("Disallowed: {type}")
+}
+
+| Bytes Types  
+
+fun size(type: EggType): Int {
+  switch type.internal_kind()
+  case variable panic("Disallowed: {type}")
+  case never panic("Disallowed: {type}")
+  case byte 1
+  case int 8
+  case type type.to_pesto().memory_layout().size
+  case box type.to_pesto().memory_layout().size
+  case array type.to_pesto().memory_layout().size
+  case struct_ type.to_pesto().memory_layout().size
+  case enum_ type.to_pesto().memory_layout().size
+  case lambda type.to_pesto().memory_layout().size
+  case recursive panic("Disallowed: {type}")
+  case ptr 8
+  case bytes(amount) amount
 }
 
 | Constructing Types  
@@ -681,7 +710,6 @@ var type_never = EggType { string = "(Never)" }
 var type_byte = EggType { string = "(Byte)" }
 var type_int = EggType { string = "(Int)" }
 var type_type = EggType { string = "(Type)" }
-var type_ptr = EggType { string = "(Ptr)" }
 fun type_box(inner: EggType): EggType {
   type_box_without_canonicalizing(inner).canonicalize()
 }
@@ -736,13 +764,18 @@ fun type_recursive(level: Int): EggType {
   EggType { string = "(^{level})" }
 }
 
+var type_ptr = EggType { string = "(Ptr)" }
+fun type_bytes(amount: Int): EggType { EggType { string = "(Bytes {amount})" } }
+
 | Accessing known types  
 
 fun is_never(type: EggType): Bool { type.string == "(Never)" }
 fun struct_(type: EggType): Map[String, EggType] {
-  type.plum().struct_.unwrap()
+  type.plum().struct_ or panic("Not a struct: {type}")
 }
-fun enum_(type: EggType): Map[String, EggType] { type.plum().enum_.unwrap() }
+fun enum_(type: EggType): Map[String, EggType] {
+  type.plum().enum_ or panic("Not an enum: {type}")
+}
 fun field(type: EggType, name: String): EggType { type.struct_().get(name) }
 fun variant(type: EggType, name: String): EggType { type.enum_().get(name) }
 
@@ -806,4 +839,5 @@ fun write[W](writer: W, type: IndentedLimited[EggType]) {
   }
   case recursive(level) writer."^{level}"
   case ptr writer."(Ptr)"
+  case bytes(amount) writer."(Bytes {amount})"
 }

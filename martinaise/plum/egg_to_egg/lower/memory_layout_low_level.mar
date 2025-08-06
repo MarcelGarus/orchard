@@ -27,7 +27,8 @@ fun map(
     builder.aggregate(parts.to_slice())
   }
   case member(member) {
-    var struct_layout = member.of.type().memory_layout_struct()
+    var struct_layout =
+      id.resolve().member.unwrap().of.type().memory_layout_struct()
     var field_layout = id.type().memory_layout()
     builder.part(
       member.of,
@@ -54,12 +55,13 @@ fun map(
   }
   case switch_(switch_) {
     var condition = switch_.condition
-    var layout = switch_.condition.type().memory_layout_enum()
+    var enum_type = id.resolve().switch_.unwrap().condition.type()
+    var layout = enum_type.memory_layout_enum()
 
     var cases = uninitialized_slice[EggBody](layout.tag_to_variant.size)
     for entry in layout.tag_to_variant do {
       var case_ = switch_.cases.get(entry.value)
-      var payload_layout = case_.params.get(0).type().memory_layout()
+      var payload_layout = enum_type.variant(entry.value).memory_layout()
       var builder = egg_body_builder().&
       var body = builder.finish(case_.fill(
         list(builder.part(condition, 0, payload_layout.size)).to_slice(),
