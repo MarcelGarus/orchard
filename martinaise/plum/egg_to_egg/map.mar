@@ -238,13 +238,33 @@ fun map_children[M](
       buffer = free.buffer.map(mapping.*), item_type = free.item_type
     })
   case malloc(id) EggExpr.malloc(id.map(mapping.*))
-  case free(id) EggExpr.free(id.map(mapping.*))
-  case load(load)
-    EggExpr.load(EggLoad {
-      ptr = load.ptr.map(mapping.*), size = load.size, alignment = load.alignment
+  case padding(amount) EggExpr.padding(amount)
+  case aggregate(parts) EggExpr.aggregate(parts.map(mapping.*))
+  case part(part)
+    EggExpr.part(EggPart {
+      of = part.of.map(mapping.*), offset = part.offset, size = part.size
     })
-  case store(store)
-    EggExpr.store(EggStore {
+  case switch_on_byte(switch_) {
+    var condition = switch_.condition.map(mapping.*)
+    var cases = list[EggBody]()
+    for case_ in switch_.cases do cases.&.push(case_.map(mapper, mapping))
+    for case_ in cases do if case_.params.len != 0 then panic("bad case")
+    EggExpr.switch_on_byte(EggSwitchOnByte {
+      condition, cases = cases.to_slice()
+    })
+  }
+  case free(free)
+    EggExpr.free(EggFree { ptr = free.ptr.map(mapping.*), size = free.size })
+  case load_word(load)
+    EggExpr.load_word(EggLoad { ptr = load.ptr.map(mapping.*) })
+  case load_byte(load)
+    EggExpr.load_word(EggLoad { ptr = load.ptr.map(mapping.*) })
+  case store_word(store)
+    EggExpr.store_word(EggStore {
+      ptr = store.ptr.map(mapping.*), value = store.value.map(mapping.*)
+    })
+  case store_byte(store)
+    EggExpr.store_byte(EggStore {
       ptr = store.ptr.map(mapping.*), value = store.value.map(mapping.*)
     })
   case store_bytes(store)

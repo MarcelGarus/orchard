@@ -14,7 +14,7 @@ fun pretty(id: EggId, names: &Namespace): _ {
 struct PrettyEggId { id: EggId, names: &Namespace }
 fun write[W](writer: W, pretty: PrettyEggId) {
   writer."{pretty.names.get(pretty.id.id.index).styled(style_of_id)}"
-  writer."{":{pretty.id.id.index}".styled(style_of_id)}"
+  | writer."{":{pretty.id.id.index}".styled(style_of_id)}"
 }
 
 fun write[W](writer: W, signature: String, fun_: EggFun) {
@@ -202,7 +202,7 @@ fun write[W](
   case drop(drop)
     writer."{pretty_op("drop")} {pretty(drop.type)} {pretty(drop.id, names)}"
   case function_ptr(signature)
-    writer."{pretty_op("function ptr")} {pretty_signature(signature)}"
+    writer."{pretty_op("ptr")} to {pretty_signature(signature)}"
   case call_indirect(call) {
     writer."{pretty_op("call indirect")} {pretty(call.function_ptr, names)}"
     if call.args.is_not_empty() then writer." with"
@@ -212,7 +212,8 @@ fun write[W](
   case object_load(load)
     writer."{pretty_op("load object")} {pretty(load.ptr, names)}"
   case object_free(free)
-    writer."{pretty_op("free object")} {pretty(free.ptr, names)}"
+    writer."{pretty_op("free object")} {pretty(free.ptr, names)}
+      ' {pretty(free.type)}"
   case get_refcount(get)
     writer."{pretty_op("get refcount")} {pretty(get.ptr, names)}"
   case set_refcount(set)
@@ -249,13 +250,38 @@ fun write[W](
   case free_buffer(free)
     writer."{pretty_op("free buffer")}
       ' {pretty(free.buffer, names)} {pretty(free.item_type)}"
-  case malloc(id) writer."{pretty_op("malloc")} {pretty(id, names)}"
-  case free(id) writer."{pretty_op("free")} {pretty(id, names)}"
-  case load(load)
-    writer."{pretty_op("load")} {pretty(load.ptr, names)} {load.size} {load.alignment}"
-  case store(store)
-    writer."{pretty_op("store")} {pretty(store.ptr, names)} {pretty(store.value, names)}"
+  case padding(amount) writer."{pretty_op("padding")} {amount} bytes"
+  case aggregate(parts) {
+    writer."{pretty_op("[")}"
+    for part in parts do writer." {pretty(part, names)}"
+    writer." {pretty_op("]")}"
+  }
+  case part(part)
+    writer."{pretty_op("part")} {pretty(part.of, names)}.{part.offset}
+      ' ({part.size} bytes)"
+  case switch_on_byte(switch_) {
+    writer."\n
+      '{indentation}{pretty_op("switch")} {pretty(switch_.condition, names)}"
+    for case_ in switch_.cases.iter().enumerate() do {
+      writer."\n{indentation + 1}{case_.index}:\n"
+      writer.write(case_.item, names, indentation + 2)
+    }
+  }
+  case malloc(id) writer."{pretty_op("malloc")} {pretty(id, names)} bytes"
+  case free(free)
+    writer."{pretty_op("free")} {pretty(free.ptr, names)} ({free.size} bytes)"
+  case load_word(load)
+    writer."{pretty_op("load word")} {pretty(load.ptr, names)}"
+  case load_byte(load)
+    writer."{pretty_op("load byte")} {pretty(load.ptr, names)}"
+  case store_word(store)
+    writer."{pretty_op("store word")}
+      ' {pretty(store.ptr, names)} {pretty(store.value, names)}"
+  case store_byte(store)
+    writer."{pretty_op("store byte")}
+      ' {pretty(store.ptr, names)} {pretty(store.value, names)}"
   case store_bytes(store)
-    writer."{pretty_op("store bytes")} {pretty(store.ptr, names)} {store.bytes.debug()}"
+    writer."{pretty_op("store bytes")}
+      ' {pretty(store.ptr, names)} {store.bytes.debug()}"
 }
 fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }
