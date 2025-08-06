@@ -97,18 +97,23 @@ fun map(
     )
   }
   case box(value) {
-    | TODO: If the type has at most one inhabitant, just create a null ptr
-    builder.object_new(value.map(mapping.*))
+    if value.type().num_inhabitants() <= NumInhabitants.one then
+      builder.null_ptr()
+    else
+      builder.object_new(value.map(mapping.*))
   }
   case unbox(box) {
     var box_type = box.type()
-    | TODO: If the type has at most one inhabitant, just create it (the ptr is null)
-    var box = box.map(mapping.*)
+    var ptr = box.map(mapping.*)
     var inner_type = box_type.plum().box.unwrap()
-    var inner = builder.object_load(box, inner_type.to_pesto())
-    builder.desugared_dup(inner, inner_type)
-    builder.desugared_drop(box, box_type, layout.funs)
-    inner
+    if inner_type.num_inhabitants() <= NumInhabitants.one then
+      builder.construct_inhabitant(inner_type)
+    else {
+      var inner = builder.object_load(ptr, inner_type.to_pesto())
+      builder.desugared_dup(inner, inner_type)
+      builder.desugared_drop(ptr, box_type, layout.funs)
+      inner
+    }
   }
   case array(array) {
     if array.items.len == 0 then
@@ -429,10 +434,22 @@ fun free_box_fun(inner_type: EggType, funs: &Map[String, EggFun]): String {
     body = {
       var builder = egg_body_builder().&
       var box = builder.param(type_ptr)
-      var inner = builder.object_load(box, inner_type.to_pesto())
-      builder.desugared_drop(inner, inner_type, funs)
-      builder.object_free(box, inner_type.to_pesto())
-      builder.finish_with_nothing()
+      if inner_type.num_inhabitants() <= NumInhabitants.one then {
+        | This function will never be called, as the box is always a null ptr.
+        | We may still need to construct the free function as part of the ABI.
+        | For example, if code returns a lambda, that lambda needs to have a
+        | closure pointer, body pointer, and closure free pointer. If the lambda
+        | doesn't capture any variables, the closure is empty and we save the
+        | heap allocation, storing a null ptr instead. When you drop the lambda,
+        | you have to check for null pointers. The function for freeing the
+        | closure should never be called.
+        builder.finish_with_unreachable(type_nothing)
+      } else {
+        var inner = builder.object_load(box, inner_type.to_pesto())
+        builder.desugared_drop(inner, inner_type, funs)
+        builder.object_free(box, inner_type.to_pesto())
+        builder.finish_with_nothing()
+      }
     }
   })
   signature
