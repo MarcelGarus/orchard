@@ -493,6 +493,12 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
       if inner.b.resolve() is int(a) then
         if b.resolve() is int(b) then
           return builder.multiply(inner.a, builder.int(a * b))
+
+    | Turn multiplication with power of two into a shift.
+    if b.resolve() is int(b) then {
+      var log = log_2(b)
+      if 2 ** log == b then return builder.shift_left(a, builder.int(log))
+    }
   }
   case divide(args) {
     var a = args.a
@@ -508,6 +514,12 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
 
     | x / 1 = x
     if b.resolve() is int(b) then if b == 1 then return a
+
+    | Turn divide by power of two into a shift.
+    if b.resolve() is int(b) then {
+      var log = log_2(b)
+      if 2 ** log == b then return builder.shift_right(a, builder.int(log))
+    }
   }
   case modulo(args) {
     var a = args.a
@@ -793,10 +805,48 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | If parts just access an entire other expression, return the original one.
     if part.offset == 0 and part.size == part.of.type().size() then
       return part.of
+
+    | If a part accesses an aggregate, create an aggregate of only the relevant
+    | expressions. For example, for bytes a, b, c, d, if we construct an
+    | aggregate [ a, b, c, d ] and then access a part at offset 2, size 2, we
+    | just want that to become [ c, d ].
+    if part.of.resolve() is aggregate(aggregate) then {
+      eprintln("Optimizing {aggregate.debug()}.{part.offset} (size {part.size})")
+      | Calculate the offsets of each part of the aggregate.
+      var offsets = uninitialized_slice[Int](aggregate.len + 1)
+      var size = 0
+      for p in aggregate.iter().enumerate() do {
+        offsets.&.set(p.index, size)
+        size = size + p.item.type().size()
+      }
+      offsets.&.set(aggregate.len, size)
+      eprintln("offsets: {offsets}")
+
+      | Find out which parts of the aggregate are relevant.
+      var start = aggregate.len
+      loop {
+        start = start - 1
+        if offsets.get(start) <= part.offset then break
+      }
+      var end = 0
+      loop {
+        end = end + 1
+        if offsets.get(end) >= {part.offset + part.size} then break
+      }
+      eprintln("relevant: {start} to {end}")
+
+      if end - start < aggregate.len then {
+        return builder.part(
+          builder.aggregate(aggregate.subslice(start..end)),
+          part.offset - offsets.get(start),
+          part.size,
+        )
+      }
+    }
   }
   case switch_on_byte(switch_) {
     | Turn switches with two cases into branchless code if that's cheap enough:
-    | (condition.to_int * then + (1 - condition.to_int) * else).to_byte
+    | (condition.to_int * else + (1 - condition.to_int) * then).to_byte
     if switch_.cases.len == 2 then {
       var else_ = switch_.cases.get(0)
       var then_ = switch_.cases.get(1)
