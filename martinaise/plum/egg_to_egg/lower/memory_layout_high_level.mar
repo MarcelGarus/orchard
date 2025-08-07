@@ -307,7 +307,9 @@ fun desugared_dup(
   case byte {}
   case int {}
   case type {}
-  case box builder.increment_refcount(value).ignore()
+  case box(inner_type)
+    if inner_type.num_inhabitants() > NumInhabitants.one then
+      builder.increment_refcount(value).ignore()
   case array {
     var buffer = builder.member(value, "buffer")
     builder.if_not_null_ptr(buffer, {
@@ -353,16 +355,17 @@ fun desugared_drop(
   case int {}
   case type {}
   case box(inner_type)
-    builder.if_refcount_zero(builder.decrement_refcount(value), {
-      var builder = egg_body_builder().&
-      builder.call(
-        free_box_fun(inner_type, funs),
-        no_substitutions,
-        list(value).to_slice(),
-        type_nothing.to_pesto(),
-      )
-      builder.finish_with_nothing()
-    })
+    if inner_type.num_inhabitants() > NumInhabitants.one then
+      builder.if_refcount_zero(builder.decrement_refcount(value), {
+        var builder = egg_body_builder().&
+        builder.call(
+          free_box_fun(inner_type, funs),
+          no_substitutions,
+          list(value).to_slice(),
+          type_nothing.to_pesto(),
+        )
+        builder.finish_with_nothing()
+      })
   case array(item_type) {
     var buffer = builder.member(value, "buffer")
     builder.if_not_null_ptr(buffer, {
