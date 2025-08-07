@@ -18,6 +18,7 @@
 | - simple loop unswitch: loop (if a then b else c; d) = if a then loop(b; d) else loop (c; d)
 
 import ../mod.mar
+import byte_mapping.mar
 import choose_order.mar
 import deduplicate.mar
 import enum_flow.mar
@@ -425,20 +426,32 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
   case byte_to_int(arg) {
     | Constant fold.
     if arg.resolve() is byte(byte) then return builder.int(byte.to_int())
+
+    | byte_to_int(lower_byte(a)) = and(a, 0xff)
+    if arg.resolve() is lower_byte(int) then
+      return builder.and_(int, builder.int(16#ff))
   }
   case add(args) {
     var a = args.a
     var b = args.b
 
+    eprintln("optimizing add of {a.resolve().debug()} + {b.resolve().debug()}")
+
     | Constant fold.
     if a.resolve() is int(a) then if b.resolve() is int(b) then
       return builder.int(a + b)
 
-    | 0 + x = x
-    if a.resolve() is int(a) then if a == 0 then return b
+    | Normalize so that constants are on the right.
+    if a.resolve() is int then return builder.add(b, a)
 
     | x + 0 = x
     if b.resolve() is int(b) then if b == 0 then return a
+
+    | (x + a) + b = x + (a + b)
+    if a.resolve() is add(inner) then
+      if inner.b.resolve() is int(a) then
+        if b.resolve() is int(b) then
+          return builder.add(inner.a, builder.int(a + b))
 
     | (x - y) + y = x
     if a.resolve() is subtract(args) then if b == args.b then return args.a
@@ -468,11 +481,20 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     if a.resolve() is int(a) then if b.resolve() is int(b) then
       return builder.int(a * b)
 
-    | 1 * x = x
-    if a.resolve() is int(a) then if a == 1 then return b
+    | Normalize so that constants are on the right.
+    if a.resolve() is int then return builder.multiply(b, a)
+
+    | x * 0 = 0
+    if b.resolve() is int(b) then if b == 0 then return builder.int(0)
 
     | x * 1 = x
     if b.resolve() is int(b) then if b == 1 then return a
+
+    | (x * a) * b = x * (a * b)
+    if a.resolve() is multiply(inner) then
+      if inner.b.resolve() is int(a) then
+        if b.resolve() is int(b) then
+          return builder.multiply(inner.a, builder.int(a * b))
   }
   case divide(args) {
     var a = args.a
@@ -512,17 +534,20 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     if a.resolve() is int(a) then if b.resolve() is int(b) then
       return builder.int(a & b)
 
-    | 0 & x = 0
-    if a.resolve() is int(a) then if a == 0 then return builder.int(0)
-  
+    | Normalize so that constants are on the right.
+    if a.resolve() is int then return builder.and_(b, a)
+
     | x & 0 = 0
     if b.resolve() is int(b) then if b == 0 then return builder.int(0)
 
-    | -1 & x = x
-    if a.resolve() is int(a) then if a == -1 then return b
-
     | x & -1 = x
     if b.resolve() is int(b) then if b == -1 then return a
+
+    | (x & a) & b = x & (a & b)
+    if a.resolve() is and_(inner) then
+      if inner.b.resolve() is int(a) then
+        if b.resolve() is int(b) then
+          return builder.and_(inner.a, builder.int(a & b))
   }
   case or_(args) {
     var a = args.a
@@ -532,17 +557,20 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     if a.resolve() is int(a) then if b.resolve() is int(b) then
       return builder.int(or(a, b))
 
-    | 0 or x = x
-    if a.resolve() is int(a) then if a == 0 then return b
+    | Normalize so that constants are on the right.
+    if a.resolve() is int then return builder.or_(b, a)
   
     | x or 0 = x
     if b.resolve() is int(b) then if b == 0 then return a
 
-    | -1 or x = -1
-    if a.resolve() is int(a) then if a == -1 then return builder.int(-1)
-  
     | x or -1 = -1
     if b.resolve() is int(b) then if b == -1 then return builder.int(-1)
+
+    | (x or a) or b = x or (a or b)
+    if a.resolve() is or_(inner) then
+      if inner.b.resolve() is int(a) then
+        if b.resolve() is int(b) then
+          return builder.or_(inner.a, builder.int(or(a, b)))
   }
   case xor(args) {
     var a = args.a
@@ -767,6 +795,67 @@ fun optimize(id: EggId, optimize: Optimize, builder: &EggBodyBuilder): EggId {
     | If parts just access an entire other expression, return the original one.
     if part.offset == 0 and part.size == part.of.type().size() then
       return part.of
+  }
+  case switch_on_byte(switch_) {
+    | Turn switches with two cases into branchless code if that's cheap enough:
+    | (condition.to_int * then + (1 - condition.to_int) * else).to_byte
+    if switch_.cases.len == 2 then {
+      var else_ = switch_.cases.get(0)
+      var then_ = switch_.cases.get(1)
+      var combined_runtime = then_.estimate_runtime() + else_.estimate_runtime()
+      if combined_runtime < 5 then {
+        if id.type().size() == 1 then {
+          eprintln("Optimizing to branchless")
+          var condition = builder.byte_to_int(switch_.condition)
+          for child in then_.children do builder.push(child)
+          for child in else_.children do builder.push(child)
+          return builder.lower_byte(builder.add(
+            builder.multiply(condition, builder.byte_to_int(then_.returns)),
+            builder.multiply(
+              builder.subtract(builder.int(1), condition),
+              builder.byte_to_int(else_.returns),
+            ),
+          ))
+        }
+        if id.type().size() == 8 then {
+          var condition = builder.byte_to_int(switch_.condition)
+          for child in then_.children do builder.push(child)
+          for child in else_.children do builder.push(child)
+          return builder.add(
+            builder.multiply(condition, then_.returns),
+            builder.multiply(
+              builder.subtract(builder.int(1), condition), else_.returns
+            ),
+          )
+        }
+      }
+    }
+
+    | Detect switches that are simply a mapping of literal bytes.
+    if id.type().size() == 1 then {
+      var is_simple_mapping = true
+      for case_ in switch_.cases do {
+        if not(case_.returns.resolve() is byte) then is_simple_mapping = false
+        if case_.children.len >= 2 then is_simple_mapping = false
+        if case_.children.len == 1 then
+          if case_.children.get(0) != case_.returns then
+            is_simple_mapping = false
+      }
+      if is_simple_mapping then {
+        var mapping = map[Byte, Byte]()
+        for case_ in switch_.cases.iter().enumerate() do
+          mapping.&.put(
+            case_.index.lower_byte(),
+            case_.item.returns.resolve().byte.unwrap(),
+          )
+        if figure_out_ops_for_mapping(mapping) is some(op) then {
+          eprintln("Mapping {mapping} is {op.debug()}")
+          return builder.apply(switch_.condition, op)
+        } else {
+          eprintln("Mapping {mapping} has no simple form")
+        }
+      }
+    }
   }
   default {}
 
