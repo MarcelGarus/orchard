@@ -38,19 +38,22 @@ fun write[W](
 fun write[W](
   writer: W, id: EggId, names: &Namespace, indentation: Indentation
 ) {
+  var type = id.type()
   switch id.resolve()
-  case param(type) writer."{pretty_op("param")}  {pretty(type)}"
-  case case_param(param) writer."{pretty_op("case param")}"
-  case type(type) writer."{pretty_op("type")} {type}  {pretty(type_type)}"
+  case param writer."{pretty_op("param")} {pretty(type)}"
+  case case_param(param) writer."{pretty_op("case param")} {pretty(type)}"
+  case type(type) writer."{pretty_op("type")} {type}"
   case int(int) writer."{pretty_op("int")} {int}"
-  case string(string) writer."{pretty_op("string")} {string.debug()}"
+  case string(string)
+    writer."{pretty_op("string")} {string.debug()} {pretty(type)}"
   case struct_(struct_) {
     writer."{pretty_op("&")}"
     for field in struct_ do writer." {field.key}: {pretty(field.value, names)}"
+    writer." {pretty(type)}"
   }
   case enum_(enum_)
     writer."{pretty_op("|")} {enum_.variant}: {pretty(enum_.payload, names)}
-      ' {pretty(enum_.type)}"
+      ' {pretty(type)}"
   case inline_lambda(body) {
     writer."{pretty_op("inline lambda")}"
     for param in body.params do writer." {pretty(param, names)}"
@@ -59,9 +62,10 @@ fun write[W](
   }
   case raw_lambda(lambda)
     writer."{pretty_op("lambda")} {pretty_signature(lambda.fun_)}
-      ' {pretty(lambda.closure, names)}"
+      ' {pretty(lambda.closure, names)} {pretty(type)}"
   case member(member)
-    writer."{pretty_op("member")} {pretty(member.of, names)}.{member.name}"
+    writer."{pretty_op("member")}
+      ' {pretty(member.of, names)}.{member.name} {pretty(type)}"
   case switch_(switch_) {
     writer."\n
       '{indentation}{pretty_op("switch")} {pretty(switch_.condition, names)}"
@@ -77,48 +81,55 @@ fun write[W](
     if call.substitutions.substitutions.is_not_empty() then
       writer." with {call.substitutions}"
     for arg in call.args do writer." {pretty(arg, names)}"
-    writer."  {pretty(call.return_type)}"
+    writer." {pretty(type)}"
   }
   case call_lambda(call) {
     writer."{pretty_op("call lambda")} {pretty(call.lambda, names)}"
     if call.args.is_not_empty() then writer." with"
     for arg in call.args do writer." {pretty(arg, names)}"
+    writer." {pretty(type)}"
   }
   case call_builtin(call) {
     writer."{pretty_op("call")} {pretty_signature(call.builtin.format())}"
     if call.substitutions.substitutions.is_not_empty() then
       writer." with {call.substitutions}"
     for arg in call.args do writer." {pretty(arg, names)}"
+    writer." {pretty(type)}"
   }
   case cast(cast)
-    writer."{pretty_op("cast")} {pretty(cast.what, names)}
-      ' to {pretty(cast.type)}"
+    writer."{pretty_op("cast")} {pretty(cast.what, names)} to {pretty(type)}"
   case byte(arg) writer."{pretty_op("byte")} {arg}"
-  case lower_byte(arg) writer."{pretty_op("lower byte")} {pretty(arg, names)}"
-  case byte_to_int(arg) writer."{pretty_op("byte to int")} {pretty(arg, names)}"
+  case lower_byte(arg)
+    writer."{pretty_op("lower byte")} {pretty(arg, names)}"
+  case byte_to_int(arg)
+    writer."{pretty_op("byte to int")} {pretty(arg, names)}"
   case add(args)
-    writer."{pretty_op("add")} {pretty(args.a, names)} {pretty(args.b, names)}"
+    writer."{pretty_op("add")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case subtract(args)
-    writer."
-      '{pretty_op("subtract")} {pretty(args.a, names)} {pretty(args.b, names)}"
+    writer."{pretty_op("subtract")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case multiply(args)
-    writer."
-      '{pretty_op("multiply")} {pretty(args.a, names)} {pretty(args.b, names)}"
+    writer."{pretty_op("multiply")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case divide(args)
-    writer."
-      '{pretty_op("divide")} {pretty(args.a, names)} {pretty(args.b, names)}"
+    writer."{pretty_op("divide")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case modulo(args)
-    writer."
-      '{pretty_op("modulo")} {pretty(args.a, names)} {pretty(args.b, names)}"
+    writer."{pretty_op("modulo")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case compare(args)
-    writer."
-      '{pretty_op("compare")} {pretty(args.a, names)} {pretty(args.b, names)}"
+    writer."{pretty_op("compare")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case and_(args)
-    writer."{pretty_op("and")} {pretty(args.a, names)} {pretty(args.b, names)}"
+    writer."{pretty_op("and")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case or_(args)
-    writer."{pretty_op("or")} {pretty(args.a, names)} {pretty(args.b, names)}"
+    writer."{pretty_op("or")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case xor(args)
-    writer."{pretty_op("xor")} {pretty(args.a, names)} {pretty(args.b, names)}"
+    writer."{pretty_op("xor")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case shift_left(args)
     writer."{pretty_op("shift left")}
       ' {pretty(args.a, names)} {pretty(args.b, names)}"
@@ -132,11 +143,13 @@ fun write[W](
     writer."{pretty_op("unchecked modulo")}
       ' {pretty(args.a, names)} {pretty(args.b, names)}"
   case box(arg) writer."{pretty_op("box")} {pretty(arg, names)}"
-  case unbox(arg) writer."{pretty_op("unbox")} {pretty(arg, names)}"
+  case unbox(arg)
+    writer."{pretty_op("unbox")} {pretty(arg, names)} {pretty(type)}"
   case array(array) {
     writer."{pretty_op("array")} of {pretty(array.item_type)}:"
     for item in array.items do writer." {pretty(item, names)}"
     if array.items.is_empty() then writer." <empty>"
+    writer." {pretty(type)}"
   }
   case generate_array(args) {
     writer."\n
@@ -147,7 +160,7 @@ fun write[W](
   }
   case array_get(args)
     writer."{pretty_op("array get")}
-      ' {pretty(args.array, names)} {pretty(args.index, names)}"
+      ' {pretty(args.array, names)} {pretty(args.index, names)} {pretty(type)}"
   case array_set(args)
     writer."{pretty_op("array set")}
       ' {pretty(args.array, names)}
@@ -157,7 +170,8 @@ fun write[W](
     writer."{pretty_op("array slice")}
       ' {pretty(args.array, names)}
       ' {pretty(args.start, names)}
-      ' {pretty(args.end, names)}"
+      ' {pretty(args.end, names)}
+      ' {pretty(type)}"
   case array_len(arg) writer."{pretty_op("array length")} {pretty(arg, names)}"
   case unchecked_generate_non_empty_array(args) {
     writer."\n
@@ -179,17 +193,19 @@ fun write[W](
     writer."{pretty_op("unchecked array slice")}
       ' {pretty(args.array, names)}
       ' {pretty(args.start, names)}
-      ' {pretty(args.end, names)}"
+      ' {pretty(args.end, names)}
+      ' {pretty(type)}"
   case type_info(arg) writer."{pretty_op("type info")} {pretty(arg, names)}"
   case static_to_dynamic(arg)
     writer."{pretty_op("static to dynamic")} {pretty(arg, names)}"
   case dynamic_to_static(arg)
-    writer."{pretty_op("dynamic to static")} {pretty(arg.dynamic, names)}"
+    writer."{pretty_op("dynamic to static")}
+      ' {pretty(arg.dynamic, names)} {pretty(type)}"
   case crash(crash)
     writer."{pretty_op("crash")} {pretty(crash.message, names)}
       ' {pretty(crash.type)}"
-  case unreachable(type) writer."{pretty_op("unreachable")} {pretty(type)}"
-  case halt(type) writer."{pretty_op("halt")} {pretty(type)}"
+  case unreachable writer."{pretty_op("unreachable")} {pretty(type)}"
+  case halt writer."{pretty_op("halt")} {pretty(type)}"
   case loop_(loop_) {
     writer."\n{indentation}{pretty_op("loop")}"
     for arg in loop_.initial do writer." {pretty(arg, names)}"
@@ -201,7 +217,7 @@ fun write[W](
   case continue_(continue_) {
     writer."{pretty_op("continue")}"
     for arg in continue_.next do writer." {pretty(arg, names)}"
-    writer." {pretty(continue_.type)}"
+    writer." {pretty(type)}"
   }
   case dup(dup)
     writer."{pretty_op("dup")} {pretty(dup.type)} {pretty(dup.id, names)}"
@@ -213,13 +229,14 @@ fun write[W](
     writer."{pretty_op("call indirect")} {pretty(call.function_ptr, names)}"
     if call.args.is_not_empty() then writer." with"
     for arg in call.args do writer." {pretty(arg, names)}"
+    writer." {pretty(type)}"
   }
   case null_ptr writer."{pretty_op("null ptr")}"
   case object_new(id) writer."{pretty_op("new object")} {pretty(id, names)}"
   case object_load(load)
-    writer."{pretty_op("load object")} {pretty(load.ptr, names)}"
+    writer."{pretty_op("load object")} {pretty(load.ptr, names)} {pretty(type)}"
   case object_free(free)
-    writer."{pretty_op("free object")} {pretty(free.ptr, names)}
+    writer."{pretty_op("free object")} {pretty(free.ptr, names)} of
       ' {pretty(free.type)}"
   case get_refcount(get)
     writer."{pretty_op("get refcount")} {pretty(get.ptr, names)}"
@@ -261,11 +278,11 @@ fun write[W](
   case aggregate(parts) {
     writer."{pretty_op("[")}"
     for part in parts do writer." {pretty(part, names)}"
-    writer." {pretty_op("]")}"
+    writer." {pretty_op("]")} {pretty(type)}"
   }
   case part(part)
     writer."{pretty_op("part")} {pretty(part.of, names)}.{part.offset}
-      ' ({part.size} bytes)"
+      ' {pretty(type)}"
   case switch_on_byte(switch_) {
     writer."\n
       '{indentation}{pretty_op("switch")} {pretty(switch_.condition, names)}"
@@ -276,7 +293,13 @@ fun write[W](
   }
   case malloc(id) writer."{pretty_op("malloc")} {pretty(id, names)} bytes"
   case free(free)
-    writer."{pretty_op("free")} {pretty(free.ptr, names)} ({free.size} bytes)"
+    writer."{pretty_op("free")}
+      ' {pretty(free.ptr, names)} ({pretty(free.size, names)} bytes)"
+  case load(load)
+    writer."{pretty_op("load")} {pretty(load.ptr, names)} ({load.size} bytes)"
+  case store(store)
+    writer."{pretty_op("store")}
+      ' {pretty(store.ptr, names)} {pretty(store.value, names)}"
   case load_word(load)
     writer."{pretty_op("load word")} {pretty(load.ptr, names)}"
   case load_byte(load)
