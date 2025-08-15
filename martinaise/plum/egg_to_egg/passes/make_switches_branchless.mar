@@ -1,5 +1,67 @@
 import mod.mar
 
+fun make_switches_branchless(id: EggId, builder: &EggBodyBuilder): EggId {
+  var switch_ = id.resolve().switch_on_byte or return id
+
+  | TODO: make absolutely sure that the branches have no side effects
+  | Turn switches with two cases into branchless code if that's cheap enough:
+  | (condition.to_int * else + (1 - condition.to_int) * then).to_byte
+  if switch_.cases.len == 2 then {
+    var else_ = switch_.cases.get(0)
+    var then_ = switch_.cases.get(1)
+    var combined_runtime = then_.estimate_runtime() + else_.estimate_runtime()
+    if combined_runtime < 5 then {
+      if id.type().memory_layout().size == 1 then {
+        var condition = builder.byte_to_int(switch_.condition)
+        for child in then_.children do builder.push(child)
+        for child in else_.children do builder.push(child)
+        return builder.lower_byte(builder.add(
+          builder.multiply(condition, builder.byte_to_int(then_.returns)),
+          builder.multiply(
+            builder.subtract(builder.int(1), condition),
+            builder.byte_to_int(else_.returns),
+          ),
+        ))
+      }
+      if id.type().memory_layout().size == 8 then {
+        var condition = builder.byte_to_int(switch_.condition)
+        for child in then_.children do builder.push(child)
+        for child in else_.children do builder.push(child)
+        return builder.add(
+          builder.multiply(condition, then_.returns),
+          builder.multiply(
+            builder.subtract(builder.int(1), condition), else_.returns
+          ),
+        )
+      }
+    }
+  }
+
+  | Detect switches that are simply a mapping of literal bytes.
+  if id.type().memory_layout().size == 1 then {
+    var is_simple_mapping = true
+    for case_ in switch_.cases do {
+      if not(case_.returns.resolve() is byte) then is_simple_mapping = false
+      if case_.children.len >= 2 then is_simple_mapping = false
+      if case_.children.len == 1 then
+        if case_.children.get(0) != case_.returns then
+          is_simple_mapping = false
+    }
+    if is_simple_mapping then {
+      var mapping = map[Byte, Byte]()
+      for case_ in switch_.cases.iter().enumerate() do
+        mapping.&.put(
+          case_.index.lower_byte(),
+          case_.item.returns.resolve().byte.unwrap(),
+        )
+      if figure_out_ops_for_mapping(mapping) is some(op) then
+        return builder.apply(switch_.condition, op)
+    }
+  }
+
+  id
+}
+
 enum ByteMappingOp {
   x,
   x_and_a: Byte,

@@ -1,6 +1,6 @@
-| Memory Layouting  
-|
-| | At some point, we need to decide how to store structs, enums, etc. in memory.
+| Bytes with Alignment and Size InLine  
+| 
+| At some point, we need to decide how to store structs, enums, etc. in memory.
 | Memory layouting is the process that decides that. It results in memory
 | layouts, which are basically mappings between high-level types and low-level
 | memory.
@@ -26,83 +26,67 @@
 
 import mod.mar
 
-| Layouting arbitrary types  
-
 struct MemoryLayout { size: Int, alignment: Int }
 
-fun memory_layout(type: EggType): MemoryLayout {
-  switch type.pesto()
-  case never MemoryLayout { size = 0, alignment = 1 }
-  case byte MemoryLayout { size = 1,  alignment = 1 }
-  case int MemoryLayout { size = 8,  alignment = 8 }
-  case struct_ {
-    var layout = type.memory_layout_struct()
-    MemoryLayout { size = layout.size, alignment = layout.alignment }
-  }
-  case enum_(enum_) {
-    var layout = type.memory_layout_enum()
-    MemoryLayout { size = layout.size, alignment = layout.alignment }
-  }
-  case ptr MemoryLayout { size = 8,  alignment = 8 }
-}
 fun stride_size(layout: MemoryLayout): Int {
   layout.size.round_up_to_multiple_of(layout.alignment)
 }
 
-| Layouting arguments  
-| When passing multiple arguments to a function, we want to place them in an
-| efficient constellation on the stack. The layouting of structs reuses this
-| logic.
-
-struct ArgsLayout {
-  size: Int, alignment: Int, parts: Slice[ArgsPart], offsets: Slice[Int]
-}
-enum ArgsPart { arg: Int, padding: Int }
-
-struct ArgMemoryLayout { size: Int, alignment: Int, index: Int }
-fun evenness(layout: ArgMemoryLayout): Int {
-  if layout.size.is_multiple_of(8) then return 8
-  if layout.size.is_multiple_of(4) then return 4
-  if layout.size.is_multiple_of(2) then return 2
-  1
-}
-fun <=>(a: ArgMemoryLayout, b: ArgMemoryLayout): Ordering {
-  | We layout args in this order:
-  | - first, by the "evenness" of the args' size
-  |   - args where the size is a multiple of 8
-  |   - args where the size is a multiple of 4
-  |   - args where the size is a multiple of 2
-  |   - args where the size is a multiple of 1
-  | - second, by decreasing size
-  | - third, by increasing index to make the sort and memory layout
-  |   deterministic
-  if a.evenness() != b.evenness() then
-    return {a.evenness() <=> b.evenness()}.flip()
-  if a.size != b.size then return {a.size <=> b.size}.flip()
-  a.index <=> b.index
-}
-
-fun is_all_minus_one(list: Slice[Int]): Bool {
-  for item in list do if item != -1 then return false
-  true
-}
-
-fun memory_layout_args(args: Slice[EggType]): ArgsLayout {
-  | Layout the individual args.
-  var layouts = list[ArgMemoryLayout]()
-  for arg in args.iter().&.enumerate() do {
-    var layout = arg.item.memory_layout()
-    layouts.&.push(ArgMemoryLayout {
-      index = arg.index, size = layout.size, alignment = layout.alignment
-    })
+fun memory_layout(type: EggType): MemoryLayout {
+  switch type.internal_kind()
+  case variable panic("Disallowed: {type}")
+  case never MemoryLayout { size = 0, alignment = 1 }
+  case byte  MemoryLayout { size = 1, alignment = 1 }
+  case int   MemoryLayout { size = 8, alignment = 8 }
+  case struct_(struct_) {
+    var layout = type.memory_layout_struct()
+    MemoryLayout { size = layout.size, alignment = layout.alignment }
   }
+  case enum_(variants) {
+    var layout = type.memory_layout_enum()
+    MemoryLayout { size = layout.size, alignment = layout.alignment }
+  }
+  case box MemoryLayout { size = 8, alignment = 8 }
+  case ptr MemoryLayout { size = 8, alignment = 8 }
+  case bytes(size) MemoryLayout { size, alignment = 1 }
+  default panic("Disallowed: {type}")
+}
+
+| Layouting aggregates  
+|
+| When constructing a struct from fields or passing multiple arguments to a
+| function, we want to place the individual pieces in an efficient
+| constellation.
+|
+| Terminology:
+| - aggregate: the overall composite structure
+| - piece: one of the original information points we want to include
+| - part: a slice of bytes that we put in the aggregate
+|
+| Every piece results in a part that is put into the aggregate. However, there
+| may be more parts for padding.
+
+struct Aggregate {
+  size: Int, alignment: Int, parts: Slice[Part], offsets: Slice[Int]
+}
+enum Part { piece: Int, padding: Int }
+
+fun memory_layout(pieces: Slice[MemoryLayout]): Aggregate {
+  | Layout the individual parts.
+  var layouts = list[PartLayoutAndIndex]()
+  for piece in pieces.iter().&.enumerate() do
+    layouts.&.push(PartLayoutAndIndex {
+      size = piece.item.size,
+      alignment = piece.item.alignment,
+      index = piece.index,
+    })
   var layouts = layouts.to_slice()
 
-  | Choose in which (temporal) order to place the args:
+  | Choose in which (temporal) order to place the pieces:
   layouts.&.sort()
 
-  | Place the args.
-  var bytes = list[Int]() | every item is one byte, the index into layouts, -1 is padding
+  | Place the pieces.
+  var bytes = list[Int]() | one item per byte, indices into layouts, padding = -1
   for arg in layouts.iter().enumerate() do {
     var index = arg.index
     var arg = arg.item
@@ -126,8 +110,8 @@ fun memory_layout_args(args: Slice[EggType]): ArgsLayout {
     }
   }
 
-  var parts = list[ArgsPart]()
-  var offsets = uninitialized_slice[Int](args.len)
+  var parts = list[Part]()
+  var offsets = uninitialized_slice[Int](pieces.len)
   var offset = 0
   loop {
     if offset >= bytes.len then break
@@ -139,14 +123,14 @@ fun memory_layout_args(args: Slice[EggType]): ArgsLayout {
       end = end + 1
     }
     if value == -1 then
-      parts.&.push(ArgsPart.padding(end - offset))
+      parts.&.push(Part.padding(end - offset))
     else {
-      parts.&.push(ArgsPart.arg(value))
+      parts.&.push(Part.piece(value))
       offsets.&.set(value, offset)
     }
     offset = end
   }
-  | For the purpose of accessing zero-sized args, claim that they are at the
+  | For the purpose of accessing zero-sized pieces, claim that they are at the
   | beginning.
   for field in layouts do
     if field.size == 0 then
@@ -156,8 +140,44 @@ fun memory_layout_args(args: Slice[EggType]): ArgsLayout {
   var alignment = 1
   for field in layouts do alignment = max(alignment, field.alignment)
 
-  ArgsLayout { size, alignment, parts = parts.to_slice(), offsets }
+  Aggregate { size, alignment, parts = parts.to_slice(), offsets }
 }
+
+struct PartLayoutAndIndex { size: Int, alignment: Int, index: Int }
+fun evenness(layout: PartLayoutAndIndex): Int {
+  if layout.size.is_multiple_of(8) then return 8
+  if layout.size.is_multiple_of(4) then return 4
+  if layout.size.is_multiple_of(2) then return 2
+  1
+}
+fun <=>(a: PartLayoutAndIndex, b: PartLayoutAndIndex): Ordering {
+  | We layout args in this order:
+  | - first, by the "evenness" of the args' size
+  |   - args where the size is a multiple of 8
+  |   - args where the size is a multiple of 4
+  |   - args where the size is a multiple of 2
+  |   - args where the size is a multiple of 1
+  | - second, by decreasing size
+  | - third, by increasing index to make the sort and memory layout
+  |   deterministic
+  if a.evenness() != b.evenness() then
+    return {a.evenness() <=> b.evenness()}.flip()
+  if a.size != b.size then return {a.size <=> b.size}.flip()
+  a.index <=> b.index
+}
+
+fun is_all_minus_one(list: Slice[Int]): Bool {
+  for item in list do if item != -1 then return false
+  true
+}
+
+| Layouting args  
+
+| struct ArgsLayout {
+|   size: Int, alignment: Int, parts: Slice[ArgsPart], offsets: Slice[Int]
+| }
+| enum ArgsPart { arg: Int, padding: Int }
+
 
 | Layouting structs  
 
@@ -169,9 +189,11 @@ struct StructLayout {
 }
 enum StructPart { field: String, padding: Int }
 
-| TODO: think about recursive structs. error? allow but like never?
 fun memory_layout_struct(type: EggType): StructLayout {
-  var fields = type.struct_()
+  | Get the Pesto fields. If the struct is unconditionally recursive, it can
+  | never be constructed and we return none.
+  var fields = type.pesto().struct_
+    .unwrap("expected struct, got {type} {type.pesto().debug()}")
 
   | Sort the field names alphabetically.
   var field_names = list[String]()
@@ -179,17 +201,18 @@ fun memory_layout_struct(type: EggType): StructLayout {
   var field_names = field_names.to_slice()
   field_names.&.sort()
 
-  | Layout the fields like we would layout arguments.
-  var field_types = list[EggType]()
-  for field in field_names do field_types.&.push(fields.get(field))
-  var layout = field_types.to_slice().memory_layout_args()
+  | Layout the fields individually.
+  var field_layouts = list[MemoryLayout]()
+  for field in field_names do
+    field_layouts.&.push(fields.get(field).memory_layout())
+  var layout = field_layouts.to_slice().memory_layout()
 
   | Map the result back to struct semantics.
   var parts = list[StructPart]()
   for part in layout.parts do
     parts.&.push(
       switch part
-      case arg(index) StructPart.field(field_names.get(index))
+      case piece(index) StructPart.field(field_names.get(index))
       case padding(padding) StructPart.padding(padding)
     )
   var offsets = map[String, Int]()
@@ -219,7 +242,7 @@ struct VariantLayout { parts: Slice[VariantPart] }
 enum VariantPart { payload, padding: Int, tag: Int }
 
 fun memory_layout_enum(type: EggType): EnumLayout {
-  var variants = type.enum_()
+  var variants = type.pesto().enum_.unwrap()
 
   | Choose the tag size.
   var tag_size = 0

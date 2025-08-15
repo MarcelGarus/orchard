@@ -1,25 +1,13 @@
 import mod.mar
 
-fun implement_casts(egg: Egg): Egg {
-  var funs = map[String, EggFun]()
-  for fun_ in egg.funs do
-    funs.&.put(fun_.key, fun_.value.map(ImplementCasts { funs = funs.& }))
-  Egg { funs, entry_point = egg.entry_point }
-}
-
-struct ImplementCasts { funs: &Map[String, EggFun] }
-
-fun map(
-  id: EggId, mapper: ImplementCasts,
-  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+fun lower_casts(
+  id: EggId, funs: &Map[String, EggFun], builder: &EggBodyBuilder
 ): EggId {
-  var expr = id.map_children(mapper, mapping)
-  if expr is cast(cast) then
-    return builder.compile_and_call_cast_fun(cast.what, cast.type, mapper.funs)
-  builder.push(expr)
+  var cast = id.resolve().cast or return id
+  builder.desugared_cast(cast.what, cast.type, funs)
 }
 
-fun compile_and_call_cast_fun(
+fun desugared_cast(
   builder: &EggBodyBuilder, what: EggId, type: EggType,
   funs: &Map[String, EggFun],
 ): EggId {
@@ -42,7 +30,7 @@ fun compile_cast_fun(
       var builder = egg_body_builder().&
       var value = builder.param(from)
       builder.finish(
-        if from.is_never() then builder.unreachable(to)
+        if from.plum() is never then builder.unreachable(to)
         else if from == to then value | This cast is the identity fun!
         else
           switch to.plum()
@@ -54,7 +42,7 @@ fun compile_cast_fun(
               var builder = egg_body_builder().&
               var index = builder.param(type_int)
               builder.finish(
-                builder.compile_and_call_cast_fun(
+                builder.desugared_cast(
                   builder.array_get(value, index), to_item_type, funs
                 ),
               )
@@ -65,7 +53,7 @@ fun compile_cast_fun(
               for field in to_field_types do
                 to_fields.&.put(
                   field.key,
-                  builder.compile_and_call_cast_fun(
+                  builder.desugared_cast(
                     builder.member(value, field.key), field.value, funs
                   ),
                 )
@@ -74,7 +62,7 @@ fun compile_cast_fun(
           case enum_(to_variant_types)
             builder.switch_(value, {
               var cases = map[String, EggBody]()
-              for variant in from.enum_() do
+              for variant in from.plum().enum_.unwrap() do
                 cases.&.put(variant.key, {
                   var builder = egg_body_builder().&
                   var payload = builder.case_param(value, variant.key)
@@ -82,7 +70,7 @@ fun compile_cast_fun(
                     builder.enum_(
                       to,
                       variant.key,
-                      builder.compile_and_call_cast_fun(
+                      builder.desugared_cast(
                         payload, to_variant_types.get(variant.key), funs
                       ),
                     )
@@ -102,10 +90,10 @@ fun compile_cast_fun(
               in zip(outer_params.iter(), from_lambda_type.args.iter())
               do
                 inner_params.&.push(
-                  builder.compile_and_call_cast_fun(param.a, param.b, funs)
+                  builder.desugared_cast(param.a, param.b, funs)
                 )
               builder.finish(
-                builder.compile_and_call_cast_fun(
+                builder.desugared_cast(
                   builder.call(value, inner_params.to_slice()),
                   from_lambda_type.return_type,
                   funs,

@@ -1,20 +1,9 @@
 import mod.mar
 
-fun turn_lambdas_into_funs(egg: Egg): Egg {
-  var funs = map[String, EggFun]()
-  for fun_ in egg.funs do
-    funs.&.put(fun_.key, fun_.value.map(TurnLambdasIntoFuns { funs = funs.& }))
-  Egg { funs, entry_point = egg.entry_point }
-}
-
-struct TurnLambdasIntoFuns { funs: &Map[String, EggFun] }
-
-fun map(
-  id: EggId, desugar: TurnLambdasIntoFuns,
-  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+fun lower_lambdas_to_funs(
+  id: EggId, funs: &Map[String, EggFun], builder: &EggBodyBuilder
 ): EggId {
-  var expr = id.map_children(desugar, mapping)
-  var lambda = expr.inline_lambda or return builder.push(expr)
+  var lambda = id.resolve().inline_lambda or return id
 
   var captured = lambda.captured()
   var closure = builder.box(builder.struct_({
@@ -42,6 +31,6 @@ fun map(
     )
   }
   var signature = "lambda-{id.id.index}"
-  desugar.funs.put(signature, EggFun { body = lambda_body })
+  funs.put(signature, EggFun { body = lambda_body })
   builder.raw_lambda(signature, closure, id.type())
 }

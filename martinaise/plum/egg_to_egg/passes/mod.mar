@@ -1,0 +1,396 @@
+| Welcome to the Egg optimizer! This file contains lots of code, so I'll point
+| out some general themes going on here. The code here is used to turn a Egg
+| into a more optimized Egg.
+|
+| This is achieved by constant folding operations, inlining function calls,
+| analyzing fixpoints of recursive expressions, and pulling impure operations
+| out of the tree.
+
+import ../mod.mar
+import choose_order.mar
+import deduplicate.mar
+import factor_out_loop_fixpoints.mar
+import hoist_helper.mar
+import hoist_known_switch_results.mar
+import hoist_out_of_generators.mar
+import hoist_out_of_loops.mar
+import inline_functions.mar
+import lower_bounds_checks.mar
+import lower_builtin_calls.mar
+import lower_casts.mar
+import lower_divide_and_modulo_checks.mar
+import lower_dynamics.mar
+import lower_generics.mar
+import lower_dup_and_drop_to_funs.mar
+import lower_memory_layouts_1.mar
+import lower_memory_layouts_2.mar
+import lower_lambdas_to_funs.mar
+import lower_loads_and_stores.mar
+import lower_ownership.mar
+import lower_recursive_enums.mar
+import lower_strings.mar
+import lower_type_infos.mar
+import lower_types_to_nothing.mar
+import make_switches_branchless.mar
+import simplify_aggregates_and_parts.mar
+import simplify_arithmetics.mar
+import simplify_arrays.mar
+import simplify_bitwise.mar
+import simplify_casts.mar
+import simplify.mar
+import sink_continues.mar
+import tree_shake.mar
+import unroll_small_arrays.mar
+import use_enum_flows.mar
+
+enum Pass {
+  deduplicate,
+  factor_out_loop_fixpoints,
+  hoist_known_switch_results,
+  hoist_out_of_generators,
+  hoist_out_of_loops,
+  inline_functions,
+  lower_bounds_checks,
+  lower_builtin_calls,
+  lower_casts,
+  lower_divide_and_modulo_checks,
+  lower_dup_and_drop_to_funs,
+  lower_dynamics,
+  lower_generics,
+  lower_lambdas_to_funs,
+  lower_loads_and_stores,
+  lower_ownership,
+  lower_recursive_enums,
+  lower_strings,
+  lower_type_infos,
+  lower_types_to_nothing,
+  lower_memory_layouts_1,
+  lower_memory_layouts_2,
+  make_switches_branchless,
+  simplify_aggregates_and_parts,
+  simplify_arithmetics,
+  simplify_arrays,
+  simplify_bitwise,
+  simplify_casts,
+  sink_continues,
+  tree_shake,
+  unroll_small_arrays,
+  use_enum_flows,
+  | TODO: more optimizations? see https://llvm.org/docs/Passes.html
+  | sink_allocations
+  | run_functions_at_comptime,
+  | dead_argment_elimination
+  | canonicalize_comparisons,
+  | delete_dead_finite_pure_loops,
+  | unroll_loops,
+  | unroll_and_jam,
+  | sink_trivial_into_lambdas: int constants, etc.
+  | unswitch_loops: loop (if a then b else c; d) = if a then loop(b; d) else loop (c; d)
+}
+
+| Passes can be applied to an entire Egg, a body, or an individual ID. Some
+| passes might be applicable at multiple abstraction levels.
+
+fun apply(egg: Egg, pass: Pass): Egg {
+  switch pass
+  case lower_generics egg.lower_generics()
+  case lower_ownership egg.lower_ownership()
+  case lower_recursive_enums egg.lower_recursive_enums()
+  case lower_memory_layouts_1 egg.lower_memory_layouts_1()
+  case lower_memory_layouts_2 egg.lower_memory_layouts_2()
+  case tree_shake egg.tree_shake()
+  default egg
+}
+
+fun apply(body: EggBody, pass: Pass): EggBody {
+  switch pass
+  case deduplicate body.deduplicate()
+  case tree_shake body.tree_shake()
+  case use_enum_flows body.use_enum_flows()
+  default body
+}
+
+| Note: If this returns the input ID, then the ID has not yet been added to the
+| builder!
+fun apply(
+  id: EggId, pass: Pass, funs: &Map[String, EggFun], builder: &EggBodyBuilder
+): EggId {
+  | eprintln("apply {pass.debug()} to {id.id} {id.resolve().debug()}")
+  switch pass
+  | case lower_loads_and_stores id.lower_loads_and_stores(builder)
+  case make_switches_branchless id.make_switches_branchless(builder)
+  case simplify_aggregates_and_parts id.simplify_aggregates_and_parts(builder)
+  case factor_out_loop_fixpoints id.factor_out_loop_fixpoints(funs.*, builder)
+  case hoist_known_switch_results id.hoist_known_switch_results(builder)
+  case hoist_out_of_generators id.hoist_out_of_generators(builder)
+  case hoist_out_of_loops id.hoist_out_of_loops(builder)
+  case inline_functions id.inline_functions(funs.*, builder)
+  case lower_bounds_checks id.lower_bounds_checks(builder)
+  case lower_builtin_calls id.lower_builtin_calls(builder)
+  case lower_casts id.lower_casts(funs, builder)
+  case lower_divide_and_modulo_checks id.lower_divide_and_modulo_checks(builder)
+  case lower_dup_and_drop_to_funs id.lower_dup_and_drop_to_funs(funs, builder)
+  case lower_dynamics id.lower_dynamics(funs, builder)
+  case lower_lambdas_to_funs id.lower_lambdas_to_funs(funs, builder)
+  case lower_strings id.lower_strings(builder)
+  case lower_type_infos id.lower_type_infos(builder)
+  case lower_types_to_nothing id.lower_types_to_nothing(builder)
+  case simplify_arithmetics id.simplify_arithmetics(builder)
+  case simplify_arrays id.simplify_arrays(builder)
+  case simplify_bitwise id.simplify_bitwise(builder)
+  case simplify_casts id.simplify_casts(builder)
+  case sink_continues id.sink_continues(builder)
+  case unroll_small_arrays id.unroll_small_arrays(builder)
+  default id
+}
+
+| Applies multiple passes one after the other.
+
+fun apply(egg: Egg, passes: Slice[Pass]): Egg {
+  for pass in passes do egg = egg.apply(pass)
+  egg
+}
+
+fun apply(body: EggBody, passes: Slice[Pass]): EggBody {
+  for pass in passes do body = body.apply(pass)
+  body
+}
+
+fun apply(
+  id: EggId,
+  passes: Slice[Pass],
+  funs: &Map[String, EggFun],
+  builder: &EggBodyBuilder,
+): EggId {
+  var original = id
+  for pass in passes do id = id.apply(pass, funs, builder)
+  if id == original then builder.push(id).ignore()
+  id
+}
+
+| Some passes take a while to stabilize. For example, optimizations might
+| enable each other: Constant folding might cause one switch case to be
+| eliminated, which restricts the enum variants that flow through the code,
+| which in turn enables other optimizations.
+
+| fun apply_until_stable(egg: Egg, passes: Slice[Pass]): Egg {
+|   var hash_before = egg.hash()
+|   loop {
+|     var funs = map[String, EggFun]()
+|     for signature in egg.choose_optimization_order() do {
+|       var mapped = egg.funs.get(signature)
+|         .map(ApplyUntilStable { passes, processed_funs = funs.& })
+|       eprintln("Mapping {pretty_signature(signature)}")
+|       stderr.write(signature, mapped)
+|       stderr."\n"
+|       mapped.verify()
+|       funs.&.put(signature, mapped)
+|     }
+|     var new_egg = Egg { funs, entry_point = egg.entry_point }.apply(passes)
+|     var hash_after = new_egg.hash()
+|     eprintln("{hash_before} -> {hash_after}")
+|     if hash_before == hash_after then break
+|     hash_before = hash_after
+|   }
+|   egg
+| }
+
+fun apply_until_stable(body: EggBody, passes: Slice[Pass]): EggBody {
+  body.map(
+    ApplyUntilStable { passes, processed_funs = map[String, EggFun]().& },
+    map[EggId, EggId]().&,
+  )
+}
+
+struct ApplyUntilStable {
+  passes: Slice[Pass], processed_funs: &Map[String, EggFun]
+}
+
+fun map(
+  body: EggBody, mapper: ApplyUntilStable, mapping: &Map[EggId, EggId]
+): EggBody {
+  loop {
+    | Explicitly do not map the params. As params are compared using their
+    | identity, mapping them would make them eternally unstable and cause
+    | infinite recursion.
+    var builder = egg_body_builder().&
+    for param in body.params do
+      mapping.put(
+        param,
+        switch param.resolve()
+        case param builder.push(param)
+        case case_param(param)
+          builder.case_param(param.switch_on.map(mapping.*), param.variant)
+        default unreachable(),
+      )
+    for child in body.children do
+      mapping.put(child, child.map(mapper, builder, mapping))
+    var new_body = builder.finish(body.returns.map(mapping.*))
+
+    new_body = new_body.apply(mapper.passes)
+
+    if body.hash() == new_body.hash() then break(body)
+    body = new_body
+  }
+}
+
+var optimized_cache = map[EggId, EggBody]().put_on_heap()
+
+fun map(
+  old: EggId,
+  mapper: ApplyUntilStable,
+  builder: &EggBodyBuilder,
+  mapping: &Map[EggId, EggId],
+): EggId {
+  | eprintln("Mapping {old.debug()} {old.resolve().debug()}")
+  | stderr.write(old, namespace().&, indentation(1))
+  | stderr."\n"
+
+  switch old.resolve()
+  case param panic("should not be mapped")
+  case case_param panic("should not be mapped")
+  default {}
+
+  | TODO: cache from passes to optimized?
+  | if optimized_cache.get_maybe(old) is some(new) then {
+  |   for param in new.params do builder.push(param)
+  |   for child in new.children do builder.push(child)
+  |   return new.returns
+  | }
+
+  | A version of the expression with mapped children. For example, if the
+  | current expression is a switch, this will create the same switch but with
+  | mapped bodies.
+  var children_mapped = old.map_children(mapper, mapping).create()
+
+  | eprintln("Children optimized: {children_mapped.debug()} {children_mapped.resolve().debug()}")
+  | stderr."\n"
+  | stderr.write(children_mapped, namespace().&, indentation(1))
+  | stderr."\n"
+
+  | A body that contains:
+  | - unmapped expressions that resulted from mapping the current expression
+  | - the current mapped expression
+  var self_mapped = {
+    var builder = egg_body_builder().&
+    builder.finish(
+      children_mapped.apply(mapper.passes, mapper.processed_funs, builder)
+    )
+  }
+
+  | A body that contains:
+  | - fully mapped expressions that resulted from mapping the current expression
+  | - the current fully mapped expression
+  var stable =
+    if self_mapped.returns == children_mapped then {
+      | The current expression could not be further optimized apart from
+      | optimizing its children.
+      self_mapped
+    } else {
+      | The current expression was broken down into some smaller expressions.
+      | Optimize those recursively.
+      var builder = egg_body_builder().&
+      for child in self_mapped.children do
+        mapping.put(child, child.map(mapper, builder, mapping))
+      builder.finish(self_mapped.returns.map(mapping.*))
+    }
+
+  | eprintln("full:     {stable.debug()}")
+
+  for child in stable.children do builder.push(child)
+
+  mapping.put(old, stable.returns)
+  | optimized_cache.put(old, stable)
+  stable.returns
+}
+
+
+fun children(id: EggId): Slice[EggId] {
+  var children = list[EggId]()
+  id.visit_children(GatherChildren { children = children.& })
+  children.to_slice()
+}
+struct GatherChildren { children: &List[EggId] }
+fun visit(id: EggId, gather: GatherChildren) { gather.children.push(id) }
+| The number of expressions inside this expression.
+fun num_exprs(body: EggBody): Int {
+  var count = 0
+  body.visit(CountExprs { count = count.& })
+  count
+}
+struct CountExprs { count: &Int }
+fun visit(id: EggId, counter: CountExprs) {
+  counter.count += 1
+  id.visit_children(counter)
+}
+| Converts calls to the given function into continue expressions.
+fun call_to_continue_(body: EggBody, fun_: String, return_type: EggType): EggBody {
+  body.map(CallToContinue { called = fun_, return_type }, map[EggId, EggId]().&)
+}
+struct CallToContinue { called: String, return_type: EggType }
+fun map(
+  id: EggId, mapper: CallToContinue,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(mapper, mapping)
+  if expr is call_fun(call) then
+    if call.fun_ == mapper.called then
+      return builder.continue_(call.args, mapper.return_type)
+  builder.push(expr)
+}
+
+| Fills the body with concrete arguments for its parameters.
+fun fill(body: EggBody, args: Slice[EggId], builder: &EggBodyBuilder): EggId {
+  | eprintln("Filling\n")
+  | stderr.write(body, namespace().&, indentation(1))
+  | stderr."\nwith {args.debug()}\n"
+  var mapping = map[EggId, EggId]().&
+  for both in zip(body.params.iter(), args.iter()) do
+    mapping.put(both.a, both.b)
+  for old in body.children do {
+    var new = old.map(Fill {}, builder, mapping)
+    mapping.put(old, new)
+  }
+  body.returns.map(mapping.*)
+}
+
+fun fill(body: EggBody, arg: EggId, builder: &EggBodyBuilder): EggId {
+  body.fill(list(arg).to_slice(), builder)
+}
+fun fill(body: EggBody, mapping: Map[EggId, EggId]): EggBody {
+  var mapping = mapping.copy()
+  body.map(Fill {}, mapping.&)
+}
+struct Fill {}
+fun map(
+  expr: EggId, fill: Fill, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]
+): EggId {
+  builder.push(expr.map_children(fill, mapping))
+}
+fun without_params(body: EggBody): EggBody {
+  EggBody {
+    params = empty_slice[EggId](),
+    children = body.children,
+    returns = body.returns,
+  }
+}
+| fun replace_recurses_with_lambda(body: EggBody, params: Slice[EggId]): EggBody {
+|   body.map(ReplaceRecursesWithLambda { params }, map[EggId, EggId]().&)
+| }
+| struct ReplaceRecursesWithLambda { params: Slice[EggId] }
+| fun map(id: EggId, mapper: ReplaceRecursesWithLambda, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]): EggId {
+|   var expr = id.map_children(mapper, mapping)
+|   if expr is recurse(rec) then
+|     builder.lambda({
+|       var builder = egg_body_builder().&
+|       for param in mapper.params do builder.params.&.push(param)
+|       builder.finish(builder.recurse({
+|         var args = list[EggId]()
+|         for arg in rec.next do args.&.push(arg)
+|         for param in mapper.params do args.&.push(param)
+|         args.to_slice()
+|       }, rec.type.plum().lambda.unwrap().return_type))
+|     })
+|   else
+|     builder.push(expr)
+| }

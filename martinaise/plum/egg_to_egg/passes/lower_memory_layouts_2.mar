@@ -1,0 +1,188 @@
+import mod.mar
+
+fun lower_memory_layouts_2(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  for fun_ in egg.funs do
+    funs.&.put(fun_.key, fun_.value.map(LowerMemoryLayouts2 {}))
+  Egg { entry_point = egg.entry_point, funs }
+}
+
+struct LowerMemoryLayouts2 {}
+
+fun map(
+  id: EggId, mapper: LowerMemoryLayouts2,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  switch id.resolve()
+  case struct_(struct_) {
+    var layout = id.type().memory_layout_struct()
+    var parts = list[EggId]()
+    for part in layout.parts do
+      parts.&.push(
+        switch part
+        case field(name) struct_.get(name).map(mapping.*)
+        case padding(amount) builder.padding(amount)
+      )
+    builder.aggregate(parts.to_slice())
+  }
+  case member(member) {
+    var struct_layout = member.of.type().memory_layout_struct()
+    var field_layout = id.type().memory_layout()
+    builder.part(
+      member.of.map(mapping.*),
+      struct_layout.field_to_offset.get(member.name),
+      field_layout.size,
+      | field_layout.alignment,
+    )
+  }
+  case enum_(enum_) {
+    var enum_layout = id.type().memory_layout_enum()
+    var variant_layout = enum_layout.variants.get(enum_.variant)
+    var parts = list[EggId]()
+    for part in variant_layout.parts do
+      switch part
+      case payload parts.&.push(enum_.payload.map(mapping.*))
+      case padding(amount) parts.&.push(builder.padding(amount))
+      case tag(tag) {
+        for i in 0..enum_layout.tag_size do {
+          parts.&.push(builder.byte(tag.lower_byte()))
+          tag = tag / 256
+        }
+      }
+    builder.aggregate(parts.to_slice())
+  }
+  case switch_(switch_) {
+    var condition = switch_.condition.map(mapping.*)
+    var enum_type = switch_.condition.type()
+    var layout = enum_type.memory_layout_enum()
+
+    var cases = uninitialized_slice[EggBody](layout.tag_to_variant.size)
+    for entry in layout.tag_to_variant do {
+      var case_ = switch_.cases.get(entry.value)
+      var payload_layout = enum_type.plum().enum_.unwrap()
+        .get(entry.value).memory_layout()
+      var builder = egg_body_builder().&
+      mapping.put(
+        case_.params.get(0), builder.part(condition, 0, payload_layout.size)
+      )
+      for child in case_.children do {
+        var mapped = child.map(mapper, builder, mapping)
+        mapping.put(child, mapped)
+      }
+      var body = builder.finish(case_.returns.map(mapping.*))
+      cases.&.set(entry.key, body)
+    }
+
+    for offset_in_tag in 0..layout.tag_size do {
+      | Group groups of 256 cases into a single case.
+      var num_new_cases = cases.len + 255 / 256
+      var new_cases = uninitialized_slice[EggBody](num_new_cases)
+      for i in 0..num_new_cases do {
+        var builder = egg_body_builder().&
+        var body = builder.finish(
+          builder.switch_on_byte(
+            builder.part(condition, layout.tag_offset + offset_in_tag, 1),
+            | cases.subslice()
+            cases.subslice({i * 256}..min(i + 1 * 256, cases.len)),
+          )
+        )
+        new_cases.&.set(i, body)
+      }
+      cases = new_cases
+    }
+    if cases.len != 1 then unreachable()
+
+    var case_body = cases.get(0)
+    for child in case_body.children do builder.children.&.push(child)
+    case_body.returns
+  }
+  | Objects are stored on the heap with the following layout:
+  | [refcount][value]
+  case object_new(value) {
+    var layout = value.type().memory_layout()
+    var value = value.map(mapping.*)
+    var ptr = builder.malloc(builder.int(8 + layout.size))
+    builder.store(ptr, builder.int(1)) | refcount
+    builder.store(builder.add(ptr, builder.int(8)), value)
+    ptr
+  }
+  case object_load(load) {
+    var ptr = load.ptr.map(mapping.*)
+    var layout = load.type.memory_layout()
+    builder.load(
+      builder.add(ptr, builder.int(8)), layout.size, | layout.alignment
+    )
+  }
+  case object_free(free) {
+    var ptr = free.ptr.map(mapping.*)
+    var layout = free.type.memory_layout()
+    builder.free(ptr, builder.int(8 + layout.size))
+  }
+  case get_refcount(get) {
+    var ptr = get.ptr.map(mapping.*)
+    builder.load(ptr, 8)
+  }
+  case set_refcount(set) {
+    var ptr = set.ptr.map(mapping.*)
+    var refcount = set.refcount.map(mapping.*)
+    builder.store(ptr, refcount)
+  }
+  | Buffers are stored on the heap with the following layout:
+  | [refcount][length][item][item][item]...
+  case new_buffer(new) {
+    var item_layout = new.item_type.memory_layout()
+    var length = new.length.map(mapping.*)
+    var ptr = builder.malloc(builder.add(
+      builder.int(16), | refcount + length
+      builder.multiply(length, builder.int(item_layout.stride_size())),
+    ))
+    builder.store(ptr, builder.int(1))
+    builder.store(builder.add(ptr, builder.int(8)), length)
+    ptr
+  }
+  case get_buffer_length(ptr) {
+    var ptr = ptr.map(mapping.*)
+    builder.load(builder.add(ptr, builder.int(8)), 8)
+  }
+  case load_buffer_item(load) {
+    var item_layout = load.item_type.memory_layout()
+    var buffer = load.buffer.map(mapping.*)
+    var index = load.index.map(mapping.*)
+    var offset = builder.add(
+      builder.int(16), | refcount + length
+      builder.multiply(index, builder.int(item_layout.stride_size())),
+    )
+    builder.load(
+      builder.add(buffer, offset), item_layout.size, | item_layout.alignment
+    )
+  }
+  case store_buffer_item(store) {
+    var item_layout = store.item_type.memory_layout()
+    var buffer = store.buffer.map(mapping.*)
+    var index = store.index.map(mapping.*)
+    var item = store.item.map(mapping.*)
+    var items_base = builder.add(buffer, builder.int(16)) | refcount + len
+    builder.store(
+      builder.add(
+        items_base,
+        builder.multiply(index, builder.int(item_layout.stride_size())),
+      ),
+      item,
+    )
+  }
+  case store_buffer_bytes(store) {
+    var buffer = store.buffer.map(mapping.*)
+    builder.store_bytes(builder.add(buffer, builder.int(16)), store.bytes)
+  }
+  case free_buffer(free) {
+    var item_layout = free.item_type.memory_layout()
+    var buffer = free.buffer.map(mapping.*)
+    var length = builder.load(builder.add(buffer, builder.int(8)), 8)
+    var size = builder.add(
+      builder.int(16), | refcount + length
+      builder.multiply(length, builder.int(item_layout.stride_size())),
+    )
+    builder.free(buffer, size)
+  }
+  default builder.push(id.map_children(mapper, mapping))
+}

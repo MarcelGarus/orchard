@@ -1,0 +1,141 @@
+import mod.mar
+
+fun simplify_arithmetics(id: EggId, builder: &EggBodyBuilder): EggId {
+  switch id.resolve()
+  case add(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a + b)
+
+    | Normalize so that constants are on the right.
+    if a.resolve() is int then return builder.add(b, a)
+
+    | x + 0 = x
+    if b.resolve() is int(b) then if b == 0 then return a
+
+    | (x + a) + b = x + (a + b)
+    if a.resolve() is add(inner) then
+      if inner.b.resolve() is int(a) then
+        if b.resolve() is int(b) then
+          return builder.add(inner.a, builder.int(a + b))
+
+    | (x - y) + y = x
+    if a.resolve() is subtract(args) then if b == args.b then return args.a
+
+    | x + (y - x) = y
+    if b.resolve() is subtract(args) then if a == args.b then return args.a
+  }
+  case subtract(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a - b)
+
+    | x - 0 = x
+    if b.resolve() is int(b) then if b == 0 then return a
+
+    | (x + y) - y = x
+    if a.resolve() is add(args) then if args.b == b then return args.a
+  }
+  case multiply(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a * b)
+
+    | Normalize so that constants are on the right.
+    if a.resolve() is int then return builder.multiply(b, a)
+
+    | x * 0 = 0
+    if b.resolve() is int(b) then if b == 0 then return builder.int(0)
+
+    | x * 1 = x
+    if b.resolve() is int(b) then if b == 1 then return a
+
+    | (x * a) * b = x * (a * b)
+    if a.resolve() is multiply(inner) then
+      if inner.b.resolve() is int(a) then
+        if b.resolve() is int(b) then
+          return builder.multiply(inner.a, builder.int(a * b))
+
+    | x * (2 ^ n) = x << n
+    if b.resolve() is int(b) then {
+      var n = log_2(b)
+      if 2 ** n == b then return builder.shift_left(a, builder.int(n))
+    }
+  }
+  case divide(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold crash.
+    if b.resolve() is int(b) then if b == 0 then
+      return builder.crash(builder.string("divide by zero"), type_int)
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a / b)
+
+    | x / 1 = x
+    if b.resolve() is int(b) then if b == 1 then return a
+
+    | x / (2 ^ n) = x >> n
+    if b.resolve() is int(b) then {
+      var n = log_2(b)
+      if 2 ** n == b then return builder.shift_right(a, builder.int(n))
+    }
+  }
+  case modulo(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold crash.
+    if b.resolve() is int(b) then if b == 0 then
+      return builder.crash(builder.string("modulo by zero"), type_int)
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a % b)
+
+    | x % 1 = 0
+    if b.resolve() is int(b) then if b == 1 then return builder.int(0)
+  }
+  case compare(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.enum_(
+        type_ordering,
+        switch a <=> b
+        case less "less"
+        case equal "equal"
+        case greater "greater",
+        builder.nothing()
+      )
+
+    | compare(x, x) == equals
+    if a == b then
+      return builder.enum_(type_ordering, "equal", builder.nothing())
+
+    | compare((x - y), 0) = compare(x, y)
+    if a.resolve() is subtract(sub) then if b.resolve() is int(b) then
+      if b == 0 then return builder.compare(sub.a, sub.b)
+    
+    | Note: Because add and subtract wrap around, we can't optimize something
+    | like compare(x + 1, x) to greater.
+  }
+  default {}
+
+  | TODO: add the unchecked variants as well
+
+  id
+}

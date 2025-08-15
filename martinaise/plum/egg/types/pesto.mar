@@ -1,0 +1,44 @@
+| Pointers, Enums, STructs, and Others  
+|
+| A lower-level view of types: In this representation, recursive types no longer
+| exist. Instead, we have opaque pointers that are inserted whenever a type
+| would recurse. For recursions that cross enum boundaries, we insert a pointer
+| indirection between recursive variants and their payload. Types with
+| recursions that only cross structs can never be instantiated, so we replace
+| them with never.
+
+import mod.mar
+
+enum PestoType {
+  never,
+  byte,
+  int,
+  struct_: Map[String, EggType],
+  enum_: Map[String, EggType],
+  ptr,
+}
+
+fun pesto(type: EggType): PestoType {
+  switch type.internal_kind()
+  case variable panic("Disallowed: {type}")
+  case never PestoType.never
+  case byte PestoType.byte
+  case int PestoType.int
+  case type PestoType.struct_(map[String, EggType]())
+  case box PestoType.ptr
+  case array PestoType.struct_(map(
+    "buffer" -> type_ptr,
+    "start" -> type_ptr,
+    "length" -> type_ptr,
+  ))
+  case struct_(fields) PestoType.struct_(fields)
+  case enum_(variants) PestoType.enum_(variants)
+  case lambda PestoType.struct_(map(
+    "closure" -> type_ptr,
+    "body" -> type_ptr,
+    "free" -> type_ptr,
+  ))
+  case recursive unreachable()
+  case ptr PestoType.ptr
+  case bytes panic("Disallowed: {type}")
+}

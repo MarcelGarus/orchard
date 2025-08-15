@@ -120,6 +120,46 @@
 
 import mod.mar
 
+fun factor_out_loop_fixpoints(
+  id: EggId, funs: Map[String, EggFun], builder: &EggBodyBuilder
+): EggId {
+  var loop_ = id.resolve().loop_ or return id
+
+  var fixpoint = loop_.find_fixpoint(funs)
+  if fixpoint.is_trivial() then return id
+
+  var dehydrated_initial = fixpoint.dehydrate(loop_.initial, builder)
+  var new_body = {
+    var builder = egg_body_builder().&
+    var dehydrated_params = {
+      var res = list[EggId]()
+      for d in dehydrated_initial do res.&.push(builder.param(d.type()))
+      res.to_slice()
+    }
+    var rehydrated = fixpoint.hydrate(dehydrated_params, builder)
+    builder.finish(loop_.body.fill(rehydrated, builder))
+  } .optimize_for_fixpoint_analysis()
+    .replace_continues(fixpoint)
+  builder.loop_(dehydrated_initial, new_body)
+}
+
+fun optimize_for_fixpoint_analysis(body: EggBody): EggBody {
+  | We do some cheap optimizations. In particular, we don't need to generate
+  | clean code, so we don't need deduplication.
+  body.apply_until_stable(list(
+    Pass.lower_strings,
+    Pass.hoist_known_switch_results,
+    Pass.inline_functions,
+    Pass.simplify_aggregates_and_parts,
+    Pass.simplify_arithmetics,
+    Pass.simplify_arrays,
+    Pass.simplify_bitwise,
+    Pass.factor_out_loop_fixpoints,
+    Pass.sink_continues,
+    Pass.use_enum_flows,
+  ).to_slice())
+}
+
 struct Fixpoint { shapes: Slice[Shape] }
 
 fun write[W](writer: W, fixpoint: Fixpoint) {
@@ -136,7 +176,7 @@ fun is_trivial(fixpoint: Fixpoint): Bool {
   all_holes
 }
 
-fun find_fixpoint(loop_: EggLoop, optimize: Optimize): Fixpoint {
+fun find_fixpoint(loop_: EggLoop, funs: Map[String, EggFun]): Fixpoint {
   var candidate = {
     var shapes = list[Shape]()
     for arg in loop_.initial do shapes.&.push(Shape.id(arg))
@@ -148,8 +188,8 @@ fun find_fixpoint(loop_: EggLoop, optimize: Optimize): Fixpoint {
     candidate.holes_to_params(builder)
     var rehydrated = candidate.hydrate(builder.params.iter().&, builder)
     var body = builder.finish(loop_.body.fill(rehydrated, builder))
-    | var body = body.map(optimize, map[EggId, EggId]().&)
-    var body = body.optimize_without_inlining()
+    | var body = body.map(funs, map[EggId, EggId]().&)
+    var body = body.optimize_for_fixpoint_analysis()
 
     | stderr."Fixpoint propagation:\n"
     | stderr."  Candidate: {candidate}\n"
@@ -163,9 +203,7 @@ fun find_fixpoint(loop_: EggLoop, optimize: Optimize): Fixpoint {
       for id in continue_.next do continue_shapes.&.push(Shape.id(id))
 
       | eprint("Merging {candidate} and {continue_shapes} ")
-      candidate = merge(
-        candidate, continue_shapes.to_slice(), optimize.optimized.*
-      )
+      candidate = merge(candidate, continue_shapes.to_slice(), funs)
       | eprintln("-> {candidate}")
     }
     if candidate == previous then break

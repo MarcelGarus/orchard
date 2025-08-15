@@ -1,0 +1,229 @@
+import mod.mar
+
+fun lower_memory_layouts_1(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  for fun_ in egg.funs do
+    funs.&.put(fun_.key, fun_.value.map(LowerMemoryLayouts1 { funs = funs.& }))
+  Egg { entry_point = egg.entry_point, funs }
+}
+
+struct LowerMemoryLayouts1 { funs: &Map[String, EggFun] }
+
+fun map(
+  body: EggBody, mapper: LowerMemoryLayouts1, mapping: &Map[EggId, EggId]
+): EggBody {
+  var builder = egg_body_builder().&
+  for param in body.params do
+    mapping.put(
+      param,
+      switch param.resolve()
+      case param(type) builder.param(type.box_recursive_variants())
+      case case_param(param)
+        builder.case_param(param.switch_on.map(mapping.*), param.variant)
+      default unreachable()
+    )
+  for child in body.children do {
+    var mapped = child.map(mapper, builder, mapping)
+    mapping.put(child, mapped)
+  }
+  builder.finish(body.returns.map(mapping.*))
+}
+
+fun map(
+  id: EggId, mapper: LowerMemoryLayouts1,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  switch id.resolve()
+  case dup(dup) {
+    builder.desugared_dup(dup.id.map(mapping.*), dup.type)
+    builder.nothing()
+  }
+  case drop(drop) {
+    builder.desugared_drop(drop.id.map(mapping.*), drop.type, mapper.funs)
+    builder.nothing()
+  }
+  case box(value) {
+    if value.type().num_inhabitants() <= NumInhabitants.one then
+      builder.null_ptr()
+    else
+      builder.object_new(value.map(mapping.*))
+  }
+  case unbox(box) {
+    var box_type = box.type()
+    var ptr = box.map(mapping.*)
+    var inner_type = box_type.plum().box.unwrap()
+    if inner_type.num_inhabitants() <= NumInhabitants.one then
+      builder.construct_inhabitant(inner_type)
+    else {
+      var inner = builder.object_load(ptr, inner_type)
+      builder.desugared_dup(inner, inner_type)
+      builder.desugared_drop(ptr, box_type, mapper.funs)
+      inner
+    }
+  }
+  case array(array) {
+    if array.items.len == 0 then
+      return builder.struct_(map(
+        "buffer" -> builder.null_ptr(),
+        "start" -> builder.int(0),
+        "end" -> builder.int(0),
+      ))
+
+    | Special case byte arrays.
+    | TODO: do this later in the compilation
+    var all_bytes = true
+    for item in array.items do
+      if not(item.resolve() is byte) then all_bytes = false
+    if all_bytes then {
+      var buffer = builder.new_buffer(type_byte, builder.int(array.items.len))
+      var bytes = list[Byte]()
+      for byte in array.items do bytes.&.push(byte.resolve().byte.unwrap())
+      builder.store_buffer_bytes(buffer, bytes.to_slice())
+      return builder.struct_(map(
+        "buffer" -> buffer,
+        "start" -> builder.int(0),
+        "end" -> builder.int(array.items.len),
+      ))
+    }
+
+    var item_type = id.type().plum().array.unwrap()
+    var buffer = builder.new_buffer(item_type, builder.int(array.items.len))
+    for item in array.items.iter().enumerate() do
+      builder.store_buffer_item(
+        buffer,
+        item.item.type(),
+        builder.int(item.index),
+        item.item.map(mapping.*),
+      )
+    builder.struct_(map(
+      "buffer" -> buffer,
+      "start" -> builder.int(0),
+      "end" -> builder.int(array.items.len),
+    ))
+  }
+  case unchecked_generate_non_empty_array(gen) {
+    var length = gen.length
+    var generator = gen.generator
+    var item_type = generator.returns.type()
+    var buffer = builder.new_buffer(item_type, length)
+    builder.loop_(list(builder.int(0)).to_slice(), {
+      var builder = egg_body_builder().&
+      var cursor = builder.param(type_int)
+      builder.finish(
+        builder.switch_on_ordering(
+          builder.compare(cursor, length),
+          {
+            var builder = egg_body_builder().&
+            var item = generator.fill(cursor, builder)
+            builder.store_buffer_item(
+              buffer, item_type, cursor, item
+            )
+            builder.finish(
+              builder.continue_(
+                list(builder.add(cursor, builder.int(1))).to_slice(),
+                type_nothing,
+              )
+            )
+          },
+          egg_body_builder().finish_with_nothing(),
+          egg_body_builder().finish_with_unreachable(type_nothing),
+        )
+      )
+    })
+    builder.struct_(map(
+      "buffer" -> buffer, "start" -> builder.int(0), "end" -> length
+    ))
+  }
+  case array_len(array) {
+    var array_type = array.type()
+    var array = array
+    var length = builder.subtract(
+      builder.member(array, "end"), builder.member(array, "start")
+    )
+    builder.desugared_drop(array, array_type, mapper.funs)
+    return length
+  }
+  case unchecked_array_get(args) {
+    var array_type = args.array.type()
+    var item_type = array_type.plum().array.unwrap()
+    var array = args.array.map(mapping.*)
+    var index = args.index.map(mapping.*)
+    var item = builder.load_buffer_item(
+      builder.member(array, "buffer"),
+      item_type,
+      builder.add(builder.member(array, "start"), index),
+    )
+    builder.desugared_dup(item, item_type)
+    builder.desugared_drop(array, array_type, mapper.funs)
+    item
+  }
+  case unchecked_array_set(args) {
+    var array_type = args.array.type()
+    var item_type = array_type.plum().array.unwrap()
+    var array = args.array.map(mapping.*)
+    var index = args.index.map(mapping.*)
+    var item = args.item.map(mapping.*)
+    var buffer = builder.member(array, "buffer")
+    var start = builder.member(array, "start")
+    var end = builder.member(array, "end")
+
+    | If the buffer's reference count is 1, we have exclusive ownership and can
+    | mutate the buffer in place. Otherwise, we copy the part of the buffer that
+    | this array points to, and then we set the item in that copy.
+    var owned_array = builder.switch_on_ordering(
+      builder.compare(builder.get_refcount(buffer), builder.int(1)),
+      egg_body_builder().finish_with_unreachable(array_type),
+      egg_body_builder().finish(array),
+      {
+        var builder = egg_body_builder().&
+        var length = builder.subtract(end, start)
+        var copy = builder.new_buffer(item_type, length)
+        builder.decrement_refcount(buffer)
+        builder.loop_(list(builder.int(0)).to_slice(), {
+          var builder = egg_body_builder().&
+          var cursor = builder.param(type_int)
+          builder.finish(builder.switch_on_ordering(
+            builder.compare(cursor, length),
+            {
+              var builder = egg_body_builder().&
+              var item = builder.load_buffer_item(
+                buffer, item_type, builder.add(start, cursor)
+              )
+              builder.store_buffer_item(
+                copy, item_type, cursor, item
+              )
+              builder.finish(builder.continue_(
+                list(builder.add(cursor, builder.int(1))).to_slice(), type_ptr
+              ))
+            },
+            egg_body_builder().finish(copy),
+            egg_body_builder().finish_with_unreachable(type_ptr),
+          ))
+        })
+        builder.finish(builder.struct_(map(
+          "buffer" -> copy, "start" -> builder.int(0), "length" -> length
+        )))
+      },
+    )
+
+    var offset = builder.add(start, index)
+    var previous = builder.load_buffer_item(
+      buffer, item_type, offset
+    )
+    builder.desugared_drop(previous, item_type, mapper.funs)
+    builder.store_buffer_item(buffer, item_type, offset, item)
+    owned_array
+  }
+  case array_slice(args) {
+    var array = args.array.map(mapping.*)
+    var start = args.start.map(mapping.*)
+    var end = args.end.map(mapping.*)
+    var old_start = builder.member(array, "start")
+    builder.struct_(map(
+      "buffer" -> builder.member(array, "buffer"),
+      "start" -> builder.add(old_start, start),
+      "end" -> builder.add(old_start, end),
+    ))
+  }
+  default builder.push(id.map_children(mapper, mapping))
+}

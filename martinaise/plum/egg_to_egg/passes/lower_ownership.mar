@@ -17,16 +17,16 @@
 
 import mod.mar
 
-fun introduce_ownership(egg: Egg): Egg {
+fun lower_ownership(egg: Egg): Egg {
   var funs = map[String, EggFun]()
-  for fun_ in egg.funs do funs.&.put(fun_.key, fun_.value.introduce_ownership())
+  for fun_ in egg.funs do funs.&.put(fun_.key, fun_.value.lower_ownership())
   Egg { entry_point = egg.entry_point, funs }
 }
 
-fun introduce_ownership(fun_: EggFun): EggFun {
+fun lower_ownership(fun_: EggFun): EggFun {
   var mapping = map[EggId, EggId]()
   fun_.body.visit(ReserveIds { mapping = mapping.& })
-  var body = fun_.body.introduce_ownership(set[EggId]().&, mapping)
+  var body = fun_.body.lower_ownership(set[EggId]().&, mapping)
   EggFun { body }
 }
 struct ReserveIds { mapping: &Map[EggId, EggId] }
@@ -48,7 +48,7 @@ fun visit(id: EggId, reserve: ReserveIds) {
   id.visit_children(reserve)
 }
 
-fun introduce_ownership(
+fun lower_ownership(
   body: EggBody,
   needed_later_on: &Set[EggId], mapping: Map[EggId, EggId],
 ): EggBody {
@@ -57,7 +57,7 @@ fun introduce_ownership(
   rev_body.&.require(body.returns.map(mapping), needed_later_on)
 
   for id in body.children.rev_iter() do
-    id.introduce_ownership(rev_body.&, needed_later_on, mapping)
+    id.lower_ownership(rev_body.&, needed_later_on, mapping)
 
   var params = list[EggId]()
   for param in body.params do {
@@ -87,7 +87,7 @@ fun require(
     needed_later_on.put(id)
 }
 
-fun introduce_ownership(
+fun lower_ownership(
   id: EggId,
   rev_body: &List[EggId], needed_later_on: &Set[EggId],
   mapping: Map[EggId, EggId],
@@ -201,7 +201,7 @@ fun introduce_ownership(
       for id in needed_later_on do needed_by_this_branch.&.put(id)
       cases.&.put(
         case_.key,
-        case_.value.introduce_ownership(needed_by_this_branch.&, mapping),
+        case_.value.lower_ownership(needed_by_this_branch.&, mapping),
       )
       needed_by_branches.&.put(case_.key, needed_by_this_branch)
     }
@@ -229,7 +229,9 @@ fun introduce_ownership(
         returns = case_.value.returns,
       })
     }
-    rev_body.push(update(id, EggExpr.switch_(EggSwitch { condition, cases })))
+    rev_body.push(update(
+      id, EggExpr.switch_(EggSwitch { condition, cases })
+    ))
     rev_body.require(condition, needed_later_on)
   }
   case raw_lambda(lambda) {
@@ -295,7 +297,7 @@ fun introduce_ownership(
       needed_later_on.put(id)
       rev_body.push(EggExpr.drop(EggDrop { id, type = id.type() }).create())
     }
-    var generator = gen.generator.introduce_ownership(needed_later_on, mapping)
+    var generator = gen.generator.lower_ownership(needed_later_on, mapping)
     rev_body.push(update(
       id,
       EggExpr.unchecked_generate_non_empty_array(EggGenerateArray {

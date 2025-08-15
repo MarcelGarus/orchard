@@ -1,0 +1,143 @@
+import mod.mar
+
+| Non-Extended Plum Types  
+|
+| The non-extended types may contain types that are not self-contained, e.g. by
+| traversing down into them you might reach a recursive expression.
+
+enum UnsafePlumType {
+  variable: String,
+  never,
+  byte,
+  int,
+  type,
+  box: EggType,
+  array: EggType,
+  struct_: Map[String, EggType],
+  enum_: Map[String, EggType],
+  lambda: PlumLambdaType,
+  recursive: Int,
+}
+struct PlumLambdaType { args: Slice[EggType], return_type: EggType }
+
+fun plum_not_extended(type: EggType): UnsafePlumType {
+  switch type.internal_kind()
+  case variable(name) UnsafePlumType.variable(name)
+  case never UnsafePlumType.never
+  case byte UnsafePlumType.byte
+  case int UnsafePlumType.int
+  case type UnsafePlumType.type
+  case box(inner) UnsafePlumType.box(inner)
+  case array(item) UnsafePlumType.array(item)
+  case struct_(fields) UnsafePlumType.struct_(fields)
+  case enum_(variants) UnsafePlumType.enum_(variants)
+  case lambda(lambda) UnsafePlumType.lambda(lambda)
+  case recursive(level) UnsafePlumType.recursive(level)
+  default panic("Disallowed: {type}")
+}
+
+| Safe Plum Types  
+|
+| When navigating into Plum types, you can't just naively take the contained
+| types because they might refer to surrounding types via recursive types. This
+| function extends recursive calls that reference the root type so that when you
+| navigate into this type, the resulting types are still self-contained.
+|
+| For example, if you switch on a value of the (| a b: (| c d: (^2))) type, the
+| enum payload in the b case should have this type: (| c d: (| a b: (^2)))
+| As you see, we can't just naively take the type of the b variant because it
+| refers to the outer type that we remove. Having ^2 in a type where there are
+| no two types surrounding it is bad. So, types need to "wrap around" -- as you
+| navigate into types, recursive types should be extended at the bottom so that
+| you never actually reach a recursive marker.
+|
+| In particular, we need to extend all recursive types that refer to the former
+| root type. To do that, we first create an extension that root-recursive types
+| will be extended with. In the example above, (| a b: (Root)). The (Root) is
+| just a temporary marker that means "replace this so that it points to the new
+| root". Then, we walk the original type and replace all recursive types that
+| reference the root with this extension, replacing (Root) with the level that
+| we are currently at.
+
+enum PlumType {
+  variable: String,
+  never,
+  byte,
+  int,
+  type,
+  struct_: Map[String, EggType],
+  enum_: Map[String, EggType],
+  lambda: PlumLambdaType,
+  box: EggType,
+  array: EggType,
+}
+
+fun plum(type: EggType): PlumType {
+  switch type.internal_kind()
+  case variable(name) PlumType.variable(name)
+  case never PlumType.never
+  case byte PlumType.byte
+  case int PlumType.int
+  case type PlumType.type
+  case box(inner) {
+    var extension = EggType { string = "(Box (Root))" }
+    PlumType.box(inner.extend_recursive_types(extension).canonicalize())
+  }
+  case array(item) {
+    var extension = EggType { string = "(Array (Root))" }
+    PlumType.array(item.extend_recursive_types(extension).canonicalize())
+  }
+  case struct_(struct_) {
+    var fields = map[String, EggType]()
+    for field in struct_ do {
+      | Type that is the original struct except the field that we navigate
+      | into. This field has been replaced with a recursive type.
+      var extension = {
+        var ext_fields = map[String, EggType]()
+        for ext_field in struct_ do
+          ext_fields.&.put(
+            ext_field.key,
+            if ext_field.key == field.key
+            then EggType { string = "(Root)" }
+            else ext_field.value
+          )
+        type_struct_without_canonicalizing(ext_fields)
+      }
+      fields.&.put(field.key, field.value.extend_recursive_types(extension).canonicalize())
+    }
+    PlumType.struct_(fields)
+  }
+  case enum_(enum_) {
+    var variants = map[String, EggType]()
+    for variant in enum_ do {
+      | Type that is the original struct except the variant that we navigate
+      | into. This variant has been replaced with a recursive type.
+      var extension = {
+        var ext_variants = map[String, EggType]()
+        for ext_variant in enum_ do
+          ext_variants.&.put(
+            ext_variant.key,
+            if ext_variant.key == variant.key
+            then EggType { string = "(Root)" }
+            else ext_variant.value
+          )
+        type_enum_without_canonicalizing(ext_variants)
+      }
+      variants.&.put(
+        variant.key, variant.value.extend_recursive_types(extension).canonicalize()
+      )
+    }
+    PlumType.enum_(variants)
+  }
+  case lambda(lambda)
+    PlumType.lambda(PlumLambdaType {
+      args = {
+        var args = list[EggType]()
+        for arg in lambda.args do
+          args.&.push(arg.extend_recursive_types(type).canonicalize())
+        args.to_slice()
+      },
+      return_type = lambda.return_type.extend_recursive_types(type).canonicalize(),
+    })
+  default panic("Disallowed: {type}")
+}

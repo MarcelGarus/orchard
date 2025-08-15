@@ -1,26 +1,16 @@
 import mod.mar
 
-fun implement_dynamics(egg: Egg): Egg {
-  var funs = map[String, EggFun]()
-  for fun_ in egg.funs do
-    funs.&.put(fun_.key, fun_.value.map(ImplementDynamics { funs = funs.& }))
-  Egg { funs, entry_point = egg.entry_point }
-}
-
-struct ImplementDynamics { funs: &Map[String, EggFun] }
-fun map(
-  id: EggId, mapper: ImplementDynamics,
-  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+fun lower_dynamics(
+  id: EggId, funs: &Map[String, EggFun], builder: &EggBodyBuilder
 ): EggId {
-  var expr = id.map_children(mapper, mapping)
-  if expr is static_to_dynamic(static_to_dynamic) then
-    builder.desugared_static_to_dynamic(static_to_dynamic, mapper.funs)
-  else if expr is dynamic_to_static(dynamic_to_static) then
+  switch id.resolve()
+  case static_to_dynamic(static_to_dynamic)
+    builder.desugared_static_to_dynamic(static_to_dynamic, funs)
+  case dynamic_to_static(dynamic_to_static)
     builder.desugared_dynamic_to_static(
-      dynamic_to_static.dynamic, dynamic_to_static.static, mapper.funs
+      dynamic_to_static.dynamic, dynamic_to_static.static, funs
     )
-  else
-    builder.push(expr)
+  default id
 }
 
 fun desugared_static_to_dynamic(

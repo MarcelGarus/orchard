@@ -10,13 +10,19 @@ fallback fun map[M](
   body.map_children(mapper, mapping)
 }
 
-| TODO: keep param identities?
 fun map_children[M](
   body: EggBody, mapper: M, mapping: &Map[EggId, EggId]
 ): EggBody {
   var builder = egg_body_builder().&
   for param in body.params do
-    mapping.put(param, param.map(mapper, builder, mapping))
+    mapping.put(
+      param,
+      switch param.resolve()
+      case param builder.push(param)
+      case case_param(param)
+        builder.case_param(param.switch_on.map(mapping.*), param.variant)
+      default unreachable()
+    )
   for child in body.children do {
     var mapped = child.map(mapper, builder, mapping)
     mapping.put(child, mapped)
@@ -41,22 +47,15 @@ fun map_children[M](
     for field in struct_ do fields.&.put(field.key, field.value.map(mapping.*))
     EggExpr.struct_(fields)
   }
+  case member(member)
+    EggExpr.member(EggMember {
+      of = member.of.map(mapping.*), name = member.name
+    })
   case enum_(enum_)
     EggExpr.enum_(EggEnum {
       type = enum_.type,
       variant = enum_.variant,
       payload = enum_.payload.map(mapping.*),
-    })
-  case inline_lambda(body) EggExpr.inline_lambda(body.map(mapper, mapping))
-  case raw_lambda(lambda)
-    EggExpr.raw_lambda(EggRawLambda {
-      fun_ = lambda.fun_,
-      closure = lambda.closure.map(mapping.*),
-      type = lambda.type,
-    })
-  case member(member)
-    EggExpr.member(EggMember {
-      of = member.of.map(mapping.*), name = member.name
     })
   case switch_(switch_) {
     var condition = switch_.condition.map(mapping.*)
@@ -79,6 +78,13 @@ fun map_children[M](
         })
     EggExpr.switch_(EggSwitch { condition, cases })
   }
+  case inline_lambda(body) EggExpr.inline_lambda(body.map(mapper, mapping))
+  case raw_lambda(lambda)
+    EggExpr.raw_lambda(EggRawLambda {
+      fun_ = lambda.fun_,
+      closure = lambda.closure.map(mapping.*),
+      type = lambda.type,
+    })
   case call_fun(call)
     EggExpr.call_fun(EggCallFun {
       fun_ = call.fun_,
