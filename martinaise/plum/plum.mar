@@ -76,6 +76,7 @@ fun report_time(duration: Duration) {
 fun compile(module: Module, function: String): Result[Ground, Error] {
   var total_timer = start_timer()
 
+  | Parsing the code  
   | This is compilation pipeline. We start with an input module and parse it
   | into lines nested by indentation (Bacon) and then an abstract syntax tree
   | (Toast). This allows us to inspect the imports and parse those modules as
@@ -87,6 +88,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   module.parse_toasts(toasts.&)?
   report_time(timer.read_duration())
 
+  | Type checking  
   | Once we've parsed the entry point module and all imported modules, we
   | type-check everything, resolve identifiers, and figure out types for all
   | expressions. This results in the Egg.
@@ -96,80 +98,109 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   var egg = toasts.to_egg("{module}.{function}")?
   report_time(timer.read_duration())
 
-  | Similar to the MLIR [0] compiler architecture, we don't have a bunch of
-  | type-safe compiler stages, as that would require implementing formatting,
-  | hashing, and (most importantly) optimizations for a bunch of stages.
+  | What is the Egg?  
+  | Similar to the MLIR (Multi-Level Intermediate Representation) [0] compiler
+  | architecture, we don't have a bunch of type-safe compiler stages, as that
+  | would require implementing formatting, hashing, and (most importantly)
+  | optimizations for a bunch of stages.
   |
   | Instead, the Egg covers all abstraction levels from a "type checked AST" to
-  | a "low-level instructions on bytes". Hence, we only ever use a subset of the
-  | Egg nodes -- for example, you will not find an Egg than contains both the
-  | builtin node as well as the store_word node.
-  | This makes the code of our compiler a bit less type-safe, but way more
-  | flexible. We can change the order that language features are lowered in and
-  | optimizations are reusable across all compiler stages.
+  | a "low-level instructions on bytes". The individual nodes can represent
+  | high-level ideas like "generate_array" to low-level ones like "store_word".
+  | In one Egg instance, only a subset of all possible nodes is used.
+  |
+  | Note that we are intentionally pragmatic here: We trade a bit of type-safety
+  | (expressing in types which subset of nodes our representation contains) for
+  | flexibility: We can re-use the validation, formatting, hashing, and
+  | optimizations across multiple abstraction levels and easily change the order
+  | that language features are lowered.
   |
   | [0]: https://mlir.llvm.org/
+  
+  | Terminology note: The lower_* passes eliminate a kind of node from the Egg,
+  | replacing it with lower-level concepts. The other passes (simplify_*, etc.)
+  | emit code that is on a similar abstraction level as before.
 
-  | Egg nodes:
-  |   param, case_param, int, struct, member, enum, switch, inline_lambda,
-  |   call_fun, call_builtin, call_lambda, string, type, cast
+  egg.assert_only(list(
+    "param", "case_param", "int", "struct_", "member", "enum_", "switch_",
+    "inline_lambda", "call_fun", "call_builtin", "call_lambda", "string",
+    "type", "cast",
+  ))
 
+  | Monomorphization  
   | TODO: add call_generic
-  | Eliminating call_generic: We specialize generic functions for the concrete
-  | types they are used with (also called "monomorphization"). After this, our
-  | code only has concrete types.
+  | We specialize generic functions for the concrete types they are used with
+  | (also called "monomorphization"), starting at the program entry point. After
+  | this, our Egg contains only the code reachable from main specialized for
+  | concrete types.
   var egg = run_egg_pass("generics", egg, Pass.lower_generics)
 
-  | Egg nodes:
-  |   param, case_param, int, struct, member, enum, switch, inline_lambda,
-  |   call_fun, call_builtin, call_lambda, string, type, cast
+  egg.assert_only(list(
+    "param", "case_param", "int", "struct_", "member", "enum_", "switch_",
+    "inline_lambda", "call_fun", "call_builtin", "call_lambda", "string",
+    "type", "cast",
+  ))
 
-  | Eliminate call_builtin: We turn call_builtin nodes into a variety of
+  | Specializing call_builtin  
+  | We turn the rather unspecific call_builtin nodes into a variety of
   | specialized nodes, one for each builtin.
   var egg = run_egg_passes_until_stable("builtin calls", egg, list(
     Pass.lower_builtin_calls
   ))
 
-  | Egg nodes:
-  |   param, case_param, lower_byte, byte_to_int, int, add, subtract, multiply,
-  |   divide, modulo, compare, and, or, xor, shift_left, shift_right, struct,
-  |   member, enum, switch, inline_lambda, call_fun, call_lambda, string, box,
-  |   unbox, generate_array, array_get, array_set, array_slice, array_len, type,
-  |   cast, type_info, static_to_dynamic, dynamic_to_static, crash
-
-  | Eliminate cast, type_info, static_to_dynamic, dynamic_to_static: Because all
-  | types are concrete, we turn expressions that operate with types into literal
-  | expressions or functions that deal with values of the corresponding type.
-  | For example, instead of a cast node, we call a function that traverses the
-  | old value and builds up a parallel new value of the new type.
-  var egg = run_egg_passes_until_stable("casts, type info, dynamics", egg, list(
-    Pass.simplify_casts, Pass.lower_casts,
-    Pass.lower_type_infos, Pass.lower_dynamics,
+  egg.assert_only(list(
+    "param", "case_param", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
+    "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
+    "inline_lambda", "call_fun", "call_lambda", "string", "box", "unbox",
+    "generate_array", "array_get", "array_set", "array_slice", "array_len",
+    "type", "cast", "type_info", "static_to_dynamic", "dynamic_to_static",
+    "crash",
   ))
 
-  | Egg nodes:
-  |   param, case_param, lower_byte, byte_to_int, int, add, subtract, multiply,
-  |   divide, modulo, compare, and, or, xor, shift_left, shift_right, struct,
-  |   member, enum, switch, inline_lambda, call_fun, call_lambda, string, box,
-  |   unbox, generate_array, array_get, array_set, array_slice, array_len, type,
-  |   crash
+  | Remove first-class types  
+  | Because all types are concrete, we turn expressions that operate with types
+  | into literal expressions or functions that deal with values of the
+  | corresponding type. For example, instead of a cast node, we call a function
+  | that traverses the old value and builds up a parallel new value of the new
+  | type.
+  var egg = run_egg_passes_until_stable("casts, type info, dynamics", egg, list(
+    Pass.simplify_casts,
+    Pass.lower_casts,
+    Pass.lower_type_infos,
+    Pass.lower_dynamics,
+  ))
 
-  | Eliminate inline_lambda: For every inline_lambda, we create a top-level
-  | function that accepts an additional closure parameter – a Box of all
-  | captured values. The inline_lambda expressions become raw_lambdas.
-  var egg = run_egg_pass("lambdas to funs", egg, Pass.lower_lambdas_to_funs)
+  egg.assert_only(list(
+    "param", "case_param", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
+    "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
+    "inline_lambda", "call_fun", "call_lambda", "string", "box", "unbox",
+    "generate_array", "array_get", "array_set", "array_slice", "array_len",
+    "type", "crash", "unreachable",
+  ))
 
-  | Egg nodes:
-  |   param, case_param, lower_byte, byte_to_int, int, add, subtract, multiply,
-  |   divide, modulo, compare, and, or, xor, shift_left, shift_right, struct,
-  |   member, enum, switch, raw_lambda, call_fun, call_lambda, string, box,
-  |   unbox, generate_array, array_get, array_set, array_slice, array_len, type,
-  |   crash
+  | Eliminate inline lambdas  
+  | For every inline_lambda, we create a top-level function that accepts an
+  | additional parameter – a Box of all captured values, also called a closure.
+  | The inline_lambda expressions become raw_lambdas.
+  var egg = run_egg_passes_until_stable("lambdas to funs", egg, list(
+    Pass.lower_lambdas_to_funs
+  ))
 
-  | Optimize: Now that the most tricky parts have been eliminated (we only have
-  | concrete types, lambdas are top-level functions), we optimize the code using
-  | a set of idempotent passes, applying them over and over until the Egg
-  | stabilizes.
+  egg.assert_only(list(
+    "param", "case_param", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
+    "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
+    "raw_lambda", "call_fun", "call_lambda", "string", "box", "unbox",
+    "generate_array", "array_get", "array_set", "array_slice", "array_len",
+    "type", "crash", "unreachable",
+  ))
+
+  | Optimize the code  
+  | Now that the most tricky language features (first-class types and lambdas)
+  | have been eliminated/simplified, we optimize the code using a set of
+  | idempotent passes, applying them over and over until the Egg stabilizes.
   var passes = list(
     Pass.lower_strings,
     Pass.deduplicate,
@@ -189,40 +220,86 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   )
   var egg = run_egg_passes_until_stable("optimize", egg, passes)
 
-  | Egg nodes:
-  |   param, case_param, byte, lower_byte, byte_to_int, int, add, subtract,
-  |   multiply, divide, modulo, compare, and, or, xor, shift_left, shift_right,
-  |   struct, member, enum, switch, raw_lambda, call_fun, call_lambda, box,
-  |   unbox, array, generate_array, array_get, array_set, array_slice,
-  |   array_len, type, crash, unreachable, halt, loop, continue
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
+    "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
+    "raw_lambda", "call_fun", "call_lambda", "box", "unbox", "array",
+    "generate_array", "array_get", "array_set", "array_slice", "array_len",
+    "type", "crash", "unreachable", "halt", "loop", "continue_",
+  ))
 
+  | Make checks explicit  
+  | Some operations (divide, modulo, generate_array, array_get, array_set,
+  | array_slice) validate their inputs, for example, to check that you don't
+  | divide by zero or that you don't try to generate an array with a negative
+  | length. Otherwise, they crash.
+  | Because of this, they are not considered pure and some optimizations such as
+  | tree shaking or loop hoisting don't apply to them. Here, we desugar these
+  | checked expressions into explicit checks followed by unchecked versions of
+  | the expressions that can assume that the inputs are valid.
   var passes = passes + list(Pass.lower_bounds_checks)
   var egg = run_egg_passes_until_stable("lower bounds checks", egg, passes)
   var passes = passes + list(Pass.lower_divide_and_modulo_checks)
   var egg = run_egg_passes_until_stable("lower div/mod checks", egg, passes)
 
-  | Egg nodes:
-  |   param, case_param, byte, lower_byte, byte_to_int, int, add, subtract,
-  |   multiply, unchecked_divide, unchecked_modulo, compare, and, or, xor,
-  |   shift_left, shift_right, struct, member, enum, switch, raw_lambda,
-  |   call_fun, call_lambda, box, unbox, array,
-  |   unchecked_generate_non_empty_array, unchecked_array_get,
-  |   unchecked_array_set, unchecked_array_slice, array_len, type, crash,
-  |   unreachable, halt, loop, continue
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
+    "and_", "or_", "xor", "shift_left", "shift_right", "struct_", "member",
+    "enum_", "switch_", "raw_lambda", "call_fun", "call_lambda", "box", "unbox",
+    "array", "unchecked_generate_non_empty_array", "unchecked_array_get",
+    "unchecked_array_set", "unchecked_array_slice", "array_len", "type",
+    "crash", "unreachable", "halt", "loop", "continue_",
+  ))
 
-  var egg = run_egg_pass("recursive enums", egg, Pass.lower_recursive_enums)
+  | Track ownership  
+  | Until now, we assumed that expressions are values that are somehow garbage
+  | collected. Now, we make that garbage collection explicit: We decide which
+  | parts of values are stored on the heap and where we have pointer
+  | indirections. All heap allocations are reference counted, so we also insert
+  | code for adjusting the reference count and freeing values when it reaches
+  | zero.
+
+  | Recursive enums can't be stored in a single place/allocation: Because their
+  | size is possibly infinite, we need pointer indirections and multiple
+  | allocations. So first, we wrap recursive variants of enums with Boxes.
+  var egg = run_egg_pass(
+    "break up recursive enums", egg, Pass.lower_recursive_enums
+  )
+
+  | After that, we insert dup and drop expressions into the code. When a value
+  | is created, we are responsible for dropping it when it's no longer used. If
+  | it is used multiple times, we need to dup it.
   var egg = run_egg_pass("introduce ownership", egg, Pass.lower_ownership)
+
+  | TODO: optimize on the abstraction level of dup/drop
+
+  | Now, we turn expressions into lower-level ones where we already know the
+  | pointer indirections:
+  | - lambdas are turned into structs of function pointers and closures
+  |   containing the captured variables
+  | - noxes are turned into objects
+  | - arrays are turned into buffers
+  | - dup/drop expressions are turned into function calls
   var egg = run_egg_pass("memory layout", egg, Pass.lower_memory_layouts_1)
   var egg = run_egg_passes_until_stable("optimize", egg, passes)
+  eprintln(egg)
 
-  | Egg nodes:
-  |   param, case_param, byte, lower_byte, byte_to_int, int, add, subtract,
-  |   multiply, unchecked_divide, unchecked_modulo, compare, and, or, xor,
-  |   shift_left, shift_right, struct, member, enum, switch, raw_lambda,
-  |   call_fun, call_lambda, crash, unreachable, halt, loop, continue, null_ptr,
-  |   object_new, object_load, object_free, get_refcount, set_refcount,
-  |   new_buffer, get_buffer_length, load_buffer_item, store_buffer_item,
-  |   store_buffer_bytes, free_buffer
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
+    "and_", "or_", "xor", "shift_left", "shift_right", "struct_", "member",
+    "enum_", "switch_", "function_ptr", "call_fun", "call_indirect", "crash",
+    "unreachable", "halt", "loop", "continue_", "null_ptr", "object_new",
+    "object_load", "object_free", "get_refcount", "set_refcount", "new_buffer",
+    "get_buffer_length", "load_buffer_item", "store_buffer_item",
+    "store_buffer_bytes", "free_buffer",
+  ))
+
+  | Memory layout  
+  | Now, think of concrete memory layouts for structs and enums. Every
+  | expression is now conceptually just a slice of bytes.
 
   var egg = run_egg_pass("memory layout", egg, Pass.lower_memory_layouts_2)
 
@@ -241,25 +318,14 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   var egg = run_egg_passes_until_stable("optimize", egg, passes)
   println(egg)
 
-  | Egg nodes:
-  |   param, case_param, byte, lower_byte, byte_to_int, int, add, subtract,
-  |   multiply, unchecked_divide, unchecked_modulo, compare, and, or, xor,
-  |   shift_left, shift_right, call_fun, call_indirect, crash, unreachable,
-  |   halt, loop, continue, null_ptr, object_new, object_load, object_free,
-  |   get_refcount, set_refcount, new_buffer, get_buffer_length,
-  |   load_buffer_item, store_buffer_item, store_buffer_bytes, free_buffer,
-  |   padding, aggregate, part, switch_on_byte
-
-  | var passes = passes + list(Pass.lower_objects_and_buffers)
-  | var egg = run_egg_passes_until_stable("objects, buffers", egg, passes)
-  | println(egg)
-
-  | Egg nodes:
-  |   param, case_param, byte, lower_byte, byte_to_int, int, add, subtract,
-  |   multiply, unchecked_divide, unchecked_modulo, compare, and, or, xor,
-  |   shift_left, shift_right, call_fun, call_indirect, crash, unreachable,
-  |   halt, loop, continue, null_ptr, padding, aggregate, part, switch_on_byte,
-  |   malloc, load, store, free
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
+    "and_", "or_", "xor", "shift_left", "shift_right", "function_ptr",
+    "call_fun", "call_indirect", "crash", "unreachable", "halt", "loop",
+    "continue_", "null_ptr", "padding", "aggregate", "part", "switch_on_byte",
+    "malloc", "load", "store", "free",
+  ))
 
   | var passes = passes + list(Pass.lower_loads_and_stores)
 

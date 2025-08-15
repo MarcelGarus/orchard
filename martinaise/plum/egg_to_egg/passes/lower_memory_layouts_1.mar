@@ -1,3 +1,24 @@
+| High-Level Memory Layouting  
+|
+| Here, we decide on high-level memory layouts: We decide which data is
+| allocated together, where we have pointer indirections, and how we dup and
+| drop the types.
+|
+| TODO: this is aspirational
+| Never               -> Never
+| Byte                -> Byte
+| Int                 -> Int
+| & foo: Foo bar: Bar -> if inhabitants(Foo * Bar) = 0: Never
+|                        if inhabitants(Foo * Bar) > 0: & foo: Foo bar: Bar
+| | foo: Foo bar: Bar -> | foo: Foo bar: Bar
+| Box Foo             -> if inhabitants(Foo) = 0: Never
+|                        if inhabitants(Foo) > 0:  Ptr
+| Array Foo           -> if inhabitants(Foo) = 0: &
+|                        if inhabitants(Foo) = 1: Int
+|                        if inhabitants(Foo) > 1: & buffer: Ptr start: Int end: Int
+| \ Foo Bar -> Baz    -> if inhabitants(Foo * Bar) = 0: &
+|                        if inhabitants(Foo * Bar) > 0: & body: Ptr closure: Ptr free: Ptr
+
 import mod.mar
 
 fun lower_memory_layouts_1(egg: Egg): Egg {
@@ -17,7 +38,7 @@ fun map(
     mapping.put(
       param,
       switch param.resolve()
-      case param(type) builder.param(type.box_recursive_variants())
+      case param(type) builder.param(type.desugar_boxes_arrays_lambdas())
       case case_param(param)
         builder.case_param(param.switch_on.map(mapping.*), param.variant)
       default unreachable()
@@ -55,7 +76,9 @@ fun map(
     if inner_type.num_inhabitants() <= NumInhabitants.one then
       builder.construct_inhabitant(inner_type)
     else {
-      var inner = builder.object_load(ptr, inner_type)
+      var inner = builder.object_load(
+        ptr, inner_type.desugar_boxes_arrays_lambdas()
+      )
       builder.desugared_dup(inner, inner_type)
       builder.desugared_drop(ptr, box_type, mapper.funs)
       inner
@@ -102,7 +125,7 @@ fun map(
     ))
   }
   case unchecked_generate_non_empty_array(gen) {
-    var length = gen.length
+    var length = gen.length.map(mapping.*)
     var generator = gen.generator
     var item_type = generator.returns.type()
     var buffer = builder.new_buffer(item_type, length)
@@ -114,10 +137,11 @@ fun map(
           builder.compare(cursor, length),
           {
             var builder = egg_body_builder().&
-            var item = generator.fill(cursor, builder)
-            builder.store_buffer_item(
-              buffer, item_type, cursor, item
-            )
+            mapping.put(generator.params.get(0), cursor)
+            for child in generator.children do
+              mapping.put(child, child.map(mapper, builder, mapping))
+            var item = generator.returns.map(mapping.*)
+            builder.store_buffer_item(buffer, item_type, cursor, item)
             builder.finish(
               builder.continue_(
                 list(builder.add(cursor, builder.int(1))).to_slice(),
@@ -136,7 +160,7 @@ fun map(
   }
   case array_len(array) {
     var array_type = array.type()
-    var array = array
+    var array = array.map(mapping.*)
     var length = builder.subtract(
       builder.member(array, "end"), builder.member(array, "start")
     )
@@ -225,5 +249,276 @@ fun map(
       "end" -> builder.add(old_start, end),
     ))
   }
+  case raw_lambda(lambda) {
+    builder.struct_(map(
+      "closure" -> lambda.closure.map(mapping.*),
+      "body" -> builder.function_ptr(lambda.fun_),
+      "free" -> builder.function_ptr(
+        free_box_fun(lambda.closure.type().plum().box.unwrap(), mapper.funs)
+      ),
+    ))
+  }
+  case call_fun(call)
+    builder.call(
+      call.fun_,
+      no_substitutions,
+      call.args.map(mapping.*),
+      call.return_type.desugar_boxes_arrays_lambdas(),
+    )
+  case call_lambda(call) {
+    var lambda = call.lambda.map(mapping.*)
+    builder.call_indirect(
+      builder.member(lambda, "body"),
+      {
+        call.args.map(mapping.*).to_list()
+          + list(builder.member(lambda, "closure"))
+      }.to_slice(),
+      call.lambda.type().plum().lambda.unwrap().return_type
+        .desugar_boxes_arrays_lambdas(),
+    )
+  }
+  case crash(crash)
+    builder.crash(
+      crash.message.map(mapping.*), crash.type.desugar_boxes_arrays_lambdas()
+    )
   default builder.push(id.map_children(mapper, mapping))
+}
+
+fun desugar_boxes_arrays_lambdas(type: EggType): EggType {
+  switch type.internal_kind()
+  case variable unreachable()
+  case never type_never
+  case byte type_byte
+  case int type_int
+  case type type_type
+  case box(inner) type_ptr
+  case array(item)
+    type_struct(map(
+      "buffer" -> type_ptr, "start" -> type_int, "end" -> type_int
+    ))
+  case struct_(struct_) {
+    var fields = map[String, EggType]()
+    for field in struct_ do
+      fields.&.put(field.key, field.value.desugar_boxes_arrays_lambdas())
+    type_struct(fields)
+  }
+  case enum_(enum_) {
+    var variants = map[String, EggType]()
+    for variant in enum_ do
+      variants.&.put(variant.key, variant.value.desugar_boxes_arrays_lambdas())
+    type_enum(variants)
+  }
+  case lambda(lambda)
+    type_struct(map(
+      "closure" -> type_ptr, "body" -> type_ptr, "free" -> type_ptr
+    ))
+  case recursive(level) type_recursive(level)
+  case ptr type_ptr
+  case bytes unreachable()
+}
+
+
+| Traverses the value and dups all inner values. If it reaches a pointer, it
+| just increments that pointer's reference count instead of traversing further.
+fun desugared_dup(builder: &EggBodyBuilder, value: EggId, type: EggType) {
+  if not(type.contains_ptr()) then return {}
+
+  switch type.plum()
+  case variable unreachable()
+  case byte {}
+  case int {}
+  case type {}
+  case box(inner_type)
+    if inner_type.num_inhabitants() > NumInhabitants.one then
+      builder.increment_refcount(value).ignore()
+  case array {
+    var buffer = builder.member(value, "buffer")
+    builder.if_not_null_ptr(buffer, {
+      var builder = egg_body_builder().&
+      builder.finish(builder.increment_refcount(buffer))
+    })
+  }
+  case never builder.unreachable(type_nothing).ignore()
+  case struct_
+    for field in type.plum().struct_.unwrap() do
+      builder.desugared_dup(builder.member(value, field.key), field.value)
+  case enum_ {
+    var cases = map[String, EggBody]()
+    for variant in type.plum().enum_.unwrap() do {
+      var builder = egg_body_builder().&
+      var payload_type = value.type().plum().enum_.unwrap().get(variant.key)
+      var payload = builder.param(payload_type)
+      builder.desugared_dup(payload, variant.value)
+      cases.&.put(variant.key, builder.finish_with_nothing())
+    }
+    builder.switch_(value, cases).ignore()
+  }
+  case lambda
+    builder.increment_refcount(builder.member(value, "closure")).ignore()
+}
+
+| Traverses the value and drops all inner values. If it reaches a pointer, it
+| just decrements pointer's reference count instead of traversing further. If
+| the reference count reaches zero, it drops the pointed-to value and frees the
+| allocation.
+fun desugared_drop(
+  builder: &EggBodyBuilder, value: EggId, type: EggType,
+  funs: &Map[String, EggFun],
+) {
+  if not(type.contains_ptr()) then return {}
+
+  switch type.plum()
+  case variable unreachable()
+  case byte {}
+  case int {}
+  case type {}
+  case box(inner_type)
+    if inner_type.num_inhabitants() > NumInhabitants.one then
+      builder.if_refcount_zero(builder.decrement_refcount(value), {
+        var builder = egg_body_builder().&
+        builder.call(
+          free_box_fun(inner_type, funs),
+          no_substitutions,
+          list(value).to_slice(),
+          type_nothing,
+        )
+        builder.finish_with_nothing()
+      })
+  case array(item_type) {
+    var buffer = builder.member(value, "buffer")
+    builder.if_not_null_ptr(buffer, {
+      var builder = egg_body_builder().&
+      var new_refcount = builder.decrement_refcount(buffer)
+      builder.if_refcount_zero(new_refcount, {
+        var builder = egg_body_builder().&
+        builder.call(
+          free_buffer_fun(item_type, funs),
+          no_substitutions,
+          list(buffer).to_slice(),
+          type_nothing,
+        )
+        builder.finish_with_nothing()
+      })
+      builder.finish_with_nothing()
+    })
+  }
+  case never {}
+  case struct_
+    for field in type.plum().struct_.unwrap() do
+      builder.desugared_drop(
+        builder.member(value, field.key), field.value, funs
+      )
+  case enum_(variant_types) {
+    var cases = map[String, EggBody]()
+    for variant in variant_types do {
+      var payload_type = variant.value
+      var builder = egg_body_builder().&
+      var payload = builder.param(payload_type)
+      builder.desugared_drop(payload, payload_type, funs)
+      cases.&.put(variant.key, builder.finish_with_nothing())
+    }
+    builder.switch_(value, cases).ignore()
+  }
+  case lambda {
+    var closure_ptr = builder.member(value, "closure")
+    var new_refcount = builder.decrement_refcount(closure_ptr)
+    builder.if_refcount_zero(new_refcount, {
+      var builder = egg_body_builder().&
+      var free_fun_ptr = builder.member(value, "free")
+      builder.call_indirect(
+        free_fun_ptr, list(closure_ptr).to_slice(), type_nothing
+      )
+      builder.finish_with_nothing()
+    })
+  }
+}
+
+| Expects a box with refcount 0. Drops the inner value and frees the allocation.
+fun free_box_fun(inner_type: EggType, funs: &Map[String, EggFun]): String {
+  var signature = "free (Box {inner_type})"
+  if funs.contains(signature) then return signature
+  funs.put(signature, uninitialized[EggFun]().*)
+  funs.put(signature, EggFun {
+    body = {
+      var builder = egg_body_builder().&
+      var box = builder.param(type_ptr)
+      if inner_type.num_inhabitants() <= NumInhabitants.one then {
+        | This function will never be called, as the box is always a null ptr.
+        | We may still need to construct the free function as part of the ABI.
+        | For example, if code returns a lambda, that lambda needs to have a
+        | closure pointer, body pointer, and closure free pointer. If the lambda
+        | doesn't capture any variables, the closure is empty and we save the
+        | heap allocation, storing a null ptr instead. When you drop the lambda,
+        | you have to check for null pointers. The function for freeing the
+        | closure should never be called.
+        builder.finish_with_unreachable(type_nothing)
+      } else {
+        var inner = builder.object_load(
+          box, inner_type.desugar_boxes_arrays_lambdas()
+        )
+        builder.desugared_drop(inner, inner_type, funs)
+        builder.object_free(box, inner_type.desugar_boxes_arrays_lambdas())
+        builder.finish_with_nothing()
+      }
+    }
+  })
+  signature
+}
+
+| Expects an array with refcount 0. Drops the inner values and frees the
+| allocation.
+fun free_buffer_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
+  var signature = "drop (Buffer {item_type})"
+  if funs.contains(signature) then return signature
+  funs.put(signature, uninitialized[EggFun]().*)
+  funs.put(signature, EggFun {
+    body = {
+      var builder = egg_body_builder().&
+      var buffer = builder.param(type_ptr)
+      var len = builder.get_buffer_length(buffer)
+
+      builder.loop_(list(builder.int(0)).to_slice(), {
+        var builder = egg_body_builder().&
+        var cursor = builder.param(type_int)
+        var cmp = builder.compare(cursor, len)
+        builder.switch_on_ordering(
+          cmp,
+          egg_body_builder().finish_with_unreachable(type_nothing),
+          egg_body_builder().finish_with_nothing(),
+          {
+            var builder = egg_body_builder().&
+            var item = builder.load_buffer_item(buffer, item_type, cursor)
+            builder.desugared_drop(item, item_type, funs)
+            builder.finish(
+              builder.continue_(
+                list(builder.add(cursor, builder.int(1))).to_slice(),
+                type_nothing,
+              )
+            )
+          },
+        ).ignore()
+        builder.finish_with_nothing()
+      })
+
+      builder.free_buffer(buffer, item_type.desugar_boxes_arrays_lambdas())
+      builder.finish_with_nothing()
+    }
+  })
+  signature
+}
+
+fun contains_ptr(type: EggType): Bool {
+  switch type.pesto()
+  case never false
+  case byte false
+  case int false
+  case struct_(fields) {
+    for field in fields do if field.value.contains_ptr() then return true
+    false
+  }
+  case enum_(variants) {
+    for variant in variants do if variant.value.contains_ptr() then return true
+    false
+  }
+  case ptr true
 }

@@ -205,5 +205,35 @@ fun return_type(fun_: EggFun): EggType { fun_.body.returns.type() }
 
 fun verify(fun_: EggFun) {
   if fun_.body.captured().is_not_empty() then
-    panic("function not self contained. it captures {fun_.body.captured().debug()}")
+    panic({
+      var b = string_builder().&
+      b."Function not self contained. It captures"
+      for c in fun_.body.captured() do b." {c.id.index}"
+      b.":\n"
+      b.write("function", fun_)
+      b.to_string()
+    })
+}
+
+fun assert_only(egg: Egg, allowed_nodes: List[String]) {
+  for fun_ in egg.funs do {
+    fun_.value.verify()
+    fun_.value.visit(AssertOnly { allowed_nodes })
+  }
+}
+struct AssertOnly { allowed_nodes: List[String] }
+fun visit(id: EggId, mapper: AssertOnly) {
+  var name = id.resolve().debug().format().split("(").get(0)
+  var is_allowed = false
+  for allowed in mapper.allowed_nodes do
+    if name == allowed then is_allowed = true
+  if not(is_allowed) then
+    panic({
+      var b = string_builder().&
+      b."The Egg contains a {name} node:\n"
+      b.write(id, namespace().&, indentation(1))
+      b."\nAt this point, only the following nodes are allowed:
+        ' {mapper.allowed_nodes}"
+      b.to_string()
+    })
 }
