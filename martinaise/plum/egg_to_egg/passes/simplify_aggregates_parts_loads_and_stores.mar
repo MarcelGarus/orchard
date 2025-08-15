@@ -1,6 +1,6 @@
 import mod.mar
 
-fun simplify_aggregates_and_parts(id: EggId, builder: &EggBodyBuilder): EggId {
+fun simplify_aggregates_parts_loads_and_stores(id: EggId, builder: &EggBodyBuilder): EggId {
   switch id.resolve()
   case aggregate(parts) {
     if parts.len == 1 then return parts.get(0)
@@ -52,6 +52,19 @@ fun simplify_aggregates_and_parts(id: EggId, builder: &EggBodyBuilder): EggId {
           part.size,
         )
       }
+    }
+
+    | If a part accesses another part, instead access the original expression
+    | directly.
+    if part.of.resolve() is part(inner) then
+      return builder.part(inner.of, inner.offset + part.offset, part.size)
+
+    | If a part access a load, instead load only the relevant part directly.
+    if part.of.resolve() is load(load) then {
+      return builder.load(
+        builder.add(load.ptr, builder.int(part.offset)),
+        part.size,
+      )
     }
   }
   default {}
