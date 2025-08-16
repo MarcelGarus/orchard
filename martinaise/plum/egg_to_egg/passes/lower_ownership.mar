@@ -340,7 +340,38 @@ fun lower_ownership(
     rev_body.require(message, needed_later_on)
   }
   case unreachable(type) rev_body.push(update(id, EggExpr.unreachable(type)))
-  case loop_ todo("loop")
-  case continue_ todo("continue")
+  case loop_(loop_) {
+    | Loop bodies execute multiple times, so naively consuming captured
+    | variables on first use would leave subsequent iterations without access.
+    | Instead, we ensure all captured variables are available throughout all
+    | iterations by adding them to needed_later_on (causing dups on use) and
+    | dropping them only after the entire loop completes.
+
+    var initial = loop_.initial.map(mapping)
+    
+    var captured = set[EggId]()
+    for id in loop_.body.captured() do {
+      var mapped = id.map(mapping)
+      captured.&.put(mapped)
+      needed_later_on.put(mapped)
+    }
+    
+    var body = loop_.body.lower_ownership(needed_later_on, mapping)
+    rev_body.push(update(
+      id, EggExpr.loop_(EggLoop { initial, body })
+    ))
+    
+    for id in captured do
+      rev_body.push(EggExpr.drop(EggDrop { id, type = id.type() }).create())
+    
+    for arg in initial do rev_body.require(arg, needed_later_on)
+  }
+  case continue_(continue_) {
+    var next = continue_.next.map(mapping)
+    rev_body.push(update(
+      id, EggExpr.continue_(EggContinue { next, type = continue_.type })
+    ))
+    for arg in next do rev_body.require(arg, needed_later_on)
+  }
   default unreachable("{expr.debug()} should not occur")
 }
