@@ -210,7 +210,9 @@ struct ApplyUntilStable {
 fun map(
   body: EggBody, mapper: ApplyUntilStable, mapping: &Map[EggId, EggId]
 ): EggBody {
+  var iteration = 0
   loop {
+    iteration = iteration + 1
     | Explicitly do not map the params. As params are compared using their
     | identity, mapping them would make them eternally unstable and cause
     | infinite recursion.
@@ -231,6 +233,16 @@ fun map(
     new_body = new_body.apply(mapper.passes)
 
     if body.hash() == new_body.hash() then break(body)
+    if iteration > 50 then {
+      eprintln("Warning: Body failed to stabilize after {iteration} iterations!")
+      eprintln("Body before iteration {iteration}:")
+      stderr.write(body, namespace().&, indentation(1))
+      stderr."\n"
+      eprintln("Body after iteration {iteration}:")
+      stderr.write(new_body, namespace().&, indentation(1))
+      stderr."\n"
+      break(new_body)
+    }
     body = new_body
   }
 }
