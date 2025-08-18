@@ -17,7 +17,7 @@ fun map(
     mapping.put(
       param,
       switch param.resolve()
-      case param(type) builder.param(type.box_recursive_variants())
+      case param(type) builder.param(type.break_up_unboxed_recursions())
       case case_param(param)
         builder.case_param(param.switch_on.map(mapping.*), param.variant)
       default unreachable()
@@ -35,12 +35,14 @@ fun map(
 ): EggId {
   switch id.resolve()
   case enum_(enum_) {
+    var extra_boxes = enum_.type.find_out_where_to_put_boxes()
     var payload = enum_.payload.map(mapping.*)
-    if enum_.type.requires_boxing(enum_.variant) then
+    if extra_boxes.contains(root_path.enum_variant(enum_.variant)) then
       payload = builder.box(payload)
-    builder.enum_(enum_.type.box_recursive_variants(), enum_.variant, payload)
+    builder.enum_(enum_.type.add_boxes(extra_boxes), enum_.variant, payload)
   }
   case switch_(switch_) {
+    var extra_boxes = switch_.condition.type().find_out_where_to_put_boxes()
     var condition = switch_.condition.map(mapping.*)
     var cases = map[String, EggBody]()
     for case_ in switch_.cases do {
@@ -48,7 +50,7 @@ fun map(
       var case_ = case_.value
       var builder = egg_body_builder().&
       var payload = builder.push(case_.params.get(0))
-      if switch_.condition.type().requires_boxing(variant) then
+      if extra_boxes.contains(root_path.enum_variant(variant)) then
         payload = builder.unbox(payload)
       var body = builder.finish(case_.fill(payload, builder)).map(mapper, mapping)
       cases.&.put(variant, body)
@@ -59,65 +61,186 @@ fun map(
     builder.raw_lambda(
       lambda.fun_,
       lambda.closure.map(mapping.*),
-      lambda.type.box_recursive_variants(),
+      lambda.type.break_up_unboxed_recursions(),
     )
   case call_fun(call)
     builder.call(
       call.fun_,
       no_substitutions,
       call.args.map(mapping.*),
-      call.return_type.box_recursive_variants(),
+      call.return_type.break_up_unboxed_recursions(),
     )
   case call_builtin unreachable()
   case array(array)
     builder.array(
-      array.items.map(mapping.*), array.item_type.box_recursive_variants()
+      array.items.map(mapping.*), array.item_type.break_up_unboxed_recursions()
     )
   case crash(crash)
     builder.crash(
-      crash.message.map(mapping.*), crash.type.box_recursive_variants()
+      crash.message.map(mapping.*), crash.type.break_up_unboxed_recursions()
     )
-  case unreachable(type) builder.unreachable(type.box_recursive_variants())
-  case halt(type) builder.halt(type.box_recursive_variants())
+  case unreachable(type) builder.unreachable(type.break_up_unboxed_recursions())
+  case halt(type) builder.halt(type.break_up_unboxed_recursions())
   case continue_(continue_)
     builder.continue_(
-      continue_.next.map(mapping.*), continue_.type.box_recursive_variants()
+      continue_.next.map(mapping.*), continue_.type.break_up_unboxed_recursions()
     )
   default builder.push(id.map_children(mapper, mapping))
 }
 
-fun requires_boxing(enum_: EggType, variant: String): Bool {
-  enum_.plum_not_extended().enum_.unwrap().get(variant).is_unboxed_recursive(1)
-}
-fun is_unboxed_recursive(type: EggType, depth: Int): Bool {
-  switch type.plum_not_extended()
-  case variable unreachable()
-  case never false
-  case byte false
-  case int false
-  case type false
-  case box false
-  case array false
-  case struct_(struct_) {
-    for field in struct_ do
-      if field.value.is_unboxed_recursive(depth + 1) then return true
-    false
-  }
-  case enum_(enum_) {
-    for variant in enum_ do
-      if variant.value.is_unboxed_recursive(depth + 1) then return true
-    false
-  }
-  case lambda false
-  case recursive(level) level == depth
+fun break_up_unboxed_recursions(type: EggType): EggType {
+  var extra_boxes = type.find_out_where_to_put_boxes()
+  var result = add_boxes(type, extra_boxes)
+  eprintln("break up unboxed recursions")
+  eprintln("  {type}")
+  eprintln("  extra boxing:")
+  for path in extra_boxes do
+    eprintln("    {path.debug()}")
+  eprintln("  {result}")
+  result
 }
 
-| TODO: this is gonna bite me in the ass
-fun box_recursive_variants(type: EggType): EggType {
-  type.box_recursive_variants(0, list[Int]())
+struct TypePath { segments: Slice[TypePathSegment] }
+enum TypePathSegment {
+  struct_field: String,
+  enum_variant: String,
+  box_inner,
+  array_item,
+  lambda_arg: Int,
+  lambda_return,
 }
-fun box_recursive_variants(
-  type: EggType, depth: Int, added_boxes: List[Int]
+
+var root_path = TypePath { segments = empty_slice[TypePathSegment]() }
+fun +(path: TypePath, segment: TypePathSegment): TypePath {
+  var segments = uninitialized_slice[TypePathSegment](path.segments.len + 1)
+  path.segments.copy_to(segments.subslice(0..path.segments.len))
+  segments.&.set(path.segments.len, segment)
+  TypePath { segments }
+}
+fun struct_field(path: TypePath, name: String): TypePath {
+  path + TypePathSegment.struct_field(name)
+}
+fun enum_variant(path: TypePath, name: String): TypePath {
+  path + TypePathSegment.enum_variant(name)
+}
+fun box_inner(path: TypePath): TypePath { path + TypePathSegment.box_inner }
+fun array_item(path: TypePath): TypePath { path + TypePathSegment.array_item }
+fun lambda_arg(path: TypePath, index: Int): TypePath {
+  path + TypePathSegment.lambda_arg(index)
+}
+fun lambda_return(path: TypePath): TypePath {
+  path + TypePathSegment.lambda_return
+}
+fun trim_prefix(path: TypePath, i: Int): TypePath {
+  TypePath { segments = path.segments.without_first(i) }
+}
+fun trim_suffix(path: TypePath, i: Int): TypePath {
+  TypePath { segments = path.segments.without_last(i) }
+}
+
+fun ==(a: TypePath, b: TypePath): Bool { a.segments == b.segments }
+fun ==(a: TypePathSegment, b: TypePathSegment): Bool {
+  switch a
+  case struct_field(a) if b is struct_field(b)  then a == b else false
+  case enum_variant(a) if b is enum_variant(b)  then a == b else false
+  case box_inner       b is box_inner
+  case array_item      b is array_item
+  case lambda_arg(a)   if b is lambda_arg(b)    then a == b else false
+  case lambda_return   b is lambda_return
+}
+
+fun hash[H](hasher: H, path: TypePath) { hasher.hash(path.segments) }
+fun hash[H](hasher: H, segment: TypePathSegment) {
+  switch segment
+  case struct_field(a) { hasher.hash("struct_field")  hasher.hash(a) }
+  case enum_variant(a) { hasher.hash("enum_variant")  hasher.hash(a) }
+  case box_inner       { hasher.hash("box_inner") }
+  case array_item      { hasher.hash("array_item") }
+  case lambda_arg(a)   { hasher.hash("lambda_arg")  hasher.hash(a) }
+  case lambda_return   { hasher.hash("lambda_return") }
+}
+
+struct OngoingPath { path: TypePath, relative_target: Int }
+
+fun find_out_where_to_put_boxes(type: EggType): Set[TypePath] {
+  var extra_boxes = set[TypePath]()
+  type.find_out_where_to_put_boxes(root_path, extra_boxes.&)
+  extra_boxes
+}
+
+fun find_out_where_to_put_boxes(
+  type: EggType,  path: TypePath, extra_boxes: &Set[TypePath]
+): List[OngoingPath] {
+  var ongoing =
+    switch type.plum_not_extended()
+    case variable unreachable()
+    case never list[OngoingPath]()
+    case byte list[OngoingPath]()
+    case int list[OngoingPath]()
+    case type list[OngoingPath]()
+    case recursive(level) list(OngoingPath { path, relative_target = level })
+    case struct_(struct_) {
+      var ongoing = list[OngoingPath]()
+      for field in struct_ do
+        ongoing.&.push_all(field.value.find_out_where_to_put_boxes(
+          path.struct_field(field.key), extra_boxes
+        ).to_slice())
+      for path in ongoing.to_slice().ref_iter() do path.relative_target.& -= 1
+      ongoing
+    }
+    case enum_(enum_) {
+      var ongoing = list[OngoingPath]()
+      for variant in enum_ do {
+        ongoing.&.push_all(variant.value.find_out_where_to_put_boxes(
+          path.enum_variant(variant.key), extra_boxes
+        ).to_slice())
+        for path in ongoing.to_slice().ref_iter() do path.relative_target.& -= 1
+      }
+      ongoing
+    }
+    case box(inner) {
+      inner.find_out_where_to_put_boxes(path.box_inner(), extra_boxes)
+      list[OngoingPath]()  | No ongoing paths propagate past indirection
+    }
+    case array(item_type) {
+      item_type.find_out_where_to_put_boxes(path.array_item(), extra_boxes)
+      list[OngoingPath]()  | No ongoing paths propagate past indirection
+    }
+    case lambda(lambda) {
+      for arg in lambda.args.iter().enumerate() do
+        arg.item.find_out_where_to_put_boxes(
+          path.lambda_arg(arg.index), extra_boxes
+        )
+      lambda.return_type.find_out_where_to_put_boxes(
+        path.lambda_return(), extra_boxes
+      )
+      list[OngoingPath]()  | No ongoing paths propagate past indirection
+    }
+  var bubble_up = list[OngoingPath]()
+  for ongoing in ongoing do
+    if ongoing.relative_target > 0 then {
+      bubble_up.&.push(ongoing)
+    } else {
+      | This path originates from a recursive type down in the tree and
+      | terminates at this type. Because it reached its target, it did not cross
+      | any pointer indirection (boxes, arrays, lambdas would have prevented the
+      | ongoing path from bubbling up).
+      | Hence: This is a recursive path that requires boxing at all the enum
+      | variants it contains!
+      var current_path = path
+      for segment in ongoing.path.trim_prefix(path.segments.len).segments do {
+        current_path = current_path + segment
+        if segment is enum_variant then extra_boxes.&.put(current_path)
+      }
+    }
+  ongoing
+}
+
+fun add_boxes(type: EggType, extra_boxes: Set[TypePath]): EggType {
+  type.add_boxes(root_path, extra_boxes).canonicalize()
+}
+fun add_boxes(
+  type: EggType, path: TypePath, extra_boxes: Set[TypePath]
 ): EggType {
   switch type.plum_not_extended()
   case variable unreachable()
@@ -125,46 +248,47 @@ fun box_recursive_variants(
   case byte type_byte
   case int type_int
   case type type_type
-  case box(inner) type_box(inner.box_recursive_variants(depth + 1, added_boxes))
+  case box(inner)
+    type_box_without_canonicalizing(
+      inner.add_boxes(path.box_inner(), extra_boxes)
+    )
   case array(item)
-    type_array(item.box_recursive_variants(depth + 1, added_boxes))
+    type_array_without_canonicalizing(
+      item.add_boxes(path.array_item(), extra_boxes)
+    )
   case struct_(struct_) {
     var fields = map[String, EggType]()
     for field in struct_ do
       fields.&.put(
-        field.key, field.value.box_recursive_variants(depth + 1, added_boxes)
+        field.key,
+        field.value.add_boxes(path.struct_field(field.key), extra_boxes),
       )
-    type_struct(fields)
+    type_struct_without_canonicalizing(fields)
   }
   case enum_(enum_) {
     var variants = map[String, EggType]()
-    for variant in enum_ do
-      variants.&.put(
-        variant.key,
-        if type.requires_boxing(variant.key) then
-          type_box(
-            variant.value.box_recursive_variants(
-              depth + 1, added_boxes + list(depth)
-            )
-          )
-        else
-          variant.value.box_recursive_variants(depth + 1, added_boxes),
-      )
-    type_enum(variants)
+    for variant in enum_ do {
+      var path = path.enum_variant(variant.key)
+      var needs_boxing = extra_boxes.contains(path)
+      var variant_type = variant.value.add_boxes(path, extra_boxes)
+      if needs_boxing then variant_type = type_box(variant_type)
+      variants.&.put(variant.key, variant_type)
+    }
+    type_enum_without_canonicalizing(variants)
   }
   case lambda(lambda) {
     var args = list[EggType]()
-    for arg in lambda.args do
-      args.&.push(arg.box_recursive_variants(depth + 1, added_boxes))
-    var return_type =
-      lambda.return_type.box_recursive_variants(depth + 1, added_boxes)
-    type_lambda(args.to_slice(), return_type)
+    for arg in lambda.args.iter().enumerate() do
+      args.&.push(arg.item.add_boxes(path.lambda_arg(arg.index), extra_boxes))
+    var return_type = lambda.return_type.add_boxes(
+      path.lambda_return(), extra_boxes
+    )
+    type_lambda_without_canonicalizing(args.to_slice(), return_type)
   }
   case recursive(level) {
-    var target_depth = depth - level
     var extra_levels = 0
-    for added in added_boxes do
-      if {target_depth..depth}.contains(added) then
+    for i in 0..level do
+      if extra_boxes.contains(path.trim_suffix(i)) then
         extra_levels = extra_levels + 1
     type_recursive(level + extra_levels)
   }
