@@ -63,6 +63,13 @@ fun map(
     builder.desugared_drop(drop.id.map(mapping.*), drop.type, mapper.funs)
     builder.nothing()
   }
+  case type builder.nothing()
+  case enum_(enum_)
+    builder.enum_(
+      enum_.type.desugar_boxes_arrays_lambdas(),
+      enum_.variant,
+      enum_.payload.map(mapping.*)
+    )
   case box(value) {
     if value.type().num_inhabitants() <= NumInhabitants.one then
       builder.null_ptr()
@@ -110,11 +117,13 @@ fun map(
     }
 
     var item_type = id.type().plum().array.unwrap()
-    var buffer = builder.new_buffer(item_type, builder.int(array.items.len))
+    var buffer = builder.new_buffer(
+      item_type.desugar_boxes_arrays_lambdas(), builder.int(array.items.len)
+    )
     for item in array.items.iter().enumerate() do
       builder.store_buffer_item(
         buffer,
-        item.item.type(),
+        item.item.type().desugar_boxes_arrays_lambdas(),
         builder.int(item.index),
         item.item.map(mapping.*),
       )
@@ -128,7 +137,9 @@ fun map(
     var length = gen.length.map(mapping.*)
     var generator = gen.generator
     var item_type = generator.returns.type()
-    var buffer = builder.new_buffer(item_type, length)
+    var buffer = builder.new_buffer(
+      item_type.desugar_boxes_arrays_lambdas(), length
+    )
     builder.loop_(list(builder.int(0)).to_slice(), {
       var builder = egg_body_builder().&
       var cursor = builder.param(type_int)
@@ -141,7 +152,9 @@ fun map(
             for child in generator.children do
               mapping.put(child, child.map(mapper, builder, mapping))
             var item = generator.returns.map(mapping.*)
-            builder.store_buffer_item(buffer, item_type, cursor, item)
+            builder.store_buffer_item(
+              buffer, item_type.desugar_boxes_arrays_lambdas(), cursor, item
+            )
             builder.finish(
               builder.continue_(
                 list(builder.add(cursor, builder.int(1))).to_slice(),
@@ -174,7 +187,7 @@ fun map(
     var index = args.index.map(mapping.*)
     var item = builder.load_buffer_item(
       builder.member(array, "buffer"),
-      item_type,
+      item_type.desugar_boxes_arrays_lambdas(),
       builder.add(builder.member(array, "start"), index),
     )
     builder.desugared_dup(item, item_type)
@@ -201,7 +214,9 @@ fun map(
       {
         var builder = egg_body_builder().&
         var length = builder.subtract(end, start)
-        var copy = builder.new_buffer(item_type, length)
+        var copy = builder.new_buffer(
+          item_type.desugar_boxes_arrays_lambdas(), length
+        )
         builder.decrement_refcount(buffer)
         builder.loop_(list(builder.int(0)).to_slice(), {
           var builder = egg_body_builder().&
@@ -211,10 +226,12 @@ fun map(
             {
               var builder = egg_body_builder().&
               var item = builder.load_buffer_item(
-                buffer, item_type, builder.add(start, cursor)
+                buffer,
+                item_type.desugar_boxes_arrays_lambdas(),
+                builder.add(start, cursor),
               )
               builder.store_buffer_item(
-                copy, item_type, cursor, item
+                copy, item_type.desugar_boxes_arrays_lambdas(), cursor, item
               )
               builder.finish(builder.continue_(
                 list(builder.add(cursor, builder.int(1))).to_slice(), type_ptr
@@ -232,10 +249,12 @@ fun map(
 
     var offset = builder.add(start, index)
     var previous = builder.load_buffer_item(
-      buffer, item_type, offset
+      buffer, item_type.desugar_boxes_arrays_lambdas(), offset
     )
     builder.desugared_drop(previous, item_type, mapper.funs)
-    builder.store_buffer_item(buffer, item_type, offset, item)
+    builder.store_buffer_item(
+      buffer, item_type.desugar_boxes_arrays_lambdas(), offset, item
+    )
     owned_array
   }
   case array_slice(args) {
@@ -285,10 +304,10 @@ fun map(
     builder.unreachable(type.desugar_boxes_arrays_lambdas())
   case halt(type)
     builder.halt(type.desugar_boxes_arrays_lambdas())
-  case cast(cast)
-    builder.cast(cast.what.map(mapping.*), cast.type.desugar_boxes_arrays_lambdas())
-  case type(type)
-    builder.type(type.desugar_boxes_arrays_lambdas())
+  case continue_(continue_)
+    builder.continue_(
+      continue_.next.map(mapping.*), continue_.type.desugar_boxes_arrays_lambdas()
+    )
   default builder.push(id.map_children(mapper, mapping))
 }
 
@@ -329,6 +348,7 @@ fun desugar_boxes_arrays_lambdas(type: EggType): EggType {
 | Traverses the value and dups all inner values. If it reaches a pointer, it
 | just increments that pointer's reference count instead of traversing further.
 fun desugared_dup(builder: &EggBodyBuilder, value: EggId, type: EggType) {
+  | eprintln("dup {type}")
   if not(type.contains_ptr()) then return {}
 
   switch type.plum()
@@ -354,14 +374,14 @@ fun desugared_dup(builder: &EggBodyBuilder, value: EggId, type: EggType) {
     var cases = map[String, EggBody]()
     for variant in type.plum().enum_.unwrap() do {
       var builder = egg_body_builder().&
-      var payload_type = value.type().plum().enum_.unwrap().get(variant.key)
-      var payload = builder.param(payload_type)
+      var payload = builder.case_param(value, variant.key)
       builder.desugared_dup(payload, variant.value)
       cases.&.put(variant.key, builder.finish_with_nothing())
     }
     builder.switch_(value, cases).ignore()
   }
   case lambda
+    | TODO: handle null ptr
     builder.increment_refcount(builder.member(value, "closure")).ignore()
 }
 
@@ -419,15 +439,15 @@ fun desugared_drop(
   case enum_(variant_types) {
     var cases = map[String, EggBody]()
     for variant in variant_types do {
-      var payload_type = variant.value
       var builder = egg_body_builder().&
-      var payload = builder.param(payload_type)
-      builder.desugared_drop(payload, payload_type, funs)
+      var payload = builder.case_param(value, variant.key)
+      builder.desugared_drop(payload, variant.value, funs)
       cases.&.put(variant.key, builder.finish_with_nothing())
     }
     builder.switch_(value, cases).ignore()
   }
   case lambda {
+    | TODO: handle null ptr
     var closure_ptr = builder.member(value, "closure")
     var new_refcount = builder.decrement_refcount(closure_ptr)
     builder.if_refcount_zero(new_refcount, {
@@ -495,7 +515,9 @@ fun free_buffer_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
           egg_body_builder().finish_with_nothing(),
           {
             var builder = egg_body_builder().&
-            var item = builder.load_buffer_item(buffer, item_type, cursor)
+            var item = builder.load_buffer_item(
+              buffer, item_type.desugar_boxes_arrays_lambdas(), cursor
+            )
             builder.desugared_drop(item, item_type, funs)
             builder.finish(
               builder.continue_(
