@@ -75,9 +75,8 @@ fun simplify_arithmetics(id: EggId, builder: &EggBodyBuilder): EggId {
     var a = args.a
     var b = args.b
 
-    | Constant fold crash.
-    if b.resolve() is int(b) then if b == 0 then
-      return builder.crash(builder.string("divide by zero"), type_int)
+    | Skip crashes (divide by zero), those will be handled by explicit checks.
+    if b.resolve() is int(b) then if b == 0 then return id
 
     | Constant fold.
     if a.resolve() is int(a) then if b.resolve() is int(b) then
@@ -96,9 +95,45 @@ fun simplify_arithmetics(id: EggId, builder: &EggBodyBuilder): EggId {
     var a = args.a
     var b = args.b
 
-    | Constant fold crash.
+    | Skip crashes (modulo by zero), those will be handled by explicit checks.
     if b.resolve() is int(b) then if b == 0 then
-      return builder.crash(builder.string("modulo by zero"), type_int)
+      return builder.crash(builder.desugared_string("modulo by zero"), type_int)
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a % b)
+
+    | x % 1 = 0
+    if b.resolve() is int(b) then if b == 1 then return builder.int(0)
+  }
+  case unchecked_divide(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold crashes.
+    if b.resolve() is int(b) then if b == 0 then
+      return builder.unreachable(type_int)
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a / b)
+
+    | x / 1 = x
+    if b.resolve() is int(b) then if b == 1 then return a
+
+    | x / (2 ^ n) = x >> n
+    if b.resolve() is int(b) then {
+      var n = log_2(b)
+      if 2 ** n == b then return builder.shift_right(a, builder.int(n))
+    }
+  }
+  case unchecked_modulo(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold crashes.
+    if b.resolve() is int(b) then if b == 0 then
+      return builder.unreachable(type_int)
 
     | Constant fold.
     if a.resolve() is int(a) then if b.resolve() is int(b) then

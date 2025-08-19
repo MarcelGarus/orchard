@@ -43,29 +43,29 @@ import tree_shake.mar
 import unroll_small_arrays.mar
 import use_enum_flows.mar
 
-enum Pass {
+enum LoweringPass {
+  lower_generics,
+  lower_strings,
+  lower_builtin_calls,
+  lower_casts,
+  lower_type_infos,
+  lower_dynamics,
+  lower_lambdas_to_funs,
+  lower_bounds_checks,
+  lower_divide_and_modulo_checks,
+  lower_recursive_enums,
+  lower_ownership,
+  lower_memory_layouts_1,
+  lower_memory_layouts_2,
+}
+
+enum OptPass {
   deduplicate,
   factor_out_loop_fixpoints,
   hoist_known_switch_results,
   hoist_out_of_generators,
   hoist_out_of_loops,
   inline_functions,
-  lower_bounds_checks,
-  lower_builtin_calls,
-  lower_casts,
-  lower_divide_and_modulo_checks,
-  lower_dup_and_drop_to_funs,
-  lower_dynamics,
-  lower_generics,
-  lower_lambdas_to_funs,
-  lower_loads_and_stores,
-  lower_ownership,
-  lower_recursive_enums,
-  lower_strings,
-  lower_type_infos,
-  lower_types_to_nothing,
-  lower_memory_layouts_1,
-  lower_memory_layouts_2,
   make_switches_branchless,
   simplify_aggregates_parts_loads_and_stores,
   simplify_arithmetics,
@@ -89,21 +89,62 @@ enum Pass {
   | unswitch_loops: loop (if a then b else c; d) = if a then loop(b; d) else loop (c; d)
 }
 
+fun ==(a: OptPass, b: OptPass): Bool { a.debug().format() == b.debug().format() }
+fun hash[H](hasher: H, pass: OptPass) { hasher.hash(pass.debug().format()) }
+
+fun apply(egg: Egg, pass: LoweringPass): Egg {
+  switch pass
+  case lower_generics egg.lower_generics()
+  case lower_recursive_enums egg.lower_recursive_enums()
+  case lower_ownership egg.lower_ownership()
+  case lower_memory_layouts_1 egg.lower_memory_layouts_1()
+  case lower_memory_layouts_2 egg.lower_memory_layouts_2()
+  default egg.apply_to_ids(pass)
+}
+fun apply_to_ids(egg: Egg, pass: LoweringPass): Egg {
+  var funs = map[String, EggFun]()
+  for fun_ in egg.funs do
+    funs.&.put(
+      fun_.key, fun_.value.map(ApplyLoweringPassToIds { pass, funs = funs.& })
+    )
+  Egg { funs, entry_point = egg.entry_point }
+}
+struct ApplyLoweringPassToIds { pass: LoweringPass, funs: &Map[String, EggFun] }
+fun map(
+  id: EggId, mapper: ApplyLoweringPassToIds,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var id = id.map_children(mapper, mapping).create()
+  var mapped = id.apply(mapper.pass, builder, mapper.funs)
+  if mapped == id then builder.push(mapped).ignore()
+  mapped
+}
+fun apply(
+  id: EggId, pass: LoweringPass,
+  builder: &EggBodyBuilder, funs: &Map[String, EggFun],
+): EggId {
+  switch pass
+  case lower_strings id.lower_strings(builder)
+  case lower_builtin_calls id.lower_builtin_calls(builder)
+  case lower_casts id.lower_casts(funs, builder)
+  case lower_type_infos id.lower_type_infos(builder)
+  case lower_dynamics id.lower_dynamics(funs, builder)
+  case lower_lambdas_to_funs id.lower_lambdas_to_funs(funs, builder)
+  case lower_bounds_checks id.lower_bounds_checks(builder)
+  case lower_divide_and_modulo_checks id.lower_divide_and_modulo_checks(builder)
+  default unreachable()
+}
+
 | Passes can be applied to an entire Egg, a body, or an individual ID. Some
 | passes might be applicable at multiple abstraction levels.
 
-fun apply(egg: Egg, pass: Pass): Egg {
+fun apply(egg: Egg, pass: OptPass): Egg {
   switch pass
-  case lower_generics egg.lower_generics()
-  case lower_ownership egg.lower_ownership()
-  case lower_recursive_enums egg.lower_recursive_enums()
-  case lower_memory_layouts_1 egg.lower_memory_layouts_1()
-  case lower_memory_layouts_2 egg.lower_memory_layouts_2()
   case tree_shake egg.tree_shake()
   default egg
 }
 
-fun apply(body: EggBody, pass: Pass): EggBody {
+fun apply(body: EggBody, pass: OptPass): EggBody {
   switch pass
   case deduplicate body.deduplicate()
   case tree_shake body.tree_shake()
@@ -114,7 +155,7 @@ fun apply(body: EggBody, pass: Pass): EggBody {
 | Note: If this returns the input ID, then the ID has not yet been added to the
 | builder!
 fun apply(
-  id: EggId, pass: Pass, funs: &Map[String, EggFun], builder: &EggBodyBuilder
+  id: EggId, pass: OptPass, funs: &Map[String, EggFun], builder: &EggBodyBuilder
 ): EggId {
   | eprintln("apply {pass.debug()} to {id.id} {id.resolve().debug()}")
   switch pass
@@ -127,15 +168,6 @@ fun apply(
   case hoist_out_of_generators id.hoist_out_of_generators(builder)
   case hoist_out_of_loops id.hoist_out_of_loops(builder)
   case inline_functions id.inline_functions(funs.*, builder)
-  case lower_bounds_checks id.lower_bounds_checks(builder)
-  case lower_builtin_calls id.lower_builtin_calls(builder)
-  case lower_casts id.lower_casts(funs, builder)
-  case lower_divide_and_modulo_checks id.lower_divide_and_modulo_checks(builder)
-  case lower_dynamics id.lower_dynamics(funs, builder)
-  case lower_lambdas_to_funs id.lower_lambdas_to_funs(funs, builder)
-  case lower_strings id.lower_strings(builder)
-  case lower_type_infos id.lower_type_infos(builder)
-  case lower_types_to_nothing id.lower_types_to_nothing(builder)
   case simplify_arithmetics id.simplify_arithmetics(builder)
   case simplify_arrays id.simplify_arrays(builder)
   case simplify_bitwise id.simplify_bitwise(builder)
@@ -147,19 +179,19 @@ fun apply(
 
 | Applies multiple passes one after the other.
 
-fun apply(egg: Egg, passes: Slice[Pass]): Egg {
+fun apply(egg: Egg, passes: Slice[OptPass]): Egg {
   for pass in passes do egg = egg.apply(pass)
   egg
 }
 
-fun apply(body: EggBody, passes: Slice[Pass]): EggBody {
+fun apply(body: EggBody, passes: Slice[OptPass]): EggBody {
   for pass in passes do body = body.apply(pass)
   body
 }
 
 fun apply(
   id: EggId,
-  passes: Slice[Pass],
+  passes: Slice[OptPass],
   funs: &Map[String, EggFun],
   builder: &EggBodyBuilder,
 ): EggId {
@@ -174,37 +206,75 @@ fun apply(
 | eliminated, which restricts the enum variants that flow through the code,
 | which in turn enables other optimizations.
 
-| fun apply_until_stable(egg: Egg, passes: Slice[Pass]): Egg {
-|   var hash_before = egg.hash()
-|   loop {
-|     var funs = map[String, EggFun]()
-|     for signature in egg.choose_optimization_order() do {
-|       var mapped = egg.funs.get(signature)
-|         .map(ApplyUntilStable { passes, processed_funs = funs.& })
-|       eprintln("Mapping {pretty_signature(signature)}")
-|       stderr.write(signature, mapped)
-|       stderr."\n"
-|       mapped.verify()
-|       funs.&.put(signature, mapped)
-|     }
-|     var new_egg = Egg { funs, entry_point = egg.entry_point }.apply(passes)
-|     var hash_after = new_egg.hash()
-|     eprintln("{hash_before} -> {hash_after}")
-|     if hash_before == hash_after then break
-|     hash_before = hash_after
-|   }
-|   egg
-| }
+fun apply_until_stable(egg: Egg, passes: Slice[OptPass]): Egg {
+  | var hash_before = egg.hash()
+  | loop {
+  |   var funs = map[String, EggFun]()
+  |   for signature in egg.choose_optimization_order() do {
+  |     var mapped = egg.funs.get(signature)
+  |       .map(ApplyUntilStable { passes, processed_funs = funs.& })
+  |     eprintln("Mapping {pretty_signature(signature)}")
+  |     stderr.write(signature, mapped)
+  |     stderr."\n"
+  |     mapped.verify()
+  |     funs.&.put(signature, mapped)
+  |   }
+  |   var new_egg = Egg { funs, entry_point = egg.entry_point }.apply(passes)
+  |   var hash_after = new_egg.hash()
+  |   eprintln("{hash_before} -> {hash_after}")
+  |   if hash_before == hash_after then break
+  |   hash_before = hash_after
+  | }
+  | egg
 
-fun apply_until_stable(body: EggBody, passes: Slice[Pass]): EggBody {
+  var funs = map[String, EggFun]()
+  for signature in egg.choose_optimization_order() do {
+    var mapped = egg.funs.get(signature).map(ApplyUntilStable {
+      passes, cache = cache_for_passes(passes), processed_funs = funs.&
+    })
+    | eprintln("Mapped {pretty_signature(signature)}")
+    | stderr.write(signature, mapped)
+    | stderr."\n"
+    mapped.verify()
+    funs.&.put(signature, mapped)
+  }
+  Egg { funs, entry_point = egg.entry_point }
+}
+
+| Used by loop fixpoint analysis.
+fun apply_until_stable(body: EggBody, passes: Slice[OptPass]): EggBody {
   body.map(
-    ApplyUntilStable { passes, processed_funs = map[String, EggFun]().& },
+    ApplyUntilStable {
+      passes,
+      cache = cache_for_passes(passes),
+      processed_funs = map[String, EggFun]().&,
+    },
     map[EggId, EggId]().&,
   )
 }
 
+fun cache_for_passes(passes: Slice[OptPass]): &Map[EggId, EggBody] {
+  if apply_until_stable_caches.get_maybe(passes)
+  is some(cache_for_these_passes)
+  then
+    cache_for_these_passes
+  else {
+    var cache = map[EggId, EggBody]().put_on_heap()
+    apply_until_stable_caches.put(passes, cache)
+    cache
+  }
+}
+
+| Maps a set of optimization passes to a cache that we can use. If the same
+| optimization passes are applied to the same expression again, we don't need to
+| re-do the work.
+var apply_until_stable_caches =
+  map[Slice[OptPass], &Map[EggId, EggBody]]().put_on_heap()
+
 struct ApplyUntilStable {
-  passes: Slice[Pass], processed_funs: &Map[String, EggFun]
+  passes: Slice[OptPass],
+  cache: &Map[EggId, EggBody],
+  processed_funs: &Map[String, EggFun],
 }
 
 fun map(
@@ -247,8 +317,6 @@ fun map(
   }
 }
 
-var optimized_cache = map[EggId, EggBody]().put_on_heap()
-
 fun map(
   old: EggId,
   mapper: ApplyUntilStable,
@@ -265,11 +333,10 @@ fun map(
   default {}
 
   | TODO: cache from passes to optimized?
-  | if optimized_cache.get_maybe(old) is some(new) then {
-  |   for param in new.params do builder.push(param)
-  |   for child in new.children do builder.push(child)
-  |   return new.returns
-  | }
+  if mapper.cache.get_maybe(old) is some(new) then {
+    for child in new.children do builder.push(child)
+    return new.returns
+  }
 
   | A version of the expression with mapped children. For example, if the
   | current expression is a switch, this will create the same switch but with
@@ -313,7 +380,7 @@ fun map(
   for child in stable.children do builder.push(child)
 
   mapping.put(old, stable.returns)
-  | optimized_cache.put(old, stable)
+  mapper.cache.put(old, stable)
   stable.returns
 }
 

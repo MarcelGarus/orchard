@@ -68,13 +68,34 @@ fun exit(status: Int, message: String): Never {
   exit(status)
 }
 
-fun print_compile_step(step: String) { print(step.pad_right(29)) }
+fun print_compile_step(step: String) { print(step.pad_right(32)) }
 fun print_time(duration: Duration) {
   print("{duration.in_milliseconds().to_int().format().pad_left(5)} ms")
 }
 fun print_stats(egg: Egg) {
   print(", {egg.funs.size} funs, {egg.count_expressions()} exprs")
 }
+
+fun lower(egg: Egg, pass: LoweringPass): Egg {
+  print_compile_step("  {pass.debug()}")
+  var timer = start_timer()
+  var egg = egg.apply(pass)
+  print_time(timer.read_duration())
+  print_stats(egg)
+  println()
+  egg
+}
+
+fun optimize(egg: Egg, passes: List[OptPass]): Egg {
+  print_compile_step("  optimize")
+  var timer = start_timer()
+  var egg = egg.apply_until_stable(passes.to_slice())
+  print_time(timer.read_duration())
+  print_stats(egg)
+  println()
+  egg
+}
+
 
 fun compile(module: Module, function: String): Result[Ground, Error] {
   var total_timer = start_timer()
@@ -138,7 +159,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | (also called "monomorphization"), starting at the program entry point. After
   | this, our Egg contains only the code reachable from main specialized for
   | concrete types.
-  var egg = run_egg_pass("generics", egg, Pass.lower_generics)
+  var egg = egg.lower(LoweringPass.lower_generics)
 
   egg.assert_only(list(
     "param", "case_param", "int", "struct_", "member", "enum_", "switch_",
@@ -146,18 +167,26 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     "type", "cast",
   ))
 
+  | Replacing Strings  
+  | We replace strings with structs of arrays of bytes.
+  var egg = egg.lower(LoweringPass.lower_strings)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "int", "struct_", "member", "enum_",
+    "switch_", "array", "inline_lambda", "call_fun", "call_builtin",
+    "call_lambda", "type", "cast",
+  ))
+
   | Specializing call_builtin  
   | We turn the rather unspecific call_builtin nodes into a variety of
   | specialized nodes, one for each builtin.
-  var egg = run_egg_passes_until_stable("builtin calls", egg, list(
-    Pass.lower_builtin_calls
-  ))
+  var egg = egg.lower(LoweringPass.lower_builtin_calls)
 
   egg.assert_only(list(
-    "param", "case_param", "lower_byte", "byte_to_int", "int", "add",
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
     "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
     "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
-    "inline_lambda", "call_fun", "call_lambda", "string", "box", "unbox",
+    "inline_lambda", "call_fun", "call_lambda", "box", "unbox", "array",
     "generate_array", "array_get", "array_set", "array_slice", "array_len",
     "type", "cast", "type_info", "static_to_dynamic", "dynamic_to_static",
     "crash",
@@ -169,32 +198,27 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | corresponding type. For example, instead of a cast node, we call a function
   | that traverses the old value and builds up a parallel new value of the new
   | type.
-  var egg = run_egg_passes_until_stable("casts, type info, dynamics", egg, list(
-    Pass.simplify_casts,
-    Pass.lower_casts,
-    Pass.lower_type_infos,
-    Pass.lower_dynamics,
-  ))
+  var egg = egg.lower(LoweringPass.lower_casts)
+  var egg = egg.lower(LoweringPass.lower_type_infos)
+  var egg = egg.lower(LoweringPass.lower_dynamics)
 
   egg.assert_only(list(
-    "param", "case_param", "lower_byte", "byte_to_int", "int", "add",
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
     "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
     "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
-    "inline_lambda", "call_fun", "call_lambda", "string", "box", "unbox",
-    "array", "generate_array", "array_get", "array_set", "array_slice",
-    "array_len", "type", "crash", "unreachable", "loop_", "continue_",
+    "inline_lambda", "call_fun", "call_lambda", "box", "unbox", "array",
+    "generate_array", "array_get", "array_set", "array_slice", "array_len",
+    "type", "crash", "unreachable", "loop_", "continue_",
   ))
 
   | Eliminate inline lambdas  
   | For every inline_lambda, we create a top-level function that accepts an
   | additional parameter – a Box of all captured values, also called a closure.
   | The inline_lambda expressions become raw_lambdas.
-  var egg = run_egg_passes_until_stable("lambdas to funs", egg, list(
-    Pass.lower_lambdas_to_funs
-  ))
+  var egg = egg.lower(LoweringPass.lower_lambdas_to_funs)
 
   egg.assert_only(list(
-    "param", "case_param", "lower_byte", "byte_to_int", "int", "add",
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
     "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
     "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
     "raw_lambda", "call_fun", "call_lambda", "string", "box", "unbox", "array",
@@ -206,24 +230,23 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | Now that the most tricky language features (first-class types and lambdas)
   | have been eliminated/simplified, we optimize the code using a set of
   | idempotent passes, applying them over and over until the Egg stabilizes.
-  var passes = list(
-    Pass.lower_strings,
-    Pass.deduplicate,
-    Pass.hoist_known_switch_results,
-    Pass.inline_functions,
-    Pass.simplify_arithmetics,
-    Pass.simplify_arrays,
-    Pass.simplify_bitwise,
-    Pass.simplify_compare_to_enum,
-    Pass.unroll_small_arrays,
-    Pass.use_enum_flows,
-    Pass.factor_out_loop_fixpoints,
-    Pass.hoist_out_of_generators,
-    Pass.hoist_out_of_loops,
-    Pass.sink_continues,
-    Pass.tree_shake,
+  var optimizations = list(
+    OptPass.deduplicate,
+    OptPass.hoist_known_switch_results,
+    OptPass.inline_functions,
+    OptPass.simplify_arithmetics,
+    OptPass.simplify_arrays,
+    OptPass.simplify_bitwise,
+    OptPass.simplify_compare_to_enum,
+    OptPass.unroll_small_arrays,
+    OptPass.use_enum_flows,
+    OptPass.factor_out_loop_fixpoints,
+    OptPass.hoist_out_of_generators,
+    OptPass.hoist_out_of_loops,
+    OptPass.sink_continues,
+    OptPass.tree_shake,
   )
-  var egg = run_egg_passes_until_stable("optimize", egg, passes)
+  var egg = egg.optimize(optimizations)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
@@ -243,10 +266,11 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | tree shaking or loop hoisting don't apply to them. Here, we desugar these
   | checked expressions into explicit checks followed by unchecked versions of
   | the expressions that can assume that the inputs are valid.
-  var passes = passes + list(Pass.lower_bounds_checks)
-  var egg = run_egg_passes_until_stable("lower bounds checks", egg, passes)
-  var passes = passes + list(Pass.lower_divide_and_modulo_checks)
-  var egg = run_egg_passes_until_stable("lower div/mod checks", egg, passes)
+  
+  var egg = egg.lower(LoweringPass.lower_bounds_checks)
+  var egg = egg.optimize(optimizations)
+  var egg = egg.lower(LoweringPass.lower_divide_and_modulo_checks)
+  var egg = egg.optimize(optimizations)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
@@ -269,14 +293,12 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | Recursive enums can't be stored in a single place/allocation: Because their
   | size is possibly infinite, we need pointer indirections and multiple
   | allocations. So first, we wrap recursive variants of enums with Boxes.
-  var egg = run_egg_pass(
-    "break up recursive enums", egg, Pass.lower_recursive_enums
-  )
+  var egg = egg.lower(LoweringPass.lower_recursive_enums)
 
   | After that, we insert dup and drop expressions into the code. When a value
   | is created, we are responsible for dropping it when it's no longer used. If
   | it is used multiple times, we need to dup it.
-  var egg = run_egg_pass("introduce ownership", egg, Pass.lower_ownership)
+  var egg = egg.lower(LoweringPass.lower_ownership)
 
   | TODO: optimize on the abstraction level of dup/drop
 
@@ -287,8 +309,8 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | - noxes are turned into objects
   | - arrays are turned into buffers
   | - dup/drop expressions are turned into function calls
-  var egg = run_egg_pass("memory layout", egg, Pass.lower_memory_layouts_1)
-  var egg = run_egg_passes_until_stable("optimize", egg, passes)
+  var egg = egg.lower(LoweringPass.lower_memory_layouts_1)
+  var egg = egg.optimize(optimizations)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
@@ -305,22 +327,22 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | Now, think of concrete memory layouts for structs and enums. Every
   | expression is now conceptually just a slice of bytes.
 
-  var egg = run_egg_pass("memory layout", egg, Pass.lower_memory_layouts_2)
+  var egg = egg.lower(LoweringPass.lower_memory_layouts_2)
   | println(egg)
 
-  var passes = list(
-    Pass.deduplicate,
-    | Pass.hoist_known_switch_results, | TODO: does this apply?
-    Pass.inline_functions,
-    Pass.simplify_aggregates_parts_loads_and_stores,
-    Pass.simplify_arithmetics,
-    Pass.simplify_bitwise,
-    Pass.hoist_out_of_loops,
-    Pass.make_switches_branchless,
-    Pass.sink_continues,
-    Pass.tree_shake,
+  var optimizations = list(
+    OptPass.deduplicate,
+    | OptPass.hoist_known_switch_results, | TODO: does this apply?
+    OptPass.inline_functions,
+    OptPass.simplify_aggregates_parts_loads_and_stores,
+    OptPass.simplify_arithmetics,
+    OptPass.simplify_bitwise,
+    OptPass.hoist_out_of_loops,
+    OptPass.make_switches_branchless,
+    OptPass.sink_continues,
+    OptPass.tree_shake,
   )
-  | var egg = run_egg_passes_until_stable("optimize", egg, passes)
+  var egg = egg.optimize(optimizations)
   | println(egg)
 
   egg.assert_only(list(
@@ -332,7 +354,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     "malloc", "load", "store", "store_bytes", "free",
   ))
 
-  | var passes = passes + list(Pass.lower_loads_and_stores)
+  | var passes = passes + list(OptPass.lower_loads_and_stores)
 
   | Egg nodes:
   |   param, case_param, byte, lower_byte, byte_to_int, int, add, subtract,
@@ -418,39 +440,4 @@ fun parse_toasts(
       }
     }
   ok[Nothing, Error]({})
-}
-
-fun run_egg_pass(name: String, egg: Egg, pass: Pass): Egg {
-  print_compile_step("  {name}")
-  var timer = start_timer()
-  var egg = egg.apply(pass)
-  print_time(timer.read_duration())
-  print_stats(egg)
-  println()
-  egg
-}
-
-fun run_egg_passes_until_stable(
-  name: String, egg: Egg, passes: List[Pass]
-): Egg {
-  print_compile_step("  {name}")
-  var timer = start_timer()
-  var funs = map[String, EggFun]()
-  for signature in egg.choose_optimization_order() do {
-    var mapped = egg.funs.get(signature).map(ApplyUntilStable {
-      passes = passes.to_slice(), processed_funs = funs.&
-    })
-    | eprintln("Mapped {pretty_signature(signature)}")
-    | stderr.write(signature, mapped)
-    | stderr."\n"
-    mapped.verify()
-    funs.&.put(signature, mapped)
-  }
-  var egg = Egg { funs, entry_point = egg.entry_point }
-  | eprintln("{hash_before} -> {hash_after}")
-  | var egg = egg.apply_until_stable(passes.to_slice())
-  print_time(timer.read_duration())
-  print_stats(egg)
-  println()
-  egg
 }
