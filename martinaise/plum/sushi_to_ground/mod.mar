@@ -1,0 +1,126 @@
+import ../plum.mar
+
+fun to_ground(sushi: Sushi): Ground {
+  var bytes = list[Byte]()
+  var offsets = map[SectionIndex, Int]()
+  var patches = list[Patch]()
+
+  { | Compile the entry point.
+    offsets.&.put(sushi.entry_point, 0)
+    var section = sushi.sections.get(sushi.entry_point.index)
+    section.to_bytes(bytes.&, patches.&)
+  }
+
+  | Compile all other functions.
+  for section in sushi.sections.iter().enumerate() do {
+    if section.index == sushi.entry_point.index then continue
+    offsets.&.put(SectionIndex { index = section.index }, bytes.len)
+    section.item.to_bytes(bytes.&, patches.&)
+  }
+
+  for patch in patches do
+    bytes.&.replace_little_endian_bytes(patch.offset, offsets.get(patch.target))
+
+  Ground { bytes = bytes.to_slice() }
+}
+
+struct Patch { offset: Int, target: SectionIndex }
+
+fun push_little_endian_bytes(bytes: &List[Byte], int: Int) {
+  for byte in int.to_bytes() do bytes.push(byte)
+}
+fun replace_little_endian_bytes(bytes: &List[Byte], offset: Int, int: Int) {
+  var int_bytes = int.to_bytes()
+  for i in 0..8 do bytes.set(offset + i, int_bytes.get(i))
+}
+
+fun to_bytes(
+  section: SushiSection, bytes: &List[Byte], patches: &List[Patch]
+): Slice[Byte] {
+  for instruction in section.instructions do {
+    switch instruction
+    case nop bytes.push(16#00.lower_byte())
+    case add_8 bytes.push(16#a0.lower_byte())
+    case sub_8 bytes.push(16#a1.lower_byte())
+    case signed_mul_8 bytes.push(16#a2.lower_byte())
+    case signed_div_8 bytes.push(16#a3.lower_byte())
+    case signed_mod_8 bytes.push(16#a4.lower_byte())
+    case compare_zero_8 bytes.push(16#a5.lower_byte())
+    case and_8 bytes.push(16#b0.lower_byte())
+    case or_8  bytes.push(16#b1.lower_byte())
+    case xor_8 bytes.push(16#b2.lower_byte())
+    case lower_byte bytes.push(16#b3.lower_byte())
+    case byte_to_int bytes.push(16#b4.lower_byte())
+    case push_padding(amount) {
+      bytes.push(16#c0.lower_byte())
+      bytes.push(amount)
+    }
+    case push_1(byte) {
+      bytes.push(16#c1.lower_byte())
+      bytes.push(byte)
+    }
+    case push_8(int) {
+      bytes.push(16#c2.lower_byte())
+      bytes.push_little_endian_bytes(int)
+    }
+    case push_1_from_stack(offset) {
+      bytes.push(16#c3.lower_byte())
+      bytes.push_little_endian_bytes(offset)
+    }
+    case push_8_from_stack(offset) {
+      bytes.push(16#c4.lower_byte())
+      bytes.push_little_endian_bytes(offset)
+    }
+    case pop(amount) {
+      bytes.push(16#c5.lower_byte())
+      bytes.push(amount)
+    }
+    case pop_below_top(tuple) {
+      bytes.push(16#c6.lower_byte())
+      bytes.push_little_endian_bytes(tuple.a)
+      bytes.push(tuple.b)
+    }
+    case malloc_8_aligned bytes.push(16#d0.lower_byte())
+    case free_8_aligned bytes.push(16#d1.lower_byte())
+    case store_1 bytes.push(16#d2.lower_byte())
+    case store_8 bytes.push(16#d3.lower_byte())
+    case load_1 bytes.push(16#d4.lower_byte())
+    case load_8 bytes.push(16#d5.lower_byte())
+    case store_bytes(literal) {
+      bytes.push(16#d6.lower_byte())
+      bytes.push_little_endian_bytes(literal.len)
+      bytes.push_all(literal)
+    }
+    case crash bytes.push(16#e0.lower_byte())
+    case jump(target) {
+      bytes.push(16#f0.lower_byte())
+      patches.&.push(Patch { offset = bytes.len, target })
+      bytes.push_little_endian_bytes(0) | placeholder
+    }
+    case jump_table(table) {
+      bytes.push(16#f1.lower_byte())
+      bytes.push(table.len.lower_byte())
+      for target in table do {
+        patches.&.push(Patch { offset = bytes.len, target })
+        bytes.push_little_endian_bytes(0) | placeholder
+      }
+    }
+    case call(target) {
+      bytes.push(16#f2.lower_byte())
+      patches.&.push(Patch { offset = bytes.len, target })
+      bytes.push_little_endian_bytes(0) | placeholder
+    }
+    case push_indirect(target) {
+      bytes.push(16#f3.lower_byte())
+      patches.&.push(Patch { offset = bytes.len, target })
+      bytes.push_little_endian_bytes(0) | placeholder
+    }
+    case call_indirect(pop_amount) {
+      bytes.push(16#f4.lower_byte())
+      bytes.push(pop_amount)
+    }
+    case return_ bytes.push(16#f5.lower_byte())
+  }
+
+  bytes.to_slice()
+}

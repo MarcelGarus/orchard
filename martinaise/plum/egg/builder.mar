@@ -1,0 +1,719 @@
+import mod.mar
+
+struct EggBodyBuilder { params: List[EggId], children: List[EggId] }
+fun egg_body_builder(): _ {
+  EggBodyBuilder { params = list[EggId](), children = list[EggId]() }
+}
+fun push(builder: &EggBodyBuilder, id: EggId): EggId {
+  var is_param =
+    switch id.resolve() case param true case case_param true default false
+  var list = if is_param then {builder.params.&} else {builder.children.&}
+  list.push(id)
+  id
+}
+fun push(builder: &EggBodyBuilder, expr: EggExpr): EggId {
+  builder.push(expr.create())
+}
+fun finish(builder: EggBodyBuilder, returns: EggId): EggBody {
+  EggBody {
+    params = builder.params.to_slice(),
+    children = builder.children.to_slice(),
+    returns,
+  }
+}
+
+fun param(builder: &EggBodyBuilder, type: EggType): EggId {
+  builder.push(EggExpr.param(type).create_with_new_identity())
+}
+
+fun case_param(
+  builder: &EggBodyBuilder, switch_on: EggId, variant: String
+): EggId {
+  builder.push(EggExpr.case_param(EggCaseParam { switch_on, variant }))
+}
+
+fun byte(builder: &EggBodyBuilder, byte: Byte): EggId {
+  builder.push(EggExpr.byte(byte))
+}
+
+fun lower_byte(builder: &EggBodyBuilder, int: EggId): EggId {
+  builder.push(EggExpr.lower_byte(int))
+}
+
+fun byte_to_int(builder: &EggBodyBuilder, byte: EggId): EggId {
+  builder.push(EggExpr.byte_to_int(byte))
+}
+
+fun int(builder: &EggBodyBuilder, int: Int): EggId {
+  builder.push(EggExpr.int(int))
+}
+
+fun add(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.add(tuple(a, b)))
+}
+
+fun subtract(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.subtract(tuple(a, b)))
+}
+
+fun multiply(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.multiply(tuple(a, b)))
+}
+
+fun divide(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.divide(tuple(a, b)))
+}
+
+fun modulo(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.modulo(tuple(a, b)))
+}
+
+fun compare(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.compare(tuple(a, b)))
+}
+
+fun and_(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.and_(tuple(a, b)))
+}
+
+fun or_(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.or_(tuple(a, b)))
+}
+
+fun xor(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.xor(tuple(a, b)))
+}
+
+fun shift_left(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.shift_left(tuple(a, b)))
+}
+  
+fun shift_right(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.shift_right(tuple(a, b)))
+}
+
+fun unchecked_divide(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.unchecked_divide(tuple(a, b)))
+}
+
+fun unchecked_modulo(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  builder.push(EggExpr.unchecked_modulo(tuple(a, b)))
+}
+
+fun struct_(builder: &EggBodyBuilder, fields: Map[String, EggId]): EggId {
+  builder.push(EggExpr.struct_(fields))
+}
+
+fun member(builder: &EggBodyBuilder, of: EggId, name: String): EggId {
+  builder.push(EggExpr.member(EggMember { of, name }))
+}
+
+fun enum_(
+  builder: &EggBodyBuilder, type: EggType, variant: String, payload: EggId
+): EggId {
+  builder.push(EggExpr.enum_(EggEnum { type, variant, payload }))
+}
+
+fun switch_(
+  builder: &EggBodyBuilder,
+  condition: EggId,
+  cases: Map[String, EggBody],
+): EggId {
+  for case_ in cases do
+    if case_.value.params.len != 1 then
+      panic("case with {case_.value.params.len} params")
+  builder.push(EggExpr.switch_(EggSwitch { condition, cases }))
+}
+
+fun inline_lambda(builder: &EggBodyBuilder, body: EggBody): EggId {
+  builder.push(EggExpr.inline_lambda(body))
+}
+
+fun raw_lambda(
+  builder: &EggBodyBuilder, fun_: String, closure: EggId, type: EggType
+): EggId {
+  builder.push(EggExpr.raw_lambda(EggRawLambda { fun_, closure, type }))
+}
+
+fun call(
+  builder: &EggBodyBuilder, 
+  fun_: String,
+  substitutions: Substitutions,
+  args: Slice[EggId],
+  return_type: EggType,
+): EggId {
+  if substitutions.substitutions.is_empty() then
+    builder.push(EggExpr.call_fun(EggCallFun {
+      fun_, args, return_type
+    }))
+  else
+    builder.push(EggExpr.call_generic_fun(EggCallGenericFun {
+      fun_, substitutions, args, return_type
+    }))
+}
+
+fun call(
+  builder: &EggBodyBuilder, 
+  fun_: String,
+  args: Slice[EggId],
+  return_type: EggType,
+): EggId {
+  builder.push(EggExpr.call_fun(EggCallFun {
+    fun_, args, return_type
+  }))
+}
+
+fun call(builder: &EggBodyBuilder, lambda: EggId, args: Slice[EggId]): EggId {
+  builder.push(EggExpr.call_lambda(EggCallLambda { lambda, args, }))
+}
+
+fun call(
+  builder: &EggBodyBuilder, 
+  builtin: EggBuiltin, substitutions: Substitutions, args: Slice[EggId],
+): EggId {
+  builder.push(EggExpr.call_builtin(EggCallBuiltin {
+    builtin, substitutions, args
+  }))
+}
+
+fun box(builder: &EggBodyBuilder, arg: EggId): EggId {
+  builder.push(EggExpr.box(arg))
+}
+
+fun unbox(builder: &EggBodyBuilder, arg: EggId): EggId {
+  builder.push(EggExpr.unbox(arg))
+}
+
+fun array(
+  builder: &EggBodyBuilder, items: Slice[EggId], item_type: EggType
+): EggId {
+  builder.push(EggExpr.array(EggArray { items, item_type }))
+}
+
+fun generate_array(
+  builder: &EggBodyBuilder, length: EggId, generator: EggBody
+): EggId {
+  builder.push(EggExpr.generate_array(EggGenerateArray { length, generator }))
+}
+
+fun array_get(builder: &EggBodyBuilder, array: EggId, index: EggId): EggId {
+  builder.push(EggExpr.array_get(EggArrayGet { array, index }))
+}
+
+fun array_set(
+  builder: &EggBodyBuilder, array: EggId, index: EggId, item: EggId
+): EggId {
+  builder.push(EggExpr.array_set(EggArraySet { array, index, item }))
+}
+
+fun array_slice(
+  builder: &EggBodyBuilder, array: EggId, start: EggId, end: EggId
+): EggId {
+  builder.push(EggExpr.array_slice(EggArraySlice { array, start, end }))
+}
+
+fun array_len(builder: &EggBodyBuilder, array: EggId): EggId {
+  builder.push(EggExpr.array_len(array))
+}
+
+fun unchecked_generate_non_empty_array(
+  builder: &EggBodyBuilder, length: EggId, generator: EggBody
+): EggId {
+  builder.push(EggExpr.unchecked_generate_non_empty_array(EggGenerateArray {
+    length, generator
+  }))
+}
+
+fun unchecked_array_get(
+  builder: &EggBodyBuilder, array: EggId, index: EggId
+): EggId {
+  builder.push(EggExpr.unchecked_array_get(EggArrayGet { array, index }))
+}
+
+fun unchecked_array_set(
+  builder: &EggBodyBuilder, array: EggId, index: EggId, item: EggId
+): EggId {
+  builder.push(EggExpr.unchecked_array_set(EggArraySet { array, index, item }))
+}
+
+fun unchecked_array_slice(
+  builder: &EggBodyBuilder, array: EggId, start: EggId, end: EggId
+): EggId {
+  builder.push(EggExpr.unchecked_array_slice(EggArraySlice {
+    array, start, end
+  }))
+}
+
+fun string(builder: &EggBodyBuilder, string: String): EggId {
+  builder.push(EggExpr.string(string))
+}
+
+fun type(builder: &EggBodyBuilder, type: EggType): EggId {
+  builder.push(EggExpr.type(type))
+}
+
+fun cast(builder: &EggBodyBuilder, what: EggId, type: EggType): EggId {
+  if what.type() == type then
+    what
+  else
+    builder.push(EggExpr.cast(EggCast { what, type }))
+}
+
+fun type_info(builder: &EggBodyBuilder, type: EggId): EggId {
+  builder.push(EggExpr.type_info(type))
+}
+
+fun static_to_dynamic(builder: &EggBodyBuilder, static: EggId): EggId {
+  builder.push(EggExpr.static_to_dynamic(static))
+}
+
+fun dynamic_to_static(
+  builder: &EggBodyBuilder, dynamic: EggId, static: EggType
+): EggId {
+  builder.push(EggExpr.dynamic_to_static(EggDynamicToStatic {
+    dynamic, static
+  }))
+}
+
+fun crash(builder: &EggBodyBuilder, message: EggId, type: EggType): EggId {
+  builder.push(EggExpr.crash(EggCrash { message, type }))
+}
+
+fun crash(builder: &EggBodyBuilder, message: String, type: EggType): EggId {
+  builder.crash(builder.desugared_string(message), type)
+}
+
+fun unreachable(builder: &EggBodyBuilder, type: EggType): EggId {
+  builder.push(EggExpr.unreachable(type))
+}
+
+fun halt(builder: &EggBodyBuilder, type: EggType): EggId {
+  builder.push(EggExpr.halt(type))
+}
+
+fun loop_(
+  builder: &EggBodyBuilder, initial: Slice[EggId], body: EggBody
+): EggId {
+  builder.push(EggExpr.loop_(EggLoop { initial, body }))
+}
+
+fun continue_(
+  builder: &EggBodyBuilder, next: Slice[EggId], type: EggType
+): EggId {
+  builder.push(EggExpr.continue_(EggContinue { next, type }))
+}
+
+fun dup(builder: &EggBodyBuilder, id: EggId, type: EggType): EggId {
+  builder.push(EggExpr.dup(EggDup { id, type }))
+}
+
+fun drop(builder: &EggBodyBuilder, id: EggId, type: EggType): EggId {
+  builder.push(EggExpr.drop(EggDrop { id, type }))
+}
+
+fun function_ptr(builder: &EggBodyBuilder, signature: String): EggId {
+  builder.push(EggExpr.function_ptr(signature))
+}
+
+fun call_indirect(
+  builder: &EggBodyBuilder,
+  function_ptr: EggId,
+  args: Slice[EggId],
+  return_type: EggType,
+): EggId {
+  builder.push(EggExpr.call_indirect(EggCallIndirect {
+    function_ptr, args, return_type
+  }))
+}
+
+fun null_ptr(builder: &EggBodyBuilder): EggId { builder.push(EggExpr.null_ptr) }
+
+fun object_new(builder: &EggBodyBuilder, value: EggId): EggId {
+  builder.push(EggExpr.object_new(value))
+}
+
+fun object_load(builder: &EggBodyBuilder, ptr: EggId, type: EggType): EggId {
+  builder.push(EggExpr.object_load(EggObjectLoad { ptr, type }))
+}
+
+fun object_free(builder: &EggBodyBuilder, ptr: EggId, type: EggType): EggId {
+  builder.push(EggExpr.object_free(EggObjectFree { ptr, type }))
+}
+
+fun get_refcount(builder: &EggBodyBuilder, ptr: EggId): EggId {
+  builder.push(EggExpr.get_refcount(EggGetRefcount { ptr }))
+}
+
+fun set_refcount(builder: &EggBodyBuilder, ptr: EggId, refcount: EggId): EggId {
+  builder.push(EggExpr.set_refcount(EggSetRefcount { ptr, refcount }))
+}
+
+fun new_buffer(
+  builder: &EggBodyBuilder, item_type: EggType, length: EggId
+): EggId {
+  builder.push(EggExpr.new_buffer(EggNewBuffer { item_type, length }))
+}
+
+fun get_buffer_length(builder: &EggBodyBuilder, buffer: EggId): EggId {
+  builder.push(EggExpr.get_buffer_length(buffer))
+}
+
+fun load_buffer_item(
+  builder: &EggBodyBuilder, buffer: EggId, item_type: EggType, index: EggId
+): EggId {
+  builder.push(EggExpr.load_buffer_item(EggLoadBufferItem {
+    buffer, item_type, index
+  }))
+}
+
+fun store_buffer_item(
+  builder: &EggBodyBuilder, 
+  buffer: EggId,
+  item_type: EggType,
+  index: EggId,
+  item: EggId,
+): EggId {
+  builder.push(EggExpr.store_buffer_item(EggStoreBufferItem {
+    buffer, item_type, index, item
+  }))
+}
+
+fun store_buffer_bytes(
+  builder: &EggBodyBuilder, buffer: EggId, bytes: Slice[Byte]
+): EggId {
+  builder.push(EggExpr.store_buffer_bytes(EggStoreBufferBytes {
+    buffer, bytes
+  }))
+}
+
+fun free_buffer(
+  builder: &EggBodyBuilder, buffer: EggId, item_type: EggType
+): EggId {
+  builder.push(EggExpr.free_buffer(EggFreeBuffer { buffer, item_type }))
+}
+
+fun padding(builder: &EggBodyBuilder, amount: Int): EggId {
+  builder.push(EggExpr.padding(amount))
+}
+
+fun aggregate(builder: &EggBodyBuilder, parts: Slice[EggId]): EggId {
+  builder.push(EggExpr.aggregate(parts))
+}
+
+fun part(builder: &EggBodyBuilder, of: EggId, offset: Int, size: Int): EggId {
+  builder.push(EggExpr.part(EggPart { of, offset, size }))
+}
+
+fun switch_on_byte(
+  builder: &EggBodyBuilder, condition: EggId, cases: Slice[EggBody]
+): EggId {
+  builder.push(EggExpr.switch_on_byte(EggSwitchOnByte { condition, cases }))
+}
+
+fun malloc(builder: &EggBodyBuilder, size: EggId): EggId {
+  builder.push(EggExpr.malloc(size))
+}
+
+fun free(builder: &EggBodyBuilder, ptr: EggId, size: EggId): EggId {
+  builder.push(EggExpr.free(EggFree { ptr, size }))
+}
+
+fun load(builder: &EggBodyBuilder, ptr: EggId, size: Int): EggId {
+  builder.push(EggExpr.load(EggLoad { ptr, size }))
+}
+
+fun store(builder: &EggBodyBuilder, ptr: EggId, value: EggId): EggId {
+  builder.push(EggExpr.store(EggStore { ptr, value }))
+}
+
+fun load_word(builder: &EggBodyBuilder, ptr: EggId): EggId {
+  builder.push(EggExpr.load_word(EggSmolLoad { ptr }))
+}
+
+fun load_byte(builder: &EggBodyBuilder, ptr: EggId): EggId {
+  builder.push(EggExpr.load_byte(EggSmolLoad { ptr }))
+}
+
+fun store_word(builder: &EggBodyBuilder, ptr: EggId, value: EggId): EggId {
+  builder.push(EggExpr.store_word(EggSmolStore { ptr, value }))
+}
+
+fun store_byte(builder: &EggBodyBuilder, ptr: EggId, value: EggId): EggId {
+  builder.push(EggExpr.store_byte(EggSmolStore { ptr, value }))
+}
+
+fun store_bytes(builder: &EggBodyBuilder, ptr: EggId, bytes: Slice[Byte]): EggId {
+  builder.push(EggExpr.store_bytes(EggStoreBytes { ptr, bytes }))
+}
+
+| More advanced helpers.
+
+fun nothing(builder: &EggBodyBuilder): EggId {
+  builder.struct_(map[String, EggId]())
+}
+
+fun true(builder: &EggBodyBuilder): EggId {
+  builder.enum_(type_bool, "true", builder.nothing())
+}
+
+fun false(builder: &EggBodyBuilder): EggId {
+  builder.enum_(type_bool, "false", builder.nothing())
+}
+
+fun finish_with_nothing(builder: EggBodyBuilder): EggBody {
+  builder.finish(builder.&.nothing())
+}
+
+fun finish_with_crash(
+  builder: EggBodyBuilder, message: String, type: EggType
+): EggBody {
+  builder.finish(builder.&.crash(message, type))
+}
+
+fun finish_with_unreachable(builder: EggBodyBuilder, type: EggType): EggBody {
+  builder.finish(builder.&.unreachable(type))
+}
+
+fun expect_variant_or_crash(
+  builder: &EggBodyBuilder, enum_: EggId, expected_variant: String
+): EggId {
+  var variant_types = enum_.type().plum().enum_.unwrap()
+  var variant_type = variant_types.get(expected_variant)
+  builder.switch_(enum_, {
+    var cases = map[String, EggBody]()
+    for variant in variant_types do
+      cases.&.put(variant.key, {
+        var builder = egg_body_builder().&
+        var payload = builder.case_param(enum_, variant.key)
+        builder.finish(
+          if variant.key == expected_variant then
+            payload
+          else
+            builder.crash("Expected {expected_variant}.", variant_type)
+        )
+      })
+    cases
+  })
+}
+
+fun if_(
+  builder: &EggBodyBuilder, condition: EggId, then_: EggBody, else_: EggBody
+): EggId {
+  builder.switch_(condition, map(
+    "true" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(condition, "true")
+      for child in then_.children do builder.push(child)
+      builder.finish(then_.returns)
+    },
+    "false" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(condition, "false")
+      for child in else_.children do builder.push(child)
+      builder.finish(else_.returns)
+    },
+  ))
+}
+
+fun switch_on_ordering(
+  builder: &EggBodyBuilder,
+  ordering: EggId, less: EggBody, equal: EggBody, greater: EggBody,
+): EggId {
+  builder.switch_(ordering, map(
+    "less" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "less")
+      for child in less.children do builder.push(child)
+      builder.finish(less.returns)
+    },
+    "equal" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "equal")
+      for child in equal.children do builder.push(child)
+      builder.finish(equal.returns)
+    },
+    "greater" -> {
+      var builder = egg_body_builder().&
+      builder.case_param(ordering, "greater")
+      for child in greater.children do builder.push(child)
+      builder.finish(greater.returns)
+    },
+  ))
+}
+
+fun assert_is_equal(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
+  builder.switch_on_ordering(
+    builder.compare(left, right),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+  )
+}
+
+fun assert_is_less(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+  )
+}
+
+fun assert_is_less_equal(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+  )
+}
+
+fun assert_is_greater(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_nothing(),
+  )
+}
+
+fun assert_is_greater_equal(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_nothing(),
+  )
+}
+
+fun assert_is_not_equal(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, message: String
+): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    egg_body_builder().finish_with_nothing(),
+    egg_body_builder().finish_with_crash(message, type_nothing),
+    egg_body_builder().finish_with_nothing(),
+  )
+}
+
+fun check_if_equal_else_false(
+  builder: &EggBodyBuilder, left: EggId, right: EggId, if_equal: EggBody
+): EggId {
+  var ordering = builder.compare(left, right)
+  builder.switch_on_ordering(
+    ordering,
+    {
+      var builder = egg_body_builder().&
+      builder.finish(builder.false())
+    },
+    {
+      var builder = egg_body_builder().&
+      for child in if_equal.children do builder.push(child)
+      builder.finish(if_equal.returns)
+    },
+    {
+      var builder = egg_body_builder().&
+      builder.finish(builder.false())
+    },
+  )
+}
+
+fun compare_strings(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
+  var a = builder.member(a, "utf8_bytes")
+  var b = builder.member(b, "utf8_bytes")
+  builder.check_if_equal_else_false(
+    builder.array_len(a),
+    builder.array_len(b),
+    {
+      var builder = egg_body_builder().&
+      builder.finish(
+        builder.loop_(list(builder.int(0)).to_slice(), {
+          var builder = egg_body_builder().&
+          var index = builder.param(type_int)
+          builder.finish(
+            builder.switch_on_ordering(
+              builder.compare(index, builder.array_len(a)),
+              {
+                var builder = egg_body_builder().&
+                builder.finish(
+                  builder.check_if_equal_else_false(
+                    builder.byte_to_int(builder.unchecked_array_get(a, index)),
+                    builder.byte_to_int(builder.unchecked_array_get(b, index)),
+                    {
+                      var builder = egg_body_builder().&
+                      builder.finish(
+                        builder.continue_(
+                          list(builder.add(index, builder.int(1))).to_slice(),
+                          type_bool,
+                        ),
+                      )
+                    }
+                  )
+                )
+              },
+              {
+                var builder = egg_body_builder().&
+                builder.finish(builder.true())
+              },
+              egg_body_builder().finish_with_unreachable(type_bool),
+            )
+          )
+        })
+      )
+    },
+  )
+}
+
+fun increment_refcount(builder: &EggBodyBuilder, ptr: EggId): EggId {
+  var refcount = builder.get_refcount(ptr)
+  var new_refcount = builder.add(refcount, builder.int(1))
+  builder.set_refcount(ptr, new_refcount)
+  new_refcount
+}
+
+fun decrement_refcount(builder: &EggBodyBuilder, ptr: EggId): EggId {
+  var refcount = builder.get_refcount(ptr)
+  var new_refcount = builder.subtract(refcount, builder.int(1))
+  builder.set_refcount(ptr, new_refcount)
+  new_refcount
+}
+
+fun if_refcount_zero(
+  builder: &EggBodyBuilder, refcount: EggId, then_: EggBody
+) {
+  builder.switch_on_ordering(
+    builder.compare(refcount, builder.int(0)),
+    egg_body_builder().finish_with_unreachable(type_nothing),
+    {
+      var builder = egg_body_builder().&
+      for child in then_.children do builder.push(child)
+      builder.finish(then_.returns)
+    },
+    egg_body_builder().finish_with_nothing(),
+  ).ignore()
+}
+
+fun if_not_null_ptr(builder: &EggBodyBuilder, ptr: EggId, then_: EggBody) {
+  builder.switch_on_ordering(
+    builder.compare(ptr, builder.null_ptr()),
+    then_,
+    egg_body_builder().finish_with_nothing(),
+    then_
+  ).ignore()
+}

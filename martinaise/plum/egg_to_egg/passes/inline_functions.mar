@@ -1,0 +1,44 @@
+import mod.mar
+
+fun inline_functions(
+  id: EggId, funs: Map[String, EggFun], builder: &EggBodyBuilder
+): EggId {
+  var call = id.resolve().call_fun or return id
+
+  | Inline the function, if:
+  | - The function has already been visited during the optimization pass.
+  |   Otherwise, mutually recursive functions might hang the compiler.
+  | - The function size fits in some upper bound.
+  |   Otherwise, we may get exponential code explosion.
+  | - The function is not generic.
+  |   Otherwise, the function might call itself with different type arguments
+  |   and we can't model that, not even using a recursive expression. After
+  |   monomorphization, no generic functions exist, so every function has a
+  |   chance of being inlined eventually.
+  |
+  | a = int 3
+  | b = int 2
+  | --------------------------------
+  | call + a b  |  add a b  |  int 5
+  if funs.get_maybe(call.fun_) is some(fun_) then {
+    if fun_.body.num_exprs() <= 50 then {
+      if not(fun_.recurses(call.fun_)) and not(fun_.contains_lambda()) then {
+        | eprintln("inlining {call.fun_}")
+        | eprintln("fun:\n")
+        | stderr.write(Egg { funs = map(call.fun_ -> fun_), entry_point = "" })
+        | stderr."\n"
+        return fun_.body.fill(call.args, builder)
+      } else if fun_.only_recurses_in_tail_position(call.fun_) then {
+        | TODO:
+        | return builder.loop_(
+        |   call.args,
+        |   fun_.body.call_to_continue_(call.fun_, call.return_type),
+        | )
+      } else {
+        | We don't inline general recursive functions.
+      }
+    }
+  }
+
+  id
+}

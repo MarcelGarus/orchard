@@ -1,0 +1,240 @@
+| Expression-Guided Graph  
+|
+| A representation of code where we have used names to establish the connections
+| between types, expressions, and functions.
+| 
+| Every Egg expression has a type. Function calls are resolved to specific
+| functions based on the parameter types (aka function overloading) and we have
+| figured out how types need to be substituted for things to work out.
+| Speaking of types: Types no longer contain user-given names. Instead, we have
+| inlined type definitions so that types are completely structural. For example,
+| rather than (LinkedList Int), the Egg uses this type:
+|
+| (| empty: (&) more: (& item: (Int) rest: (^2)))
+
+import ../plum.mar
+import builder.mar
+import builtins.mar
+import dag.mar
+import equivalent.mar
+import format.mar
+| import run.mar
+import types/mod.mar
+
+| All EggExprs are allocated and managed by the DAG in dag.mar. This allows
+| using EggIds everywhere instead of having to use references.
+
+struct Egg { entry_point: String, funs: Map[String, EggFun] }
+struct EggFun { body: EggBody }
+struct EggBody { params: Slice[EggId], children: Slice[EggId], returns: EggId }
+enum EggExpr {
+  param: EggType,           | A parameter to a function or loop.
+  case_param: EggCaseParam, | A parameter to a switch case.
+
+  | byte stuff
+  byte: Byte,         | A byte literal.
+  lower_byte: EggId,  | Takes an int and returns its lower byte.
+  byte_to_int: EggId, | Takes a byte, expands it to an int in 0..256.
+
+  | int stuff
+  int: Int,                               | An int literal.
+  add: Tuple2[EggId, EggId],              | Adds two integers. Wraps around.
+  subtract: Tuple2[EggId, EggId],         | Subtracts two integers. Wraps around.
+  multiply: Tuple2[EggId, EggId],         | Multiplies two integers. Wraps around.
+  divide: Tuple2[EggId, EggId],           | Divides two integers. Wraps around. May crash.
+  modulo: Tuple2[EggId, EggId],           | Modulos two integers. Wraps around. May crash.
+  compare: Tuple2[EggId, EggId],          | Compares two integers and returns an Ordering.
+  and_: Tuple2[EggId, EggId],             | Bitwise-ands two integers.
+  or_: Tuple2[EggId, EggId],              | Bitwise-ors two integers.
+  xor: Tuple2[EggId, EggId],              | Bitwise-xors two integers.
+  shift_left: Tuple2[EggId, EggId],       | Shifts an integer left, farther from zero. Zero-extends.
+  shift_right: Tuple2[EggId, EggId],      | Shifts an integer right, closer to zero. Sign-extends.
+  unchecked_divide: Tuple2[EggId, EggId], | Divides two integers. The second may not be zero.
+  unchecked_modulo: Tuple2[EggId, EggId], | Modulos two integers. The second may not be zero.
+
+  | struct stuff
+  struct_: Map[String, EggId], | Constructs a structs.
+  member: EggMember,           | Accesses the member of a struct.
+
+  | enum stuff
+  enum_: EggEnum,     | Constructs an enum.
+  switch_: EggSwitch, | Switches on an enum.
+
+  | function and lambda stuff
+  inline_lambda: EggBody,              | A lambda literal.
+  raw_lambda: EggRawLambda,            | A lambda as a function ptr + closure.
+  call_generic_fun: EggCallGenericFun, | Calls a top-level function with substitutions.
+  call_fun: EggCallFun,                | Calls a top-level function without substitutions.
+  call_builtin: EggCallBuiltin,        | Calls a builtin.
+  call_lambda: EggCallLambda,          | Calls a lambda.
+
+  | box stuff
+  box: EggId,   | Boxes a value, storing it on the heap.
+  unbox: EggId, | Unboxes a value.
+
+  | array stuff
+  array: EggArray,                   | Constructs an array of known items.
+  generate_array: EggGenerateArray,  | Generates an array of length using a body.
+  array_get: EggArrayGet,            | Gets an item from an array. May crash.
+  array_set: EggArraySet,            | Sets an item of an array, returning a new array. May crash.
+  array_slice: EggArraySlice,        | Gets a subslice of an array. May crash.
+  array_len: EggId,                  | Gets the length of an array.
+  unchecked_generate_non_empty_array: EggGenerateArray, | Like, generate but length must be >= 1.
+  unchecked_array_get: EggArrayGet,     | Like array_get, but without bounds checks.
+  unchecked_array_set: EggArraySet,     | Like array_set, but without bounds checks.
+  unchecked_array_slice: EggArraySlice, | Like array_slice, but without bounds checks.
+
+  | string stuff
+  string: String, | A string literal.
+
+  | type stuff
+  type: EggType,                         | A type literal.
+  cast: EggCast,                         | A cast from one type to another.
+  type_info: EggId,                      | Gets info about a type. The type must be known at comptime.  TODO: may crash?
+  static_to_dynamic: EggId,              | Converts a type to Dynamic.
+  dynamic_to_static: EggDynamicToStatic, | Converts a Dynamic to a type.
+
+  | diverging stuff
+  crash: EggCrash,      | Crashes with a String.
+  unreachable: EggType, | Marks code as unreachable.
+  halt: EggType,        | Loops infinitely.
+
+  | loop stuff
+  loop_: EggLoop,         | Creates a loop with explicit loops variables.
+  continue_: EggContinue, | Starts the surrounding loop over with new values for the loop variables. Con only occur in loops.
+
+  | ownership stuff
+  dup: EggDup,   | Dups a value.
+  drop: EggDrop, | Drops a value.
+
+  | function pointers! yeah!
+  function_ptr: String,           | A pointer to a function.
+  call_indirect: EggCallIndirect, | A call of a function_ptr.
+
+  | high-level heap stuff (refcounted objects + buffers)
+  null_ptr,                                | May not be dereferenced (used for empty Boxes, closures, empty buffers, etc.)
+  object_new: EggId,                       | Allocates a new refcounted object.
+  object_load: EggObjectLoad,              | Loads the value of an object.
+  object_free: EggObjectFree,              | Frees an object.
+  get_refcount: EggGetRefcount,            | Gets the refcount of an object or buffer.
+  set_refcount: EggSetRefcount,            | Sets the refcount of an object or buffer.
+  new_buffer: EggNewBuffer,                | Allocates a new refcounted buffer with a fixed length.
+  get_buffer_length: EggId,                | Gets the length of a buffer.
+  load_buffer_item: EggLoadBufferItem,     | Loads an item from a buffer.
+  store_buffer_item: EggStoreBufferItem,   | Stores an item into the buffer.
+  store_buffer_bytes: EggStoreBufferBytes, | Stores bytes into a (Buffer Byte).
+  free_buffer: EggFreeBuffer,              | Frees a buffer.
+
+  | memory layouted stuff
+  padding: Int,
+  aggregate: Slice[EggId],
+  part: EggPart,
+  switch_on_byte: EggSwitchOnByte,
+
+  | low-level heap stuff
+  malloc: EggId,
+  free: EggFree,
+  load: EggLoad,
+  store: EggStore,
+
+  | smol loads and stores
+  load_word: EggSmolLoad,
+  load_byte: EggSmolLoad,
+  store_word: EggSmolStore,
+  store_byte: EggSmolStore,
+  store_bytes: EggStoreBytes,
+}
+struct EggCaseParam { switch_on: EggId, variant: String }
+struct EggMember { of: EggId, name: String }
+struct EggEnum { type: EggType, variant: String, payload: EggId }
+struct EggSwitch { condition: EggId, cases: Map[String, EggBody] }
+struct EggRawLambda { fun_: String, closure: EggId, type: EggType }
+struct EggCallGenericFun {
+  fun_: String,
+  substitutions: Substitutions,
+  args: Slice[EggId],
+  return_type: EggType,
+}
+struct EggCallFun { fun_: String, args: Slice[EggId], return_type: EggType }
+struct EggCallBuiltin {
+  builtin: EggBuiltin, substitutions: Substitutions, args: Slice[EggId]
+}
+struct EggCallLambda { lambda: EggId, args: Slice[EggId] }
+struct EggArray { items: Slice[EggId], item_type: EggType }
+struct EggGenerateArray { length: EggId, generator: EggBody }
+struct EggArrayGet { array: EggId, index: EggId }
+struct EggArraySet { array: EggId, index: EggId, item: EggId }
+struct EggArraySlice { array: EggId, start: EggId, end: EggId }
+struct EggDynamicToStatic { dynamic: EggId, static: EggType }
+struct EggCast { what: EggId, type: EggType }
+struct EggCrash { message: EggId, type: EggType }
+struct EggLoop { initial: Slice[EggId], body: EggBody }
+struct EggContinue { next: Slice[EggId], type: EggType }
+struct EggDup { id: EggId, type: EggType }
+struct EggDrop { id: EggId, type: EggType }
+struct EggCallIndirect {
+  function_ptr: EggId, args: Slice[EggId], return_type: EggType
+}
+struct EggObjectLoad { ptr: EggId, type: EggType }
+struct EggObjectFree { ptr: EggId, type: EggType }
+struct EggGetRefcount { ptr: EggId }
+struct EggSetRefcount { ptr: EggId, refcount: EggId }
+struct EggNewBuffer { item_type: EggType, length: EggId }
+struct EggLoadBufferItem { buffer: EggId, item_type: EggType, index: EggId }
+struct EggStoreBufferItem {
+  buffer: EggId, item_type: EggType, index: EggId, item: EggId
+}
+struct EggStoreBufferBytes { buffer: EggId, bytes: Slice[Byte] }
+struct EggFreeBuffer { buffer: EggId, item_type: EggType }
+struct EggPart { of: EggId, offset: Int, size: Int }
+struct EggSwitchOnByte { condition: EggId, cases: Slice[EggBody] }
+struct EggFree { ptr: EggId, size: EggId }
+struct EggLoad { ptr: EggId, size: Int }
+struct EggStore { ptr: EggId, value: EggId }
+struct EggSmolLoad { ptr: EggId }
+struct EggSmolStore { ptr: EggId, value: EggId }
+struct EggStoreBytes { ptr: EggId, bytes: Slice[Byte] }
+
+fun signature(module: Module, name: String, params: Slice[EggType]): String {
+  var b = string_builder().&
+  b."{module}.{name}"
+  for param in params do b." {param}"
+  b.to_string()
+}
+
+fun return_type(fun_: EggFun): EggType { fun_.body.returns.type() }
+
+fun verify(fun_: EggFun) {
+  if fun_.body.captured().is_not_empty() then
+    panic({
+      var b = string_builder().&
+      b."Function not self contained. It captures"
+      for c in fun_.body.captured() do b." {c.id.index}"
+      b.":\n"
+      b.write("function", fun_)
+      b.to_string()
+    })
+}
+
+fun assert_only(egg: Egg, allowed_nodes: List[String]) {
+  for fun_ in egg.funs do {
+    fun_.value.verify()
+    fun_.value.visit(AssertOnly { allowed_nodes })
+  }
+}
+struct AssertOnly { allowed_nodes: List[String] }
+fun visit(id: EggId, mapper: AssertOnly) {
+  var name = id.resolve().debug().format().split("(").get(0)
+  var is_allowed = false
+  for allowed in mapper.allowed_nodes do
+    if name == allowed then is_allowed = true
+  if not(is_allowed) then
+    panic({
+      var b = string_builder().&
+      b."The Egg contains a {name} node:\n"
+      b.write(id, namespace().&, indentation(1))
+      b."\nAt this point, only the following nodes are allowed:
+        ' {mapper.allowed_nodes}"
+      b.to_string()
+    })
+}

@@ -1,0 +1,171 @@
+| Expression Hoisting  
+|
+| To optimize the code, we want to minimize the amount of work that we do. Some
+| bodies (such as those of lambdas or array generators) may be called many, many
+| times, so it can make sense to "hoist" expressions from inside them to the
+| outer scope -- doing the work once, letting the body capture the results, and
+| then reusing those instead of redoing the work.
+|
+| What expressions can we hoist out of bodies?
+| - We can't hoist expressions that depend on the body's parameters directly or
+|   indirectly.
+| - If we are not sure that the body is executed at all (such as switch cases or
+|   lambdas), we can't hoist potentially crashing expressions because our
+|   optimizations should not introduce crashes.
+|
+| Technically, even hoisting pure expressions out of bodies does not always
+| reduce the amount of work as a body might not be executed at all. For example,
+| consider a switch where one case crashes with a message. We could pull the
+| pure crash message string out of the case, but we probably don't want to do
+| that because programs typically don't crash during normal operations and
+| constructing the string is expensive (allocating memory etc). Ugh. Nuance.
+
+import mod.mar
+
+struct BodyWithHoisted { body: EggBody, hoisted: Slice[EggId] }
+
+| Hoist expressions from the body, assuming that it runs often (but it's not
+| guaranteed to run). This means that we hoist all operations except if they
+| directly or indirecty depend on the body parameters or they may crash.
+fun hoist_from_body_running_often(body: EggBody): BodyWithHoisted {
+  var hoisted = list[EggId]()
+  var body = body.map(
+    HoistOften { kept = set[EggId]().&, hoisted = hoisted.& },
+    map[EggId, EggId]().&,
+  )
+  BodyWithHoisted { body, hoisted = hoisted.to_slice() }
+}
+
+struct HoistOften { kept: &Set[EggId], hoisted: &List[EggId] }
+fun map(
+  body: EggBody, mapper: HoistOften, mapping: &Map[EggId, EggId]
+): EggBody {
+  var builder = egg_body_builder().&
+  for old in body.params do {
+    var new = old.map(mapper, builder, mapping)
+    mapping.put(old, new)
+    mapper.kept.put(old)
+  }
+  for old in body.children do {
+    var any_reference_not_hoisted = {
+      var res = false
+      for id in old.captured() do if mapper.kept.contains(id) then res = true
+      res
+    }
+    var independent_of_kept_expressions = not(any_reference_not_hoisted)
+    var hoist = independent_of_kept_expressions
+      and not(old.is_unchecked()) and old.is_pure_biased()
+
+    if hoist then {
+      mapper.hoisted.push(old)
+    } else {
+      var new = old.map(mapper, builder, mapping)
+      mapping.put(old, new)
+      mapper.kept.put(old)
+    }
+  }
+  builder.finish(body.returns.map(mapping.*))
+}
+fun map(
+  id: EggId, mapper: HoistOften,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  switch id.resolve()
+  case switch_(switch_) {
+    var cases = map[String, EggBody]()
+    for case_ in switch_.cases do
+      cases.&.put(
+        case_.key,
+        if case_.value.definitely_diverges_biased() then
+          case_.value.map(DoNotHoist {}, mapping)
+        else
+          case_.value.map(mapper, mapping),
+      )
+    builder.switch_(switch_.condition.map(mapping.*), cases)
+  }
+  default builder.push(id.map_children(mapper, mapping))
+}
+
+| Hoist expressions from a body that it is guaranteed to run at least once.
+| Knowing the fact that the body runs allows us to hoist crashing expressions
+| such as bounds checks, as long as they don't come after possibly-crashing,
+| non-hoisted expressions.
+fun hoist_from_body_running_at_least_once(body: EggBody): BodyWithHoisted {
+  var hoisted = list[EggId]()
+  var body = body.map(
+    HoistAtLeastOnce {
+      kept = set[EggId]().&,
+      hoisted = hoisted.&,
+      kept_something_possibly_diverging = false,
+    },
+    map[EggId, EggId]().&,
+  )
+  BodyWithHoisted { body, hoisted = hoisted.to_slice() }
+}
+
+struct HoistAtLeastOnce {
+  kept: &Set[EggId],
+  hoisted: &List[EggId],
+  kept_something_possibly_diverging: Bool,
+}
+fun map(
+  body: EggBody, mapper: HoistAtLeastOnce, mapping: &Map[EggId, EggId]
+): EggBody {
+  var builder = egg_body_builder().&
+  for old in body.params do {
+    var new = old.map(mapper, builder, mapping)
+    mapping.put(old, new)
+    mapper.kept.put(old)
+  }
+  for old in body.children do {
+    var any_reference_not_hoisted = {
+      var res = false
+      for id in old.captured() do if mapper.kept.contains(id) then res = true
+      res
+    }
+    var independent_of_kept_expressions = not(any_reference_not_hoisted)
+    var hoist =
+      independent_of_kept_expressions and not(old.is_unchecked()) and {
+        old.is_pure_biased() or not(mapper.kept_something_possibly_diverging)
+      }
+    if not(hoist) and not(old.is_pure_biased()) then
+      mapper.kept_something_possibly_diverging = true
+
+    if hoist then
+      mapper.hoisted.push(old)
+    else {
+      var new = old.map(mapper, builder, mapping)
+      mapping.put(old, new)
+      mapper.kept.put(old)
+    }
+  }
+  builder.finish(body.returns.map(mapping.*))
+}
+fun map(
+  id: EggId, hoist: HoistAtLeastOnce,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  switch id.resolve()
+  case switch_(switch_) {
+    var cases = map[String, EggBody]()
+    for case_ in switch_.cases do
+      cases.&.put(
+        case_.key,
+        if case_.value.definitely_diverges_biased() then
+          case_.value.map(DoNotHoist {}, mapping)
+        else
+          case_.value.map(hoist, mapping),
+      )
+    builder.switch_(switch_.condition.map(mapping.*), cases)
+  }
+  default builder.push(id.map_children(hoist, mapping))
+}
+
+| Does not hoist anything, just maps the IDs using the mapping.
+struct DoNotHoist {}
+fun map(
+  id: EggId, dont_hoist: DoNotHoist,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  builder.push(id.map_children(dont_hoist, mapping))
+}

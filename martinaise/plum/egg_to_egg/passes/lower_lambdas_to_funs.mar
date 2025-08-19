@@ -1,0 +1,36 @@
+import mod.mar
+
+fun lower_lambdas_to_funs(
+  id: EggId, funs: &Map[String, EggFun], builder: &EggBodyBuilder
+): EggId {
+  var lambda = id.resolve().inline_lambda or return id
+
+  var captured = lambda.captured()
+  var closure = builder.box(builder.struct_({
+    var fields = map[String, EggId]()
+    for captured in captured.iter().enumerate() do
+      fields.&.put("{captured.index}", captured.item)
+    fields
+  }))
+  var lambda_body = {
+    var builder = egg_body_builder().&
+    for param in lambda.params do builder.params.&.push(param)
+    var inner_closure = builder.param(closure.type())
+    var inner_unboxed_closure = builder.unbox(inner_closure)
+
+    var mapping = map[EggId, EggId]()
+    for captured in captured.iter().enumerate() do
+      mapping.&.put(
+        captured.item,
+        builder.member(inner_unboxed_closure, "{captured.index}"),
+      )
+    builder.finish(
+      lambda
+        .fill(mapping)
+        .fill(builder.params.to_slice().without_last(), builder)
+    )
+  }
+  var signature = "lambda-{id.id.index}"
+  funs.put(signature, EggFun { body = lambda_body })
+  builder.raw_lambda(signature, closure, id.type())
+}

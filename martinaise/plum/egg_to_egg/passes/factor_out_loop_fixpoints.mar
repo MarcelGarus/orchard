@@ -1,0 +1,394 @@
+| Loop Expressions  
+|
+| I want to optimize recursive code, but inlining recursive functions naively
+| hangs the compiler (because recursive functions call themselves, they get
+| inlined again and again and again).
+| I fixed this by introducing loop expressions: These are expressions with
+| explicit loop variables. A loop has initial values for the loop variables and
+| a body that receives the loop variables as parameters and can continue
+| expressions that restart evaluation of the loop from the top with new values
+| for the loop variables.
+| Consider this
+| code:
+|
+| sum iterator: (Iterator Int) -> Int =
+|   iterator .fold 0 \ a: Int b: Int -> a .+ b
+|
+| fold iterator: (Iterator a) initial_state: s folder: (\ s a -> s) -> s =
+|   iterator.next
+|   % empty -> initial_state
+|     more: (& item rest) -> rest .fold (folder initial_state item) folder
+|
+| I want to analyze and optimize the fold function in the concrete context of
+| the sum function, but I can't inline it again and again and again. So, I only
+| inline it once, turning it into a loop that contains a continue:
+|
+| sum a =
+|   b = int 0
+|   c =
+|     lambda d e:
+|       f = add d e
+|       f
+|   g =
+|     loop a b c
+|       body h i j:
+|         k = call lambda h
+|         l =
+|           switch k
+|             empty m:
+|               i
+|             more n:
+|               o = member n.rest
+|               p = member n.item
+|               q = call lambda j with i p
+|               r = continue o q j
+|               r
+|         l
+|   g
+| 
+| See how the call of fold with three arguments became a loop with three
+| variables (h, i, j) and three initial arguments (a, b, c)? The recursive call
+| of fold became a continue expression with (o, q, j).
+|
+| Fixpoints  
+|
+| In the sum function above, the fold function got inlined and turned into a
+| loop. You might notice that the third parameter, the reducer/folder, is always
+| the lambda adding two numbers. That's a fixpoint! I want to detect fixpoints
+| because I can "factor out" the fixed parts (such as the add lambda), bake them
+| into the loop body and only use the unknown parts as real loop variables.
+|
+| However, not all fixpoints are as easy to spot as this one. I also want to
+| find fixpoints where the initial values for loop variables and the new values
+| at continue expressions are not the exact same, but share a "shape". Some
+| parts of this shape might be statically known, others not. For example, I
+| might figure out that a loop variable always has the shape
+| (& foo: 3 bar: <hole>). The hole here indicates that the value varies among
+| iterations. Still, if some part in the loop accesses the foo field, we want to
+| be able to optimize that. So, here's the general strategy:
+|
+| 1. Find a fixpoint.
+|    1. We maintain a candidate for the shape of the loop variables, starting
+|       with the initial values.
+|    2. Specialize and optimize the loop body for the candidate. Find all
+|       remaining continues and analyze the shapes of the values they recurse
+|       with. Merge our candidate shapes with these shapes.
+|    3. Did the candidiate change?
+|       Yes: We made our candidate shape less precise. Continue with step 1.2.
+|       No:  We have found a shape that – if passed into the body – only results
+|            in continues that also adhere to the same shape. That's a fixpoint!
+| 2. Replace the loop variables with only the holes of the fixpoint shape.
+|    1. For the initial loop variable values, extract the parts corresponding to
+|       the fixpoint's holes ("dehydration", boiling away the fixed parts).
+|    2. At the beginning of the loop body, reconstruct the original values
+|       ("hydration").
+|    3. At each continue expression, extract the parts corresponding to the
+|       fixpoint's holes ("dehydration").
+|
+| TODO: add example
+| TODO: update following text
+|
+| This works, but the recursion is over more state than necessary (an array). If
+| you would write this in an imperative language with a loop, you would not use
+| the array as a loop variable and then assign subarrays to that:
+|
+| for (var array = my_array; array.len > 0; array = array.slice(1, array.len)) {
+|   ...
+| }
+|
+| Instead, you'd use an index as the loop variable:
+|
+| for (var index = 0; index < array.len; i++) {
+|   ...
+| }
+|
+| My fixpoint optimization explained above achieves something similar:
+| Our initial candidate is (a). If we would only recurse with (a), we could
+| constant-fold (a) to wherever we use the recursion variable and remove the
+| variable entirely. Thankfully, that's not the case because that would indicate
+| an infinite loop.
+| Instead, after optimizing the recursive body for e = a, we find a recurse
+| expression with v = "unchecked array slice a 1 3". Note that a, the g, and the
+| length have been constant-folded. We try to merge this with our original
+| array. In particular, because an array is the same as an array slice from 0 to
+| its length, the common shape is (slice a <hole> 3) – the start indices 0 and 1
+| can only be merged to a general hole.
+| If we pass (slice a <hole> 3) into the loop body and optimize for that, we
+| find the same recursion with "unchecked array slice a <hole> 3" – a fixpoint!
+| So, we rewrite the initial argument to the recursion to use 0, and we only
+| pass in the next index in the recurse expressions.
+
+import mod.mar
+
+fun factor_out_loop_fixpoints(
+  id: EggId, funs: Map[String, EggFun], builder: &EggBodyBuilder
+): EggId {
+  var loop_ = id.resolve().loop_ or return id
+
+  var fixpoint = loop_.find_fixpoint(funs)
+  if fixpoint.is_trivial() then return id
+
+  var dehydrated_initial = fixpoint.dehydrate(loop_.initial, builder)
+  var new_body = {
+    var builder = egg_body_builder().&
+    var dehydrated_params = {
+      var res = list[EggId]()
+      for d in dehydrated_initial do res.&.push(builder.param(d.type()))
+      res.to_slice()
+    }
+    var rehydrated = fixpoint.hydrate(dehydrated_params, builder)
+    builder.finish(loop_.body.fill(rehydrated, builder))
+  } .optimize_for_fixpoint_analysis()
+    .replace_continues(fixpoint)
+  builder.loop_(dehydrated_initial, new_body)
+}
+
+fun optimize_for_fixpoint_analysis(body: EggBody): EggBody {
+  | We do some cheap optimizations. In particular, we don't need to generate
+  | clean code, so we don't need deduplication or tree shaking.
+  body.apply_until_stable(list(
+    OptPass.hoist_known_switch_results,
+    OptPass.inline_functions,
+    OptPass.simplify_aggregates_parts_loads_and_stores,
+    OptPass.simplify_arithmetics,
+    OptPass.simplify_arrays,
+    OptPass.simplify_bitwise,
+    OptPass.factor_out_loop_fixpoints,
+    OptPass.sink_continues,
+    OptPass.use_enum_flows,
+  ).to_slice())
+}
+
+struct Fixpoint { shapes: Slice[Shape] }
+
+fun write[W](writer: W, fixpoint: Fixpoint) {
+  var first = true
+  for shape in fixpoint.shapes do {
+    if first then first = false else writer." "
+    writer.write(shape)
+  }
+}
+
+fun is_trivial(fixpoint: Fixpoint): Bool {
+  var all_holes = true
+  for shape in fixpoint.shapes do if not(shape is hole) then all_holes = false
+  all_holes
+}
+
+fun find_fixpoint(loop_: EggLoop, funs: Map[String, EggFun]): Fixpoint {
+  var candidate = {
+    var shapes = list[Shape]()
+    for arg in loop_.initial do shapes.&.push(Shape.id(arg))
+    shapes.to_slice()
+  }
+
+  loop {
+    var builder = egg_body_builder().&
+    candidate.holes_to_params(builder)
+    var rehydrated = candidate.hydrate(builder.params.iter().&, builder)
+    var body = builder.finish(loop_.body.fill(rehydrated, builder))
+    | var body = body.map(funs, map[EggId, EggId]().&)
+    var body = body.optimize_for_fixpoint_analysis()
+
+    | stderr."Fixpoint propagation:\n"
+    | stderr."  Candidate: {candidate}\n"
+    | stderr.write(body, namespace().&, indentation(1))
+    | stderr."\n"
+    var continues = body.collect_continues()
+
+    var previous = candidate
+    for continue_ in continues do {
+      var continue_shapes = list[Shape]()
+      for id in continue_.next do continue_shapes.&.push(Shape.id(id))
+
+      | eprint("Merging {candidate} and {continue_shapes} ")
+      candidate = merge(candidate, continue_shapes.to_slice(), funs)
+      | eprintln("-> {candidate}")
+    }
+    if candidate == previous then break
+  }
+
+  Fixpoint { shapes = candidate }
+}
+
+fun holes_to_params(shapes: Slice[Shape], builder: &EggBodyBuilder) {
+  for shape in shapes do shape.holes_to_params(builder)
+}
+fun holes_to_params(shape: Shape, builder: &EggBodyBuilder) {
+  switch shape
+  case self unreachable()
+  case id {}
+  case int {}
+  case struct_(struct_)
+    for field in struct_.fields do field.value.holes_to_params(builder)
+  case enum_(enum_) builder.param(enum_.type).ignore()
+  case array_slice(slice) {
+    slice.start.holes_to_params(builder)
+    slice.end.holes_to_params(builder)
+  }
+  case hole(type) builder.param(type).ignore()
+}
+
+| This returns a list of all recurse expressions that refer to the surrounding
+| recursive expression. This explicitly does not return recurses in inner
+| recursive expressions.
+fun collect_continues(body: EggBody): Slice[EggContinue] {
+  var recurses = list[EggContinue]()
+  body.visit(CollectRecurses { out = recurses.& })
+  recurses.to_slice()
+}
+struct CollectRecurses { out: &List[EggContinue] }
+fun visit(id: EggId, collect_continues: CollectRecurses) {
+  switch id.resolve()
+  case loop_(loop_) for arg in loop_.initial do arg.visit(collect_continues)
+  case continue_(continue_) collect_continues.out.push(continue_)
+  default id.visit_children(collect_continues)
+}
+
+fun dehydrate(
+  fixpoint: Fixpoint, ids: Slice[EggId], builder: &EggBodyBuilder
+): Slice[EggId] {
+  var out = list[EggId]()
+  for both in zip(fixpoint.shapes.iter(), ids.iter()) do
+    both.a.dehydrate(both.b, builder, out.&)
+  out.to_slice()
+}
+fun dehydrate(
+  shape: Shape, id: EggId, builder: &EggBodyBuilder, out: &List[EggId]
+) {
+  switch shape
+  case self unreachable()
+  case id(fix) if id != fix then panic("bad id")
+  case int {}
+  case struct_(struct_)
+    for field in struct_.fields do
+      field.value.dehydrate(builder.member(id, field.key), builder, out)
+  case enum_ out.push(id)
+  case array_slice(slice_shape) {
+    switch id.resolve()
+    case array(array) {
+      if slice_shape.array != id then panic("bad array")
+      slice_shape.start.dehydrate(builder.int(0), builder, out)
+      slice_shape.end.dehydrate(builder.int(array.items.len), builder, out)
+    }
+    case unchecked_array_slice(slice) {
+      if slice_shape.array != slice.array then panic("mismatched array")
+      slice_shape.start.dehydrate(slice.start, builder, out)
+      slice_shape.end.dehydrate(slice.end, builder, out)
+    }
+    default unreachable()
+  }
+  case hole(type) out.push(id)
+}
+
+fun hydrate(
+  fixpoint: Fixpoint, ids: Slice[EggId], builder: &EggBodyBuilder
+): Slice[EggId] {
+  var ids = ids.iter()
+  fixpoint.shapes.hydrate(ids.&, builder)
+}
+fun hydrate[I](
+  shapes: Slice[Shape], ids: &Iter[EggId, I], builder: &EggBodyBuilder
+): Slice[EggId] {
+  var out = list[EggId]()
+  for shape in shapes do out.&.push(shape.hydrate(ids, builder))
+  out.to_slice()
+}
+fun hydrate[I](
+  shape: Shape, ids: &Iter[EggId, I], builder: &EggBodyBuilder
+): EggId {
+  switch shape
+  case self unreachable()
+  case id(id) id
+  case int(int) builder.int(int)
+  case struct_(struct_) {
+    var fields = map[String, EggId]()
+    for field in struct_.fields do
+      fields.&.put(field.key, field.value.hydrate(ids, builder))
+    builder.struct_(fields)
+  }
+  case enum_ ids.next().unwrap()
+  case array_slice(slice_shape) {
+    var start = slice_shape.start.hydrate(ids, builder)
+    var end = slice_shape.end.hydrate(ids, builder)
+    builder.unchecked_array_slice(slice_shape.array, start, end)
+  }
+  case hole(type) ids.next().unwrap()
+}
+
+| | Simplifies the expression given that we know that it doesn't crash.
+| fun not_crashing(expr: TacoExpr, context: OptimizeTacoContext): TacoExpr {
+|   var children = list[TacoExpr]()
+|   for child in expr.children do children.&.push(child.not_crashing(context))
+|   var children = children.to_slice()
+
+|   switch expr.op
+|   case switch_(holes) {
+|     var condition = children.first()
+|     var cases = children.without_first()
+|     var new_holes = list[Hole]()
+|     var new_cases = list[TacoExpr]()
+|     for both in zip(holes.iter(), cases.iter()) do
+|       if not(both.b.definitely_crashes()) then {
+|         new_holes.&.push(both.a)
+|         new_cases.&.push(both.b.not_crashing(context))
+|       }
+|     if new_cases.len == 0 then return taco_crash(expr.type)
+|     if new_cases.len == 1 then
+|       return new_cases.get(0)
+|         .fill(map(new_holes.get(0) -> condition))
+|         .optimize(context)
+|         .not_crashing(context)
+|     return expr(
+|       TacoOp.switch_(new_holes.to_slice()),
+|       (list(condition) + new_cases).to_slice(),
+|       expr.type
+|     )
+|   }
+|   case body return expr.children.last().not_crashing(context)
+|   default {}
+
+|   expr(expr.op, children, expr.type)
+| }
+
+fun replace_continues(body: EggBody, fixpoint: Fixpoint): EggBody {
+  body.map_children(ReplaceContinues { fixpoint }, map[EggId, EggId]().&)
+}
+struct ReplaceContinues { fixpoint: Fixpoint }
+fun map(
+  id: EggId, mapper: ReplaceContinues,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  switch id.resolve()
+  case loop_(loop_)
+    builder.loop_(loop_.initial.map(mapping.*), loop_.body.map(mapping.*))
+  case continue_(continue_)
+    builder.continue_(
+      mapper.fixpoint.dehydrate(continue_.next.map(mapping.*), builder),
+      continue_.type,
+    )
+  default builder.push(id.map_children(mapper, mapping))
+}
+
+
+| fun extend_recursives(expr: TacoExpr): TacoExpr {
+|   expr.map(ExtendRecursives {})
+| }
+| fun extend_recursives(exprs: Slice[TacoExpr]): Slice[TacoExpr] {
+|   exprs.map(ExtendRecursives {})
+| }
+| struct ExtendRecursives {}
+| fun map(expr: TacoExpr, extend_recursives: ExtendRecursives): TacoExpr {
+|   if expr.op is recursive(recursive) then
+|     return recursive.b.*
+|       .fill(recursive.a)
+|       .map(ExtendRecurses { recursive = recursive.b.* })
+|   expr.map_children(extend_recursives)
+| }
+| struct ExtendRecurses { recursive: TacoBody }
+| fun map(expr: TacoExpr, extend_recurses: ExtendRecurses): TacoExpr {
+|   var expr = expr.map_children(extend_recurses)
+|   if expr.op is recurse(args) then
+|     return recursive(args, extend_recurses.recursive)
+|   expr
+| }

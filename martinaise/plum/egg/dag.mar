@@ -1,0 +1,31 @@
+| All egg operations are managed using a global DAG. See the builder.mar for
+| functions that create new ops and put them into the DAG.
+
+import mod.mar
+
+struct EggId { id: Id }
+
+fun resolve(id: EggId): EggExpr { egg_dag.get(id.id) }
+
+fun hash[H](hasher: H, id: EggId) { hasher.hash(id.id) }
+fun ==(a: EggId, b: EggId): Bool { a.id == b.id }
+
+var egg_dag = dag[EggExpr]().put_on_heap()
+var all_egg_exprs = map[EggExpr, EggId]().put_on_heap()
+
+fun create_with_new_identity(expr: EggExpr): EggId {
+  var id = EggId { id = egg_dag.put(expr) }
+  if not(all_egg_exprs.contains(expr)) then
+    all_egg_exprs.put(expr, id)
+  id
+}
+fun create(expr: EggExpr): EggId {
+  if all_egg_exprs.get_maybe(expr) is some(id) then return id
+  var id = expr.create_with_new_identity()
+  all_egg_exprs.put(expr, id)
+  id
+}
+fun update(id: EggId, expr: EggExpr): EggId {
+  egg_dag.nodes.&.set(id.id.index, expr)
+  id
+}

@@ -1,0 +1,54 @@
+import mod.mar
+
+fun num_recurses_including_lambdas(fun_: EggFun, signature: String): Int {
+  var counter = 0
+  fun_.body.visit(CountRecurses { anchor = signature, counter = counter.& })
+  counter
+}
+struct CountRecurses { anchor: String, counter: &Int }
+fun visit(id: EggId, check: CountRecurses) {
+  switch id.resolve()
+  case call_fun(call) if call.fun_ == check.anchor   then check.counter += 1
+  case raw_lambda(lambda) if lambda.fun_ == check.anchor then check.counter += 1
+  default id.visit_children(check)
+}
+
+fun num_tail_recurses(fun_: EggFun, signature: String): Int {
+  var counter = 0
+  fun_.body.visit(CountTailRecurses { anchor = signature, counter = counter.& })
+  counter
+}
+struct CountTailRecurses { anchor: String, counter: &Int }
+fun visit(id: EggId, check: CountTailRecurses) {
+  switch id.resolve()
+  case switch_(switch_) for case_ in switch_.cases do case_.value.visit(check)
+  case call_fun(call) if call.fun_ == check.anchor   then check.counter += 1
+  case raw_lambda(lambda) if lambda.fun_ == check.anchor then check.counter += 1
+  default {}
+}
+fun visit(body: EggBody, check: CountTailRecurses) {
+  | Explicitly do not visit all children, only the last one.
+  if body.children.last_maybe() == some(body.returns) then
+    body.returns.visit(check)
+}
+
+fun contains_lambda(fun_: EggFun): Bool {
+  var check = false
+  fun_.body.visit(FindLambda { check = check.& })
+  check
+}
+struct FindLambda { check: &Bool }
+fun visit(id: EggId, find: FindLambda) {
+  switch id.resolve()
+  case inline_lambda find.check.* = true
+  case raw_lambda    find.check.* = true
+  default id.visit_children(find)
+}
+
+
+fun recurses(fun_: EggFun, signature: String): Bool {
+  fun_.num_recurses_including_lambdas(signature) > 0
+}
+fun only_recurses_in_tail_position(fun_: EggFun, signature: String): Bool {
+  fun_.num_recurses_including_lambdas(signature) == fun_.num_tail_recurses(signature)
+}
