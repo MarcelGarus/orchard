@@ -239,7 +239,7 @@ fun apply_until_stable(egg: Egg, passes: Slice[OptPass]): Egg {
     mapped.verify()
     funs.&.put(signature, mapped)
   }
-  Egg { funs, entry_point = egg.entry_point }
+  Egg { funs, entry_point = egg.entry_point }.apply(passes)
 }
 
 | Used by loop fixpoint analysis.
@@ -333,7 +333,6 @@ fun map(
   case case_param panic("should not be mapped")
   default {}
 
-  | TODO: cache from passes to optimized?
   if mapper.cache.get_maybe(old) is some(new) then {
     for child in new.children do builder.push(child)
     return new.returns
@@ -455,23 +454,3 @@ fun without_params(body: EggBody): EggBody {
     returns = body.returns,
   }
 }
-| fun replace_recurses_with_lambda(body: EggBody, params: Slice[EggId]): EggBody {
-|   body.map(ReplaceRecursesWithLambda { params }, map[EggId, EggId]().&)
-| }
-| struct ReplaceRecursesWithLambda { params: Slice[EggId] }
-| fun map(id: EggId, mapper: ReplaceRecursesWithLambda, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]): EggId {
-|   var expr = id.map_children(mapper, mapping)
-|   if expr is recurse(rec) then
-|     builder.lambda({
-|       var builder = egg_body_builder().&
-|       for param in mapper.params do builder.params.&.push(param)
-|       builder.finish(builder.recurse({
-|         var args = list[EggId]()
-|         for arg in rec.next do args.&.push(arg)
-|         for param in mapper.params do args.&.push(param)
-|         args.to_slice()
-|       }, rec.type.plum().lambda.unwrap().return_type))
-|     })
-|   else
-|     builder.push(expr)
-| }
