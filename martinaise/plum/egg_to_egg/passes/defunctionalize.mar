@@ -82,33 +82,59 @@ fun visit(id: EggId, collect: CollectLambdas) {
 fun defunctionalize(
   type: EggType, lambda_sets: Map[EggType, LambdaSet]
 ): EggType {
-  switch type.plum()
-  case variable {}
-  case never type_never
-  case byte type_byte
-  case int type_int
-  case type type_type
-  case struct_(struct_) {
-    var fields = map[String, EggId]()
-    for field in struct_ do
-      fields.&.put(field.key, field.value.defunctionalize(lambda_sets))
-  }
-  case enum_: Map[String, EggType],
-  case lambda: PlumLambdaType,
-  case box: EggType,
-  case array: EggType,
-  
   eprintln("lambda sets")
   for entry in lambda_sets do {
     eprintln("  {entry.key}")
     for lambda in entry.value.lambdas do
       eprintln("    {lambda.fun_} capturing {lambda.closure_type}")
   }
-  var new = type.defunctionalize_lambda(lambda_sets, map[EggType, Int]())
+  var new = type.defunctionalize(lambda_sets, type, root_path)
   eprintln("defunctionalizing")
   eprintln("  {type}")
   eprintln("  {new}")
   new
+}
+fun defunctionalize(
+  type: EggType,
+  lambda_sets: Map[EggType, LambdaSet],
+  root: EggType,
+  path: TypePath,
+): EggType {
+  switch type.plum_not_extended()
+  case variable unreachable()
+  case never type_never
+  case byte type_byte
+  case int type_int
+  case type type_type
+  case struct_(struct_) {
+    var fields = map[String, EggType]()
+    for field in struct_ do
+      fields.&.put(
+        field.key,
+        field.value.defunctionalize(
+          lambda_sets, root, path.struct_field(field.key)
+        ),
+      )
+    type_struct(fields)
+  }
+  case enum_(enum_) {
+    var variants = map[String, EggType]()
+    for variant in enum_ do
+      variants.&.put(
+        variant.key,
+        variant.value.defunctionalize(
+          lambda_sets, root, path.enum_variant(variant.key)
+        ),
+      )
+    type_enum(variants)
+  }
+  case lambda
+    root.get(path).defunctionalize_lambda(lambda_sets, map[EggType, Int]())
+  case box(inner)
+    type_box(inner.defunctionalize(lambda_sets, root, path.box_inner()))
+  case array(item)
+    type_array(item.defunctionalize(lambda_sets, root, path.array_item()))
+  case recursive(level) type_recursive(level)
 }
 fun defunctionalize_lambda(
   type: EggType,
@@ -155,7 +181,7 @@ fun defunctionalize_lambda(
       for entry in surrounding do
         inner_surrounding.&.put(entry.key, entry.value + nesting)
       inner_surrounding.&.put(original, nesting)
-      b.write(lambda.defunctionalize(lambda_sets, inner_surrounding))
+      b.write(lambda.defunctionalize_lambda(lambda_sets, inner_surrounding))
 
       cursor = end_cursor
       last_flushed = end_cursor
@@ -212,7 +238,7 @@ fun map(
           for arg in call.args do args.&.push(arg)
           args.&.push(closure)
           builder.finish(builder.call(
-            lambda.fun_.defunctionalize(mapper), args.to_slice(), id.type()
+            lambda.fun_.defunctionalize(mapper), args.to_slice(), id.type().defunctionalize(mapper.lambda_sets)
           ))
         })
       cases
