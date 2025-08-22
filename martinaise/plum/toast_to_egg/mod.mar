@@ -269,17 +269,29 @@ fun compile(
         var lambda = call.function.compile(builder, module, visible, context)?
         var lambda_type = lambda.type()
         var lambda_type = lambda_type.plum().lambda or
-          return return error[EggId, Error](error(
+          return error[EggId, Error](error(
             "Tried to call non-lambda: {lambda_type}", call.function.src()
           ))
 
         | Cast arguments
+        if args.len != lambda_type.args.len then
+          return error[EggId, Error](error({
+            var b = string_builder().&
+            b."
+              'Tried to call a lambda with the wrong number of arguments.\n
+              '  lambda needs {lambda_type.args.len} arguments:"
+            for param in lambda_type.args do b." {param}"
+            b."\n
+              '   called with {args.len} arguments:"
+            for arg in args do b." {arg.type()}"
+            b.to_string()
+          }, call.function.src()))
         var cast_args = list[EggId]()
         for both in zip(args.iter(), lambda_type.args.iter()) do {
           var arg = both.a
           var expected_type = both.b
           arg.type().is_assignable_to(expected_type) or
-            return return error[EggId, Error](error(
+            return error[EggId, Error](error(
               "Tried to call lambda with wrong types.", call.function.src()
             ))
           cast_args.&.push(builder.cast(arg, expected_type))
