@@ -1,8 +1,9 @@
 import
   "..core"
     Byte, Matrix t, Size, Int, + Int Int, to Int Int, contains (Range Int) Int,
-    Range t, and Bool Bool, Bool, get Texture Int Int, Position, - Int Int,
+    Range t, and Bool Bool, Bool, Position, - Int Int,
     generate_matrix Size (\ Int Int -> t), to_int Byte, == Int Int, to_byte Int,
+    get (Matrix t) Int Int, set (Matrix t) Int Int t
 
 Color = & red: Byte blue: Byte green: Byte alpha: Byte
 
@@ -11,15 +12,20 @@ rgba red: Int green: Int blue: Int alpha: Int -> Color =
 
 rgb red: Int green: Int blue: Int -> Color = rgba red green blue 255
 
-Rect = & left: Int top: Int right: Int bottom: Int
+blend bottom: Color top: Color -> Color =
+  top.alpha.to_int .== 0
+  % true -> bottom
+    false -> top
 
-by at: Position size: Size -> Rect =
+Rectangle = & left: Int top: Int right: Int bottom: Int
+
+by at: Position size: Size -> Rectangle =
   & left: at.x
     top: at.y
     right: (at.x .+ (size.width))
     bottom: (at.y .+ (size.height))
 
-contains rect: Rect pos: Position -> Bool =
+contains rect: Rectangle pos: Position -> Bool =
   and
     rect.left .to (rect.right) .contains (pos.x)
     rect.top .to (rect.bottom) .contains (pos.y)
@@ -32,20 +38,38 @@ generate_texture size: Size generator: (\ Int Int -> Color) -> Texture =
 generate_texture size: Size color: Color -> Texture =
   generate_texture size \ x: Int y: Int -> color
 
-generate_texture size: Size -> Texture =
-  generate_texture
-    size
-    & red: 0.to_byte green: 0.to_byte blue: 0.to_byte alpha: 0.to_byte
+update_area
+  texture: Texture rectangle: Rectangle update: (\ Int Int Color -> Color)
+  -> Texture
+= texture .update_from_column rectangle update (rectangle.top)
+
+update_from_column
+  texture: Texture
+  rectangle: Rectangle
+  update: (\ Int Int Color -> Color)
+  y: Int
+  -> Texture
+= y .== (rectangle.bottom)
+  % true -> texture
+    false -> texture .update_from_row rectangle update (rectangle.left) y
+
+update_from_row
+  texture: Texture
+  rectangle: Rectangle
+  update: (\ Int Int Color -> Color)
+  x: Int
+  y: Int
+  -> Texture
+= x .== (rectangle.right)
+  % true -> texture
+    false -> texture .set x y (update x y (texture .get x y))
 
 draw to: Texture at: Position what: Texture -> Texture =
-  generate_texture
-    to.size
-    \ x: Int y: Int ->
-      base_color = to .get x y
-      at .by (what.size) .contains (& x y)
-      % false -> base_color
-        true ->
-          new_color = what .get (x .- (at.x)) (y .- (at.y))
-          new_color.alpha.to_int .== 0
-          % true -> base_color
-            false -> new_color
+  to
+  . update_area
+      at .by (what.size)
+      \ x: Int y: Int old: Color ->
+        old .blend (what .get (x .- (at.x)) (y .- (at.y)))
+
+fill_rectangle to: Texture rectangle: Rectangle color: Color -> Texture =
+  to .update_area rectangle (\ x: Int y: Int old: Color -> old .blend color)
