@@ -43,10 +43,8 @@ fun map(
         builder.case_param(param.switch_on.map(mapping.*), param.variant)
       default unreachable()
     )
-  for child in body.children do {
-    var mapped = child.map(mapper, builder, mapping)
-    mapping.put(child, mapped)
-  }
+  for child in body.children do
+    mapping.put(child, child.map(mapper, builder, mapping))
   builder.finish(body.returns.map(mapping.*))
 }
 
@@ -64,12 +62,6 @@ fun map(
     builder.nothing()
   }
   case type builder.nothing()
-  case enum_(enum_)
-    builder.enum_(
-      enum_.type.desugar_boxes_arrays_lambdas(),
-      enum_.variant,
-      enum_.payload.map(mapping.*)
-    )
   case box(value) {
     if value.type().num_inhabitants() <= NumInhabitants.one then
       builder.null_ptr()
@@ -178,7 +170,7 @@ fun map(
       builder.member(array, "end"), builder.member(array, "start")
     )
     builder.desugared_drop(array, array_type, mapper.funs)
-    return length
+    length
   }
   case unchecked_array_get(args) {
     var array_type = args.array.type()
@@ -209,7 +201,9 @@ fun map(
     | this array points to, and then we set the item in that copy.
     var owned_array = builder.switch_on_ordering(
       builder.compare(builder.get_refcount(buffer), builder.int(1)),
-      egg_body_builder().finish_with_unreachable(array_type),
+      egg_body_builder().finish_with_unreachable(
+        array_type.desugar_boxes_arrays_lambdas()
+      ),
       egg_body_builder().finish(array),
       {
         var builder = egg_body_builder().&
@@ -277,12 +271,6 @@ fun map(
       ),
     ))
   }
-  case call_fun(call)
-    builder.call(
-      call.fun_,
-      call.args.map(mapping.*),
-      call.return_type.desugar_boxes_arrays_lambdas(),
-    )
   case call_lambda(call) {
     var lambda = call.lambda.map(mapping.*)
     builder.call_indirect(
@@ -295,19 +283,11 @@ fun map(
         .desugar_boxes_arrays_lambdas(),
     )
   }
-  case crash(crash)
-    builder.crash(
-      crash.message.map(mapping.*), crash.type.desugar_boxes_arrays_lambdas()
-    )
-  case unreachable(type)
-    builder.unreachable(type.desugar_boxes_arrays_lambdas())
-  case halt(type)
-    builder.halt(type.desugar_boxes_arrays_lambdas())
-  case continue_(continue_)
-    builder.continue_(
-      continue_.next.map(mapping.*), continue_.type.desugar_boxes_arrays_lambdas()
-    )
   default builder.push(id.map_children(mapper, mapping))
+}
+
+fun map(type: EggType, mapper: LowerMemoryLayouts1): EggType {
+  type.desugar_boxes_arrays_lambdas()
 }
 
 fun desugar_boxes_arrays_lambdas(type: EggType): EggType {
