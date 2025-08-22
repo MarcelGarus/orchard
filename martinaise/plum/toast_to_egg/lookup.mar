@@ -222,10 +222,15 @@ fun lookup(
   if full_matches.is_empty() then
     return error[MatchingCallee, Error]({
       var b = string_builder().&
-      b."There is no matching function named {name} for the arg {args}. These 
-        'functions have mismatched types:"
+      b."There is no matching function.\n
+        '  {"{name}".pad_left(30)}"
+      for arg in args do
+        if arg.type == type_type then
+            b." {arg.value}: {arg.type}"
+          else
+            b." {arg.type}"
       for item in name_matches do {
-        var signature_and_params =
+        var module_name_params =
           switch item
           case local_fun(fun_) {
             var params = list[FunParam]()
@@ -234,26 +239,30 @@ fun lookup(
                 name = param.name.string,
                 type = param.type.compile(module, types)?,
               })
-            var params = params.to_slice()
-            tuple(signature(module, name, params), params)
+            tuple(module, name, params.to_slice())
           }
           case imported_fun(imported)
-            tuple(
-              signature(imported.module, imported.name.string, imported.params),
-              imported.params,
-            )
+            tuple(imported.module, imported.name.string, imported.params)
 
-        b."\n- {signature_and_params.a}"
+        var module = module_name_params.a
+        var name = module_name_params.b
+        var params = module_name_params.c
+
+        b."\n  {"{module}.{name}".pad_left(30)}"
+        for param in params do
+          if param.type == type_type then
+            b." {param.name}: {param.type}"
+          else
+            b." {param.type}"
         var constraints = constraints()
-        args.match_against(signature_and_params.b, constraints.&) or {
-          b."  (doesn't match types)"
+        args.match_against(params, constraints.&) or {
+          b."  doesn't match types"
           continue
         }
         var substitutions = constraints.check_coherency() or {
-          b."  (impossible constraints:"
+          b."  has impossible constraints:"
           for constraint in constraints.constraints do
             b." {constraint}"
-          b.")"
           continue
         }
       }
