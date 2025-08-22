@@ -120,13 +120,12 @@
 
 import mod.mar
 
-fun factor_out_loop_fixpoints(
-  id: EggId, funs: Map[String, EggFun], builder: &EggBodyBuilder
-): EggId {
+fun factor_out_loop_fixpoints(id: EggId, builder: &EggBodyBuilder): EggId {
   var loop_ = id.resolve().loop_ or return id
 
-  var fixpoint = loop_.find_fixpoint(funs)
+  var fixpoint = loop_.find_fixpoint()
   if fixpoint.is_trivial() then return id
+  | eprintln("Found fixpoint: {fixpoint}")
 
   var dehydrated_initial = fixpoint.dehydrate(loop_.initial, builder)
   var new_body = {
@@ -175,7 +174,7 @@ fun is_trivial(fixpoint: Fixpoint): Bool {
   all_holes
 }
 
-fun find_fixpoint(loop_: EggLoop, funs: Map[String, EggFun]): Fixpoint {
+fun find_fixpoint(loop_: EggLoop): Fixpoint {
   var candidate = {
     var shapes = list[Shape]()
     for arg in loop_.initial do shapes.&.push(Shape.id(arg))
@@ -183,11 +182,11 @@ fun find_fixpoint(loop_: EggLoop, funs: Map[String, EggFun]): Fixpoint {
   }
 
   loop {
+    | eprintln("fixpoint candidate: {candidate}")
     var builder = egg_body_builder().&
     candidate.holes_to_params(builder)
     var rehydrated = candidate.hydrate(builder.params.iter().&, builder)
     var body = builder.finish(loop_.body.fill(rehydrated, builder))
-    | var body = body.map(funs, map[EggId, EggId]().&)
     var body = body.optimize_for_fixpoint_analysis()
 
     | stderr."Fixpoint propagation:\n"
@@ -202,7 +201,7 @@ fun find_fixpoint(loop_: EggLoop, funs: Map[String, EggFun]): Fixpoint {
       for id in continue_.next do continue_shapes.&.push(Shape.id(id))
 
       | eprint("Merging {candidate} and {continue_shapes} ")
-      candidate = merge(candidate, continue_shapes.to_slice(), funs)
+      candidate = merge(candidate, continue_shapes.to_slice())
       | eprintln("-> {candidate}")
     }
     if candidate == previous then break

@@ -82,18 +82,10 @@ fun type(shape: Shape): EggType {
 }
 
 | Returns the shape of an ID (not Shape.id, but something less precise).
-fun shape(id: EggId, funs: Map[String, EggFun]): Shape {
-  id.shape(funs, list[String]().&, false)
-}
-fun shape(
-  id: EggId,
-  funs: Map[String, EggFun],
-  stack: &List[String],
-  is_root_in_fun: Bool,
-): Shape {
+fun shape(id: EggId): Shape {
   switch id.resolve()
   case case_param(param) {
-    if param.switch_on.shape(funs, stack, false) is enum_(enum_shape) then
+    if param.switch_on.shape() is enum_(enum_shape) then
       if enum_shape.variants.get_maybe(param.variant) is some(shape) then
         return shape
     Shape.hole(id.type())
@@ -104,38 +96,26 @@ fun shape(
     Shape.struct_(ShapeStruct { fields, type = id.type() })
   }
   case member(member)
-    if member.of.shape(funs, stack, false) is struct_(struct_) then
+    if member.of.shape() is struct_(struct_) then
       struct_.fields.get(member.name)
     else
       Shape.hole(id.type())
   case enum_(enum_)
     Shape.enum_(ShapeEnum {
-      variants = map(enum_.variant -> enum_.payload.shape(funs, stack, false)),
+      variants = map(enum_.variant -> enum_.payload.shape()),
       type = id.type(),
     })
   case switch_(switch_) {
     var shapes = list[Shape]()
     for case_ in switch_.cases do
-      shapes.&.push(case_.value.returns.shape(funs, stack, is_root_in_fun))
+      shapes.&.push(case_.value.returns.shape())
     if shapes.is_empty() then return Shape.hole(id.type())
     var common = shapes.get(0)
     for shape in shapes.to_slice().without_first() do
-      common = merge(common, shape, funs)
+      common = merge(common, shape)
     common
   }
-  case call_fun(call) {
-    if stack.get_maybe(stack.len - 1) == some(call.fun_) and is_root_in_fun then
-      Shape.self(id)
-    else if stack.iter().&.contains(call.fun_) then
-      Shape.hole(call.return_type)
-    else if funs.get_maybe(call.fun_) is some(fun_) then {
-      stack.push(call.fun_)
-      var shape = fun_.body.returns.shape(funs, stack, true)
-      stack.pop()
-      if shape is self then Shape.hole(call.return_type) else shape
-    } else
-      Shape.hole(call.return_type)
-  }
+  case call_fun(call) Shape.hole(call.return_type)
   case array(array)
     Shape.array_slice(ShapeArraySlice {
       array = id,
@@ -151,69 +131,61 @@ fun shape(
   default Shape.hole(id.type())
 }
 
-fun merge(a: Shape, b: Shape, funs: Map[String, EggFun]): Shape {
+fun merge(a: Shape, b: Shape): Shape {
   | eprintln("  Merging {a} and {b}")
   if a is self then return b
   if b is self then return a
   if a is id(a_id) then
     if b is id(b_id) then if a_id == b_id then return Shape.id(a_id)
-  if a is id(a_id) then return merge(a_id.shape(funs), b, funs)
-  if b is id(b_id) then return merge(a, b_id.shape(funs), funs)
+  if a is id(a_id) then return merge(a_id.shape(), b)
+  if b is id(b_id) then return merge(a, b_id.shape())
   if a is int(a_int) then
     if b is int(b_int) then if a_int == b_int then return a
   if a is struct_(a_struct) then
     if b is struct_(b_struct) then
-      return Shape.struct_(merge(a_struct, b_struct, funs))
+      return Shape.struct_(merge(a_struct, b_struct))
   if a is enum_(a_enum) then
     if b is enum_(b_enum) then
-      return Shape.enum_(merge(a_enum, b_enum, funs))
+      return Shape.enum_(merge(a_enum, b_enum))
   if a is array_slice(a_slice) then
     if b is array_slice(b_slice) then
-      if merge(a_slice, b_slice, funs) is some(merged) then
+      if merge(a_slice, b_slice) is some(merged) then
         return Shape.array_slice(merged)
   Shape.hole(a.type())
 }
-fun merge(
-  a: Slice[Shape], b: Slice[Shape], funs: Map[String, EggFun]
-): Slice[Shape] {
+fun merge(a: Slice[Shape], b: Slice[Shape]): Slice[Shape] {
   var merged = list[Shape]()
   for both in zip(a.iter(), b.iter()) do
-    merged.&.push(merge(both.a, both.b, funs))
+    merged.&.push(merge(both.a, both.b))
   merged.to_slice()
 }
 
-fun merge(
-  a: ShapeStruct, b: ShapeStruct, funs: Map[String, EggFun]
-): ShapeStruct {
+fun merge(a: ShapeStruct, b: ShapeStruct): ShapeStruct {
   var fields = map[String, Shape]()
   for field in a.fields do
-    fields.&.put(field.key, merge(field.value, b.fields.get(field.key), funs))
+    fields.&.put(field.key, merge(field.value, b.fields.get(field.key)))
   ShapeStruct { fields, type = a.type }
 }
 
-fun merge(
-  a: ShapeEnum, b: ShapeEnum, funs: Map[String, EggFun]
-): ShapeEnum {
+fun merge(a: ShapeEnum, b: ShapeEnum): ShapeEnum {
   var variants = map[String, Shape]()
   for variant in a.variants do variants.&.put(variant.key, variant.value)
   for variant in b.variants do
     variants.&.put(
       variant.key,
       if variants.get_maybe(variant.key) is some(a_payload) then
-        merge(a_payload, variant.value, funs)
+        merge(a_payload, variant.value)
       else
         variant.value
     )
   ShapeEnum { variants, type = a.type }
 }
 
-fun merge(
-  a: ShapeArraySlice, b: ShapeArraySlice, funs: Map[String, EggFun]
-): Maybe[ShapeArraySlice] {
+fun merge(a: ShapeArraySlice, b: ShapeArraySlice): Maybe[ShapeArraySlice] {
   if a.array != b.array then return none[ShapeArraySlice]()
   some(ShapeArraySlice {
     array = a.array,
-    start = merge(a.start.*, b.start.*, funs).put_on_heap(),
-    end = merge(a.end.*, b.end.*, funs).put_on_heap(),
+    start = merge(a.start.*, b.start.*).put_on_heap(),
+    end = merge(a.end.*, b.end.*).put_on_heap(),
   })
 }
