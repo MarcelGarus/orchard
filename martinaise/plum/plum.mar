@@ -72,6 +72,9 @@ fun print_compile_step(step: String) { print(step.pad_right(32)) }
 fun print_time(duration: Duration) {
   print("{duration.in_milliseconds().to_int().format().pad_left(5)} ms")
 }
+fun print_stats(toasts: Map[Module, Toast]) {
+  print(", {toasts.size} modules")
+}
 fun print_stats(egg: Egg) {
   print(", {egg.funs.size} funs, {egg.count_expressions()} exprs")
 }
@@ -110,6 +113,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   var toasts = map[Module, Toast]()
   module.parse_toasts(toasts.&)?
   print_time(timer.read_duration())
+  print_stats(toasts)
   println()
 
   | Type checking  
@@ -121,6 +125,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   var timer = start_timer()
   var egg = toasts.to_egg("{module}.{function}")?
   print_time(timer.read_duration())
+  print_stats(egg)
   println()
 
   | What is the Egg?  
@@ -319,7 +324,6 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | - arrays are turned into buffers
   | - dup/drop expressions are turned into function calls
   var egg = egg.lower(LoweringPass.lower_memory_layouts_1)
-  eprintln(egg)
   var egg = egg.optimize(optimizations)
 
   egg.assert_only(list(
@@ -338,7 +342,6 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | expression is now conceptually just a slice of bytes.
 
   var egg = egg.lower(LoweringPass.lower_memory_layouts_2)
-  | println(egg)
 
   var optimizations = list(
     OptPass.deduplicate,
@@ -353,7 +356,6 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     OptPass.tree_shake,
   )
   var egg = egg.optimize(optimizations)
-  | println(egg)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
@@ -364,42 +366,51 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     "malloc", "load", "store", "store_bytes", "free",
   ))
 
+  | Prepare for conversion to Waffle  
+  | Now, we decompose some expression into even lower-level versions. In
+  | particular:
+  | - load -> load_word, load_byte
+  | - store -> store_word, store_byte
+  | - compare -> compare_zero
+
   var egg = egg.lower(LoweringPass.lower_loads_and_stores)
+  var egg = egg.lower(LoweringPass.lower_compare)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
-    "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
-    "and_", "or_", "xor", "shift_left", "shift_right", "function_ptr",
-    "call_fun", "call_indirect", "crash", "unreachable", "halt", "loop_",
-    "continue_", "null_ptr", "padding", "aggregate", "part", "switch_on_byte",
-    "malloc", "load_word", "load_byte", "store_word", "store_byte",
-    "store_bytes", "free",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo",
+    "compare_zero", "and_", "or_", "xor", "shift_left", "shift_right",
+    "function_ptr", "call_fun", "call_indirect", "crash", "unreachable", "halt",
+    "loop_", "continue_", "null_ptr", "padding", "aggregate", "part",
+    "switch_on_byte", "malloc", "load_word", "load_byte", "store_word",
+    "store_byte", "store_bytes", "free",
   ))
 
   var egg = egg.optimize(optimizations)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
-    "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
-    "and_", "or_", "xor", "shift_left", "shift_right", "function_ptr",
-    "call_fun", "call_indirect", "crash", "unreachable", "halt", "loop_",
-    "continue_", "null_ptr", "padding", "aggregate", "part", "switch_on_byte",
-    "malloc", "load_word", "load_byte", "store_word", "store_byte",
-    "store_bytes", "free",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo",
+    "compare_zero", "and_", "or_", "xor", "shift_left", "shift_right",
+    "function_ptr", "call_fun", "call_indirect", "crash", "unreachable", "halt",
+    "loop_", "continue_", "null_ptr", "padding", "aggregate", "part",
+    "switch_on_byte", "malloc", "load_word", "load_byte", "store_word",
+    "store_byte", "store_bytes", "free",
   ))
-  eprintln(egg)
 
   print_compile_step("Waffle")
   var timer = start_timer()
   var waffle = egg.to_waffle()
   print_time(timer.read_duration())
-  if true then println(waffle)
+  println()
+  if false then println(waffle)
 
   print_compile_step("  optimize")
   var timer = start_timer()
   var waffle = waffle.optimize()
   print_time(timer.read_duration())
-  if true then println(waffle)
+  println()
+  if false then println(waffle)
   | if false then {
   |   println("Running Waffle")
   |   println(waffle.run(5.to_bytes()))
