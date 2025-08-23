@@ -129,102 +129,12 @@ fun to_waffle(
       return_layout.size, return_layout.alignment,
     )
   }
-  | case object_new(value) {
-  |   var value = mapping.get(value)
-  |   var ptr = builder.local(waffle_malloc(waffle_int(8 + value.size())))
-  |   builder.local(waffle_store(ptr,
-  |     waffle_aggregate(list(waffle_int(1), value).to_slice())
-  |   ))
-  |   ptr
-  | }
-  | case object_load(load) {
-  |   var layout = id.type().memory_layout()
-  |   builder.local(waffle_load(
-  |     waffle_add(mapping.get(load.ptr), waffle_int(8)),
-  |     layout.size, layout.alignment
-  |   ))
-  | }
-  | case object_free(free)
-  |   builder.local(waffle_free(
-  |     mapping.get(free.ptr), waffle_int(8 + free.type.memory_layout().size)
-  |   ))
-  | case new_buffer(new) {
-  |   | On the heap, we allocate space for the data with the following layout:
-  |   | [reference count][length][item][item][item]...
-  |   var item_layout = new.item_type.memory_layout()
-  |   var len = mapping.get(new.length)
-  |   var ptr = builder.local(waffle_malloc(
-  |     waffle_add(
-  |       waffle_int(8 + 8),
-  |       waffle_multiply(len, waffle_int(item_layout.stride_size())),
-  |     )
-  |   ))
-  |   builder.local(waffle_store(ptr, waffle_int(1)))
-  |   builder.local(waffle_store(waffle_add(ptr, waffle_int(8)), len))
-  |   ptr
-  | }
-  | case get_buffer_length(ptr)
-  |   builder.local(
-  |     waffle_load(waffle_add(mapping.get(ptr), waffle_int(8)), 8, 8)
-  |   )
-  | case load_buffer_item(load) {
-  |   var item_layout = load.item_type.memory_layout()
-  |   builder.local(waffle_load(
-  |     waffle_add(
-  |       waffle_add(mapping.get(load.buffer), waffle_int(16)),
-  |       waffle_multiply(
-  |         mapping.get(load.index), waffle_int(item_layout.stride_size())
-  |       )
-  |     ),
-  |     item_layout.size, item_layout.alignment
-  |   ))
-  | }
-  | case store_buffer_item(store) {
-  |   var item_layout = store.item_type.memory_layout()
-  |   builder.local(waffle_store(
-  |     waffle_add(
-  |       waffle_add(mapping.get(store.buffer), waffle_int(16)),
-  |       waffle_multiply(
-  |         mapping.get(store.index), waffle_int(item_layout.stride_size())
-  |       )
-  |     ),
-  |     mapping.get(store.item),
-  |   ))
-  | }
-  | case store_buffer_bytes(store)
-  |   builder.local(waffle_store_bytes(
-  |     waffle_add(mapping.get(store.buffer), waffle_int(16)), store.bytes
-  |   ))
-  | case free_buffer(free) {
-  |   var item_layout = free.item_type.memory_layout()
-  |   var ptr = mapping.get(free.buffer)
-  |   var len = builder.local(waffle_load(waffle_add(ptr, waffle_int(8)), 8, 8))
-  |   var size = waffle_add(
-  |     waffle_int(8 + 8),
-  |     waffle_multiply(len, waffle_int(item_layout.stride_size())),
-  |   )
-  |   builder.local(waffle_free(ptr, size))
-  | }
-  | case get_refcount(get)
-  |   builder.&.local(waffle_load(mapping.get(get.ptr), 8, 8))
-  | case set_refcount(set) {
-  |   var ptr = mapping.get(set.ptr)
-  |   var refcount = mapping.get(set.refcount)
-  |   builder.local(waffle_store(ptr, refcount))
-  | }
-  case crash(crash) {
-    | Convert the Plum String to bytes ptr + len.
-    |
-    | String layout: [buffer][end][start]
-    |                 |
-    |                 v
-    |                [refcount][len][bytes]
-    var message = mapping.get(crash.message)
-    var ptr_to_buffer = waffle_part(message, 0, 8, 8)
-    var ptr_to_bytes = waffle_add(ptr_to_buffer, waffle_int(16))
-    var len = waffle_part(message, 8, 8, 8)
-    waffle_crash(waffle_aggregate(list(ptr_to_bytes, len).to_slice()))
-  }
+  case raw_crash(crash) 
+    waffle_crash(
+      waffle_aggregate(
+        list(mapping.get(crash.ptr), mapping.get(crash.len)).to_slice()
+      )
+    )
   case unreachable waffle_unreachable
   case halt waffle_halt
   case loop_(loop_) {
