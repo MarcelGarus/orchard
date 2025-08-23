@@ -480,30 +480,32 @@ fun free_buffer_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
       var buffer = builder.param(type_ptr)
       var len = builder.get_buffer_length(buffer)
 
-      builder.loop_(list(builder.int(0)).to_slice(), {
-        var builder = egg_body_builder().&
-        var cursor = builder.param(type_int)
-        var cmp = builder.compare(cursor, len)
-        builder.switch_on_ordering(
-          cmp,
-          egg_body_builder().finish_with_unreachable(type_nothing),
-          egg_body_builder().finish_with_nothing(),
-          {
-            var builder = egg_body_builder().&
-            var item = builder.load_buffer_item(
-              buffer, item_type.desugar_boxes_arrays_lambdas(), cursor
-            )
-            builder.desugared_drop(item, item_type, funs)
-            builder.finish(
-              builder.continue_(
-                list(builder.add(cursor, builder.int(1))).to_slice(),
-                type_nothing,
+      if item_type.contains_ptr() then {
+        builder.loop_(list(builder.int(0)).to_slice(), {
+          var builder = egg_body_builder().&
+          var cursor = builder.param(type_int)
+          var cmp = builder.compare(cursor, len)
+          builder.switch_on_ordering(
+            cmp,
+            egg_body_builder().finish_with_unreachable(type_nothing),
+            egg_body_builder().finish_with_nothing(),
+            {
+              var builder = egg_body_builder().&
+              var item = builder.load_buffer_item(
+                buffer, item_type.desugar_boxes_arrays_lambdas(), cursor
               )
-            )
-          },
-        ).ignore()
-        builder.finish_with_nothing()
-      })
+              builder.desugared_drop(item, item_type, funs)
+              builder.finish(
+                builder.continue_(
+                  list(builder.add(cursor, builder.int(1))).to_slice(),
+                  type_nothing,
+                )
+              )
+            },
+          ).ignore()
+          builder.finish_with_nothing()
+        }).ignore()
+      }
 
       builder.free_buffer(buffer, item_type.desugar_boxes_arrays_lambdas())
       builder.finish_with_nothing()

@@ -14,8 +14,8 @@ fun finish(builder: WaffleBodyBuilder, returns: WaffleExpr): WaffleBody {
 }
 
 fun is_byte(expr: WaffleExpr): Bool { expr.size() == 1 and expr.alignment() == 1 }
-fun is_int(expr: WaffleExpr): Bool { expr.size() == 8 and expr.alignment() == 8 }
-fun is_ptr(expr: WaffleExpr): Bool { expr.size() == 8 and expr.alignment() == 8 }
+fun is_int(expr: WaffleExpr): Bool { expr.size() == 8 } |and expr.alignment() == 8 }
+fun is_ptr(expr: WaffleExpr): Bool { expr.size() == 8 } |and expr.alignment() == 8 }
 
 
 fun waffle_param(size: Int, alignment: Int): WaffleExpr {
@@ -40,15 +40,13 @@ fun waffle_aggregate(fields: Slice[WaffleExpr]): WaffleExpr {
   WaffleExpr.aggregate(fields)
 }
 
-fun waffle_member(
+fun waffle_part(
   of: WaffleExpr, offset: Int, size: Int, alignment: Int
 ): WaffleExpr {
   offset >= 0 or panic("negative offset")
   offset + size <= of.size() or
     panic("offset too big: {offset} + {size} > {of.size()}")
-  WaffleExpr.member(WaffleMember {
-    of = of.put_on_heap(), offset, size, alignment
-  })
+  WaffleExpr.part(WafflePart { of = of.put_on_heap(), offset, size, alignment })
 }
 
 fun waffle_switch(byte: WaffleExpr, cases: Slice[WaffleBody]): WaffleExpr {
@@ -144,6 +142,20 @@ fun waffle_modulo(args: WaffleExpr): WaffleExpr {
   WaffleExpr.modulo(args.put_on_heap())
 }
 
+fun waffle_shift_left(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
+  waffle_shift_left(waffle_int_operands(left, right))
+}
+fun waffle_shift_left(args: WaffleExpr): WaffleExpr {
+  WaffleExpr.shift_left(args.put_on_heap())
+}
+
+fun waffle_shift_right(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
+  waffle_shift_right(waffle_int_operands(left, right))
+}
+fun waffle_shift_right(args: WaffleExpr): WaffleExpr {
+  WaffleExpr.shift_right(args.put_on_heap())
+}
+
 fun waffle_compare_zero(int: WaffleExpr): WaffleExpr {
   int.is_int() or panic("expected int")
   WaffleExpr.compare_zero(int.put_on_heap())
@@ -184,14 +196,26 @@ fun waffle_free(args: WaffleExpr): WaffleExpr {
   WaffleExpr.free(args.put_on_heap())
 }
 
-fun waffle_load(ptr: WaffleExpr, size: Int, alignment: Int): WaffleExpr {
+fun waffle_load_word(ptr: WaffleExpr): WaffleExpr {
   ptr.is_ptr() or panic("expected pointer")
-  WaffleExpr.load(WaffleLoad { ptr = ptr.put_on_heap(), size, alignment })
+  WaffleExpr.load_word(ptr.put_on_heap())
 }
 
-fun waffle_store(ptr: WaffleExpr, value: WaffleExpr): WaffleExpr {
+fun waffle_load_byte(ptr: WaffleExpr): WaffleExpr {
   ptr.is_ptr() or panic("expected pointer")
-  WaffleExpr.store(WaffleStore {
+  WaffleExpr.load_byte(ptr.put_on_heap())
+}
+
+fun waffle_store_word(ptr: WaffleExpr, value: WaffleExpr): WaffleExpr {
+  ptr.is_ptr() or panic("expected pointer")
+  WaffleExpr.store_word(WaffleStore {
+    ptr = ptr.put_on_heap(), value = value.put_on_heap()
+  })
+}
+
+fun waffle_store_byte(ptr: WaffleExpr, value: WaffleExpr): WaffleExpr {
+  ptr.is_ptr() or panic("expected pointer")
+  WaffleExpr.store_byte(WaffleStore {
     ptr = ptr.put_on_heap(), value = value.put_on_heap()
   })
 }

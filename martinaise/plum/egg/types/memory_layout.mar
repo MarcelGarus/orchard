@@ -173,11 +173,33 @@ fun is_all_minus_one(list: Slice[Int]): Bool {
 
 | Layouting args  
 
-| struct ArgsLayout {
-|   size: Int, alignment: Int, parts: Slice[ArgsPart], offsets: Slice[Int]
-| }
-| enum ArgsPart { arg: Int, padding: Int }
+struct ArgsLayout {
+  size: Int, alignment: Int, parts: Slice[ArgsPart], offsets: Slice[Int]
+}
+enum ArgsPart { arg: Int, padding: Int }
 
+fun memory_layout_args(args: Slice[EggType]): ArgsLayout {
+  | Layout the args individually.
+  var arg_layouts = list[MemoryLayout]()
+  for arg in args do arg_layouts.&.push(arg.memory_layout())
+  var layout = arg_layouts.to_slice().memory_layout()
+
+  | Map the result back to arg semantics.
+  var parts = list[ArgsPart]()
+  for part in layout.parts do
+    parts.&.push(
+      switch part
+      case piece(index) ArgsPart.arg(index)
+      case padding(padding) ArgsPart.padding(padding)
+    )
+
+  ArgsLayout {
+    size = layout.size,
+    alignment = layout.alignment,
+    parts = parts.to_slice(),
+    offsets = layout.offsets,
+  }
+}
 
 | Layouting structs  
 
