@@ -55,6 +55,9 @@ fun to_waffle(
 fun to_waffle(
   id: EggId, builder: &WaffleBodyBuilder, mapping: &Map[EggId, WaffleExpr]
 ): WaffleExpr {
+  eprintln("Converting:")
+  stderr.write(id, namespace().&, indentation(1))
+  stderr."\n"
   switch id.resolve()
   case param unreachable()
   case byte(byte) waffle_byte(byte)
@@ -82,6 +85,14 @@ fun to_waffle(
     waffle_compare_zero(
       waffle_subtract(mapping.get(args.a), mapping.get(args.b))
     )
+  case struct_(fields) {
+    if fields.is_not_empty() then
+      panic(
+        "Only Nothing is allowed when converting to Waffle; other structs 
+        'should be layouted."
+      )
+    waffle_aggregate(empty_slice[WaffleExpr]())
+  }
   case switch_on_byte(switch_) {
     var condition = mapping.get(switch_.condition)
     var cases = list[WaffleBody]()
@@ -89,6 +100,9 @@ fun to_waffle(
       var builder = waffle_body_builder().&
       cases.&.push(builder.finish(case_.to_waffle(builder, mapping)))
     }
+    eprintln("Converting:")
+    stderr.write(id, namespace().&, indentation(1))
+    stderr."\n"
     waffle_switch(condition, cases.to_slice())
   }
   case call_fun(call) {
