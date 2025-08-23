@@ -26,13 +26,12 @@ fun count_references(expr: WaffleExpr, out: &Map[WaffleId, Int]) {
   case aggregate(aggregate) for part in aggregate do part.count_references(out)
   case part(part) part.of.count_references(out)
   case switch_(switch_) {
-    switch_.byte.count_references(out)
+    switch_.condition.count_references(out)
     for case_ in switch_.cases do case_.count_references(out)
   }
   case call(call) call.args.count_references(out)
   case call_indirect(call) {
-    call.function_ptr.count_references(out)
-    call.args.count_references(out)
+    call.fun_and_args.count_references(out)
   }
   case function_ptr(signature) {}
   case malloc(size) size.count_references(out)
@@ -40,12 +39,10 @@ fun count_references(expr: WaffleExpr, out: &Map[WaffleId, Int]) {
   case load_word(ptr) ptr.count_references(out)
   case load_byte(ptr) ptr.count_references(out)
   case store_word(store) {
-    store.ptr.count_references(out)
-    store.value.count_references(out)
+    store.count_references(out)
   }
   case store_byte(store) {
-    store.ptr.count_references(out)
-    store.value.count_references(out)
+    store.count_references(out)
   }
   case store_bytes(store) store.ptr.count_references(out)
   case crash(args) args.count_references(out)
@@ -109,24 +106,23 @@ fun try_nest_local(
       waffle_part(
         part.of.try_nest_local(local, used)?,
         part.offset,
-        part.size,
-        part.alignment,
+        part.layout,
+        1,
       )
     case switch_(switch_) {
-      var byte = switch_.byte.try_nest_local(local, used)?
+      var condition = switch_.condition.try_nest_local(local, used)?
       used.must_have_been_used()?
-      waffle_switch(byte, switch_.cases)
+      waffle_switch(condition, switch_.cases)
     }
     case call(call) {
       var args = call.args.try_nest_local(local, used)?
       used.must_have_been_used()?
-      waffle_call(call.function, args, call.size, call.alignment)
+      waffle_call(call.function, args, call.layout.size, call.layout.alignment)
     }
     case call_indirect(call) {
-      var function_ptr = call.function_ptr.try_nest_local(local, used)?
-      var args = call.args.try_nest_local(local, used)?
+      var fun_and_args = call.fun_and_args.try_nest_local(local, used)?
       used.must_have_been_used()?
-      waffle_call_indirect(function_ptr, args, call.size, call.alignment)
+      waffle_call_indirect(fun_and_args, call.layout.size, call.layout.alignment)
     }
     case function_ptr(signature) waffle_function_ptr(signature)
     case malloc(size) {
@@ -150,16 +146,30 @@ fun try_nest_local(
       waffle_load_byte(ptr)
     }
     case store_word(store) {
-      var ptr = store.ptr.try_nest_local(local, used)?
-      var value = store.value.try_nest_local(local, used)?
+      var store = store.try_nest_local(local, used)?
       used.must_have_been_used()?
-      waffle_store_word(ptr, value)
+      if store is aggregate(parts) then {
+        if parts.len == 2 then {
+          waffle_store_word(parts.get(0), parts.get(1))
+        } else {
+          waffle_store_word(store)
+        }
+      } else {
+        waffle_store_word(store)
+      }
     }
     case store_byte(store) {
-      var ptr = store.ptr.try_nest_local(local, used)?
-      var value = store.value.try_nest_local(local, used)?
+      var store = store.try_nest_local(local, used)?
       used.must_have_been_used()?
-      waffle_store_byte(ptr, value)
+      if store is aggregate(parts) then {
+        if parts.len == 2 then {
+          waffle_store_byte(parts.get(0), parts.get(1))
+        } else {
+          waffle_store_byte(store)
+        }
+      } else {
+        waffle_store_byte(store)
+      }
     }
     case store_bytes(store) {
       var ptr = store.ptr.try_nest_local(local, used)?
