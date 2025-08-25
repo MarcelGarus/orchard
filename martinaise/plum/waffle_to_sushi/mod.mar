@@ -95,31 +95,31 @@ fun compile(
     for field in aggregate.iter().enumerate() do
       field.item.compile(builder, funs, surrounding_loop)
   }
-  case member(member) {
+  case part(part) {
     | Quite often, you see things like @0.0:8 in the Waffle – for example, if
     | we have an aggregate representing the arguments of a function and we want
     | to get a single argument, we extract that argument.
-    | Lowering this in a naive way (first lowering @0, then lowering the member
+    | Lowering this in a naive way (first lowering @0, then lowering the part
     | access) leads to crazy amounts of copying: We copy the entire local
     | aggregate to the top of the stack, just to then discard the majority to
     | extract the field we want.
     | So, here, we special-case that pattern.
-    if member.of.* is local(local) then {
+    if part.of.* is local(local) then {
       builder.copy_from_stack(
-        builder.stack.not_diverged.unwrap().mapping.get(local) + member.offset,
+        builder.stack.not_diverged.unwrap().mapping.get(local) + part.offset,
         expr.size(),
       )
     } else {
-      var padding = builder.align_to(member.of.alignment())
-      member.of.compile(builder, funs, surrounding_loop)
-      var amount_before_member = padding + member.offset
-      var amount_after_member  = member.of.size() - expr.size() - member.offset
-      builder.pop(amount_after_member)
-      builder.pop_below_top(expr.size(), amount_before_member)
+      var padding = builder.align_to(part.of.alignment())
+      part.of.compile(builder, funs, surrounding_loop)
+      var amount_before_part = padding + part.offset
+      var amount_after_part  = part.of.size() - expr.size() - part.offset
+      builder.pop(amount_after_part)
+      builder.pop_below_top(expr.size(), amount_before_part)
     }
   }
   case switch_(switch_) {
-    switch_.byte.compile(builder, funs, surrounding_loop)
+    switch_.condition.compile(builder, funs, surrounding_loop)
 
     var case_builders = builder.jump_table(switch_.cases.len)
     var after_switch_builder = builder.split("after switch")
@@ -145,14 +145,12 @@ fun compile(
     builder.pop_below_top(expr.size(), padding)
   }
   case call_indirect(call) {
-    var padding = builder.align_to(call.args.alignment())
-    call.args.compile(builder, funs, surrounding_loop)
-    var more_padding = builder.align_to(8)
-    call.function_ptr.compile(builder, funs, surrounding_loop)
+    var padding = builder.align_to(call.fun_and_args.alignment())
+    call.fun_and_args.compile(builder, funs, surrounding_loop)
     var fun_stack_diff = 0
-      - call.args.size() | as well as the arguments
-      + expr.size()      | and pushes its result
-    builder.call_indirect(more_padding.lower_byte(), fun_stack_diff)
+      - call.fun_and_args.size() | as well as the arguments
+      + expr.size()               | and pushes its result
+    builder.call_indirect(0.lower_byte(), fun_stack_diff)
     builder.pop_below_top(expr.size(), padding)
   }
   case function_ptr(signature) builder.push_indirect(funs.get(signature))
@@ -194,6 +192,14 @@ fun compile(
     args.compile(builder, funs, surrounding_loop)
     builder.xor_8()
   }
+  case shift_left(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.shift_left_8()
+  }
+  case shift_right(args) {
+    args.compile(builder, funs, surrounding_loop)
+    builder.shift_right_8()
+  }
   case lower_byte(arg) {
     var padding = builder.align_to(8)
     arg.compile(builder, funs, surrounding_loop)
@@ -214,69 +220,29 @@ fun compile(
     builder.free_8_aligned()
     builder.pop_below_top(8, padding)
   }
-  case load(load) {
+  case load_word(ptr) {
     var padding = builder.align_to(8)
-    | Compute the pointer to be unboxed.
-    var ptr_start = builder.stack.not_diverged.unwrap().size
-    load.ptr.compile(builder, funs, surrounding_loop)
-
-    | Copy the data from the heap.
-    var data_start = ptr_start + 8
-    var cursor = 0
-    loop if cursor + 8 > load.size then break else {
-      builder.push_8_from_stack(ptr_start)
-      builder.push_8(cursor)
-      builder.add_8()
-      builder.load_8() | TODO: alignment
-      cursor = cursor + 8
-    }
-    loop if cursor == load.size then break else {
-      var padding = builder.align_to(8)
-      builder.push_8_from_stack(ptr_start)
-      builder.push_8(cursor)
-      builder.add_8()
-      builder.load_1()
-      builder.pop_below_top(1, padding)
-      cursor = cursor + 1
-    }
-    builder.pop_below_top(load.size, 8 + padding)
+    ptr.compile(builder, funs, surrounding_loop)
+    builder.load_8()
+    builder.pop_below_top(8, padding)
   }
-  case store(store) {
-    | Compute the pointer.
-    var padding_before_ptr = builder.align_to(8)
-    var ptr_start = builder.stack.not_diverged.unwrap().size
-    store.ptr.compile(builder, funs, surrounding_loop)
-
-    | Compute the data to be boxed.
-    var data_start = ptr_start + 8
-    store.value.compile(builder, funs, surrounding_loop)
-
-    if store.value.size() == 1 then {
-      builder.store_1()
-    } else if store.value.size() == 8 then {
-      builder.store_8()
-    } else {
-      | Store data piece by piece.
-      var padding_before_work = builder.align_to(8)
-      var cursor = 0
-      loop if cursor + 8 > store.value.size() then break else {
-        builder.push_8_from_stack(ptr_start)
-        builder.add_8(cursor)
-        builder.push_8_from_stack(data_start + cursor)
-        builder.store_8()
-        cursor = cursor + 8
-      }
-      loop if cursor == store.value.size() then break else {
-        builder.push_8_from_stack(ptr_start)
-        builder.add_8(cursor)
-        builder.push_1_from_stack(data_start + cursor)
-        builder.store_1()
-        cursor = cursor + 1
-      }
-      builder.pop(
-        padding_before_ptr + 8 + store.value.size() + padding_before_work
-      )
-    }
+  case load_byte(ptr) {
+    var padding = builder.align_to(8)
+    ptr.compile(builder, funs, surrounding_loop)
+    builder.load_1()
+    builder.pop_below_top(1, padding)
+  }
+  case store_word(args) {
+    var padding = builder.align_to(8)
+    args.compile(builder, funs, surrounding_loop) | ptr and value
+    builder.store_8()
+    builder.pop_below_top(0, padding)
+  }
+  case store_byte(args) {
+    var padding = builder.align_to(8)
+    args.compile(builder, funs, surrounding_loop) | ptr and value
+    builder.store_1()
+    builder.pop_below_top(0, padding)
   }
   case store_bytes(store) {
     var padding_before_ptr = builder.align_to(8)
