@@ -40,13 +40,11 @@ fun waffle_aggregate(fields: Slice[WaffleExpr]): WaffleExpr {
   WaffleExpr.aggregate(fields)
 }
 
-fun waffle_part(
-  of: WaffleExpr, offset: Int, size: Int, alignment: Int
-): WaffleExpr {
+fun waffle_part(of: WaffleExpr, offset: Int, layout: MemoryLayout): WaffleExpr {
   offset >= 0 or panic("negative offset")
-  offset + size <= of.size() or
-    panic("offset too big: {offset} + {size} > {of.size()}")
-  WaffleExpr.part(WafflePart { of = of.put_on_heap(), offset, layout = size })
+  offset + layout.size <= of.size() or
+    panic("offset too big: {offset} + {layout.size} > {of.size()}")
+  WaffleExpr.part(WafflePart { of = of.put_on_heap(), offset, layout })
 }
 
 fun waffle_switch(byte: WaffleExpr, cases: Slice[WaffleBody]): WaffleExpr {
@@ -66,31 +64,28 @@ fun waffle_switch(byte: WaffleExpr, cases: Slice[WaffleBody]): WaffleExpr {
   WaffleExpr.switch_(WaffleSwitch { condition = byte.put_on_heap(), cases })
 }
 
-| The size and alignment are of the returned value, not the arguments.
 fun waffle_call(
-  function: String, args: WaffleExpr, size: Int, alignment: Int
+  function: String, args: WaffleExpr, layout: MemoryLayout
 ): WaffleExpr {
-  WaffleExpr.call(WaffleCall {
-    function, args = args.put_on_heap(), layout = MemoryLayout { size, alignment }
-  })
-}
-
-| The size and alignment are of the returned value, not the arguments.
-fun waffle_call_indirect(
-  function_ptr: WaffleExpr, args: WaffleExpr, size: Int, alignment: Int
-): WaffleExpr {
-  WaffleExpr.call_indirect(WaffleCallIndirect {
-    fun_and_args = waffle_aggregate(list(function_ptr, args).to_slice()).put_on_heap(),
-    layout = MemoryLayout { size, alignment },
-  })
+  WaffleExpr.call(WaffleCall { function, args = args.put_on_heap(), layout })
 }
 
 fun waffle_call_indirect(
-  fun_and_args: WaffleExpr, size: Int, alignment: Int
+  fun_ptr: WaffleExpr, args: WaffleExpr, layout: MemoryLayout
 ): WaffleExpr {
   WaffleExpr.call_indirect(WaffleCallIndirect {
-    fun_and_args = fun_and_args.put_on_heap(),
-    layout = MemoryLayout { size, alignment },
+    fun_and_args = waffle_aggregate(
+      list(fun_ptr, args).to_slice()
+    ).put_on_heap(),
+    layout,
+  })
+}
+
+fun waffle_call_indirect(
+  fun_and_args: WaffleExpr, layout: MemoryLayout
+): WaffleExpr {
+  WaffleExpr.call_indirect(WaffleCallIndirect {
+    fun_and_args = fun_and_args.put_on_heap(), layout
   })
 }
 
@@ -114,51 +109,30 @@ fun waffle_int_operands(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
   waffle_aggregate(list(left, right).to_slice())
 }
 
-fun waffle_add(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_add(waffle_int_operands(left, right))
-}
 fun waffle_add(args: WaffleExpr): WaffleExpr {
   WaffleExpr.add(args.put_on_heap())
 }
 
-fun waffle_subtract(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_subtract(waffle_int_operands(left, right))
-}
 fun waffle_subtract(args: WaffleExpr): WaffleExpr {
   WaffleExpr.subtract(args.put_on_heap())
 }
 
-fun waffle_multiply(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_multiply(waffle_int_operands(left, right))
-}
 fun waffle_multiply(args: WaffleExpr): WaffleExpr {
   WaffleExpr.multiply(args.put_on_heap())
 }
 
-fun waffle_divide(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_divide(waffle_int_operands(left, right))
-}
 fun waffle_divide(args: WaffleExpr): WaffleExpr {
   WaffleExpr.divide(args.put_on_heap())
 }
 
-fun waffle_modulo(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_modulo(waffle_int_operands(left, right))
-}
 fun waffle_modulo(args: WaffleExpr): WaffleExpr {
   WaffleExpr.modulo(args.put_on_heap())
 }
 
-fun waffle_shift_left(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_shift_left(waffle_int_operands(left, right))
-}
 fun waffle_shift_left(args: WaffleExpr): WaffleExpr {
   WaffleExpr.shift_left(args.put_on_heap())
 }
 
-fun waffle_shift_right(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_shift_right(waffle_int_operands(left, right))
-}
 fun waffle_shift_right(args: WaffleExpr): WaffleExpr {
   WaffleExpr.shift_right(args.put_on_heap())
 }
@@ -168,23 +142,14 @@ fun waffle_compare_zero(int: WaffleExpr): WaffleExpr {
   WaffleExpr.compare_zero(int.put_on_heap())
 }
 
-fun waffle_and(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_and(waffle_int_operands(left, right))
-}
 fun waffle_and(args: WaffleExpr): WaffleExpr {
   WaffleExpr.and_(args.put_on_heap())
 }
 
-fun waffle_or(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_or(waffle_int_operands(left, right))
-}
 fun waffle_or(args: WaffleExpr): WaffleExpr {
   WaffleExpr.or_(args.put_on_heap())
 }
 
-fun waffle_xor(left: WaffleExpr, right: WaffleExpr): WaffleExpr {
-  waffle_xor(waffle_int_operands(left, right))
-}
 fun waffle_xor(args: WaffleExpr): WaffleExpr {
   WaffleExpr.xor(args.put_on_heap())
 }
@@ -194,11 +159,6 @@ fun waffle_malloc(size: WaffleExpr): WaffleExpr {
   WaffleExpr.malloc(size.put_on_heap())
 }
 
-fun waffle_free(ptr: WaffleExpr, size: WaffleExpr): WaffleExpr {
-  ptr.is_ptr() or panic("expected pointer")
-  size.is_ptr() or panic("expected size")
-  waffle_free(waffle_aggregate(list(ptr, size).to_slice()))
-}
 fun waffle_free(args: WaffleExpr): WaffleExpr {
   WaffleExpr.free(args.put_on_heap())
 }
@@ -211,16 +171,6 @@ fun waffle_load_word(ptr: WaffleExpr): WaffleExpr {
 fun waffle_load_byte(ptr: WaffleExpr): WaffleExpr {
   ptr.is_ptr() or panic("expected pointer")
   WaffleExpr.load_byte(ptr.put_on_heap())
-}
-
-fun waffle_store_word(ptr: WaffleExpr, value: WaffleExpr): WaffleExpr {
-  ptr.is_ptr() or panic("expected pointer")
-  waffle_store_word(waffle_aggregate(list(ptr, value).to_slice()))
-}
-
-fun waffle_store_byte(ptr: WaffleExpr, value: WaffleExpr): WaffleExpr {
-  ptr.is_ptr() or panic("expected pointer")
-  waffle_store_byte(waffle_aggregate(list(ptr, value).to_slice()))
 }
 
 fun waffle_store_word(args: WaffleExpr): WaffleExpr {
@@ -253,8 +203,6 @@ fun waffle_loop(
   })
 }
 
-fun waffle_continue(next: WaffleExpr, size: Int, alignment: Int): WaffleExpr {
-  WaffleExpr.continue_(WaffleContinue {
-    next = next.put_on_heap(), layout = MemoryLayout { size, alignment }
-  })
+fun waffle_continue(next: WaffleExpr, layout: MemoryLayout): WaffleExpr {
+  WaffleExpr.continue_(WaffleContinue { next = next.put_on_heap(), layout })
 }

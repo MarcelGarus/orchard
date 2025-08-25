@@ -25,10 +25,7 @@ fun to_waffle(fun_: EggFun): WaffleFun {
     mapping.&.put(
       p.item,
       waffle_part(
-        waffle_local(param),
-        param_layout.offsets.get(p.index),
-        layout.size,
-        layout.alignment,
+        waffle_local(param), param_layout.offsets.get(p.index), layout
       ),
     )
   }
@@ -118,9 +115,9 @@ fun to_waffle(
         case arg(index) mapping.get(call.args.get(index))
         case padding(amount) waffle_padding(amount)
       )
-    var args = waffle_aggregate(parts.to_slice())
-    var return_layout = id.type().memory_layout()
-    waffle_call(call.fun_, args, return_layout.size, return_layout.alignment)
+    waffle_call(
+      call.fun_, waffle_aggregate(parts.to_slice()), id.type().memory_layout()
+    )
   }
   case fun_ptr(signature) waffle_fun_ptr(signature)
   case call_indirect(call) {
@@ -134,11 +131,10 @@ fun to_waffle(
         case arg(index) mapping.get(call.args.get(index))
         case padding(amount) waffle_padding(amount)
       )
-    var args = waffle_aggregate(parts.to_slice())
-    var return_layout = id.type().memory_layout()
     waffle_call_indirect(
-      mapping.get(call.function_ptr), args,
-      return_layout.size, return_layout.alignment,
+      mapping.get(call.fun_ptr),
+      waffle_aggregate(parts.to_slice()),
+      id.type().memory_layout(),
     )
   }
   case raw_crash(crash) 
@@ -166,18 +162,15 @@ fun to_waffle(
     var initial = waffle_aggregate(parts.to_slice())
 
     var body = {
-      for var_ in loop_.body.params.iter().enumerate() do {
-        var layout = var_.item.type().memory_layout()
+      for var_ in loop_.body.params.iter().enumerate() do
         mapping.&.put(
           var_.item,
           waffle_part(
             waffle_local(param),
             var_layout.offsets.get(var_.index),
-            layout.size,
-            layout.alignment,
+            var_.item.type().memory_layout(),
           ),
         )
-      }
       var builder = waffle_body_builder().&
       builder.finish(loop_.body.to_waffle(builder, mapping))
     }
@@ -195,11 +188,9 @@ fun to_waffle(
         case arg(index) mapping.get(continue_.next.get(index))
         case padding(amount) waffle_padding(amount)
       )
-    var next = waffle_aggregate(parts.to_slice())
-
-    var layout = id.type().memory_layout()
-
-    waffle_continue(next, layout.size, layout.alignment)
+    waffle_continue(
+      waffle_aggregate(parts.to_slice()), id.type().memory_layout()
+    )
   }
   case padding(amount) waffle_padding(amount)
   case aggregate(aggregate) {
@@ -207,7 +198,12 @@ fun to_waffle(
     for part in aggregate do parts.&.push(mapping.get(part))
     waffle_aggregate(parts.to_slice())
   }
-  case part(part) waffle_part(mapping.get(part.of), part.offset, part.size, 1)
+  case part(part)
+    waffle_part(
+      mapping.get(part.of),
+      part.offset,
+      MemoryLayout { size = part.size, alignment = 1 },
+    )
   case malloc(size) waffle_malloc(mapping.get(size))
   case null_ptr waffle_int(0)
   case free(free)

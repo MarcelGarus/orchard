@@ -1,64 +1,5 @@
 import mod.mar
 
-fun count_references(expr: WaffleExpr, out: &Map[WaffleId, Int]) {
-  switch expr
-  case param {}
-  case padding {}
-  case local(id) {
-    var count = out.get_ref_or_put_default(id, 0)
-    count.* = count.* + 1
-  }
-  case byte {}
-  case lower_byte(arg) arg.count_references(out)
-  case byte_to_int(arg) arg.count_references(out)
-  case int {}
-  case add(args) args.count_references(out)
-  case subtract(args) args.count_references(out)
-  case multiply(args) args.count_references(out)
-  case divide(args) args.count_references(out)
-  case modulo(args) args.count_references(out)
-  case and_(args) args.count_references(out)
-  case or_(args) args.count_references(out)
-  case xor(args) args.count_references(out)
-  case shift_left(args) args.count_references(out)
-  case shift_right(args) args.count_references(out)
-  case compare_zero(arg) arg.count_references(out)
-  case aggregate(aggregate) for part in aggregate do part.count_references(out)
-  case part(part) part.of.count_references(out)
-  case switch_(switch_) {
-    switch_.condition.count_references(out)
-    for case_ in switch_.cases do case_.count_references(out)
-  }
-  case call(call) call.args.count_references(out)
-  case call_indirect(call) {
-    call.fun_and_args.count_references(out)
-  }
-  case function_ptr(signature) {}
-  case malloc(size) size.count_references(out)
-  case free(args) args.count_references(out)
-  case load_word(ptr) ptr.count_references(out)
-  case load_byte(ptr) ptr.count_references(out)
-  case store_word(store) {
-    store.count_references(out)
-  }
-  case store_byte(store) {
-    store.count_references(out)
-  }
-  case store_bytes(store) store.ptr.count_references(out)
-  case crash(args) args.count_references(out)
-  case unreachable {}
-  case halt {}
-  case loop_(loop_) {
-    loop_.initial.count_references(out)
-    loop_.body.count_references(out)
-  }
-  case continue_(continue_) continue_.next.count_references(out)
-}
-fun count_references(body: WaffleBody, out: &Map[WaffleId, Int]) {
-  for local in body.locals do local.resolve().count_references(out)
-  body.returns.count_references(out)
-}
-
 fun must_have_been_used(used: Bool): Result[Nothing, Nothing] {
   if used then ok[Nothing, Nothing]({}) else error[Nothing, Nothing]({})
 }
@@ -104,10 +45,7 @@ fun try_nest_local(
     }
     case part(part)
       waffle_part(
-        part.of.try_nest_local(local, used)?,
-        part.offset,
-        part.layout,
-        1,
+        part.of.try_nest_local(local, used)?, part.offset, part.layout
       )
     case switch_(switch_) {
       var condition = switch_.condition.try_nest_local(local, used)?
@@ -117,12 +55,12 @@ fun try_nest_local(
     case call(call) {
       var args = call.args.try_nest_local(local, used)?
       used.must_have_been_used()?
-      waffle_call(call.function, args, call.layout.size, call.layout.alignment)
+      waffle_call(call.function, args, call.layout)
     }
     case call_indirect(call) {
       var fun_and_args = call.fun_and_args.try_nest_local(local, used)?
       used.must_have_been_used()?
-      waffle_call_indirect(fun_and_args, call.layout.size, call.layout.alignment)
+      waffle_call_indirect(fun_and_args, call.layout)
     }
     case fun_ptr(signature) waffle_fun_ptr(signature)
     case malloc(size) {
@@ -148,28 +86,12 @@ fun try_nest_local(
     case store_word(store) {
       var store = store.try_nest_local(local, used)?
       used.must_have_been_used()?
-      if store is aggregate(parts) then {
-        if parts.len == 2 then {
-          waffle_store_word(parts.get(0), parts.get(1))
-        } else {
-          waffle_store_word(store)
-        }
-      } else {
-        waffle_store_word(store)
-      }
+      waffle_store_word(store)
     }
     case store_byte(store) {
       var store = store.try_nest_local(local, used)?
       used.must_have_been_used()?
-      if store is aggregate(parts) then {
-        if parts.len == 2 then {
-          waffle_store_byte(parts.get(0), parts.get(1))
-        } else {
-          waffle_store_byte(store)
-        }
-      } else {
-        waffle_store_byte(store)
-      }
+      waffle_store_byte(store)
     }
     case store_bytes(store) {
       var ptr = store.ptr.try_nest_local(local, used)?
@@ -188,22 +110,22 @@ fun try_nest_local(
 fun try_nest_local(
   expr: WaffleExpr, previous: Maybe[WaffleId],
   num_references: Map[WaffleId, Int],
-): Maybe[WaffleExpr] {
-  var previous = previous or return none[WaffleExpr]()
-  if previous.resolve() is param then return none[WaffleExpr]()
-  {num_references.get_maybe(previous) or 0} == 1 or return none[WaffleExpr]()
+): Result[WaffleExpr, Nothing] {
+  var previous = previous or return error[WaffleExpr, Nothing]({})
+  if previous.resolve() is param then return error[WaffleExpr, Nothing]({})
+  {num_references.get_maybe(previous) or 0} == 1 or
+    return error[WaffleExpr, Nothing]({})
 
   var used = false
-  var new_version =
-    expr.try_nest_local(previous, used.&) or return none[WaffleExpr]()
-  if used then some(new_version) else none[WaffleExpr]()
+  var new_version = expr.try_nest_local(previous, used.&)?
+  used.must_have_been_used()?
+  ok[WaffleExpr, Nothing](new_version)
 }
 
 | If (pure or unpure) locals are defined and then immediately used without an
 | impure expression in between, we move them.
 fun nest_locals(body: WaffleBody): WaffleBody {
-  var num_references = map[WaffleId, Int]()
-  body.count_references(num_references.&)
+  var num_references = body.count_references()
 
   var locals = list[WaffleId]()
   for i in 0..body.locals.len do {
@@ -211,7 +133,7 @@ fun nest_locals(body: WaffleBody): WaffleBody {
     locals.&.push(local)
 
     if local.resolve().try_nest_local(locals.get_maybe(i - 1), num_references)
-    is some(new_version)
+    is ok(new_version)
     then {
       update(local, new_version)
       locals.&.pop() | pop current
@@ -221,10 +143,9 @@ fun nest_locals(body: WaffleBody): WaffleBody {
   }
 
   var returns = body.returns
-  if returns.try_nest_local(locals.last_maybe(), num_references)
-  is some(new_version)
+  if returns.try_nest_local(locals.last_maybe(), num_references) is ok(new)
   then {
-    returns = new_version
+    returns = new
     locals.&.pop().ignore()
   }
 

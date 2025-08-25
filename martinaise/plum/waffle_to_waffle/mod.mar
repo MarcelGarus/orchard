@@ -4,7 +4,7 @@ import ../plum.mar
 import is_cheap.mar
 import is_pure.mar
 import tree_shake.mar
-import nest.mar
+import nest.mar 
 
 fun optimize(waffle: Waffle): Waffle {
   var funs = map[String, WaffleFun]()
@@ -20,14 +20,13 @@ fun optimize(fun_: WaffleFun): WaffleFun {
 
 fun optimize(body: WaffleBody): WaffleBody {
   | Optimize the expression in-place (they keep their IDs).
-  for local in body.locals do
-    update(local, local.resolve().optimize())
+  for local in body.locals do update(local, local.resolve().optimize())
   var body = WaffleBody {
     locals = body.locals, returns = body.returns.optimize()
   }
 
   var body = body.tree_shake()
-  | var body = body.nest_locals()
+  var body = body.nest_locals()
   body
 }
 
@@ -38,50 +37,13 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
   case local(id) {
     var referenced = id.resolve()
     if referenced.is_cheap() then return referenced
-    | if referenced.size() == 0 then
-    |   return waffle_aggregate(empty_slice[WaffleExpr]())
     expr
   }
   case lower_byte(arg) waffle_lower_byte(arg.optimize())
   case byte_to_int(arg) waffle_byte_to_int(arg.optimize())
-  case add(args) {
-    var args = args.optimize()
-    if args is aggregate(parts) then {
-      if parts.len == 2 then {
-        var a = parts.get(0)
-        var b = parts.get(1)
-        if a is int(a) then if b is int(b) then return waffle_int(a + b)
-        if a is int(a) then if a == 0 then return b
-        if b is int(b) then if b == 0 then return a
-      }
-    }
-    waffle_add(args)
-  }
-  case subtract(args) {
-    var args = args.optimize()
-    if args is aggregate(parts) then {
-      if parts.len == 2 then {
-        var a = parts.get(0)
-        var b = parts.get(1)
-        if a is int(a) then if b is int(b) then return waffle_int(a - b)
-        if b is int(b) then if b == 0 then return a
-      }
-    }
-    waffle_subtract(args)
-  }
-  case multiply(args) {
-    var args = args.optimize()
-    if args is aggregate(parts) then {
-      if parts.len == 2 then {
-        var a = parts.get(0)
-        var b = parts.get(1)
-        if a is int(a) then if b is int(b) then return waffle_int(a * b)
-        if a is int(a) then if a == 1 then return b
-        if b is int(b) then if b == 1 then return a
-      }
-    }
-    waffle_multiply(args)
-  }
+  case add(args) waffle_add(args.optimize())
+  case subtract(args) waffle_subtract(args.optimize())
+  case multiply(args) waffle_multiply(args.optimize())
   case divide(args) waffle_divide(args.optimize())
   case modulo(args) waffle_modulo(args.optimize())
   case and_(args) waffle_and(args.optimize())
@@ -90,58 +52,76 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
   case shift_left(args) waffle_shift_left(args.optimize())
   case shift_right(args) waffle_shift_right(args.optimize())
   case compare_zero(arg) waffle_compare_zero(arg.optimize())
-  case aggregate(aggregate) {
-    var parts = list[WaffleExpr]()
-    for part in aggregate do parts.&.push(part.optimize())
-    waffle_aggregate(parts.to_slice())
+  case aggregate(parts) {
+    | Optimize parts individually.
+    var parts_1 = list[WaffleExpr]()
+    for part in parts do parts_1.&.push(part.optimize())
+
+    | Remove zero-sized pure parts.
+    var parts_2 = list[WaffleExpr]()
+    for part in parts_1 do {
+      if part.size() == 0 and part.is_pure() then continue
+      parts_2.&.push(part)
+    }
+
+    | Merge adjacent members of the same local.
+    | {@0.0:8, @0.8:8, foo} -> {@0.0:16, foo}
+    var parts_3 = list[WaffleExpr]()
+    for part in parts_2 do {
+      parts_3.&.push(part)
+      var member = part.part or continue
+      var local = member.of.local or continue
+      var previous = parts_3.get_maybe(parts_3.len - 2) or continue
+      var previous_member = previous.part or continue
+      var previous_local = previous_member.of.local or continue
+      previous_local == local or continue
+      previous_member.offset + previous.size() == member.offset or continue
+      | Merge them!
+      parts_3.&.pop()
+      parts_3.&.pop()
+      parts_3.&.push(waffle_part(
+        member.of.*,
+        previous_member.offset,
+        MemoryLayout {
+          size = previous.size() + part.size(),
+          alignment = max(previous.alignment(), part.alignment()),
+        },
+      ).optimize())
+    }
+
+    if parts_3.len == 1 then
+      parts_3.get(0)
+    else
+      waffle_aggregate(parts_3.to_slice())
   }
-  case part(part)
-    waffle_part(part.of.optimize(), part.offset, part.layout, 1)
+  case part(part) {
+    var of = part.of.optimize()
+    if of.size() == expr.size() then return of
+    if of is part(inner) then
+      return waffle_part(inner.of.*, part.offset + inner.offset, part.layout)
+        .optimize()
+    waffle_part(of, part.offset, part.layout)
+  }
   case switch_(switch_) {
     var cases = list[WaffleBody]()
     for case_ in switch_.cases do cases.&.push(case_.optimize())
     waffle_switch(switch_.condition.optimize(), cases.to_slice())
   }
-  case call(call)
-    waffle_call(call.function, call.args.optimize(), call.layout.size, call.layout.alignment)
+  case call(call) waffle_call(call.function, call.args.optimize(), call.layout)
   case call_indirect(call)
-    waffle_call_indirect(call.fun_and_args.optimize(), call.layout.size, call.layout.alignment)
+    waffle_call_indirect(call.fun_and_args.optimize(), call.layout)
   case malloc(size) waffle_malloc(size.optimize())
   case free(free) waffle_free(free.optimize())
   case load_word(ptr) waffle_load_word(ptr.optimize())
   case load_byte(ptr) waffle_load_byte(ptr.optimize())
-  case store_word(store) {
-    var store = store.optimize()
-    if store is aggregate(parts) then {
-      if parts.len == 2 then {
-        waffle_store_word(parts.get(0), parts.get(1))
-      } else {
-        waffle_store_word(store)
-      }
-    } else {
-      waffle_store_word(store)
-    }
-  }
-  case store_byte(store) {
-    var store = store.optimize()
-    if store is aggregate(parts) then {
-      if parts.len == 2 then {
-        waffle_store_byte(parts.get(0), parts.get(1))
-      } else {
-        waffle_store_byte(store)
-      }
-    } else {
-      waffle_store_byte(store)
-    }
-  }
+  case store_word(store) waffle_store_word(store.optimize())
+  case store_byte(store) waffle_store_byte(store.optimize())
   case store_bytes(store) waffle_store_bytes(store.ptr.optimize(), store.bytes)
   case crash(message) waffle_crash(message.optimize())
   case unreachable expr
   case loop_(loop_)
     waffle_loop(loop_.param, loop_.initial.optimize(), loop_.body.optimize())
   case continue_(continue_)
-    waffle_continue(
-      continue_.next.optimize(), continue_.layout.size, continue_.layout.alignment
-    )
+    waffle_continue(continue_.next.optimize(), continue_.layout)
   default expr
 }
