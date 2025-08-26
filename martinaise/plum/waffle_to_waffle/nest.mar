@@ -63,11 +63,7 @@ fun try_nest_local(
       waffle_call_indirect(fun_and_args, call.layout)
     }
     case fun_ptr(signature) waffle_fun_ptr(signature)
-    case malloc(size) {
-      var size = size.try_nest_local(local, used)?
-      used.must_have_been_used()?
-      waffle_malloc(size)
-    }
+    case malloc(size) waffle_malloc(size.try_nest_local(local, used)?)
     case free(free) {
       var free = free.try_nest_local(local, used)?
       used.must_have_been_used()?
@@ -103,19 +99,29 @@ fun try_nest_local(
       used.must_have_been_used()?
       waffle_crash(args)
     }
-    default return error[WaffleExpr, Nothing]({})
+    case unreachable {
+      used.must_have_been_used()?
+      waffle_unreachable
+    }
+    case halt {
+      used.must_have_been_used()?
+      waffle_halt
+    }
+    case loop_(loop_) {
+      var initial = loop_.initial.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_loop(loop_.param, initial, loop_.body.*)
+    }
+    case continue_(continue_)
+      waffle_continue(
+        continue_.next.try_nest_local(local, used)?, continue_.layout
+      )
   )
 }
 
 fun try_nest_local(
-  expr: WaffleExpr, previous: Maybe[WaffleId],
-  num_references: Map[WaffleId, Int],
+  expr: WaffleExpr, previous: WaffleId
 ): Result[WaffleExpr, Nothing] {
-  var previous = previous or return error[WaffleExpr, Nothing]({})
-  if previous.resolve() is param then return error[WaffleExpr, Nothing]({})
-  {num_references.get_maybe(previous) or 0} == 1 or
-    return error[WaffleExpr, Nothing]({})
-
   var used = false
   var new_version = expr.try_nest_local(previous, used.&)?
   used.must_have_been_used()?
@@ -128,25 +134,38 @@ fun nest_locals(body: WaffleBody): WaffleBody {
   var num_references = body.count_references()
 
   var locals = list[WaffleId]()
-  for i in 0..body.locals.len do {
-    var local = body.locals.get(i)
-
-    if local.resolve().try_nest_local(locals.last_maybe(), num_references)
-    is ok(new_version)
-    then {
-      update(local, new_version)
-      locals.&.pop() | pop previous
-      locals.&.push(local) | push current
-    } else {
-      locals.&.push(local)
+  for local in body.locals do {
+    locals.&.push(local)
+    | Repeatedly try to merge the last two locals.
+    loop {
+      if locals.len < 2 then break
+      var current = locals.last()
+      var previous = locals.get(locals.len - 2)
+      if {num_references.get_maybe(previous) or 0} == 1 then
+        if current.resolve().try_nest_local(previous)
+        is ok(current_containing_previous)
+        then {
+          update(current, current_containing_previous)
+          locals.&.pop() | pop current
+          locals.&.pop() | pop previous
+          locals.&.push(current) | push current containing previous
+          continue
+        }
+      break
     }
   }
 
   var returns = body.returns
-  if returns.try_nest_local(locals.last_maybe(), num_references) is ok(new)
-  then {
-    returns = new
-    locals.&.pop().ignore()
+  loop {
+    if locals.last_maybe() is some(previous) then
+      if {num_references.get_maybe(previous) or 0} == 1 then
+        if returns.try_nest_local(previous) is ok(return_containing_previous)
+        then {
+          locals.&.pop().ignore()
+          returns = return_containing_previous
+          continue
+        }
+    break
   }
 
   WaffleBody { locals = locals.to_slice(), returns }

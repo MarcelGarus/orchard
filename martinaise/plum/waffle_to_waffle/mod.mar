@@ -34,13 +34,16 @@ fun optimize(body: WaffleBody): WaffleBody {
 | expressions depends on are already optimized.
 fun optimize(expr: WaffleExpr): WaffleExpr {
   switch expr
+  case param unreachable()
   case local(id) {
     var referenced = id.resolve()
     if referenced.is_cheap() then return referenced
     expr
   }
+  case byte expr
   case lower_byte(arg) waffle_lower_byte(arg.optimize())
   case byte_to_int(arg) waffle_byte_to_int(arg.optimize())
+  case int expr
   case add(args) waffle_add(args.optimize())
   case subtract(args) waffle_subtract(args.optimize())
   case multiply(args) waffle_multiply(args.optimize())
@@ -52,6 +55,7 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
   case shift_left(args) waffle_shift_left(args.optimize())
   case shift_right(args) waffle_shift_right(args.optimize())
   case compare_zero(arg) waffle_compare_zero(arg.optimize())
+  case padding expr
   case aggregate(parts) {
     | Optimize parts individually.
     var parts_1 = list[WaffleExpr]()
@@ -107,6 +111,7 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
     for case_ in switch_.cases do cases.&.push(case_.optimize())
     waffle_switch(switch_.condition.optimize(), cases.to_slice())
   }
+  case fun_ptr expr
   case call(call) waffle_call(call.function, call.args.optimize(), call.layout)
   case call_indirect(call)
     waffle_call_indirect(call.fun_and_args.optimize(), call.layout)
@@ -119,9 +124,9 @@ fun optimize(expr: WaffleExpr): WaffleExpr {
   case store_bytes(store) waffle_store_bytes(store.ptr.optimize(), store.bytes)
   case crash(message) waffle_crash(message.optimize())
   case unreachable expr
+  case halt expr
   case loop_(loop_)
     waffle_loop(loop_.param, loop_.initial.optimize(), loop_.body.optimize())
   case continue_(continue_)
     waffle_continue(continue_.next.optimize(), continue_.layout)
-  default expr
 }
