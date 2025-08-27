@@ -1,126 +1,190 @@
 import mod.mar
 
 fun run(waffle: Waffle, input: Slice[Byte]): Slice[Byte] {
-  waffle.entry_point.run(input, waffle)
+  switch waffle.entry_point.run(input, waffle, no_indentation)
+  case ok(value) value
+  case error(error) {
+    switch error
+    case continue_ panic("continue outside of loop")
+    case crash(message) panic("Plum program crashed: {message}")
+    case halt panic("Plum program halted")
+  }
 }
 
-fun run(function: String, args: Slice[Byte], waffle: Waffle): Slice[Byte] {
-  var visible = map(id(0) -> args)
-  var fun_ = waffle.funs.get(function)
-  fun_.body.run(fun_.dag, visible.&, waffle)
+enum NonLocalWaffleFlow { continue_: Slice[Byte], crash: String, halt }
+
+fun run(
+  fun_: String, args: Slice[Byte], waffle: Waffle, indentation: Indentation
+): Result[Slice[Byte], NonLocalWaffleFlow] {
+  eprintln("{indentation}{fun_} {args}")
+  var fun_ = waffle.funs.get(fun_)
+  var result = fun_.body.run(map(fun_.param -> args).&, waffle, indentation)
+  eprintln("{indentation}-> {result.debug()}")
+  result
 }
 
 fun run(
-  body: WaffleBody, dag: Dag[WaffleExpr],
-  visible: &Map[Id, Slice[Byte]], waffle: Waffle,
-): Slice[Byte] {
-  for id in body.locals do
-    visible.put(id, dag.get(id).run(dag, visible, waffle))
-  body.returns.run(dag, visible, waffle)
+  body: WaffleBody,
+  env: &Map[WaffleId, Slice[Byte]],
+  waffle: Waffle,
+  indentation: Indentation,
+): Result[Slice[Byte], NonLocalWaffleFlow] {
+  for id in body.locals do env.put(id, id.resolve().run(env, waffle, indentation)?)
+  body.returns.run(env, waffle, indentation)
 }
 
 fun run(
-  expr: WaffleExpr, dag: Dag[WaffleExpr],
-  visible: &Map[Id, Slice[Byte]], waffle: Waffle,
-): Slice[Byte] {
-  switch expr.kind
-  case param visible.get(id(0))
-  case padding(amount) filled_slice(amount, 16#aa.lower_byte())
-  case byte(byte) list(byte).to_slice()
-  case int(int) int.to_bytes()
-  case local(id) visible.get(id)
-  case aggregate(aggregate) {
-    var bytes = list[Byte]()
-    for part in aggregate do bytes.&.push_all(part.run(dag, visible, waffle))
-    bytes.to_slice()
-  }
-  case member(member) {
-    member.of.run(dag, visible, waffle).subslice(member.offset ..+ expr.size)
-  }
-  case switch_(switch_) {
-    switch_.cases.get(switch_.byte.run(dag, visible, waffle).get(0).to_int())
-      .run(dag, visible, waffle)
-  }
-  case call(call) call.function.run(call.args.run(dag, visible, waffle), waffle)
-  case call_indirect(call) {
-    var fun_index = call.fun_ptr.run(dag, visible, waffle).to_int()
-    var signature = waffle.funs.iter().skip(fun_index).&.next().unwrap().key
-    signature.run(call.args.run(dag, visible, waffle), waffle)
-  }
-  case fun_ptr(signature) {
-    var fun_index = 0
-    for fun_ in waffle.funs.iter().enumerate() do
-      if fun_.item.key == signature then fun_index = fun_.index
-    fun_index.to_bytes()
-  }
-  case lower_byte(int)
-    list(int.run(dag, visible, waffle).to_int().lower_byte()).to_slice()
-  case byte_to_int(byte)
-    byte.run(dag, visible, waffle).to_int().to_bytes()
-  case add(args) {
-    var ints = args.run(dag, visible, waffle).to_two_ints()
-    {ints.a + ints.b}.to_bytes()
-  }
-  case sub(args) {
-    var ints = args.run(dag, visible, waffle).to_two_ints()
-    {ints.a - ints.b}.to_bytes()
-  }
-  case mul(args) {
-    var ints = args.run(dag, visible, waffle).to_two_ints()
-    {ints.a * ints.b}.to_bytes()
-  }
-  case div(args) {
-    var ints = args.run(dag, visible, waffle).to_two_ints()
-    {ints.a / ints.b}.to_bytes()
-  }
-  case mod(args) {
-    var ints = args.run(dag, visible, waffle).to_two_ints()
-    {ints.a % ints.b}.to_bytes()
-  }
-  case compare_zero(arg) {
-    var int = arg.run(dag, visible, waffle).to_int()
-    switch int <=> 0
-    case equal   list(0.lower_byte()).to_slice()
-    case greater list(1.lower_byte()).to_slice()
-    case less    list(2.lower_byte()).to_slice()
-  }
-  case and_(args) {
-    var ints = args.run(dag, visible, waffle).to_two_ints()
-    {ints.a & ints.b}.to_bytes()
-  }
-  case or_(args) {
-    var ints = args.run(dag, visible, waffle).to_two_ints()
-    {ints.a.or(ints.b)}.to_bytes()
-  }
-  case xor(args) {
-    var ints = args.run(dag, visible, waffle).to_two_ints()
-    {ints.a ^ ints.b}.to_bytes()
-  }
-  case malloc(size) {
-    var size = size.run(dag, visible, waffle).to_int()
-    var memory = uninitialized_slice[Byte](size)
-    memory.data.to_int().to_bytes()
-  }
-  case free empty_slice[Byte]()
-  case load(ptr) {
-    var address = ptr.run(dag, visible, waffle).to_int().to_address()
-    Slice[Byte] { data = address, len = expr.size }
-  }
-  case store(store) {
-    var ptr = store.ptr.run(dag, visible, waffle).to_int().to_address()
-    var value = store.value.run(dag, visible, waffle)
-    for byte in value.iter().enumerate() do
-      {ptr + byte.index}.to_reference[Byte]().* = byte.item
-    empty_slice[Byte]()
-  }
-  case store_bytes(store) {
-    var ptr = store.ptr.run(dag, visible, waffle).to_int().to_address()
-    for byte in store.bytes.iter().enumerate() do
-      {ptr + byte.index}.to_reference[Byte]().* = byte.item
-    empty_slice[Byte]()
-  }
-  case crash(message) {
-    var message = message.run(dag, visible, waffle)
-    panic("Plum code panicked")
-  }
+  expr: WaffleExpr,
+  env: &Map[WaffleId, Slice[Byte]],
+  waffle: Waffle,
+  indentation: Indentation,
+): Result[Slice[Byte], NonLocalWaffleFlow] {
+  eprintln("{indentation}{expr.debug().format().split("(").get(0)}")
+  var result =
+    switch expr
+    case param unreachable()
+    case padding(amount) filled_slice(amount, 16#aa.lower_byte())
+    case byte(byte) list(byte).to_slice()
+    case int(int) int.to_bytes()
+    case local(id) env.get(id)
+    case aggregate(aggregate) {
+      var bytes = list[Byte]()
+      for part in aggregate do bytes.&.push_all(part.run(env, waffle, indentation + 1)?)
+      bytes.to_slice()
+    }
+    case part(part)
+      part.of.run(env, waffle, indentation + 1)?.subslice(part.offset ..+ part.layout.size)
+    case switch_(switch_)
+      switch_.cases.get(switch_.condition.run(env, waffle, indentation + 1)?.get(0).to_int())
+        .run(env, waffle, indentation + 1)?
+    case fun_ptr(signature) {
+      var fun_index = 0
+      for fun_ in waffle.funs.iter().enumerate() do
+        if fun_.item.key == signature then fun_index = fun_.index
+      fun_index.to_bytes()
+    }
+    case call(call) call.function.run(call.args.run(env, waffle, indentation + 1)?, waffle, indentation + 1)?
+    case call_indirect(call) {
+      var fun_and_args = call.fun_and_args.run(env, waffle, indentation + 1)?
+      var fun_index = fun_and_args.subslice(0..8).to_int()
+      var args = fun_and_args.without_first(8)
+      var signature = waffle.funs.iter().skip(fun_index).&.next().unwrap().key
+      signature.run(args, waffle, indentation + 1)?
+    }
+    case lower_byte(int)
+      list(int.run(env, waffle, indentation + 1)?.to_int().lower_byte()).to_slice()
+    case byte_to_int(byte)
+      byte.run(env, waffle, indentation + 1)?.get(0).to_int().to_bytes()
+    case add(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      {ints.a + ints.b}.to_bytes()
+    }
+    case subtract(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var res = ints.a - ints.b
+      eprintln("{indentation}{ints.a} - {ints.b} = {res}. In bytes: {res.to_bytes()}")
+      {ints.a - ints.b}.to_bytes()
+    }
+    case multiply(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      {ints.a * ints.b}.to_bytes()
+    }
+    case divide(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      {ints.a / ints.b}.to_bytes()
+    }
+    case modulo(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      {ints.a % ints.b}.to_bytes()
+    }
+    case shift_left(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      {ints.a << ints.b}.to_bytes()
+    }
+    case shift_right(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      {ints.a >> ints.b}.to_bytes()
+    }
+    case compare_zero(arg) {
+      var int = arg.run(env, waffle, indentation + 1)?.to_int()
+      switch int <=> 0
+      case equal   list(0.lower_byte()).to_slice()
+      case greater list(1.lower_byte()).to_slice()
+      case less    list(2.lower_byte()).to_slice()
+    }
+    case and_(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      {ints.a & ints.b}.to_bytes()
+    }
+    case or_(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      {ints.a.or(ints.b)}.to_bytes()
+    }
+    case xor(args) {
+      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      {ints.a ^ ints.b}.to_bytes()
+    }
+    case malloc(size) {
+      var size = size.run(env, waffle, indentation + 1)?.to_int()
+      var memory = uninitialized_slice[Byte](size)
+      memory.data.to_int().to_bytes()
+    }
+    case free empty_slice[Byte]()
+    case load_word(ptr) {
+      var address = ptr.run(env, waffle, indentation + 1)?.to_int().to_address()
+      eprintln("loaded word {Slice[Byte] { data = address, len = 8 }}")
+      Slice[Byte] { data = address, len = 8 }
+    }
+    case load_byte(ptr) {
+      var address = ptr.run(env, waffle, indentation + 1)?.to_int().to_address()
+      Slice[Byte] { data = address, len = 1 }
+    }
+    case store_word(args) {
+      var args = args.run(env, waffle, indentation + 1)?
+      var ptr = args.subslice(0..8).to_int().to_address()
+      var value = args.subslice(8..16).to_int()
+      ptr.to_reference[Int]().* = value
+      empty_slice[Byte]()
+    }
+    case store_byte(args) {
+      var args = args.run(env, waffle, indentation + 1)?
+      var ptr = args.subslice(0..8).to_int().to_address()
+      var value = args.get(8)
+      ptr.to_reference[Byte]().* = value
+      empty_slice[Byte]()
+    }
+    case store_bytes(store) {
+      var ptr = store.ptr.run(env, waffle, indentation + 1)?.to_int().to_address()
+      for byte in store.bytes.iter().enumerate() do
+        {ptr + byte.index}.to_reference[Byte]().* = byte.item
+      empty_slice[Byte]()
+    }
+    case crash(message) {
+      var message = message.run(env, waffle, indentation + 1)?
+      var message = String {
+        data = message.subslice(0..8).to_int().to_address(),
+        len = message.subslice(8..16).to_int(),
+      }
+      return error[Slice[Byte], NonLocalWaffleFlow](NonLocalWaffleFlow.crash(message))
+    }
+    case unreachable panic("reached unreachable")
+    case halt return error[Slice[Byte], NonLocalWaffleFlow](NonLocalWaffleFlow.halt)
+    case loop_(loop_) {
+      env.put(loop_.param, loop_.initial.run(env, waffle, indentation + 1)?)
+      loop {
+        switch loop_.body.run(env, waffle, indentation + 1)
+        case ok(value) break(value)
+        case error(non_local) {
+          switch non_local
+          case continue_(next) env.put(loop_.param, next)
+          default return error[Slice[Byte], NonLocalWaffleFlow](non_local)
+        }
+      }
+    }
+    case continue_(continue_)
+      return error[Slice[Byte], NonLocalWaffleFlow](
+        NonLocalWaffleFlow.continue_(continue_.next.run(env, waffle, indentation + 1)?)
+      )
+  eprintln("{indentation}-> {result}")
+  ok[Slice[Byte], NonLocalWaffleFlow](result)
 }
