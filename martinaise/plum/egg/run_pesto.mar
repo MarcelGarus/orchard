@@ -1,0 +1,232 @@
+import mod.mar
+import ../dag.mar
+
+enum EggPestoValue {
+  byte: Byte,
+  int: Int,
+  struct_: Map[String, EggPestoValue],
+  enum_: EggPestoEnumValue,
+  null_ptr,
+  fun_ptr: String,
+  object: EggPestoObject,
+  buffer: EggPestoBuffer,
+}
+
+struct EggPestoEnumValue { variant: String, payload: &EggPestoValue }
+struct EggPestoObject { refcount: Int, value: &EggPestoValue }
+struct EggPestoBuffer { refcount: Int, items: Slice[EggPestoValue] }
+
+fun write[W](writer: W, value: EggPestoValue) {
+  switch value
+  case byte(byte) writer."{byte}"
+  case int(int) writer."{int}"
+  case struct_(fields) {
+    writer."(&"
+    for field in fields do writer." {field.key}: {field.value}"
+    writer.")"
+  }
+  case enum_(enum_) writer."(| {enum_.variant}: {enum_.payload})"
+  case null_ptr writer."null"
+  case fun_ptr(fun_) writer."(fun_ptr {fun_})"
+  case object(object) writer."(obj {object.value})"
+  case buffer(buffer) {
+    writer."(buffer"
+    for item in buffer.items do writer." {item}"
+    writer.")"
+  }
+}
+
+fun run(egg: Egg, args: Slice[EggPestoValue]): EggPestoValue {
+  switch run(egg.entry_point, args, egg, list[String]().&)
+  case ok(value) value
+  case error(error) {
+    switch error
+    case continue_ panic("continue outside loop")
+    case crash(message) panic("Pesto code crashed: {message}")
+    case halt panic("Pesto code halted")
+  }
+}
+
+enum NonLocalPestoFlow { continue_: Slice[EggPestoValue], crash: String, halt }
+
+fun run(
+  fun_: String, args: Slice[EggPestoValue], egg: Egg, stack: &List[String],
+): Result[EggPestoValue, NonLocalPestoFlow] {
+  if stack.len >= 100 then panic("Stack overflow")
+
+  var function = egg.funs.get(fun_)
+  stack.push(fun_)
+  var result = function.body.run(args, map[EggId, EggPestoValue]().&, egg, stack)
+  stack.pop()
+  result
+}
+
+fun run(
+  body: EggBody, args: Slice[EggPestoValue],
+  env: &Map[EggId, EggPestoValue], egg: Egg, stack: &List[String],
+): Result[EggPestoValue, NonLocalPestoFlow] {
+  for both in zip(body.params.iter(), args.iter()) do env.put(both.a, both.b)
+  for id in body.children do env.put(id, id.resolve().run(env, egg, stack)?)
+  ok[EggPestoValue, NonLocalPestoFlow](env.get(body.returns))
+}
+
+fun run(
+  expr: EggExpr,
+  env: &Map[EggId, EggPestoValue], egg: Egg, stack: &List[String],
+): Result[EggPestoValue, NonLocalPestoFlow] {
+  | eprintln("Running: {expr.debug()}")
+  stack.push(expr.debug().format().split("(").get(0))
+  eprintln("{indentation(stack.len)}{stack.last()}")
+
+  var result =
+    switch expr
+    case param unreachable()
+    case case_param unreachable()
+    case byte(byte) EggPestoValue.byte(byte)
+    case lower_byte(id) EggPestoValue.byte(env.get(id).int.unwrap().lower_byte())
+    case byte_to_int(id)  EggPestoValue.int(env.get(id).byte.unwrap().to_int())
+    case int(int) EggPestoValue.int(int)
+    case add(args)
+      EggPestoValue.int(env.get(args.a).int.unwrap() + env.get(args.b).int.unwrap())
+    case subtract(args)
+      EggPestoValue.int(env.get(args.a).int.unwrap() - env.get(args.b).int.unwrap())
+    case multiply(args)
+      EggPestoValue.int(env.get(args.a).int.unwrap() * env.get(args.b).int.unwrap())
+    case unchecked_divide(args)
+      EggPestoValue.int(env.get(args.a).int.unwrap() / env.get(args.b).int.unwrap())
+    case unchecked_modulo(args)
+      EggPestoValue.int(env.get(args.a).int.unwrap() % env.get(args.b).int.unwrap())
+    case compare(args) {
+      var a =
+        switch env.get(args.a)
+        case int(a) a
+        case null_ptr 0
+        case object 1
+        case buffer 1
+        default unreachable()
+      var b =
+        switch env.get(args.b)
+        case int(b) b
+        case null_ptr 0
+        case object 1
+        case buffer 1
+        default unreachable()
+      var ordering = a <=> b
+      var variant = switch ordering
+        case less "less"
+        case equal "equal"  
+        case greater "greater"
+      EggPestoValue.enum_(EggPestoEnumValue {
+        variant,
+        payload = EggPestoValue.struct_(map[String, EggPestoValue]()).put_on_heap(),
+      })
+    }
+    case and_(args)
+      EggPestoValue.int(env.get(args.a).int.unwrap() & env.get(args.b).int.unwrap())
+    case or_(args)
+      EggPestoValue.int(or(env.get(args.a).int.unwrap(), env.get(args.b).int.unwrap()))
+    case xor(args)
+      EggPestoValue.int(env.get(args.a).int.unwrap() ^ env.get(args.b).int.unwrap())
+    case shift_left(args)
+      EggPestoValue.int(env.get(args.a).int.unwrap() << env.get(args.b).int.unwrap())
+    case shift_right(args)
+      EggPestoValue.int(env.get(args.a).int.unwrap() >> env.get(args.b).int.unwrap())
+    case struct_(fields) {
+      var result = map[String, EggPestoValue]()
+      for field in fields do result.&.put(field.key, env.get(field.value))
+      EggPestoValue.struct_(result)
+    }
+    case member(member) env.get(member.of).struct_.unwrap().get(member.name)
+    case enum_(enum_)
+      EggPestoValue.enum_(EggPestoEnumValue {
+        variant = enum_.variant, payload = env.get(enum_.payload).put_on_heap()
+      })
+    case switch_(switch_) {
+      var condition = env.get(switch_.condition).enum_.unwrap()
+      var case_ = switch_.cases.get(condition.variant)
+      case_.run(list(condition.payload.*).to_slice(), env, egg, stack)?
+    }
+    case fun_ptr(name) EggPestoValue.fun_ptr(name)
+    case call_fun(call) {
+      var args = list[EggPestoValue]()
+      for arg in call.args do args.&.push(env.get(arg))
+      call.fun_.run(args.to_slice(), egg, stack)?
+    }
+    case call_indirect(call) {
+      var fun_ = env.get(call.fun_ptr).fun_ptr.unwrap()
+      var args = list[EggPestoValue]()
+      for arg in call.args do args.&.push(env.get(arg))
+      fun_.run(args.to_slice(), egg, stack)?
+    }
+    case crash(crash) panic("Pesto code crashed")
+    case unreachable unreachable()
+    case halt panic("Pesto code halted")
+    case loop_(loop_) {
+      var args = list[EggPestoValue]()
+      for initial in loop_.initial do args.&.push(env.get(initial))
+      var loop_vars = args.to_slice()
+      loop {
+        switch loop_.body.run(loop_vars, env, egg, stack)
+        case ok(value) break(value)
+        case error(non_local) {
+          switch non_local
+          case continue_(next) loop_vars = next 
+          default return error[EggPestoValue, NonLocalPestoFlow](non_local)
+        }
+      }
+    }
+    case continue_(continue_expr) {
+      var next = list[EggPestoValue]()
+      for value in continue_expr.next do next.&.push(env.get(value))
+      return error[EggPestoValue, NonLocalPestoFlow](
+        NonLocalPestoFlow.continue_(next.to_slice())
+      )
+    }
+    case null_ptr EggPestoValue.null_ptr
+    case object_new(value_id)
+      EggPestoValue.object(EggPestoObject {
+        refcount = 1, value = env.get(value_id).put_on_heap()
+      })
+    case object_load(load) env.get(load.ptr).object.unwrap().value.*
+    case object_free(object) EggPestoValue.struct_(map[String, EggPestoValue]())
+    case get_refcount(get) {
+      switch env.get(get.ptr)
+      case object(object) EggPestoValue.int(object.refcount)
+      case buffer(buffer) EggPestoValue.int(buffer.refcount)
+      default panic("tried to get refcount of non-object/buffer")
+    }
+    case set_refcount(set) {
+      var refcount = env.get(set.refcount).int.unwrap()
+      switch env.get(set.ptr)
+      case object(object) env.put(set.ptr, EggPestoValue.object(EggPestoObject { refcount, value = object.value }))
+      case buffer(buffer) env.put(set.ptr, EggPestoValue.buffer(EggPestoBuffer { refcount, items = buffer.items }))
+      default panic("tried to set refcount of non-object/buffer")
+      EggPestoValue.struct_(map[String, EggPestoValue]())
+    }
+    case new_buffer(new) {
+      var items = filled_slice(env.get(new.length).int.unwrap(), EggPestoValue.null_ptr)
+      EggPestoValue.buffer(EggPestoBuffer { refcount = 1, items })
+    }
+    case get_buffer_length(buffer)
+      EggPestoValue.int(env.get(buffer).buffer.unwrap().items.len)
+    case load_buffer_item(load) {
+      var buffer = env.get(load.buffer).buffer.unwrap()
+      var index = env.get(load.index).int.unwrap()
+      buffer.items.get(index)
+    }
+    case store_buffer_item(store) {
+      var buffer = env.get(store.buffer).buffer.unwrap()
+      var index = env.get(store.index).int.unwrap()
+      var item = env.get(store.item)
+      buffer.items.&.set(index, item)
+      EggPestoValue.struct_(map[String, EggPestoValue]())
+    }
+    case free_buffer(ptr_id) {
+      EggPestoValue.struct_(map[String, EggPestoValue]())
+    }
+    default todo()
+
+  eprintln("{indentation(stack.len)}{result}")
+  stack.pop()
+  ok[EggPestoValue, NonLocalPestoFlow](result)
+}

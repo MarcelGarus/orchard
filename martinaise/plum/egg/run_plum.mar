@@ -1,0 +1,235 @@
+import mod.mar
+
+enum EggPlumValue {
+  type: EggType,
+  byte: Byte,
+  int: Int,
+  array: Slice[EggPlumValue],
+  struct_: Map[String, EggPlumValue],
+  enum_: EggPlumEnumValue,
+  lambda: EggPlumLambdaValue,
+  box: &EggPlumValue,
+}
+struct EggPlumEnumValue { name: String, value: &EggPlumValue }
+struct EggPlumLambdaValue { function: String, closure: &EggPlumValue }
+
+fun write[W](writer: W, value: EggPlumValue) {
+  switch value
+  case type(type) writer."{type}"
+  case byte(byte) writer."{byte}"
+  case int(int) writer."{int}"
+  case array(items) {
+    writer."["
+    var first = true
+    for item in items do {
+      if first then first = false else writer." "
+      writer."{item}"
+    }
+    writer."]"
+  }
+  case struct_(fields) {
+    writer."(&"
+    for field in fields do writer." {field.key}: {field.value}"
+    writer.")"
+  }
+  case enum_(enum_) {
+    if enum_.value.* is struct_(fields) then if fields.is_empty() then {
+      writer."(| {enum_.name})"
+      return {}
+    }
+    writer."(| {enum_.name}: {enum_.value})"
+  }
+  case lambda(lambda) writer."(\\ ...)"
+  case box(inner) writer."(box {inner})"
+}
+
+fun run(egg: Egg, args: Slice[EggPlumValue]): EggPlumValue {
+  switch egg.entry_point.run(args, egg, list[String]().&)
+  case ok(value) value
+  case error(error) {
+    switch error
+    case continue_ panic("continue outside loop")
+    case crash(message) panic("Plum code crashed: {message}")
+    case halt panic("Plum code halted")
+  }
+}
+
+enum NonLocalPlumFlow { continue_: Slice[EggPlumValue], crash: String, halt }
+
+fun run(
+  function: String, args: Slice[EggPlumValue], egg: Egg, stack: &List[String]
+): Result[EggPlumValue, NonLocalPlumFlow] {
+  eprint("{indentation(stack.len)}{pretty_signature(function)}")
+  for arg in args do eprint(" {arg}")
+  eprintln()
+
+  stack.push(function)
+  var value = egg.funs.get(function).body
+    .run(args, map[EggId, EggPlumValue]().&, egg, stack)?
+  stack.pop()
+
+  for i in 0..stack.len do eprint(" ")
+  eprintln("-> {value}")
+
+  ok[EggPlumValue, NonLocalPlumFlow](value)
+}
+
+fun run(
+  body: EggBody, args: Slice[EggPlumValue],
+  env: &Map[EggId, EggPlumValue], egg: Egg, stack: &List[String],
+): Result[EggPlumValue, NonLocalPlumFlow] {
+  for both in zip(body.params.iter(), args.iter()) do env.put(both.a, both.b)
+  for id in body.children do env.put(id, id.resolve().run(env, egg, stack)?)
+  ok[EggPlumValue, NonLocalPlumFlow](env.get(body.returns))
+}
+
+fun run(
+  expr: EggExpr,
+  env: &Map[EggId, EggPlumValue], egg: Egg, stack: &List[String],
+): Result[EggPlumValue, NonLocalPlumFlow] {
+  | eprintln("Running: {expr.debug()}")
+
+  ok[EggPlumValue, NonLocalPlumFlow](
+    switch expr
+    case param unreachable()
+    case case_param(case_param) env.get(case_param.switch_on).enum_.unwrap().value.*
+    case type(type) EggPlumValue.type(type)
+    case byte(byte) EggPlumValue.byte(byte)
+    case lower_byte unreachable()
+    case byte_to_int unreachable()
+    case int(int) EggPlumValue.int(int)
+    case add(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() + env.get(tuple.b).int.unwrap())
+    case subtract(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() - env.get(tuple.b).int.unwrap())
+    case multiply(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() * env.get(tuple.b).int.unwrap())
+    case divide(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() / env.get(tuple.b).int.unwrap())
+    case modulo(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() % env.get(tuple.b).int.unwrap())
+    case compare(tuple) EggPlumValue.enum_(EggPlumEnumValue {
+      name = 
+        switch env.get(tuple.a).int.unwrap() <=> env.get(tuple.b).int.unwrap()
+        case less "less"
+        case equal "equal"
+        case greater "greater",
+      value = EggPlumValue.struct_(map[String, EggPlumValue]()).put_on_heap(),
+    })
+    case array(array) {
+      var items = list[EggPlumValue]()
+      for item in array.items do items.&.push(env.get(item))
+      EggPlumValue.array(items.to_slice())
+    }
+    case struct_(struct_) {
+      var fields = map[String, EggPlumValue]()
+      for field in struct_ do fields.&.put(field.key, env.get(field.value))
+      EggPlumValue.struct_(fields)
+    }
+    case member(member) env.get(member.of).struct_.unwrap().get(member.name)
+    case enum_(enum_)
+      EggPlumValue.enum_(EggPlumEnumValue {
+        name = enum_.variant, value = env.get(enum_.payload).put_on_heap()
+      })
+    case switch_(switch_) {
+      var condition = env.get(switch_.condition).enum_.unwrap()
+      var case_ = switch_.cases.get(condition.name)
+      case_.run(list(condition.value.*).to_slice(), env, egg, stack)?
+    }
+    case raw_lambda(lambda)
+      EggPlumValue.lambda(EggPlumLambdaValue {
+        function = lambda.fun_,
+        closure = env.get(lambda.closure).put_on_heap(),
+      })
+    case call_fun(call) {
+      var args = list[EggPlumValue]()
+      for arg in call.args do args.&.push(env.get(arg))
+      call.fun_.run(args.to_slice(), egg, stack)?
+    }
+    case call_lambda(call) {
+      var lambda = env.get(call.lambda).lambda.unwrap()
+      var args = list[EggPlumValue]()
+      for arg in call.args do args.&.push(env.get(arg))
+      var all_args = args + list(lambda.closure.*)
+      lambda.function.run(all_args.to_slice(), egg, stack)?
+    }
+    case box(id) EggPlumValue.box(env.get(id).put_on_heap())
+    case unbox(id) env.get(id).box.unwrap().*
+    case generate_array(gen) {
+      var len = env.get(gen.length).int.unwrap()
+      var items = list[EggPlumValue]()
+      for index in 0..len do
+        items.&.push(
+          gen.generator
+            .run(list(EggPlumValue.int(index)).to_slice(), env, egg, stack)?
+        )
+      EggPlumValue.array(items.to_slice())
+    }
+    case array_get(get) {
+      var array = env.get(get.array).array.unwrap()
+      var index = env.get(get.index).int.unwrap()
+      array.get(index)
+    }
+    case array_set(set) {
+      var array = env.get(set.array).array.unwrap()
+      var index = env.get(set.index).int.unwrap()
+      var item = env.get(set.item)
+      var copy = list[EggPlumValue]()
+      for old_item in array do copy.&.push(old_item)
+      copy.&.set(index, item)
+      EggPlumValue.array(copy.to_slice())
+    }
+    case array_slice(slice) {
+      var array = env.get(slice.array).array.unwrap()
+      var start = env.get(slice.start).int.unwrap()
+      var end = env.get(slice.end).int.unwrap()
+      EggPlumValue.array(array.subslice(start..end))
+    }
+    case array_len(id) EggPlumValue.int(env.get(id).array.unwrap().len)
+    case unchecked_generate_non_empty_array(gen) {
+      var len = env.get(gen.length).int.unwrap()
+      var items = list[EggPlumValue]()
+      for index in 0..len do
+        items.&.push(
+          gen.generator
+            .run(list(EggPlumValue.int(index)).to_slice(), env, egg, stack)?
+        )
+      EggPlumValue.array(items.to_slice())
+    }
+    case unchecked_array_get(get) {
+      var array = env.get(get.array).array.unwrap()
+      var index = env.get(get.index).int.unwrap()
+      array.get(index)
+    }
+    case unchecked_array_set(set) {
+      var array = env.get(set.array).array.unwrap()
+      var index = env.get(set.index).int.unwrap()
+      var item = env.get(set.item)
+      var copy = list[EggPlumValue]()
+      for old_item in array do copy.&.push(old_item)
+      copy.&.set(index, item)
+      EggPlumValue.array(copy.to_slice())
+    }
+    case unchecked_array_slice(slice) {
+      var array = env.get(slice.array).array.unwrap()
+      var start = env.get(slice.start).int.unwrap()
+      var end = env.get(slice.end).int.unwrap()
+      EggPlumValue.array(array.subslice(start..end))
+    }
+    case loop_(loop_expr) {
+      var args = list[EggPlumValue]()
+      for initial in loop_expr.initial do args.&.push(env.get(initial))
+      var loop_vars = args.to_slice()
+      loop {
+        switch loop_expr.body.run(loop_vars, env, egg, stack)
+        case ok(value) break(value)
+        case error(non_local) {
+          switch non_local
+          case continue_(next) loop_vars = next 
+          default return error[EggPlumValue, NonLocalPlumFlow](non_local)
+        }
+      }
+    }
+    case continue_(continue_expr) {
+      var values = list[EggPlumValue]()
+      for value in continue_expr.next do values.&.push(env.get(value))
+      return error[EggPlumValue, NonLocalPlumFlow](NonLocalPlumFlow.continue_(values.to_slice()))
+    }
+    default todo()
+  )
+}
