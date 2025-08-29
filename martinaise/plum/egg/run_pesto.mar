@@ -52,8 +52,6 @@ enum NonLocalPestoFlow { continue_: Slice[EggPestoValue], crash: String, halt }
 fun run(
   fun_: String, args: Slice[EggPestoValue], egg: Egg, stack: &List[String],
 ): Result[EggPestoValue, NonLocalPestoFlow] {
-  if stack.len >= 100 then panic("Stack overflow")
-
   var function = egg.funs.get(fun_)
   stack.push(fun_)
   var result = function.body.run(args, map[EggId, EggPestoValue]().&, egg, stack)
@@ -75,6 +73,8 @@ fun run(
   env: &Map[EggId, EggPestoValue], egg: Egg, stack: &List[String],
 ): Result[EggPestoValue, NonLocalPestoFlow] {
   | eprintln("Running: {expr.debug()}")
+  if stack.len >= 100 then panic("Stack overflow")
+  var stack_len = stack.len
   stack.push(expr.debug().format().split("(").get(0))
   eprintln("{indentation(stack.len)}{stack.last()}")
 
@@ -165,12 +165,16 @@ fun run(
       var args = list[EggPestoValue]()
       for initial in loop_.initial do args.&.push(env.get(initial))
       var loop_vars = args.to_slice()
+      var stack_len = stack.len
       loop {
         switch loop_.body.run(loop_vars, env, egg, stack)
         case ok(value) break(value)
         case error(non_local) {
           switch non_local
-          case continue_(next) loop_vars = next 
+          case continue_(next) {
+            loop_vars = next
+            stack.len = stack_len
+          }
           default return error[EggPestoValue, NonLocalPestoFlow](non_local)
         }
       }
@@ -226,7 +230,7 @@ fun run(
     }
     default todo()
 
-  eprintln("{indentation(stack.len)}{result}")
-  stack.pop()
+  eprintln("{indentation(stack.len)}-> {result}")
+  stack.len = stack_len
   ok[EggPestoValue, NonLocalPestoFlow](result)
 }
