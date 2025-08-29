@@ -1,0 +1,104 @@
+import
+  "...core"
+    Array t
+    Bool
+    Byte
+    Int
+    Iterator t
+    List t
+    Matrix t
+    Map k v
+    Maybe t
+    Position
+    String
+    Size
+    Type
+    == String String
+    + Int Int
+    + Position Position
+    => k v
+    array t
+    else (Maybe t) t
+    empty_list t:Type
+    fold (Iterator t) s (\ s t -> s)
+    get_maybe (Map k v) k
+    iterate (Array t)
+    iterate (List t)
+    map (Iterator a) (\ a -> b)
+    push (List t) t
+    to_list (Iterator t)
+    get (Matrix t) Int Int
+  "..color" Color
+  "..texture" Texture, update_area Texture Rectangle (\ Int Int Color -> Color)
+  "..rectangle" Rectangle, by Position Size
+
+Grapheme = String
+# A grapheme is a (usually) short string that represents one visible character
+# when rendering text. For ASCII characters, those map basically one-to-one.
+# Emojis and other such stuff might be arbitrarily long.
+
+break_into_graphemes text: String -> (List Grapheme) =
+  # TODO: Do this properly.
+  text
+  .utf8_bytes
+  .iterate
+  .map \ byte: Byte -> & utf8_bytes: (array byte)
+  .to_list
+
+may_replace_by_wrap grapheme: String -> Bool =
+  # TODO: Have better logic here.
+  grapheme .== " "
+
+# Fonts are a collection of glyphs, descriptions of how to render characters.
+
+Font =
+  & line_height: Int
+    glyphs: (Map Grapheme Glyph)
+    tofu: Glyph
+Glyph = Matrix Bool
+# TODO: This doesn't correctly model i.e. emojis that are colored.
+
+get_or_tofu font: Font grapheme: String -> Glyph =
+  font.glyphs .get_maybe grapheme .else (font.tofu)
+
+PositionedGlyph = & position: Position glyph: Glyph
+
+layout
+  graphemes: (List Grapheme) font: Font width: Int -> (List PositionedGlyph)
+= # TODO: word wrap
+  graphemes
+  .iterate
+  .fold
+    & glyphs: (empty_list PositionedGlyph) x: 0
+    \ state: (& glyphs: (List PositionedGlyph) x: Int) grapheme: Grapheme ->
+      (& glyphs x) = state
+      glyph = font .get_or_tofu grapheme
+      & glyphs: glyphs .push (& position: (& x y: 0) glyph)
+        x: x .+ (glyph.size.width)
+  .glyphs
+
+draw_text
+  texture: Texture
+  text: String
+  where: Position
+  width: Int
+  font: Font
+  color: Color
+  -> Texture
+= text
+  .break_into_graphemes
+  .layout font width
+  .iterate
+  .fold
+    texture
+    \ texture: Texture glyph: PositionedGlyph ->
+      texture .draw_glyph (glyph.glyph) (where .+ (glyph.position)) color
+
+draw_glyph texture: Texture glyph: Glyph where: Position color: Color -> Texture
+= texture
+  .update_area
+    where .by (glyph.size)
+    \ x: Int y: Int old: Color ->
+      glyph .get x y
+      % true -> color
+        false -> old
