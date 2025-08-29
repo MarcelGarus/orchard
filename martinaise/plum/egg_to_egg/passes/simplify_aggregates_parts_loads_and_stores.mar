@@ -15,7 +15,7 @@ fun simplify_aggregates_parts_loads_and_stores(id: EggId, builder: &EggBodyBuild
   }
   case part(part) {
     | If parts just access an entire other expression, return the original one.
-    if part.offset == 0 and part.size == part.of.type().memory_layout().size
+    if part.offset == 0 and part.layout.size == part.of.type().memory_layout().size
     then
       return part.of
 
@@ -42,14 +42,14 @@ fun simplify_aggregates_parts_loads_and_stores(id: EggId, builder: &EggBodyBuild
       var end = 0
       loop {
         end = end + 1
-        if offsets.get(end) >= {part.offset + part.size} then break
+        if offsets.get(end) >= {part.offset + part.layout.size} then break
       }
 
       if end - start < aggregate.len then {
         return builder.part(
           builder.aggregate(aggregate.subslice(start..end)),
           part.offset - offsets.get(start),
-          part.size,
+          part.layout,
         )
       }
     }
@@ -57,13 +57,13 @@ fun simplify_aggregates_parts_loads_and_stores(id: EggId, builder: &EggBodyBuild
     | If a part accesses another part, instead access the original expression
     | directly.
     if part.of.resolve() is part(inner) then
-      return builder.part(inner.of, inner.offset + part.offset, part.size)
+      return builder.part(inner.of, inner.offset + part.offset, part.layout)
 
     | If a part access a load, instead load only the relevant part directly.
     if part.of.resolve() is load(load) then {
       return builder.load(
         builder.add(load.ptr, builder.int(part.offset)),
-        part.size,
+        part.layout,
       )
     }
   }

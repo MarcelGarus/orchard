@@ -435,7 +435,7 @@ enum InternalEggType {
   lambda: PlumLambdaType,
   recursive: Int,
   ptr,
-  bytes: Int,
+  bytes: MemoryLayout,
 }
 
 fun internal_kind(type: EggType): InternalEggType {
@@ -504,9 +504,10 @@ fun internal_kind(type: EggType): InternalEggType {
   }
   if string == "Ptr" then return InternalEggType.ptr
   if string.starts_with("Bytes ") then {
-    return InternalEggType.bytes(
-      string.without_first("Bytes ".len).parse_int().unwrap()
-    )
+    var parts = string.without_first("Bytes ".len).split(" ")
+    var size = parts.get(0).parse_int().unwrap()
+    var alignment = parts.get(1).parse_int().unwrap()
+    return InternalEggType.bytes(MemoryLayout { size, alignment })
   }
   InternalEggType.variable(string)
 }
@@ -578,7 +579,9 @@ fun type_recursive(level: Int): EggType {
 }
 
 var type_ptr = EggType { string = "(Ptr)" }
-fun type_bytes(amount: Int): EggType { EggType { string = "(Bytes {amount})" } }
+fun type_bytes(layout: MemoryLayout): EggType {
+  EggType { string = "(Bytes {layout.size} {layout.alignment})" }
+}
 
 | Printing Types  
 
@@ -640,5 +643,5 @@ fun write[W](writer: W, type: IndentedLimited[EggType]) {
   }
   case recursive(level) writer."^{level}"
   case ptr writer."(Ptr)"
-  case bytes(amount) writer."(Bytes {amount})"
+  case bytes(layout) writer."(Bytes {layout.size} {layout.alignment})"
 }

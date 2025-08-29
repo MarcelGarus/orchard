@@ -60,7 +60,8 @@ fun type(id: EggId): EggType {
   case array_set(args) args.array.type()
   case array_slice(args) args.array.type()
   case array_len type_int
-  case unchecked_generate_non_empty_array(args) type_array(args.generator.returns.type())
+  case unchecked_generate_non_empty_array(args)
+    type_array(args.generator.returns.type())
   case unchecked_array_get(args) args.array.type().plum().array.unwrap()
   case unchecked_array_set(args) args.array.type()
   case unchecked_array_slice(args) args.array.type()
@@ -88,17 +89,22 @@ fun type(id: EggId): EggType {
   case store_buffer_item type_nothing
   case store_buffer_bytes type_nothing
   case free_buffer type_nothing
-  case padding(amount) type_bytes(amount)
+  case padding(amount) type_bytes(MemoryLayout { size = amount, alignment = 1 })
   case aggregate(parts) {
     var size = 0
-    for part in parts do size = size + part.type().memory_layout().size
-    type_bytes(size)
+    var alignment = 1
+    for part in parts do {
+      var layout = part.type().memory_layout()
+      size = size + layout.size
+      alignment = max(alignment, layout.alignment)
+    }
+    type_bytes(MemoryLayout { size, alignment })
   }
-  case part(part) type_bytes(part.size)
+  case part(part) type_bytes(part.layout)
   case switch_on_byte(switch_) switch_.cases.get(0).returns.type()
   case malloc type_ptr
   case free type_nothing
-  case load(load) type_bytes(load.size)
+  case load(load) type_bytes(load.layout)
   case store type_nothing
   case store_bytes type_nothing
   case load_word type_int
