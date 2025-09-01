@@ -172,10 +172,7 @@ fun write[W](writer: W, fixpoint: Fixpoint) {
 fun is_trivial(fixpoint: Fixpoint): Bool {
   var all_trivial = true
   for shape in fixpoint.shapes do
-    switch shape
-    case hole {}
-    case enum_ {}
-    default all_trivial = false
+    if not(shape is hole) then all_trivial = false
   all_trivial
 }
 
@@ -207,12 +204,29 @@ fun find_fixpoint(loop_: EggLoop): Fixpoint {
 
       | eprint("Merging {candidate} and {continue_shapes} ")
       candidate = merge(candidate, continue_shapes.to_slice())
+        .loosen_for_fixpoint()
       | eprintln("-> {candidate}")
     }
     if candidate == previous then break
   }
 
   Fixpoint { shapes = candidate }
+}
+
+fun loosen_for_fixpoint(shapes: Slice[Shape]): Slice[Shape] {
+  var loosened = list[Shape]()
+  for shape in shapes do loosened.&.push(shape.loosen_for_fixpoint())
+  loosened.to_slice()
+}
+fun loosen_for_fixpoint(shape: Shape): Shape {
+  switch shape
+  case enum_(enum_) {
+    if enum_.variants.size == 1 then
+      shape
+    else
+      Shape.hole(enum_.type)
+  }
+  default shape
 }
 
 fun holes_to_params(shapes: Slice[Shape], builder: &EggBodyBuilder) {
@@ -225,7 +239,12 @@ fun holes_to_params(shape: Shape, builder: &EggBodyBuilder) {
   case int {}
   case struct_(struct_)
     for field in struct_.fields do field.value.holes_to_params(builder)
-  case enum_(enum_) builder.param(enum_.type).ignore()
+  case box(inner) inner.holes_to_params(builder)
+  case enum_(enum_) {
+    if not(enum_.variants.size == 1) then panic("bad enum shape")
+    var only_variant = enum_.variants.iter().&.next().unwrap()
+    only_variant.value.holes_to_params(builder)
+  }
   case array_slice(slice) {
     slice.start.holes_to_params(builder)
     slice.end.holes_to_params(builder)
@@ -267,7 +286,25 @@ fun dehydrate(
   case struct_(struct_)
     for field in struct_.fields do
       field.value.dehydrate(builder.member(id, field.key), builder, out)
-  case enum_ out.push(id)
+  case enum_(enum_) {
+    if not(enum_.variants.size == 1) then panic("bad enum shape")
+    var only_variant = enum_.variants.iter().&.next().unwrap()
+    var cases = map[String, EggBody]()
+    for variant in id.type().plum().enum_.unwrap() do {
+      cases.&.put(variant.key, {
+        var builder = egg_body_builder().&
+        var payload = builder.case_param(id, variant.key)
+        if variant.key == only_variant.key then
+          builder.finish(payload)
+        else
+          builder.finish_with_unreachable(enum_.type)
+      })
+    }
+    var payload = builder.switch_(id, cases)
+    only_variant.value.dehydrate(payload, builder, out)
+  }
+  case box(inner_shape)
+    inner_shape.dehydrate(builder.unbox(id), builder, out)
   case array_slice(slice_shape) {
     switch id.resolve()
     case array(array) {
@@ -311,7 +348,16 @@ fun hydrate[I](
       fields.&.put(field.key, field.value.hydrate(ids, builder))
     builder.struct_(fields)
   }
-  case enum_ ids.next().unwrap()
+  case enum_(enum_) {
+    if not(enum_.variants.size == 1) then panic("bad enum shape")
+    var only_variant = enum_.variants.iter().&.next().unwrap()
+    builder.enum_(
+      enum_.type,
+      only_variant.key,
+      only_variant.value.hydrate(ids, builder),
+    )
+  }
+  case box(inner_shape) builder.box(inner_shape.hydrate(ids, builder))
   case array_slice(slice_shape) {
     var start = slice_shape.start.hydrate(ids, builder)
     var end = slice_shape.end.hydrate(ids, builder)

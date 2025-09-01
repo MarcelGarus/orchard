@@ -1,7 +1,7 @@
 | Something we know about the shape of an expression. Sorted roughly from
 | highest to lowest quality (this is not a total ordering, so some order is
 | arbitrary).
-| 
+|
 |            id
 |       ___//  \\___
 |    __/   /    \   \___
@@ -22,7 +22,7 @@ enum Shape {
   int: Int,
   struct_: ShapeStruct,
   enum_: ShapeEnum,
-  | box: &Shape, TODO
+  box: &Shape,
   array_slice: ShapeArraySlice,
   hole: EggType, | We know nothing about the expression.
 }
@@ -37,6 +37,7 @@ fun ==(a: Shape, b: Shape): Bool {
   case int(a)         if b is int(b)         then a == b else false
   case struct_(a)     if b is struct_(b)     then a == b else false
   case enum_(a)       if b is enum_(b)       then a == b else false
+  case box(a)         if b is box(b)         then a.* == b.* else false
   case array_slice(a) if b is array_slice(b) then a == b else false
   case hole(a)        if b is hole(b)        then a == b else false
 }
@@ -65,6 +66,7 @@ fun write[W](writer: W, shape: Shape) {
     for variant in enum_.variants do writer." {variant.key}: {variant.value}"
     writer.")"
   }
+  case box(inner) writer."(box {inner.*})"
   case array_slice(slice)
     writer."(slice {slice.array.id.index.debug()} {slice.start.*} {slice.end.*})"
   case hole writer."(?)"
@@ -77,6 +79,7 @@ fun type(shape: Shape): EggType {
   case int type_int
   case struct_(struct_) struct_.type
   case enum_(enum_) enum_.type
+  case box(inner) type_box(inner.type())
   case array_slice(slice) type_array(slice.array.type())
   case hole(type) type
 }
@@ -88,7 +91,7 @@ fun shape(id: EggId): Shape {
     if param.switch_on.shape() is enum_(enum_shape) then
       if enum_shape.variants.get_maybe(param.variant) is some(shape) then
         return shape
-    Shape.hole(id.type())
+    id.type().shape()
   }
   case struct_(struct_) {
     var fields = map[String, Shape]()
@@ -99,17 +102,18 @@ fun shape(id: EggId): Shape {
     if member.of.shape() is struct_(struct_) then
       struct_.fields.get(member.name)
     else
-      Shape.hole(id.type())
+      id.type().shape()
   case enum_(enum_)
     Shape.enum_(ShapeEnum {
       variants = map(enum_.variant -> enum_.payload.shape()),
       type = id.type(),
     })
+  case box(inner) Shape.box(inner.shape().put_on_heap())
   case switch_(switch_) {
     var shapes = list[Shape]()
     for case_ in switch_.cases do
       shapes.&.push(case_.value.returns.shape())
-    if shapes.is_empty() then return Shape.hole(id.type())
+    if shapes.is_empty() then return id.type().shape()
     var common = shapes.get(0)
     for shape in shapes.to_slice().without_first() do
       common = merge(common, shape)
@@ -128,7 +132,24 @@ fun shape(id: EggId): Shape {
       start = Shape.id(slice.start).put_on_heap(),
       end = Shape.id(slice.end).put_on_heap(),
     })
-  default Shape.hole(id.type())
+  default id.type().shape()
+}
+fun shape(type: EggType): Shape {
+  if type.contains_recursion() then return Shape.hole(type)
+  switch type.internal_kind()
+  case struct_(struct_) {
+    var fields = map[String, Shape]()
+    for field in struct_ do fields.&.put(field.key, field.value.shape())
+    Shape.struct_(ShapeStruct { fields, type })
+  }
+  case enum_(enum_) {
+    var variants = map[String, Shape]()
+    for variant in enum_ do
+      variants.&.put(variant.key, variant.value.shape())
+    Shape.enum_(ShapeEnum { variants, type })
+  }
+  case box(inner) Shape.box(inner.shape().put_on_heap())
+  default Shape.hole(type)
 }
 
 fun merge(a: Shape, b: Shape): Shape {
@@ -147,6 +168,9 @@ fun merge(a: Shape, b: Shape): Shape {
   if a is enum_(a_enum) then
     if b is enum_(b_enum) then
       return Shape.enum_(merge(a_enum, b_enum))
+  if a is box(a_inner) then
+    if b is box(b_inner) then
+      return Shape.box(merge(a_inner.*, b_inner.*).put_on_heap())
   if a is array_slice(a_slice) then
     if b is array_slice(b_slice) then
       if merge(a_slice, b_slice) is some(merged) then
