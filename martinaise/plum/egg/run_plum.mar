@@ -59,7 +59,7 @@ enum NonLocalPlumFlow { continue_: Slice[EggPlumValue], crash: String, halt }
 fun run(
   function: String, args: Slice[EggPlumValue], egg: Egg, stack: &List[String]
 ): Result[EggPlumValue, NonLocalPlumFlow] {
-  if stack.len > 10 then panic("stack overflow")
+  if stack.len > 100 then panic("stack overflow")
 
   eprint("{indentation(stack.len)}{pretty_signature(function)}")
   for arg in args do eprint(" {arg}")
@@ -70,8 +70,7 @@ fun run(
     .run(args, map[EggId, EggPlumValue]().&, egg, stack)?
   stack.pop()
 
-  for i in 0..stack.len do eprint(" ")
-  eprintln("-> {value}")
+  eprintln("{indentation(stack.len)}-> {value}")
 
   ok[EggPlumValue, NonLocalPlumFlow](value)
 }
@@ -97,17 +96,17 @@ fun run(
     case case_param(case_param) env.get(case_param.switch_on).enum_.unwrap().value.*
     case type(type) EggPlumValue.type(type)
     case byte(byte) EggPlumValue.byte(byte)
-    case lower_byte unreachable()
-    case byte_to_int unreachable()
+    case lower_byte(int) EggPlumValue.byte(env.get(int).int.unwrap().lower_byte())
+    case byte_to_int(byte) EggPlumValue.int(env.get(byte).byte.unwrap().to_int())
     case int(int) EggPlumValue.int(int)
-    case add(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() + env.get(tuple.b).int.unwrap())
-    case subtract(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() - env.get(tuple.b).int.unwrap())
-    case multiply(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() * env.get(tuple.b).int.unwrap())
-    case divide(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() / env.get(tuple.b).int.unwrap())
-    case modulo(tuple) EggPlumValue.int(env.get(tuple.a).int.unwrap() % env.get(tuple.b).int.unwrap())
-    case compare(tuple) EggPlumValue.enum_(EggPlumEnumValue {
-      name = 
-        switch env.get(tuple.a).int.unwrap() <=> env.get(tuple.b).int.unwrap()
+    case add(args) EggPlumValue.int(env.get(args.a).int.unwrap() + env.get(args.b).int.unwrap())
+    case subtract(args) EggPlumValue.int(env.get(args.a).int.unwrap() - env.get(args.b).int.unwrap())
+    case multiply(args) EggPlumValue.int(env.get(args.a).int.unwrap() * env.get(args.b).int.unwrap())
+    case divide(args) EggPlumValue.int(env.get(args.a).int.unwrap() / env.get(args.b).int.unwrap())
+    case modulo(args) EggPlumValue.int(env.get(args.a).int.unwrap() % env.get(args.b).int.unwrap())
+    case compare(args) EggPlumValue.enum_(EggPlumEnumValue {
+      name =
+        switch env.get(args.a).int.unwrap() <=> env.get(args.b).int.unwrap()
         case less "less"
         case equal "equal"
         case greater "greater",
@@ -222,7 +221,7 @@ fun run(
         case ok(value) break(value)
         case error(non_local) {
           switch non_local
-          case continue_(next) loop_vars = next 
+          case continue_(next) loop_vars = next
           default return error[EggPlumValue, NonLocalPlumFlow](non_local)
         }
       }
