@@ -65,27 +65,33 @@ fun waffle_switch(byte: WaffleExpr, cases: Slice[WaffleBody]): WaffleExpr {
 }
 
 fun waffle_call(
-  function: String, args: WaffleExpr, layout: MemoryLayout
+  function: String, args: WaffleExpr, return_layout: MemoryLayout
 ): WaffleExpr {
-  WaffleExpr.call(WaffleCall { function, args = args.put_on_heap(), layout })
-}
-
-fun waffle_call_indirect(
-  fun_ptr: WaffleExpr, args: WaffleExpr, layout: MemoryLayout
-): WaffleExpr {
-  WaffleExpr.call_indirect(WaffleCallIndirect {
-    fun_and_args = waffle_aggregate(
-      list(fun_ptr, args).to_slice()
-    ).put_on_heap(),
-    layout,
+  WaffleExpr.call(WaffleCall {
+    function, args = args.put_on_heap(), return_layout
   })
 }
 
 fun waffle_call_indirect(
-  fun_and_args: WaffleExpr, layout: MemoryLayout
+  fun_ptr: WaffleExpr, args: WaffleExpr, return_layout: MemoryLayout
+): WaffleExpr {
+  var padding_before_fun_ptr = args.size().round_up_to_multiple_of(8) - args.size()
+  WaffleExpr.call_indirect(WaffleCallIndirect {
+    args_and_fun = waffle_aggregate(
+      list(args, waffle_padding(padding_before_fun_ptr), fun_ptr).to_slice()
+    ).put_on_heap(),
+    padding_before_fun_ptr,
+    return_layout,
+  })
+}
+
+fun waffle_call_indirect(
+  args_and_fun: WaffleExpr, return_layout: MemoryLayout
 ): WaffleExpr {
   WaffleExpr.call_indirect(WaffleCallIndirect {
-    fun_and_args = fun_and_args.put_on_heap(), layout
+    args_and_fun = args_and_fun.put_on_heap(),
+    padding_before_fun_ptr = 0,
+    return_layout,
   })
 }
 
@@ -204,5 +210,5 @@ fun waffle_loop(
 }
 
 fun waffle_continue(next: WaffleExpr, layout: MemoryLayout): WaffleExpr {
-  WaffleExpr.continue_(WaffleContinue { next = next.put_on_heap(), layout })
+  WaffleExpr.continue_(WaffleContinue { next = next.put_on_heap(), return_layout = layout })
 }
