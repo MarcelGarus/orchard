@@ -1,57 +1,56 @@
-# The Grass Compiler  
-# (written in Grass)
+## The Grass Compiler
 #
-# The compiler uses a continuation-passing style to request imported files from
-# the surrounding environment. Here's pseudocode on how to use the compiler:
+# This file contains a compiler for Grass, written in Grass. Use it like this:
 #
-# task = 0.run(ptr, len)
-# loop {
-#   match task {
-#     [ptr len ctx cont 00] -> task = cont.run(ctx, read_file(ptr, len))
-#     [ptr len _0  _0   01] -> break (ptr, len)
-#   }
-# }
+# input stack:   pointer length  (this should point to Grass source code)
+# output stack:  pointer length  (this points to compiled Ground code)
+#
+# The compiler allocates new memory for the output, but it does not free the
+# input.
 
+## A Refresher on Grass
+#
+# Grass stands for Ground assembly (because I use it to write Ground byte code),
+# but really it's encoding agnostic. The compiler just goes through the file
+# and turns words into bytes. It's somewhat similar to Forth, but also not
+# really.
+#
+# - The words 00 to ff are predefined, each stands for a single byte.
+# - You can define new words using:
+#   - A colon (:) to start a definition.
+#   - The word to be defined.
+#   - The words that make up the definition (forward references allowed).
+#   - A semicolon (;) to end the definition.
+# - You can use @label in the top-level scope (not inside a definition) to
+#   define a label. Every reference ^label then gets replaced by the absolute
+#   offset of the corresponding label (64-bits, little endian encoded).
 
+jump ^main
 
+: . ; # Allows me to use dots for aligning code, like on a restaurant menu.
 
+## Instructions
+#
+# I don't want to have to remember the opcodes, so here are aliases/mnemonics.
 
-# Numbers  
-# Full-word numbers.
-
-:   0 00 00 00 00 00 00 00 00 ;
-:   1 00 00 00 00 00 00 00 01 ;
-:   2 00 00 00 00 00 00 00 02 ;
-:   4 00 00 00 00 00 00 00 04 ;
-:   8 00 00 00 00 00 00 00 08 ;
-: _16 00 00 00 00 00 00 00 10 ;
-: _24 00 00 00 00 00 00 00 18 ;
-: _32 00 00 00 00 00 00 00 20 ;
-:  -1 ff ff ff ff ff ff ff ff ;
-
-
-: . ; # Allows us to use dots for aligning code.
-
-# Instructions  
-
-# mnemonic          opcode    immediates    stack
+# mnemonic          opcode    immediates    data stack
 : nop . . . . . . . . . 00 ;#             |               ->
 : add . . . . . . . . . a0 ;#             |       a:8 b:8 -> (a+b):8
-: sub . . . . . . . . . a1 ;#             |       a:8 b:8 -> (a-b):8
-: mul . . . . . . . . . a2 ;#             |       a:8 b:8 -> (a*b):8
-: div . . . . . . . . . a3 ;#             |       a:8 b:8 -> (a/b):8
-: mod . . . . . . . . . a4 ;#             |       a:8 b:8 -> (a%b):8
+: subtract  . . . . . . a1 ;#             |       a:8 b:8 -> (a-b):8
+: multiply  . . . . . . a2 ;#             |       a:8 b:8 -> (a*b):8
+: divide  . . . . . . . a3 ;#             |       a:8 b:8 -> (a/b):8
+: modulo  . . . . . . . a4 ;#             |       a:8 b:8 -> (a%b):8
 : compare_zero  . . . . a5 ;#             |           a:8 -> ordering:1
 : and . . . . . . . . . b0 ;#             |       a:8 b:8 -> (a&b):8
 : or  . . . . . . . . . b1 ;#             |       a:8 b:8 -> (a|b):8
 : xor . . . . . . . . . b2 ;#             |       a:8 b:8 -> (a^b):8
 : lower_byte  . . . . . b3 ;#             |           a:8 -> a:1
 : byte_to_word  . . . . b4 ;#             |           a:1 -> a:8
-: push_padding  . . . . c0 ;#             |           n:1 -> padding:n
+: push_padding  . . . . c0 ;#             |           n:1 -> _:n
 : push_byte . . . . . . c1 ;# a:1         |               -> a:1
 : push_word . . . . . . c2 ;# a:8         |               -> a:8
-: push_byte_from_stack  c3 ;# offset:8    |               -> byte
-: push_word_from_stack  c4 ;# offset:8    |               -> word
+: push_byte_from_stack  c3 ;# offset:8    |               -> byte:1
+: push_word_from_stack  c4 ;# offset:8    |               -> word:8
 : pop . . . . . . . . . c5 ;# amount:1    |      _:amount ->
 : pop_below_top . . . . c6 ;# a:8 b:1     |    _:b kept:a -> kept:a
 : malloc_word_aligned . d0 ;#             |        size:8 -> ptr:8
@@ -63,78 +62,180 @@
 : store_bytes . . . . . d6 ;# len:8 b:len |         ptr:8 ->
 : malloc_byte_aligned . d7 ;#             |        size:8 -> ptr:8
 : free_byte_aligned . . d8 ;#             |  ptr:8 size:8 ->
-: crash . . . . . . . . e0 ;#             |   ptr:8 len:8 -> BANG
+: crash . . . . . . . . e0 ;#             |   ptr:8 len:8 -> CRASH
 : jump  . . . . . . . . f0 ;# target:8    |               ->
-: jump_table  . . . . . f1 ;# len:1 targets:8*len | b:1   ->
+: jump_table  . . . . . f1 ;# len:1 targets:8*len |   b:1 ->
 : call  . . . . . . . . f2 ;# target:8    |               ->
-: push_indirect . . . . f3 ;# target:8    |               -> token:8
-: call_indirect . . . . f4 ;# pop:1       | _:pop token:8 ->
+: push_indirect . . . . f3 ;# target:8    |               -> fun:8
+: call_indirect . . . . f4 ;# pop:1       |   _:pop fun:8 ->
 : return  . . . . . . . f5 ;#             |               ->
 
-: 0w _0 ;
-: 1w _8 ;
-: 2w _16 ;
-: 3w _24 ;
-: 4w _32 ;
-: 5w _40 ;
+## Decimal Words
+#
+# Next, Ground requires little-endian word literals in some places. Writing
+# those by hand is tedious, so I did it only once here and re-use those below.
 
+: dec_0   00 00 00 00 00 00 00 00 ;
+: dec_1   00 00 00 00 00 00 00 01 ;
+: dec_2   00 00 00 00 00 00 00 02 ;
+: dec_3   00 00 00 00 00 00 00 03 ;
+: dec_4   00 00 00 00 00 00 00 04 ;
+: dec_8   00 00 00 00 00 00 00 08 ;
+: dec_16  00 00 00 00 00 00 00 10 ;
+: dec_24  00 00 00 00 00 00 00 18 ;
+: dec_32  00 00 00 00 00 00 00 20 ;
+: dec_40  00 00 00 00 00 00 00 28 ;
+: dec_-1  ff ff ff ff ff ff ff ff ;
 
+## Character and String Constants
+#
+# Grass is _very_ minimal and doesn't even have string literals. Unlike all
+# those developers writing code with their high-level fancy-pants assemblers,
+# _real developers_ obviously first define their ASCII literals and string
+# constants by hand.
 
-: dup   push_word_from_stack 0w ;
-: over  push_word_from_stack 1w ;
-: over2 push_word_from_stack 2w ;
-: over3 push_word_from_stack 3w ;
-: over4 push_word_from_stack 4w ;
-: over5 push_word_from_stack 5w ;
-: pop_over  pop_below_top _8  ;
-: pop_over2 pop_below_top _16 ;
+# Todo: Rethink life choices.
+: 'm TODO ;
+: 'n TODO ;
+: 'o TODO ;
+: "oom" 'o 'o 'm ;# length 3
+: "unreachable" 'u 'n 'r 'e 'a 'c 'h 'a 'b 'l 'e ;# length 11
 
-jump ^main
+## Higher Level Instructions
+#
+# Some stack operations are quite common, such as pushing words from a bit
+# further back on the stack. Here, we define some operations that help
+# manipulate the stack more easily.
 
-# Low-level memory operations.
+: _0          push_word dec_0 ; # (-> 0)
+: _1          push_word dec_1 ; # (-> 1)
+: _3          push_word dec_3 ; # (-> 3)
+: dup         push_word_from_stack dec_0  ;#           (a -> a a)
+: over        push_word_from_stack dec_8  ;#         (a b -> a b a)
+: over2       push_word_from_stack dec_16 ;#       (a b c -> a b c a)
+: over3       push_word_from_stack dec_24 ;#     (a b c d -> a b c d a)
+: over4       push_word_from_stack dec_32 ;#   (a b c d e -> a b c d e a)
+: over5       push_word_from_stack dec_40 ;# (a b c d e f -> a b c d e f a)
+: keep1_pop1  pop_below_top dec_8 08 ;#              (a b -> b)
+: keep1_pop2  pop_below_top dec_8 10 ;#            (a b c -> c)
+: keep2_pop1  pop_below_top dec_16 08 ;#           (a b c -> b c)
+: keep2_pop2  pop_below_top dec_16 10 ;#         (a b c d -> c d)
+: swap        over keep1_pop1 ;#                     (a b -> b a)
+: inc         _1  add ;# (c -> c+1)
+: compare     sub compare_zero ;# (a b -> ord)
+: negate      # (bool -> bool)
+              call ^negate ;
+              @negate jump_table 02 ^negate.true ^negate.false
+              @negate.true   false  return
+              @negate.false  true   return
+: ord_neq     # (ord -> bool)
+              byte_to_int  _3  over  shift_right  _1  and  lower_byte ;
+: if_not      # CAREFUL: Needs postfix targets: bool if ^then ^else
+              jump_table 02 ;
+: if_ord_eq   # CAREFUL: Needs postfix targets: ord if_zero ^then ^else
+              ord_neq  if_not ;
+: if_zero     # CAREFUL: Needs postfix targets: num if_zero ^then ^else
+              compare_zero  if_ord_eq ;
+: if_eq       # CAREFUL: Needs postfix targets: a if_eq ^then ^else
+              compare  if_ord_eq ;
+: if          # CAREFUL: Needs postfix targets: bool if ^then ^else
+              negate  jump_table 02 ;
+: safe_malloc  # (size -> ptr)
+              call ^safe_malloc ;
+              @safe_malloc       malloc_word_aligned
+                                 dup  if_zero ^safe_malloc.oom ^safe_malloc.yeah
+              @safe_malloc.yeah  return
+              @safe_malloc.oom   _3  malloc_byte_aligned  # allocate for "oom"
+                                 dup  if_zero ^safe_malloc.shit ^safe_malloc.meh
+              @safe_malloc.shit  _0  _0  crash  # not even three bytes :(
+              @safe_malloc.meh   dup  store_bytes _3 "oom"  _3  crash
+: safe_free   free_word_aligned ;# (ptr ->)
+              # Just for symmetry with safe_malloc; freeing is always safe.
+: unreachable  call ^unreachable ;
+              @unreachable
+               push_word _11  safe_malloc_byte_aligned  dup  store_bytes _11 "unreachable"
+               push_word _11 crash
+: memcopy     # (from to amount ->)
+              call ^memcopy ;
+              @memcopy       push_word _0
+              @memcopy.loop  over  over  if_num_eq ^@memcopy.done ^memcopy.copy
+              @memcopy.done  pop4  return
+              @memcopy.copy  over2  over  add  over4  over2  add
+                             load_byte  store_byte  inc  jump ^memcopy.loop
 
-# Allocates memory and also makes sure that the allocation succeeded.
-@safe_malloc_word_aligned  # length
- malloc_word_aligned       # ptr
- dup                       # ptr ptr
- compare_zero              # ptr worked?
- jump_table ^oom ^safe_malloc_word_aligned.yeah ^safe_malloc_word_aligned.yeah
-@safe_malloc_word_aligned.yeah  # ptr
- return
+## Tuples
+#
+# Because the bottleneck for my Grass projects is not execution speed, but
+# implementation complexity, I'm not afraid of pointer indirections: Rather than
+# keeping data directly on the stack, most data structures have a heap-allocated
+# single source of truth and only keep pointers on the stack.
+#
+# ( tuple )
+#   │
+#   v
+# ( a | b | c )
 
-# Allocates memory and also makes sure that the allocation succeeded.
-@safe_malloc_byte_aligned  # length
- malloc_byte_aligned       # ptr
- dup                       # ptr ptr
- compare_zero              # ptr worked?
- jump_table ^oom ^safe_malloc_byte_aligned.yeah ^safe_malloc_byte_aligned.yeah
-@safe_malloc_byte_aligned.yeah  # ptr
- return
+: make_a      _8   safe_malloc ;#         ( -> tuple)
+: make_ab     _16  safe_malloc ;#         ( -> tuple)
+: make_abc    _24  safe_malloc ;#         ( -> tuple)
+: make_abcd   _32  safe_malloc ;#         ( -> tuple)
+: make_abcde  _40  safe_malloc ;#         ( -> tuple)
+: free_a      _8   safe_free ;#      (tuple -> )
+: free_ab     _16  safe_free ;#      (tuple -> )
+: free_abc    _24  safe_free ;#      (tuple -> )
+: free_abcd   _32  safe_free ;#      (tuple -> )
+: free_abcde  _40  safe_free ;#      (tuple -> )
+: a           load_word ;#           (tuple -> field)
+: b           _8   add  load_word ;# (tuple -> field)
+: c           _16  add  load_word ;# (tuple -> field)
+: d           _24  add  load_word ;# (tuple -> field)
+: e           _32  add  load_word ;# (tuple -> field)
+: a=          store_word ;#                             (tuple field -> )
+: b=          over  _8   add  over  store_word  pop2 ;# (tuple field -> )
+: c=          over  _16  add  over  store_word  pop2 ;# (tuple field -> )
+: d=          over  _24  add  over  store_word  pop2 ;# (tuple field -> )
+: e=          over  _32  add  over  store_word  pop2 ;# (tuple field -> )
 
-# Copies memory from one location to another.
-@memcopy       # from to amount
- push_word _0  # from to amount cursor
-@memcopy.loop  # from to amount cursor
- over          # from to amount cursor amount
- over2         # from to amount cursor amount cursor
- compare       # from to amount cursor done?
- jump_table 03 ^@memcopy.done ^memcopy.copy_byte ^unreachable
-@memcopy.copy_byte  # from to amount cursor
- over2              # from to amount cursor to
- over               # from to amount cursor to cursor
- add                # from to amount cursor to+cursor
- over4              # from to amount cursor to+cursor from
- over2              # from to amount cursor to+cursor from cursor
- add                # from to amount cursor to+cursor from+cursor
- load_byte          # from to amount cursor to+cursor byte
- store_byte         # from to amount cursor
- push_word _1       # from to amount cursor 1
- add                # from to amount cursor+1
- jump ^memcopy.loop
-@memcopy.done  # from to amount cursor
- pop 20        #
- return
+## Str
+#
+# ( str )
+#    |
+#    v
+# ( ptr | len )
+#    |
+#    v
+# ( bytes )
 
+: make_str  # (ptr len -> str)
+            make_ab  dup  over3  a=  dup  over2  b=  keep1_pop2 ;
+: free_str  keep_load_b  free_slots_ab  safe_free ;# (str ->)
+: str.ptr   a ;# (str -> ptr)
+: str.len   b ;# (str -> len)
+: str_eq # (str str -> bool)
+            call ^str_eq ;
+            @str_eq             over  str.len  over  str.len
+                                if_eq ^str_eq.len_same ^str.len_diff
+            @str_eq.len_diff    pop2  false return
+            @str_eq.len_same    # a b
+                                over  str.ptr  over  str.ptr  over2  str.len
+                                keep3_pop2  _0
+            @str_eq.loop        # a_ptr b_ptr len cursor
+                                over  over  if_eq ^str_eq.done ^str_eq.cmp_bytes
+            @str_eq.cmp_bytes   over3  over   add  load_byte  byte_to_int
+                                over3  over2  add  load_byte  byte_to_int
+                                if_eq ^str_eq.bytes_same ^str_eq.bytes_diff
+            @str_eq.bytes_same  inc  jump ^str_eq.loop
+            @str_eq.bytes_diff  pop4  false  return
+            @str_eq.done        pop4  true   return
+: if_str_eq # CAREFUL: Needs postfix targets: a b if_str_eq ^then ^else
+            str_eq ;
+
+@str.starts_with  # str prefix
+
+ TODO
+
+@str.starts_with_byte  # str byte
+ TODO
 
 # Before calling, make sure that len > 0.
 @keep_starts_with  # ptr len byte
@@ -151,275 +252,90 @@ jump ^main
  return
 
 
-# Called when we are out of memory (an allocation failed).
-@oom
- TODO
 
-@unreachable
- TODO
-
-
-# Many data structures have a similar memory layout: Rather than keeping data
-# directly on the stack, they enable mutation of a single source of truth by
-# allocating fields on the heap and only maintaining a pointer on the stack.
+## Out
 #
-# ┌────────┐
-# │ slots  │
-# └────────┘
-#     │
-#     v
-# ┌────────┬────────┬────────┐
-# │ a      | b      | c      │
-# └────────┴────────┴────────┘
-#
-# This file contains utility procedures for allocating such a data structure and
-# for loading and storing the slots.
-
-# ( -> slots)
-@slots.make_a      push_word _8   call ^safe_malloc_word_aligned  return
-@slots.make_ab     push_word _16  call ^safe_malloc_word_aligned  return
-@slots.make_abc    push_word _24  call ^safe_malloc_word_aligned  return
-@slots.make_abcd   push_word _32  call ^safe_malloc_word_aligned  return
-@slots.make_abcde  push_word _40  call ^safe_malloc_word_aligned  return
-
-# (slots -> )
-@slots.free_a      push_word _8   free_word_aligned  return
-@slots.free_ab     push_word _16  free_word_aligned  return
-@slots.free_abc    push_word _24  free_word_aligned  return
-@slots.free_abcd   push_word _32  free_word_aligned  return
-@slots.free_abcde  push_word _40  free_word_aligned  return
-
-# (slots -> field)
-@slots.get_a                      load_word  return
-@slots.get_b  push_word _8   add  load_word  return
-@slots.get_c  push_word _16  add  load_word  return
-@slots.get_d  push_word _24  add  load_word  return
-@slots.get_e  push_word _32  add  load_word  return
-
-# (field slots -> )
-@slots.set_a                      over  store_word  pop 08  return
-@slots.set_b  push_word _8   add  over  store_word  pop 08  return
-@slots.set_c  push_word _16  add  over  store_word  pop 08  return
-@slots.set_d  push_word _24  add  over  store_word  pop 08  return
-@slots.set_e  push_word _32  add  over  store_word  pop 08  return
-
-# (slots -> field slots)
-@slots.keep_get_a  dup                      load_word  over  pop_over2 08  return
-@slots.keep_get_b  dup  push_word _8   add  load_word  over  pop_over2 08  return
-@slots.keep_get_c  dup  push_word _16  add  load_word  over  pop_over2 08  return
-@slots.keep_get_d  dup  push_word _24  add  load_word  over  pop_over2 08  return
-@slots.keep_get_e  dup  push_word _32  add  load_word  over  pop_over2 08  return
-
-# (field slots -> slots)
-@slots.keep_set_a  dup                      over2  store_word  pop_over  return
-@slots.keep_set_b  dup  push_word _8   add  over2  store_word  pop_over  return
-@slots.keep_set_c  dup  push_word _16  add  over2  store_word  pop_over  return
-@slots.keep_set_d  dup  push_word _24  add  over2  store_word  pop_over  return
-@slots.keep_set_e  dup  push_word _32  add  over2  store_word  pop_over  return
-
-# A str of bytes. With two pointer indirections to the data, the memory
-# representation is not as efficient as most other languages, but the bottleneck
-# for Grass is not the runtime speed, but the complexity of implementing code.
-# And it's easier to write code if most variables have the word size.
-#
-# ┌────────┐
-# │ str    │
-# └────────┘
-#     │
-#     v
-# ┌────────┬────────┐
-# │ ptr    | len    │
-# └────────┴────────┘
-#     │
-#     v
-# ┌───────────────────────────────────────────┐
-# │ bytes                                     │
-# └───────────────────────────────────────────┘
-
-# (ptr len -> str)
-@str.make  call ^slots.make_ab  call ^slots.keep_set_b  call ^slots.set_a  return
-
-# (str -> ptr)
-@str.ptr  call ^slots.get_a  return
-
-# (str -> len)
-@str.len  call ^slots.get_b  return
-
-# (str str -> bool)
-@str.==               # a b
- over  call ^str.len  # a b a_len
- over  call ^str.len  # a b a_len b_len
- call ^==             # a b same_len?
- jump_table 02 ^str.==.different_len ^str.==.same_len
-@str.==.different_len  # a b
- pop 10  push_byte false  return
-@str.==.same_len       # a b
- over   call ^str.ptr  # a b a_ptr
- over   call ^str.ptr  # a b a_ptr b_ptr
- over2  call ^str.len  # a b a_ptr b_ptr len
- push_word _0          # a b a_ptr b_ptr len cursor
-@str.==.loop           # a b a_ptr b_ptr len cursor
- over  over  call ^==  # a b a_ptr b_ptr len cursor at_end?
- jump_table 02 ^str.==.compare_bytes ^str.==.done
-@str.==.compare_bytes   # a b a_ptr b_ptr len cursor
- over3  over   add      # a b a_ptr b_ptr len cursor a_ptr+cursor
- load_byte byte_to_int  # a b a_ptr b_ptr len cursor a_byte
- over3  over2  add      # a b a_ptr b_ptr len cursor a_byte b_ptr+cursor
- load_byte byte_to_int  # a b a_ptr b_ptr len cursor a_byte b_byte
- call ^==               # a b a_ptr b_ptr len cursor byte_equal?
- jump_table 02 ^str.==.different_bytes ^str.==.same_byte
-@str.==.different_bytes  # a b a_ptr b_ptr len cursor
- pop 30                  #
- push_byte 00            # 0
- return
-@str.==.same_byte   # a b a_ptr b_ptr len cursor
- push_word _1  add  # a b a_ptr b_ptr len cursor+1
- jump ^str.==.loop
-@str.==.done  # a_ptr a_len b_ptr b_len
- pop 20              #
- push_byte 00        # 0
- return
-
-@str.starts_with  # str prefix
- 
- TODO
-
-@str.starts_with_byte  # str byte
- TODO
-
-
-
-# Output  
 # An automatically growing output buffer for bytes.
 #
-# ┌────────┐
-# │ output │
-# └────────┘
-#     │
-#     v
-# ┌────────┬────────┬────────┐
-# │ ptr    | cap    | length │
-# └────────┴────────┴────────┘
-#     │
-#     v
-# ┌───────────────────────────────────────────┐
-# │ bytes                                     │
-# └───────────────────────────────────────────┘
+# ( out )
+#    │
+#    v
+# ( ptr | cap | len )
+#    │
+#    v
+# ( bytes )
 
-@output.make                     #
- push_word _16                   # 16
- call ^safe_malloc_byte_aligned  # ptr
- push_word _16                   # ptr 16
- push_word _0                    # ptr 16 0
- call ^slots.make_abc            # ptr 16 0 parser
- call ^slots.keep_set_c          # ptr 16 output
- call ^slots.keep_set_b          # ptr output
- call ^slots.keep_set_a          # output
- return
+: make_out  # (-> out)
+            _16  safe_malloc  _16  _0
+            make_abc  keep_c=  keep_b=  keep_a= ;
+: free_out  # (out ->)
+            keep_load_a  keep_load_b  free_slots_abc  safe_free ;
+: out.ptr   a ;# (out -> ptr)
+: out.cap   b ;# (out -> cap)
+: out.len   c ;# (out -> len)
+: out.ptr=  a= ;# (out ptr -> )
+: out.cap=  b= ;# (out cap -> )
+: out.len=  c= ;# (out len -> )
+: out.len++ dup  out.len  inc  out.len= ;# (out -> )
+: emit      # (out byte -> )
+            call ^emit ;
+            @emit       byte_to_int  over  out.cap  over2  out.len
+                        if_eq ^emit.grow ^emit.push
+            @emit.grow  over  out.ptr  over2  out.cap  # out byte ptr cap
+                        dup  _1  shift_left  # out byte ptr cap new_cap
+                        dup  safe_malloc     # out byte ptr cap new_cap new_ptr
+                        over3  over  over4  memcopy
+                        over5  # out byte ptr cap new_cap new_ptr out
+                        dup  over2  out.ptr=
+                        dup  over3  out.cap=
+                        pop3  safe_free  # out byte  (old buffer freed)
+            @emit.push  over  out.ptr  over2  out.len  add  # out byte ptr+len
+                        over  lower_byte  store_byte  # out byte
+                        pop1  out.len++  return
+: append    # (out str -> )
+            call ^append ;
+            @append           dup  str.ptr  over  str.len  keep2_pop1  _0
+            @append.loop      # out ptr len cursor
+                              over  over  if_eq ^append.done ^append.not_done
+            @append.done      pop4 return
+            @append.not_done  over3  over3  over2  # out ptr len cursor out ptr cursor
+                              add  load_byte  emit  # out ptr len cursor
+                              inc  jump ^append.loop
+: shrink    # (out -> str)
+            dup  out.ptr  swap dup  out.cap  swap dup  out.len  # ptr cap len out
+            swap  free_abc               # ptr cap len
+            dup  safe_malloc             # ptr cap len new_ptr
+            over3  over  over3  memcopy  # ptr cap len new_ptr
+            over3  over3  safe_free      # ptr cap len new_ptr
+            over  keep2_pop3  make_str  return
 
-@output.free             # output
- call ^keep_load_a       # ptr output
- call ^keep_load_b       # ptr cap output
- call ^free_slots_a_b_c  # ptr cap
- call free_byte_aligned  #
- return
+## Dictionary
+#
+# A dictionary from strings to some values. Uses a linear search for lookup.
+# The capacity and length are stored in number of entries.
+#
+# ( dict )
+#   │
+#   v
+# ( ptr | cap | len )
+#   │
+#   v
+# ( key | val | key | val | ... )
 
-# Emits a byte into the output.
-@emit             # output byte
- push_padding 07   # output byte..
- over              # output byte.. output
- call ^keep_load_b # output byte.. cap output
- call ^load_c      # output byte.. cap length
- compare           # output byte.. full?
- jump_table ^emit.make_bigger ^emit.unchecked ^unreachable
-@emit.make_bigger                # output byte..
- over                            # output byte.. output
- call ^keep_load_a               # output byte.. ptr output
- call ^load_b                    # output byte.. ptr cap
- dup                             # output byte.. ptr cap cap
- push_word _2                    # output byte.. ptr cap cap 2
- multiply                        # output byte.. ptr cap new_cap
- dup                             # output byte.. ptr cap new_cap new_cap
- call ^safe_malloc_byte_aligned  # output byte.. ptr cap new_cap new_ptr
- over3                           # output byte.. ptr cap new_cap new_ptr ptr
- over                            # output byte.. ptr cap new_cap new_ptr ptr new_ptr
- over4                           # output byte.. ptr cap new_cap new_ptr ptr new_ptr cap
- call ^memcopy                   # output byte.. ptr cap new_cap new_ptr
- over5                           # output byte.. ptr cap new_cap new_ptr output
- call ^keep_store_a              # output byte.. ptr cap new_cap output
- call ^store_b                   # output byte.. ptr cap
- free_byte_aligned               # output byte..
-@emit.unchecked            # output byte..
- over                      # output byte.. output
- call ^keep_load_a         # output byte.. ptr output
- call ^load_c              # output byte.. ptr length
- add                       # output byte.. ptr+length
- push_byte_from_stack _15  # output byte.. ptr+length byte
- store_byte                # output byte..
- pop 08                    # output
- dup                       # output output
- call ^load_c              # output cursor
- push_word _1              # output cursor 1
- add                       # output cursor+1
- over                      # output cursor+1 output
- call ^store_c             # output
- pop 08                    #
- return
-
-# Emits an entire buffer into the output.
-@append        # output ptr len
- push_word _0  # output ptr len cursor
-@append.loop  # output ptr len cursor
- over         # output ptr len cursor len
- over         # output ptr len cursor len cursor
- compare      # output ptr len cursor at_end?
- jump_table 03 ^append.done ^append.not_done ^unreachable
-@append.not_done  # output ptr len cursor
- over3            # output ptr len cursor output
- over3            # output ptr len cursor output ptr
- over2            # output ptr len cursor output ptr cursor
- add              # output ptr len cursor output ptr+cursor
- load_byte        # output ptr len cursor output byte
- call ^emit       # output ptr len cursor
- push_word _1     # output ptr len cursor 1
- add              # output ptr len cursor+1
- jump ^append.loop
-@append.done  # output ptr len cursor
- pop 20       #
- return
-
-# Turns an output into a byte array.
-@shrink                          # output
- call ^keep_load_a               # ptr output
- call ^keep_load_b               # ptr cap output
- call ^keep_load_c               # ptr cap length output
- call ^free_slots_a_b_c          # ptr cap length
- dup                             # ptr cap length length
- call ^safe_malloc_byte_aligned  # ptr cap length new_ptr
- over3                           # ptr cap length new_ptr ptr
- over                            # ptr cap length new_ptr ptr new_ptr
- over3                           # ptr cap length new_ptr ptr new_ptr length
- call ^memcopy                   # ptr cap length new_ptr
- over                            # ptr cap length new_ptr length
- pop_below_top _16 18            # new_ptr length
-
-
-# ┌────────┐
-# │ dict   │
-# └────────┘
-#     │
-#     v
-# ┌────────┬────────┬────────┐
-# │ ptr    | cap    | len    │
-# └────────┴────────┴────────┘
-#     │
-#     v
-# ┌────────┬────────┬────────┬────────┬────────┐
-# │ key    | value  | key    │ value  | ...    |
-# └────────┴────────┴────────┴────────┴────────┘
-
-@make_dict  # -> dict
- 
+: make_dict  # ( -> dict)
+             make_abc
+             dup  _16  safe_malloc  dict.ptr=
+             dup  _1  dict.cap=
+             dup  _0  dict.len=
+             _16  safe_malloc  _16  _0
+  make_abc  keep_c=  keep_b=  keep_a= ;
+: dict.ptr   a ;# (dict -> ptr)
+: dict.cap   b ;# (dict -> cap)
+: dict.len   c ;# (dict -> len)
+: dict.ptr=  a= ;# (dict ptr -> )
+: dict.cap=  b= ;# (dict cap -> )
+: dict.len=  c= ;# (dict len -> )
+: lookup     # (dict key -> value)
 
 
 @lookup_num  # dict key_ptr key_len -> value_ptr value_len
@@ -490,11 +406,11 @@ jump ^main
  jump_table 03 ^compile.totally_done ^compile.back_to_parent ^compile.back_to_parent
 @compile.back_to_parent  # parent parser output words labels
  pop 20                  # parent
- call ^keep_load_a       # context parent
- call ^keep_load_b       # context parser parent
- call ^keep_load_c       # context parser output parent
- call ^keep_load_d       # context parser output words parent
- call ^load_e            # context parser output words labels
+ keep_load_a       # context parent
+ keep_load_b       # context parser parent
+ keep_load_c       # context parser output parent
+ keep_load_d       # context parser output words parent
+ load_e            # context parser output words labels
  jump ^compile
 @compile.totally_done        # parent parser output words labels
  call ^free_dict_of_nums     # parent parser output words
@@ -525,21 +441,21 @@ jump ^main
  over6                       # parent parser output words labels ptr len parent parser output words labels
  pop_below_top _56 28        # ptr len parent parser output words labels
  call ^make_slots_a_b_c_d_e  # ptr len parent parser output words labels context
- call ^keep_store_e          # ptr len parent parser output words context
- call ^keep_store_d          # ptr len parent parser output context
- call ^keep_store_c          # ptr len parent parser context
- call ^keep_store_b          # ptr len parent context
- call ^keep_store_a          # ptr len context
+ keep_store_e          # ptr len parent parser output words context
+ keep_store_d          # ptr len parent parser output context
+ keep_store_c          # ptr len parent parser context
+ keep_store_b          # ptr len parent context
+ keep_store_a          # ptr len context
  push_indirect ^import.cont  # ptr len context cont
  push_byte 00                # ptr len context cont 0
  return
 @import.cont        # context ptr len
  call ^make_parser  # context parser
  over               # context parser context
- call ^keep_load_c  # context parser output context
- call ^keep_load_d  # context parser output words context
- call ^load_e       # context parser output words labels
- jump ^compile 
+ keep_load_c  # context parser output context
+ keep_load_d  # context parser output words context
+ load_e       # context parser output words labels
+ jump ^compile
 
 # Compiles a definition. The colon and name have already been consumed, we only
 # need to parse the actual content up to the semicolon. Note that definitions
@@ -554,8 +470,8 @@ jump ^main
  over4                 # parser output words labels words ptr len parser word_output words
  call ^compile_def     # parser output words labels words ptr len def_ptr def_len
  call ^make_slots_a_b  # parser output words labels words ptr len def_ptr def_len entry
- call ^keep_store_b    # parser output words labels words ptr len def_ptr entry
- call ^keep_store_a    # parser output words labels words ptr len entry
+ keep_store_b    # parser output words labels words ptr len def_ptr entry
+ keep_store_a    # parser output words labels words ptr len entry
  call ^put             # parser output words labels
  jump ^compile
 
@@ -615,7 +531,7 @@ jump ^main
 todo
 
 
-# Parser  
+# Parser
 # The parser offers a way to step through bytes (the textual input). It
 # maintains a cursor that starts at the beginning. You can ^peek the current
 # character, ^advance the cursor by one character, and do higher-level
@@ -638,33 +554,33 @@ todo
 @make_parser              # ptr length
  push_word _0             # ptr length 0
  call ^alloc_slots_a_b_c  # ptr length 0 parser
- call ^keep_store_c       # ptr length parser
- call ^keep_store_b       # ptr parser
- call ^keep_store_a       # parser
+ keep_store_c       # ptr length parser
+ keep_store_b       # ptr parser
+ keep_store_a       # parser
  return
 
 @free_parser             # parser
  dup                     # parser parser
- call ^keep_load_a       # parser ptr parser
- call ^load_b            # parser ptr length
+ keep_load_a       # parser ptr parser
+ load_b            # parser ptr length
  free_byte_aligned       # parser
- call ^free_slots_a_b_c  #
+ free_slots_a_b_c  #
  return
 
 # Turns a parser into its current character or zero if it's at the end.
 @peek                     # parser
  dup                      # parser parser
- call ^keep_load_b        # parser length parser
- call ^load_c             # parser length cursor
+ keep_load_b        # parser length parser
+ load_c             # parser length cursor
  compare                  # parser at_end?
- jump_table 03 ^peek.return_0 ^peek.get_char ^unreachable
+ jump_table 03 ^peek.return_0 ^peek.char ^unreachable
 @peek.return_0   # parser
  pop 08          #
  push_byte 00    # 0
  return
-@peek.get_char      # parser
- call ^keep_load_a  # ptr parser
- call ^load_c       # ptr cursor
+@peek.char      # parser
+ keep_load_a  # ptr parser
+ load_c       # ptr cursor
  add                # ptr+cursor
  load_byte          # char
  return
@@ -672,10 +588,10 @@ todo
 # Advances the parser's cursor by one character.
 @advance        # parser
  dup            # parser parser
- call ^load_c   # parser cursor
+ load_c   # parser cursor
  push_word _1   # parser cursor 1
  add            # parser cursor+1
  over           # parser cursor+1 parser
- call ^store_c  # parser
+ store_c  # parser
  pop 08         #
  return
