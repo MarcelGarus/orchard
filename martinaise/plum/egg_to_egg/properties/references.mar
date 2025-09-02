@@ -1,0 +1,160 @@
+import mod.mar
+
+fun count_references(id: EggId): Map[EggId, Int] {
+  var out = map[EggId, Int]()
+  id.visit(CountReferences { out = out.& })
+  out
+}
+fun count_references(body: EggBody): Map[EggId, Int] {
+  var out = map[EggId, Int]()
+  body.visit(CountReferences { out = out.& })
+  out
+}
+
+struct CountReferences { out: &Map[EggId, Int] }
+fun add(counter: CountReferences, id: EggId) {
+  if counter.out.get_maybe_ref(id) is some(count) then
+    count += 1
+  else
+    counter.out.put(id, 1)
+}
+fun visit(body: EggBody, visitor: CountReferences) {
+  for child in body.children do child.visit(visitor)
+  visitor.add(body.returns)
+}
+fun visit(id: EggId, visitor: CountReferences) {
+  switch id.resolve()
+  case param panic("param")
+  case case_param panic("case param")
+  case type {}
+  case int {}
+  case string {}
+  case struct_(fields) for field in fields do visitor.add(field.value)
+  case enum_(enum_) visitor.add(enum_.payload)
+  case inline_lambda(body) body.visit(visitor)
+  case raw_lambda(lambda) visitor.add(lambda.closure)
+  case member(member) visitor.add(member.of)
+  case switch_(switch_) {
+    visitor.add(switch_.condition)
+    for case_ in switch_.cases do case_.value.visit(visitor)
+  }
+  case call_generic_fun(call) for arg in call.args do visitor.add(arg)
+  case call_fun(call) for arg in call.args do visitor.add(arg)
+  case call_lambda(call) {
+    visitor.add(call.lambda)
+    for arg in call.args do visitor.add(arg)
+  }
+  case call_builtin(call) for arg in call.args do visitor.add(arg)
+  case cast(cast) visitor.add(cast.what)
+  case byte {}
+  case lower_byte(arg)  visitor.add(arg)
+  case byte_to_int(arg) visitor.add(arg)
+  case add(args)      { visitor.add(args.a)  visitor.add(args.b) }
+  case subtract(args) { visitor.add(args.a)  visitor.add(args.b) }
+  case multiply(args) { visitor.add(args.a)  visitor.add(args.b) }
+  case divide(args)   { visitor.add(args.a)  visitor.add(args.b) }
+  case modulo(args)   { visitor.add(args.a)  visitor.add(args.b) }
+  case compare(args)  { visitor.add(args.a)  visitor.add(args.b) }
+  case compare_zero(arg) visitor.add(arg)
+  case and_(args)     { visitor.add(args.a)  visitor.add(args.b) }
+  case or_(args)      { visitor.add(args.a)  visitor.add(args.b) }
+  case xor(args)      { visitor.add(args.a)  visitor.add(args.b) }
+  case shift_left(args)  { visitor.add(args.a)  visitor.add(args.b) }
+  case shift_right(args) { visitor.add(args.a)  visitor.add(args.b) }
+  case unchecked_divide(args) { visitor.add(args.a)  visitor.add(args.b) }
+  case unchecked_modulo(args) { visitor.add(args.a)  visitor.add(args.b) }
+  case box(arg)   visitor.add(arg)
+  case unbox(arg) visitor.add(arg)
+  case array(array) for item in array.items do visitor.add(item)
+  case generate_array(args) {
+    visitor.add(args.length)
+    args.generator.visit(visitor)
+  }
+  case array_get(args) { visitor.add(args.array)  visitor.add(args.index) }
+  case array_set(args) {
+    visitor.add(args.array)
+    visitor.add(args.index)
+    visitor.add(args.item)
+  }
+  case array_slice(args) {
+    visitor.add(args.array)
+    visitor.add(args.start)
+    visitor.add(args.end)
+  }
+  case array_len(arg) visitor.add(arg)
+  case unchecked_generate_non_empty_array(args) {
+    visitor.add(args.length)
+    args.generator.visit(visitor)
+  }
+  case unchecked_array_get(args) {
+    visitor.add(args.array)
+    visitor.add(args.index)
+  }
+  case unchecked_array_set(args) {
+    visitor.add(args.array)
+    visitor.add(args.index)
+    visitor.add(args.item)
+  }
+  case unchecked_array_slice(args) {
+    visitor.add(args.array)
+    visitor.add(args.start)
+    visitor.add(args.end)
+  }
+  case type_info(arg) visitor.add(arg)
+  case static_to_dynamic(static) visitor.add(static)
+  case dynamic_to_static(convert) visitor.add(convert.dynamic)
+  case crash(crash) visitor.add(crash.message)
+  case raw_crash(raw_crash) { visitor.add(raw_crash.ptr)  visitor.add(raw_crash.len) }
+  case unreachable {}
+  case halt(type) {}
+  case loop_(loop_) {
+    for arg in loop_.initial do visitor.add(arg)
+    loop_.body.visit(visitor)
+  }
+  case continue_(continue_) for arg in continue_.next do visitor.add(arg)
+  case dup(dup) visitor.add(dup.id)
+  case drop(drop) visitor.add(drop.id)
+  case fun_ptr {}
+  case call_indirect(call) {
+    visitor.add(call.fun_ptr)
+    for arg in call.args do visitor.add(arg)
+  }
+  case null_ptr {}
+  case object_new(id) visitor.add(id)
+  case object_load(load) visitor.add(load.ptr)
+  case object_free(free) visitor.add(free.ptr)
+  case get_refcount(get) visitor.add(get.ptr)
+  case set_refcount(set) {
+    visitor.add(set.ptr)
+    visitor.add(set.refcount)
+  }
+  case new_buffer(new) visitor.add(new.length)
+  case get_buffer_length(buffer) visitor.add(buffer)
+  case load_buffer_item(load) {
+    visitor.add(load.buffer)
+    visitor.add(load.index)
+  }
+  case store_buffer_item(store) {
+    visitor.add(store.buffer)
+    visitor.add(store.index)
+    visitor.add(store.item)
+  }
+  case store_buffer_bytes(store) visitor.add(store.buffer)
+  case free_buffer(free) visitor.add(free.buffer)
+  case padding {}
+  case aggregate(parts) for part in parts do visitor.add(part)
+  case part(part) visitor.add(part.of)
+  case switch_on_byte(switch_) {
+    visitor.add(switch_.condition)
+    for case_ in switch_.cases do case_.visit(visitor)
+  }
+  case malloc(id) visitor.add(id)
+  case free(free) { visitor.add(free.ptr) visitor.add(free.size) }
+  case load(load) visitor.add(load.ptr)
+  case store(store) { visitor.add(store.ptr) visitor.add(store.value) }
+  case load_word(load) visitor.add(load.ptr)
+  case load_byte(load) visitor.add(load.ptr)
+  case store_word(store) { visitor.add(store.ptr) visitor.add(store.value) }
+  case store_byte(store) { visitor.add(store.ptr) visitor.add(store.value) }
+  case store_bytes(store) visitor.add(store.ptr)
+}
