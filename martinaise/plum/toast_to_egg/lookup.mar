@@ -1,16 +1,136 @@
-| Looking up Functions  
+| Looking up Types and Functions
 
 import mod.mar
 
-fun signature(module: Module, name: String, params: Slice[FunParam]): String {
-  var b = string_builder().&
-  b."{module}.{name}"
-  for param in params do
-    if param.type == type_type then
-      b." {param.name}: {param.type}"
-    else
-      b." {param.type}"
-  b.to_string()
+fun lookup_exported_type(
+  name: String, num_args: Int,
+  module: Module, toasts: Map[Module, Toast],
+): Result[Maybe[ToastTypeDef], Error] {
+  lookup_exported_type(name, num_args, module, toasts, list[Module]().&)
+}
+fun lookup_type(
+  name: String, num_args: Int,
+  module: Module, toasts: Map[Module, Toast], src: Src,
+): Result[ToastTypeDef, Error] {
+  lookup_type(name, num_args, module, toasts, src, list[Module]().&)
+}
+fun lookup_exported_fun(
+  name: String, args: Slice[FunArg],
+  module: Module, toasts: Map[Module, Toast],
+): Result[Maybe[MatchingCallee], Error] {
+  lookup_exported_fun(name, args, module, toasts, list[Module]().&)
+}
+fun lookup_fun(
+  name: String, args: Slice[FunArg],
+  module: Module, toasts: Map[Module, Toast], src: Src,
+): Result[MatchingCallee, Error] {
+  lookup_fun(name, args, module, toasts, src, list[Module]().&)
+}
+
+fun lookup_exported_type(
+  name: String,
+  num_args: Int,
+  module: Module,
+  toasts: Map[Module, Toast],
+  stack: &List[Module],
+): Result[Maybe[ToastTypeDef], Error] {
+  if module == builtin_module then {
+    for type in builtin_types do
+      if type.name == name and type.args == num_args then
+        return ok[Maybe[ToastTypeDef], Error](some(ToastTypeDef {
+          name = name @ invalid_src,
+          params = {
+            var params = list[StringAndSrc]()
+            for arg in 0..num_args do params.&.push("{arg}" @ invalid_src)
+            params.to_slice()
+          },
+          type = ToastType.primitive(ToastTypePrimitive {
+            name,
+            args = {
+              var the_args = list[ToastType]()
+              for arg in 0..num_args do
+                the_args.&.push(ToastType.variable("{arg}" @ invalid_src))
+              the_args.to_slice()
+            },
+          })
+        }))
+    return ok[Maybe[ToastTypeDef], Error](none[ToastTypeDef]())
+  }
+  for def in toasts.get(module).defs do
+    if def is export(export) then
+      for item in export.items do
+        if item is type(type) then
+          if type.name.string == name and type.args.len == num_args then
+            return ok[Maybe[ToastTypeDef], Error](some(
+              lookup_type(
+                type.name.string, num_args, module, toasts, type.name.src, stack
+              )?
+            ))
+  ok[Maybe[ToastTypeDef], Error](none[ToastTypeDef]())
+}
+
+fun lookup_type(
+  name: String,
+  num_args: Int,
+  module: Module,
+  toasts: Map[Module, Toast],
+  src: Src,
+  stack: &List[Module],
+): Result[ToastTypeDef, Error] {
+  if module == builtin_module then {
+    | The lookup_exported_type function already resolves the type defs from the
+    | builtin module instead of using this function. As there is also no code
+    | inside the builtin module that could depend on internal types, this should
+    | never be reached.
+    unreachable()
+  }
+
+  var candidates = list[ToastTypeDef]()
+  for def in toasts.get(module).defs do
+    switch def
+    case type(type) {
+      | TODO: check if name matches
+      if type.name.string == name and type.params.len == num_args then
+        candidates.&.push(type)
+    }
+    case import_(import_) {
+      for imported in import_.modules do {
+        var imported = module.resolve_import(imported)?
+        if stack.iter().&.contains(imported) then continue
+        stack.push(imported)
+        if lookup_exported_type(name, num_args, imported, toasts, stack)?
+        is some(exported)
+        then candidates.&.push(exported)
+        stack.pop()
+      }
+    }
+    default {}
+  if candidates.is_empty() then
+    return error[ToastTypeDef, Error](error(
+      "Type {name} with {num_args} args does not exist in {module}.", src
+    ))
+  if candidates.len > 1 then
+    return error[ToastTypeDef, Error](error({
+      var b = string_builder().&
+      b."Multiple types named {name} with {num_args} args exist in {module}:"
+      for candidate in candidates do
+        b."\n - {candidate.debug()}"
+      b.to_string()
+    }, src))
+  ok[ToastTypeDef, Error](candidates.get(0))
+}
+
+struct MatchingCallee {
+  kind: MatchingCalleeKind,
+  substitutions: Substitutions,
+  param_types: Slice[EggType],
+  return_type: EggType,
+}
+enum MatchingCalleeKind { builtin: EggBuiltinFun, fun_: String }
+fun write[W](writer: W, kind: MatchingCalleeKind) {
+  switch kind
+  case builtin(builtin) writer.write(builtin)
+  case fun_(signature) writer.write(signature)
 }
 
 struct FunParam { name: String, type: EggType }
@@ -24,8 +144,41 @@ fun write[W](writer: W, arg: FunArg) {
   writer."{arg.type}"
 }
 
+fun lookup_exported_fun(
+  name: String,
+  args: Slice[FunArg],
+  module: Module,
+  toasts: Map[Module, Toast],
+  stack: &List[Module],
+): Result[Maybe[MatchingCallee], Error] {
+if module == builtin_module then {
+    todo("support looking up exported builtin funs")
+  }
+  for def in toasts.get(module).defs do
+    if def is export(export) then
+      for item in export.items do
+        if item is fun_(fun_) then
+          if fun_.name.string == name then {
+            todo("Todo: Type-check whether function matches")
+            | return ok[Maybe[MatchingCallee], Error](some(type))
+          }
+  ok[Maybe[MatchingCallee], Error](none[MatchingCallee]())
+}
+
+fun signature(module: Module, name: String, params: Slice[FunParam]): String {
+  var b = string_builder().&
+  b."{module}.{name}"
+  for param in params do
+    if param.type == type_type then
+      b." {param.name}: {param.type}"
+    else
+      b." {param.type}"
+  b.to_string()
+}
+
 fun match_against(
-  args: Slice[FunArg], params: Slice[FunParam],
+  args: Slice[FunArg],
+  params: Slice[FunParam],
   constraints: &TypeVariableConstraints,
 ): Bool {
   args.len == params.len or return false
@@ -64,7 +217,7 @@ fun match_against(
       var b = string_builder().&
       b."Function with args"
       for param in params do b." {param.name}: {param.type}"
-      b." matches, but not all type 
+      b." matches, but not all type
         'variables are constrained:"
       for var_ in type_vars do {
         b."\n  {var_} "
@@ -78,31 +231,16 @@ fun match_against(
   ok[Maybe[Substitutions], String](some(substitutions))
 }
 
-struct MatchingCallee {
-  kind: MatchingCalleeKind,
-  substitutions: Substitutions,
-  param_types: Slice[EggType],
-  return_type: EggType,
-}
-
-enum MatchingCalleeKind { builtin: EggBuiltin, fun_: String }
-fun write[W](writer: W, kind: MatchingCalleeKind) {
-  switch kind
-  case builtin(builtin) writer.write(builtin)
-  case fun_(signature) writer.write(signature)
-}
-
-enum LookupNameMatches { local_fun: ToastFun, imported_fun: LookupImportedFun }
-struct LookupImportedFun {
-  module: Module, name: StringAndSrc, params: Slice[FunParam]
-}
-
-fun lookup(
-  name: String, args: Slice[FunArg], module: Module, src: Src,
-  toasts: Map[Module, Toast], types: Map[String, EggTypeDef],
+fun lookup_fun(
+  name: String,
+  args: Slice[FunArg],
+  module: Module,
+  toasts: Map[Module, Toast],
+  src: Src,
+  stack: &List[Module],
 ): Result[MatchingCallee, Error] {
   if module == builtin_module then {
-    for builtin in egg_builtins do {
+    for builtin in builtin_funs do {
       if "{builtin}" == name then {
         var params = list[FunParam]()
         for param in builtin.type_signature().params.iter().&.enumerate() do
@@ -133,57 +271,16 @@ fun lookup(
     return error[MatchingCallee, Error](error("Unknown builtin function.", src))
   }
 
-  var toast = toasts.get(module)
-
-  var name_matches = list[LookupNameMatches]()
-  for def in toast.defs do
+  var matches = list[MatchingCallee]()
+  for def in toasts.get(module).defs do
     switch def
     case fun_(fun_) {
-      if fun_.name.string == name then
-        name_matches.&.push(LookupNameMatches.local_fun(fun_))
-    }
-    case import_(import_) {
-      for part in import_.parts do {
-        var imported_module = module.resolve_import(part.module) or(error)
-          return error[MatchingCallee, Error](
-            error(error, import_.keyword.src)
-          )
-        for item in part.items do
-          if item is fun_(signature) then
-            if signature.name.string == name then {
-              var params = list[FunParam]()
-              for param in signature.args do
-                params.&.push(FunParam {
-                  name = param.name.string,
-                  type = param.type.compile(module, types)?,
-                })
-              var params = params.to_slice()
+      fun_.name.string == name or continue
 
-              name_matches.&.push(
-                LookupNameMatches.imported_fun(LookupImportedFun {
-                  module = imported_module,
-                  name = signature.name,
-                  params,
-                })
-              )
-            }
-      }
-    }
-    default {}
-
-  if name_matches.is_empty() then
-    return error[MatchingCallee, Error](
-      error("There is no function named {name} in scope.", src)
-    )
-
-  var full_matches = list[MatchingCallee]()
-  for item in name_matches do {
-    switch item
-    case local_fun(fun_) {
       var params = list[FunParam]()
       for param in fun_.params do
         params.&.push(FunParam {
-          name = param.name.string, type = param.type.compile(module, types)?
+          name = param.name.string, type = param.type.compile(module, toasts)?
         })
       var params = params.to_slice()
 
@@ -199,27 +296,25 @@ fun lookup(
         param_types.&.push(param.type.specialize(substitutions))
       var param_types = param_types.to_slice()
       var return_type =
-        fun_.return_type.compile(module, types)?.specialize(substitutions)
+        fun_.return_type.compile(module, toasts)?.specialize(substitutions)
 
-      full_matches.&.push(MatchingCallee {
+      matches.&.push(MatchingCallee {
         kind = MatchingCalleeKind.fun_(signature),
         substitutions,
         param_types,
         return_type,
       })
     }
-    case imported_fun(imported) {
-      var substitutions = args.match_against(imported.params) or(message) {
-        return error[MatchingCallee, Error](error(message, src))
+    case import_(import_) {
+      for imported in import_.modules do {
+        var imported = module.resolve_import(imported)?
+        if lookup_exported_fun(name, args, module, toasts)? is some(fun_) then
+          matches.&.push(fun_)
       }
-      var substitutions = substitutions or continue
-
-      var imported = lookup(name, args, imported.module, src, toasts, types)?
-      full_matches.&.push(imported)
     }
-  }
+    default {}
 
-  if full_matches.is_empty() then
+  if matches.is_empty() then
     return error[MatchingCallee, Error]({
       var b = string_builder().&
       b."There is no matching function.\n
@@ -229,56 +324,56 @@ fun lookup(
             b." {arg.value}: {arg.type}"
           else
             b." {arg.type}"
-      for item in name_matches do {
-        var module_name_params =
-          switch item
-          case local_fun(fun_) {
-            var params = list[FunParam]()
-            for param in fun_.params do
-              params.&.push(FunParam {
-                name = param.name.string,
-                type = param.type.compile(module, types)?,
-              })
-            tuple(module, name, params.to_slice())
-          }
-          case imported_fun(imported)
-            tuple(imported.module, imported.name.string, imported.params)
+      | for item in name_matches do {
+      |   var module_name_params =
+      |     switch item
+      |     case local_fun(fun_) {
+      |       var params = list[FunParam]()
+      |       for param in fun_.params do
+      |         params.&.push(FunParam {
+      |           name = param.name.string,
+      |           type = param.type.compile(module, types)?,
+      |         })
+      |       tuple(module, name, params.to_slice())
+      |     }
+      |     case imported_fun(imported)
+      |       tuple(imported.module, imported.name.string, imported.params)
 
-        var module = module_name_params.a
-        var name = module_name_params.b
-        var params = module_name_params.c
+      |   var module = module_name_params.a
+      |   var name = module_name_params.b
+      |   var params = module_name_params.c
 
-        b."\n  {"{module}.{name}".pad_left(30)}"
-        for param in params do
-          if param.type == type_type then
-            b." {param.name}: {param.type}"
-          else
-            b." {param.type}"
-        var constraints = constraints()
-        args.match_against(params, constraints.&) or {
-          b."  doesn't match types"
-          continue
-        }
-        var substitutions = constraints.check_coherency() or {
-          b."  has impossible constraints:"
-          for constraint in constraints.constraints do
-            b." {constraint}"
-          continue
-        }
-      }
+      |   b."\n  {"{module}.{name}".pad_left(30)}"
+      |   for param in params do
+      |     if param.type == type_type then
+      |       b." {param.name}: {param.type}"
+      |     else
+      |       b." {param.type}"
+      |   var constraints = constraints()
+      |   args.match_against(params, constraints.&) or {
+      |     b."  doesn't match types"
+      |     continue
+      |   }
+      |   var substitutions = constraints.check_coherency() or {
+      |     b."  has impossible constraints:"
+      |     for constraint in constraints.constraints do
+      |       b." {constraint}"
+      |     continue
+      |   }
+      | }
       error(b.to_string(), src)
     })
 
-  if full_matches.len > 1 then
+  if matches.len > 1 then
     return error[MatchingCallee, Error]({
       var b = string_builder().&
       b."Multiple functions match {name} {args}:"
-      for match in full_matches do
+      for match in matches do
         b."\n  {match.kind} with {match.substitutions}"
       error(b.to_string(), src)
     })
 
-  var matching_callee = full_matches.get(0)
+  var matching_callee = matches.get(0)
 
   ok[MatchingCallee, Error](matching_callee)
 }

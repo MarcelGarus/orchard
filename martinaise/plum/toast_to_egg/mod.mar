@@ -1,4 +1,4 @@
-| Converting Toast To Egg  
+| Converting Toast To Egg
 
 import ../plum.mar
 import lookup.mar
@@ -6,41 +6,296 @@ import types/mod.mar
 import visible.mar
 
 fun to_egg(
-  toasts: Map[Module, Toast], entry_point: String
+  toasts: Map[Module, Toast], entry_module: Module, entry_fun: String
 ): Result[Egg, Error] {
-  var types = compile_all_types(toasts)?
-
   var funs = map[String, EggFun]()
   for toast in toasts do {
     var module = toast.key
     var toast = toast.value
     for def in toast.defs do
-      if def is fun_(fun_) then {
-        var params = list[FunParam]()
-        for param in fun_.params do
-          params.&.push(FunParam {
-            name = param.name.string, type = param.type.compile(module, types)?
-          })
-        var params = params.to_slice()
-        var signature = signature(module, fun_.name.string, params)
-        var compiled = fun_.compile(module, types, toasts)?
-        funs.&.put(signature, compiled)
-      }
+      switch def
+      case import_(import_) check(import_)
+      case export(export) check(export, module, toasts)?
+      case type(type) check(type, module, toasts)?
+      case fun_(fun_) funs.&.put(compile(fun_, module, toasts)?)
   }
+  ok[Egg, Error](Egg { entry_point = "{entry_module}.{entry_fun}", funs })
+}
 
-  ok[Egg, Error](Egg { entry_point, funs })
+fun check(import_: ToastImport) {
+  | We don't actually need to do anything. During the creation of the
+  | Map[Module, Toast], we have already looked at all the imports and parsed
+  | the respective imported files, crashing with a compiler error if a file was
+  | not found.
+}
+
+fun check(
+  export: ToastExport, module: Module, toasts: Map[Module, Toast]
+): Result[Nothing, Error] {
+  | TODO: Check that the exported items actually exist.
+  for item in export.items do
+    switch item
+    case type(type)
+      lookup_type(
+        type.name.string, type.args.len, module, toasts, type.name.src
+      )?.ignore()
+    case fun_(fun_) eprintln("TODO: Ensure that {fun_.name.string} exists in {module}")
+  ok[Nothing, Error]({})
+}
+
+fun check(
+  type_def: ToastTypeDef, module: Module, toasts: Map[Module, Toast]
+): Result[Nothing, Error] {
+  | TODO: check that the same type var doesn't appear twice
+  var env = map[String, EggType]()
+  for param in type_def.params do
+    env.&.put(param.string, type_variable(param.string))
+  type_def.type.compile(env, module, toasts)?
+  ok[Nothing, Error]({})
+}
+
+| fun compile(
+|   type: ToastType, module: Module, toasts: Map[Module, Toast]
+| ): Result[EggType, Error] {
+|   ok[ToastType, Error](
+|     switch type
+|     case primitive(primitive) {
+|       var args = list[ToastType]()
+|       for arg in primitive.args do args.&.push(arg.specialize(env)?)
+|       var args = args.to_slice()
+      
+|       ToastType.primitive(ToastTypePrimitive { name = primitive.name, args })
+|     }
+|     case variable(variable)
+|       env.get_maybe(variable.string) or
+|         return error[ToastType, Error](error(
+|           "Tried to use {variable.string}, but that type doesn't exist. (speci.)",
+|           variable.src
+|         ))
+|     case call(call) {
+|       var args = list[ToastType]()
+|       for arg in call.args do args.&.push(arg.specialize(env)?)
+|       var args = args.to_slice()
+|       ToastType.call(ToastTypeCall { name = call.name, args })
+|     }
+|     case struct_(struct_) {
+|       var fields = list[ToastTypeField]()
+|       for field in struct_ do
+|         fields.&.push(ToastTypeField {
+|           name = field.name, type = field.type.specialize(env)?
+|         })
+|       var fields = fields.to_slice()
+|       ToastType.struct_(fields)
+|     }
+|     case enum_(enum_) {
+|       var variants = list[ToastTypeVariant]()
+|       for variant in enum_ do
+|         variants.&.push(ToastTypeVariant {
+|           name = variant.name, type = variant.type.specialize(env)?
+|         })
+|       var variants = variants.to_slice()
+|       ToastType.enum_(variants)
+|     }
+|     case lambda(lambda) {
+|       var args = list[ToastType]()
+|       for arg in lambda.args do args.&.push(arg.specialize(env)?)
+|       var args = args.to_slice()
+|       var return_type = lambda.return_type.specialize(env)?
+|       ToastType.lambda(ToastTypeLambda {
+|         args, return_type = return_type.put_on_heap()
+|       })
+|     }
+|   )
+| }
+
+struct OngoingTypeCall { name: String, args: Slice[EggType], depth: Int }
+
+fun write[W](writer: W, call: OngoingTypeCall) {
+  writer."{call.name}"
+  for arg in call.args do writer." {arg}"
 }
 
 fun compile(
-  fun_: ToastFun, module: Module,
-  types: Map[String, EggTypeDef], toasts: Map[Module, Toast],
+  type: ToastType,
+  env: Map[String, EggType],
+  module: Module,
+  toasts: Map[Module, Toast],
+): Result[EggType, Error] {
+  type.compile(env, module, toasts, list[OngoingTypeCall]().&, 0)
+}
+
+fun compile(
+  type: ToastType,
+  env: Map[String, EggType],
+  module: Module,
+  toasts: Map[Module, Toast],
+  stack: &List[OngoingTypeCall],
+  depth: Int,
+): Result[EggType, Error] {
+  return ok[EggType, Error](
+    switch type
+    case primitive(primitive) {
+      var name = primitive.name
+      if name == "Never" then type_never
+      else if name == "Type"  then type_type
+      else if name == "Byte"  then type_byte
+      else if name == "Int"   then type_int
+      else if name == "Box" then
+        type_box_without_canonicalizing(
+          primitive.args.get(0).compile(env, module, toasts, stack, depth + 1)?
+        )
+      else if name == "Array" then
+        type_array_without_canonicalizing(
+          primitive.args.get(0).compile(env, module, toasts, stack, depth + 1)?
+        )
+      else unreachable()
+    }
+    case variable(variable) type_variable(variable.string)
+    case call(call) {
+      var name = call.name
+
+      var args = list[EggType]()
+      for arg in call.args do
+        args.&.push(arg.compile(env, module, toasts, stack, depth))
+      var args = args.to_slice()
+
+      | Are we recursively lowering a type? If so, we need to insert a recursive
+      | type instead of endlessly digging down into the type.
+      for parent in stack do
+        if parent.name == name.string and parent.args == args then
+          return ok[EggType, Error](type_recursive(depth - parent.depth))
+
+      | Look for a type with the name.
+      var called_def = lookup_type(
+        name.string, args.len, module, toasts, name.src
+      )?
+      called_def.params.len == args.len or panic("bad lookup")
+
+      var env = map[String, EggType]()
+      for arg in zip(called_def.params.iter(), args.iter()) do
+        env.&.put(arg.a.string, arg.b)
+      var called = called_def.type.specialize(env)?
+
+      stack.&.push(OngoingTypeCall { name = name.string, args, depth })
+      var type = called.compile(env, module, toasts, stack, depth)?
+      stack.&.pop()
+
+      type
+    }
+    case struct_(struct_) {
+      var fields = map[String, EggType]()
+      for field in struct_ do {
+        if fields.contains(field.name.string) then
+          return error[EggType, Error](error(
+            "Struct contains multiple fields named {field.name.string}.",
+            field.name.src,
+          ))
+        fields.&.put(
+          field.name.string, field.type.compile(stack, depth + 1, defs)?
+        )
+      }
+      type_struct_without_canonicalizing(fields)
+    }
+    case enum_(enum_) {
+      var variants = map[String, EggType]()
+      for variant in enum_ do {
+        if variants.contains(variant.name.string) then
+          return error[EggType, Error](error(
+            "Enum contains multiple variants named {variant.name.string}.",
+            variant.name.src,
+          ))
+        variants.&.put(
+          variant.name.string,
+          variant.type.compile(stack, depth + 1, defs)?
+        )
+      }
+      type_enum_without_canonicalizing(variants)
+    }
+    case lambda(lambda) {
+      var args = list[EggType]()
+      for arg in lambda.args do
+        args.&.push(arg.compile(stack, depth + 1, defs)?)
+      var args = args.to_slice()
+
+      var return_type =
+        lambda.return_type.compile(stack, depth + 1, defs)?
+
+      type_lambda_without_canonicalizing(args, return_type)
+    }
+  )
+}
+
+fun specialize(
+  type: ToastType, env: Map[String, ToastType]
+): Result[ToastType, Error] {
+  var type =
+    switch type
+    case primitive(primitive) {
+      var args = list[ToastType]()
+      for arg in primitive.args do args.&.push(arg.specialize(env)?)
+      var args = args.to_slice()
+      ToastType.primitive(ToastTypePrimitive { name = primitive.name, args })
+    }
+    case variable(variable)
+      env.get_maybe(variable.string) or
+        return error[ToastType, Error](error(
+          "Tried to use {variable.string}, but that type doesn't exist in the
+          ' specializations.",
+          variable.src
+        ))
+    case call(call) {
+      var args = list[ToastType]()
+      for arg in call.args do args.&.push(arg.specialize(env)?)
+      var args = args.to_slice()
+      ToastType.call(ToastTypeCall { name = call.name, args })
+    }
+    case struct_(struct_) {
+      var fields = list[ToastTypeField]()
+      for field in struct_ do
+        fields.&.push(ToastTypeField {
+          name = field.name, type = field.type.specialize(env)?
+        })
+      var fields = fields.to_slice()
+      ToastType.struct_(fields)
+    }
+    case enum_(enum_) {
+      var variants = list[ToastTypeVariant]()
+      for variant in enum_ do
+        variants.&.push(ToastTypeVariant {
+          name = variant.name, type = variant.type.specialize(env)?
+        })
+      var variants = variants.to_slice()
+      ToastType.enum_(variants)
+    }
+    case lambda(lambda) {
+      var args = list[ToastType]()
+      for arg in lambda.args do args.&.push(arg.specialize(env)?)
+      var args = args.to_slice()
+      var return_type = lambda.return_type.specialize(env)?
+      ToastType.lambda(ToastTypeLambda {
+        args, return_type = return_type.put_on_heap()
+      })
+    }
+  ok[ToastType, Error](type)
+}
+
+fun compile(
+  fun_: ToastFun, module: Module, toasts: Map[Module, Toast]
 ): Result[EggFun, Error] {
+  var params = list[FunParam]()
+  for param in fun_.params do
+    params.&.push(FunParam {
+      name = param.name.string, type = param.type.compile(module, toasts)?
+    })
+  var params = params.to_slice()
+  var signature = signature(module, fun_.name.string, params)
+
   var visible = visible()
   var builder = egg_body_builder().&
 
   var param_types = list[EggType]()
   for param in fun_.params do {
-    var type = param.type.compile(module, types)?
+    var type = param.type.compile(module, toasts)?
     visible.&.define(param.name.string, builder.param(type))
     param_types.&.push(type)
   }
@@ -50,21 +305,21 @@ fun compile(
   for var_ in param_types.collect_type_variables() do
     visible.&.define(var_, builder.type(type_variable(var_)))
   for param in fun_.params do
-    if param.type.compile(module, types)? == type_type then
+    if param.type.compile(module, toasts)? == type_type then
       visible.&.define(
         param.name.string, builder.type(type_variable(param.name.string))
       )
 
-  var returned = fun_.body.compile(builder, module, visible.&, EggContext { toasts, types })?
+  var returned = fun_.body.compile(builder, module, visible.&, toasts)?
   | TODO: What's up with this?
   | var last = none[EggId]()
   | for expr in fun_.body.body.unwrap() do
   |   last = some(builder.push(
-  |     expr.compile(builder, module, visible.&, EggContext { toasts, types })?
+  |     expr.compile(builder, module, visible.&, toasts)?
   |   ))
   | var returned = last.unwrap()
 
-  var return_type = fun_.return_type.compile(module, types)?
+  var return_type = fun_.return_type.compile(module, toasts)?
   returned.type().is_assignable_to(return_type) or
     return error[EggFun, Error](error(
       "Function returns something different than its claimed return type:\n
@@ -76,28 +331,29 @@ fun compile(
 
   var body = builder.finish(returned)
 
-  ok[EggFun, Error](EggFun { body })
+  ok[EggFun, Error](EggFun { signature, body })
 }
 
-struct EggContext { toasts: Map[Module, Toast], types: Map[String, EggTypeDef] }
-
 fun compile(
-  toast: ToastExpr, builder: &EggBodyBuilder, module: Module, visible: &Visible,
-  context: EggContext,
+  expr: ToastExpr,
+  builder: &EggBodyBuilder,
+  module: Module,
+  visible: &Visible,
+  toasts: Map[Module, Toast],
 ): Result[EggId, Error] {
   ok[EggId, Error](
-    switch toast
+    switch expr
     case todo builder.crash(builder.string("todo"), type_never)
     case int(int) builder.int(int.int)
     case string(string) builder.string(string.string)
-    case type(type) builder.type(type.compile(module, context.types)?)
+    case type(type) builder.type(type.compile(module, toasts)?)
     case struct_(struct_)
       builder.struct_({
         var fields = map[String, EggId]()
         var names = set[String]()
         for field in struct_.fields do {
           var name = field.name.string
-          var value = field.value.compile(builder, module, visible, context)?
+          var value = field.value.compile(builder, module, visible, toasts)?
           if names.contains(name) then
             return error[EggId, Error](error(
               "Field {name} is in the struct multiple times.",
@@ -110,12 +366,12 @@ fun compile(
       })
     case enum_(enum_) {
       var name = enum_.name.string
-      var value = enum_.value.compile(builder, module, visible, context)?
+      var value = enum_.value.compile(builder, module, visible, toasts)?
       builder.enum_(type_enum(map(name -> value.type())), name, value)
     }
     case switch_(switch_) {
       | Compile the condition.
-      var condition = switch_.condition.compile(builder, module, visible, context)?
+      var condition = switch_.condition.compile(builder, module, visible, toasts)?
       var variant_types = condition.type().plum().enum_
         or return error[EggId, Error](error(
           "Switched on non-enum: {condition.type()}", switch_.percent.src
@@ -153,11 +409,11 @@ fun compile(
         var payload = case_builder.case_param(condition, symbol)
         if case_.payload is some(pattern) then
           pattern.compile_pattern(
-            payload, case_builder, module, visible, context
+            payload, case_builder, module, visible, toasts
           )?
 
         var returns = case_.body.compile(
-          case_builder, module, visible, context
+          case_builder, module, visible, toasts
         )?
         visible.restore(snapshot)
         case_compilers.&.put(symbol, tuple(case_builder.*, returns))
@@ -165,7 +421,7 @@ fun compile(
       }
       var common_type = union(case_types.to_slice()) or
         return error[EggId, Error](error(
-          "Couldn't union types {case_types}", switch_.percent.src
+          "Couldn't union toasts {case_types}", switch_.percent.src
         ))
       var common_type = common_type
       var cases = map[String, EggBody]()
@@ -189,11 +445,11 @@ fun compile(
       var lambda_builder = egg_body_builder().&
       for param in lambda.params do {
         var name = param.name.string
-        var type = param.type.compile(module, context.types)?
+        var type = param.type.compile(module, toasts)?
         visible.define(name, lambda_builder.param(type))
       }
       var returns = lambda.body.compile(
-        lambda_builder, module, visible, context
+        lambda_builder, module, visible, toasts
       )?
       var lambda_body = lambda_builder.finish(returns)
       visible.restore(snapshot)
@@ -203,7 +459,7 @@ fun compile(
     case call(call) {
       var args = list[EggId]()
       for arg in call.args do
-        args.&.push(arg.compile(builder, module, visible, context)?)
+        args.&.push(arg.compile(builder, module, visible, toasts)?)
       var args = args.to_slice()
 
       | Find the function name -- either some(String) if it's a function call
@@ -236,7 +492,7 @@ fun compile(
               var type_value =
                 arg.resolve().type
                   or return error[EggId, Error](error(
-                    "Arguments of the type Type have to be known at 
+                    "Arguments of the type Type have to be known at
                     'compile-time. Arg is {args.get(i).debug()}",
                     name.src
                   ))
@@ -248,9 +504,8 @@ fun compile(
         var arg_values = arg_values.to_slice()
 
         | Look for a matching function.
-        var match = lookup(
-          name.string, arg_values, module, name.src,
-          context.toasts, context.types,
+        var match = lookup_fun(
+          name.string, arg_values, module, toasts, name.src
         )?
 
         | Cast arguments
@@ -266,7 +521,7 @@ fun compile(
         case builtin(builtin) builder.call(builtin, match.substitutions, args)
       }
       case none { | lambda
-        var lambda = call.function.compile(builder, module, visible, context)?
+        var lambda = call.function.compile(builder, module, visible, toasts)?
         var lambda_type = lambda.type()
         var lambda_type = lambda_type.plum().lambda or
           return error[EggId, Error](error(
@@ -292,7 +547,7 @@ fun compile(
           var expected_type = both.b
           arg.type().is_assignable_to(expected_type) or
             return error[EggId, Error](error(
-              "Tried to call lambda with wrong types.", call.function.src()
+              "Tried to call lambda with wrong toasts.", call.function.src()
             ))
           cast_args.&.push(builder.cast(arg, expected_type))
         }
@@ -302,14 +557,14 @@ fun compile(
       }
     }
     case var_(var_) {
-      var value = var_.right.compile(builder, module, visible, context)?
-      var_.left.compile_pattern(value, builder, module, visible, context)?
+      var value = var_.right.compile(builder, module, visible, toasts)?
+      var_.left.compile_pattern(value, builder, module, visible, toasts)?
       value
     }
     case body(exprs) {
       var last = none[EggId]()
       for expr in exprs do {
-        last = some(expr.compile(builder, module, visible, context)?)
+        last = some(expr.compile(builder, module, visible, toasts)?)
       }
       last or unreachable()
     }
@@ -317,9 +572,12 @@ fun compile(
 }
 
 fun compile_pattern(
-  pattern: ToastExpr, matched: EggId,
-  builder: &EggBodyBuilder, module: Module, visible: &Visible,
-  context: EggContext,
+  pattern: ToastExpr,
+  matched: EggId,
+  builder: &EggBodyBuilder,
+  module: Module,
+  visible: &Visible,
+  toasts: Map[Module, Toast],
 ): Result[Nothing, Error] {
   switch pattern
   case todo error[Nothing, Error](error("Todo in pattern.", pattern.src()))
@@ -345,7 +603,7 @@ fun compile_pattern(
     for field in pattern.fields do
       field_types.contains(field.name.string) or
         return error[Nothing, Error](error(
-          "Patterns refers to {field.name.string}, but that is not in the 
+          "Patterns refers to {field.name.string}, but that is not in the
           'struct {matched.type()}.",
           field.name.src,
         ))
@@ -362,7 +620,7 @@ fun compile_pattern(
       var field_type = field_types.get(field.name.string)
       var matched_value = builder.member(matched, field.name.string)
       field.value.compile_pattern(
-        matched_value, builder, module, visible, context
+        matched_value, builder, module, visible, toasts
       )?
     }
 

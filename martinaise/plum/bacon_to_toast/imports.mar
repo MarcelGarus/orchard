@@ -1,0 +1,51 @@
+import mod.mar
+
+fun parse_import(bacon: Bacon): Result[Maybe[ToastImport], Error] {
+  if bacon.line == "import" then {
+    | Multiline import.
+
+    var modules = list[StringAndSrc]()
+    for child in bacon.children do {
+      var parser = parser(child.line, child.src)
+
+      modules.&.push(
+        parser.&.parse_string()? or
+          return bad_input[ToastImport](error(
+            "Expected module to import.", parser.src_of_rest()))
+      )
+
+      parser.&.consume_whitespace()
+      parser.&.ensure_is_at_end()?
+      child.children.is_empty() or
+        return bad_input[ToastImport](error(
+          "Import modules can't have children.", parser.src_of_rest()
+        ))
+    }
+    var modules = modules.to_slice()
+
+    return parsed(ToastImport { keyword = bacon.line @ bacon.src, modules })
+  }
+
+  | Single-line import.
+  var parser = parser(bacon.line, bacon.src)
+
+  var keyword = parser.&.consume("import") or return no_match[ToastImport]()
+  parser.current().is_whitespace() or return no_match[ToastImport]()
+
+  bacon.children.is_empty() or
+    return bad_input[ToastImport](error(
+      "Multi-line import should just have a line that says import.",
+      bacon.children.first().src ... bacon.children.last().src,
+    ))
+
+  var modules = list[StringAndSrc]()
+  loop modules.&.push(parser.&.parse_string()? or break)
+  parser.&.ensure_is_at_end()?
+  var modules = modules.to_slice()
+
+  if modules.is_empty() then
+    return bad_input[ToastImport](error(
+      "Expected imported modules.", parser.src_of_rest()))
+
+  parsed(ToastImport { keyword, modules })
+}

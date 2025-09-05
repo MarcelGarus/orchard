@@ -19,24 +19,27 @@ fun file_paths(module: Module): Slice[String] {
   ).to_slice()
 }
 
-fun resolve_import(base: Module, relative_import: String): Result[Module, String] {
+fun resolve_import(
+  base: Module, relative_import: StringAndSrc
+): Result[Module, Error] {
+  var str = relative_import.string
   var parent_navigations = 0
   loop
-    if relative_import.starts_with(".") then {
+    if str.starts_with(".") then {
       parent_navigations = parent_navigations + 1
-      relative_import = relative_import.substr(1..relative_import.len)
+      str = str.substr(1..str.len)
     } else break
 
   if parent_navigations == 0 then {
-    if relative_import == "builtins" then {
-      return ok[Module, String](Module { path = "builtins" })
-    }
-    return error[Module, String](
-      "Can't import packages yet (except \"builtins\")")
+    if str == "builtins" then
+      return ok[Module, Error](Module { path = "builtins" })
+    return error[Module, Error](error(
+      "Can't import packages yet (except \"builtins\")", relative_import.src
+    ))
   }
 
   var path =
     "{base.path.split("/").without_last(parent_navigations - 1).join("/")}/
-    '{relative_import}"
-  ok[Module, String](Module { path })
+    '{str}"
+  ok[Module, Error](Module { path })
 }
