@@ -9,6 +9,12 @@ export
   list a a -> (List a)
   list a a a -> (List a)
   list a a a a -> (List a)
+  list a a a a a -> (List a)
+  list a a a a a a -> (List a)
+  list a a a a a a a -> (List a)
+  list a a a a a a a a -> (List a)
+  list a a a a a a a a a -> (List a)
+  list a a a a a a a a a a -> (List a)
   reserve_for_length (List a) Int -> (List a)
   reserve_for_extra (List a) Int -> (List a)
   is_empty (List a) -> Bool
@@ -24,40 +30,64 @@ export
   to_list (Iterator a) -> (List a)
 
 import
-  "..any"
-  "..array"
-  "..bool"
-  "..int"
-  "..iterator"
-  "..maybe"
-  "..never"
-  "..string"
-  "..range"
-  "..test"
-  "..type"
+  ..any
+  ..array
+  ..bool
+  ..int
+  ..iterator
+  ..maybe
+  ..never
+  ..string
+  ..range
+  ..test
+  ..type
 
 List t = & array: (Array t) length: Int
 
 empty_list t: Type -> (List t) =
   & array: generate_array 0 \ index: Int -> crash "not called" .as t
     length: 0
-list a: t -> (List t) = empty_list t .reserve 1 .push a
-list a: t b: t -> (List t) = empty_list t .reserve 2 .push a .push b
+list a: t -> (List t) = empty_list t .reserve_for_length 1 .push a
+list a: t b: t -> (List t) = empty_list t .reserve_for_length 2 .push a .push b
 list a: t b: t c: t -> (List t) =
-  empty_list t .reserve 3 .push a .push b .push c
+  empty_list t .reserve_for_length 3 .push a .push b .push c
 list a: t b: t c: t d: t -> (List t) =
-  empty_list t .reserve 4 .push a .push b .push c .push d
+  empty_list t .reserve_for_length 4 .push a .push b .push c .push d
 list a: t b: t c: t d: t e: t -> (List t) =
-  empty_list t .reserve 5 .push a .push b .push c .push d .push e
+  empty_list t .reserve_for_length 5 .push a .push b .push c .push d .push e
 list a: t b: t c: t d: t e: t f: t -> (List t) =
-  empty_list t .reserve 6 .push a .push b .push c .push d .push e .push f
+  empty_list t
+  . reserve_for_length 6
+  . push a
+  . push b
+  . push c
+  . push d
+  . push e
+  . push f
 list a: t b: t c: t d: t e: t f: t g: t -> (List t) =
-  empty_list t .reserve 7 .push a .push b .push c .push d .push e .push f .push g
+  empty_list t
+  . reserve_for_length 7
+  . push a
+  . push b
+  . push c
+  . push d
+  . push e
+  . push f
+  . push g
 list a: t b: t c: t d: t e: t f: t g: t h: t -> (List t) =
-  empty_list t .reserve 8 .push a .push b .push c .push d .push e .push f .push g .push h
+  empty_list t
+  . reserve_for_length 8
+  . push a
+  . push b
+  . push c
+  . push d
+  . push e
+  . push f
+  . push g
+  . push h
 list a: t b: t c: t d: t e: t f: t g: t h: t i: t -> (List t) =
   empty_list t
-  . reserve 9
+  . reserve_for_length 9
   . push a
   . push b
   . push c
@@ -67,31 +97,47 @@ list a: t b: t c: t d: t e: t f: t g: t h: t i: t -> (List t) =
   . push g
   . push h
   . push i
+list a: t b: t c: t d: t e: t f: t g: t h: t i: t j: t -> (List t) =
+  empty_list t
+  . reserve_for_length 10
+  . push a
+  . push b
+  . push c
+  . push d
+  . push e
+  . push f
+  . push g
+  . push h
+  . push i
+  . push j
 
 # Makes sure that the list can reach the target_length without reallocating.
-reserve list: (List t) target_length: Int -> (List t) =
-  default_item = any t
+reserve_for_length list: (List t) target_length: Int -> (List t) =
   & array:
       list.array.length .< target_length
       % true  -> | grow
         false -> | fits
       % grow ->
+          default_item = any t
           generate_array
             target_length .round_up_to_power_of 2
             \ index: Int -> list.array .get_maybe index .else default_item
         fits -> list.array
     length: list.length
 
-reserve_extra list: (List t) extra: Int -> (List t) =
-  list .reserve (list.length .+ extra)
+reserve_for_extra list: (List t) extra: Int -> (List t) =
+  list .reserve_for_length (list.length .+ extra)
 
 is_empty list: (List t) -> Bool = list.length .== 0
 
+push_without_growing list: (List t) item: t -> (Maybe (List t)) =
+  (& array length: len) = list
+  len .< (array.length)
+  % true -> | some: & array: (array .set len item) length: (len .+ 1)
+    false -> | none
+
 push list: (List t) item: t -> (List t) =
-  # TODO: hack so that we don't use list after the array.set
-  length = list.length
-  new_len = length .+ 1
-  & array: (list .reserve new_len .array .set length item) length: new_len
+  list .reserve_for_extra 1 .push_without_growing item .unwrap
 
 push_all list: (List t) iterator: (Iterator t) -> (List t) =
   iterator.next

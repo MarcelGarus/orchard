@@ -1,45 +1,50 @@
 export
   Texture
   filled_texture Size Color -> Texture
-  generate_texture Size (\ Int Int -> Color) -> Texture
-  update_area Texture Rectangle (\ Int Int Color -> Color) -> Texture
+  generate_texture Size (\ Position -> Color) -> Texture
+  update_area Texture Rectangle (\ Position Color -> Color) -> Texture
   draw_texture Texture Position Texture -> Texture
   fill_rectangle Texture Rectangle Color -> Texture
 
-import "...core" "..color" "..rectangle" "..texture"
+import
+  ...core
+  ..color
+  ..rectangle
+  ..texture
+  ..matrix
 
 Texture = Matrix Color
 
 filled_texture size: Size color: Color -> Texture = filled_matrix size color
 
-generate_texture size: Size generator: (\ Int Int -> Color) -> Texture =
+generate_texture size: Size generator: (\ Position -> Color) -> Texture =
   generate_matrix size generator
 
 update_area
-  texture: Texture rectangle: Rectangle update: (\ Int Int Color -> Color)
+  texture: Texture rectangle: Rectangle update: (\ Position Color -> Color)
   -> Texture
-= texture .update_from_column rectangle update (rectangle.top)
-
-update_from_column
-  texture: Texture
-  rectangle: Rectangle
-  update: (\ Int Int Color -> Color)
-  y: Int
-  -> Texture
-= y .== (rectangle.bottom)
-  % true -> texture
-    false -> texture .update_from_row rectangle update (rectangle.left) y
-
-update_from_row
-  texture: Texture
-  rectangle: Rectangle
-  update: (\ Int Int Color -> Color)
-  x: Int
-  y: Int
-  -> Texture
-= x .== (rectangle.right)
-  % true -> texture
-    false -> texture .set x y (update x y (texture .get x y))
+= loop
+    & texture y: (rectangle.top)
+    \ state: (& texture: Texture y: Int) ->
+      (& texture y) = state
+      y .== (rectangle.bottom)
+      % true -> | break: texture
+        false ->
+          | continue:
+              & y: (y .+ 1)
+                texture:
+                  loop
+                    & texture x: (rectangle.left)
+                    \ state: (& texture: Texture x: Int) ->
+                      (& texture x) = state
+                      x .== (rectangle.right)
+                      % true -> | break: texture
+                        false ->
+                          | continue:
+                              & x: (x .+ 1)
+                                texture:
+                                  texture
+                                  . set x y (update (& x y) (texture .get x y))
 
 draw to: Texture at: Position what: Texture -> Texture =
   to
@@ -48,4 +53,5 @@ draw to: Texture at: Position what: Texture -> Texture =
       \ position: Position old: Color -> old .blend (what .get (position .- at))
 
 fill_rectangle to: Texture rectangle: Rectangle color: Color -> Texture =
-  to .update_area rectangle (\ x: Int y: Int old: Color -> old .blend color)
+  to
+  . update_area rectangle (\ position: Position old: Color -> old .blend color)

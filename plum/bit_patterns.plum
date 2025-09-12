@@ -1,0 +1,37 @@
+export
+  matches_mask Byte String -> Bool
+
+import ..core
+
+ascii_char string: String -> Byte = string.utf8_bytes .get 0
+
+bits_to_byte bits: (Iterator Bool) -> Byte =
+  bits
+  . fold
+      0
+      \ byte: Int bit: Bool ->
+        bit =
+          bit
+          % true -> 1
+            false -> 0
+        byte .<< 1 .or bit
+  . to_byte
+
+matches_mask byte: Byte mask: String -> Bool =
+  chars =
+    mask.utf8_bytes.iterate
+    . filter \ char: Byte -> char .== (ascii_char " ")
+    . to_list
+  assert (chars.length .== 8) "mask string should be 8 chars in length"
+  assert
+    chars.iterate
+    . all
+        \ char: Byte ->
+          char .== (ascii_char "0")
+          . or (char .== (ascii_char "1"))
+          . or (char .== (ascii_char "x"))
+  matters =
+    chars.iterate .map (\ char: Byte -> char .!= (ascii_char "x")) .bits_to_byte
+  ones =
+    chars.iterate .map (\ char: Byte -> char .== (ascii_char "1")) .bits_to_byte
+  byte .and matters .== ones

@@ -1,0 +1,89 @@
+export
+  Position
+  Size
+  Matrix a
+  + Position Position -> Position
+  - Position Position -> Position
+  filled_matrix Size a -> (Matrix a)
+  generate_matrix Size (\ Position -> a) -> (Matrix a)
+  get (Matrix a) Int Int -> a
+  get (Matrix a) Position -> a
+  get_maybe (Matrix a) Int Int -> (Maybe a)
+  get_maybe (Matrix a) Position -> (Maybe a)
+  set (Matrix a) Int Int a -> (Matrix a)
+  set (Matrix a) Position a -> (Matrix a)
+
+import ...core
+
+Position = & x: Int y: Int
+Size = & width: Int height: Int
+Matrix a = & cells: (Array a) size: Size
+
++ a: Position b: Position -> Position = & x: (a.x .+ (b.x)) y: (a.y .+ (b.y))
+- a: Position b: Position -> Position = & x: (a.x .- (b.x)) y: (a.y .- (b.y))
+
+filled_matrix size: Size item: a -> (Matrix a) =
+  (& width height) = size
+  & size cells: (generate_array (width .* height) (\ i: Int -> item))
+
+generate_matrix size: Size generator: (\ Position -> t) -> (Matrix t) =
+  # Note: A naive version of this used the generate_array builtin function to
+  # fill the array immediately, like this:
+  #
+  # generate_array
+  #   width .* height
+  #   \ index: Int -> generator (& x: (index .mod width) y: (index ./ height))
+  #
+  # However, division and modulo operations are rather expensive. So, we instead
+  # first create an array with placeholder values and then fill it using two
+  # nested loops, keeping track of x and y and thereby avoiding any expensive
+  # divisions.
+  (& width height) = size
+  placeholder = any t
+  cells =
+    loop
+      & cells: (generate_array (width .* height) (\ i: Int -> placeholder)) y: 0
+      \ state: (& cells: (Array t) y: Int) ->
+        (& cells y) = state
+        y .== height
+        % true -> | break: cells
+          false ->
+            | continue:
+                & y: (y .+ 1)
+                  cells:
+                    loop
+                      & cells x: 0
+                      \ state: (& cells: (Array t) x: Int) ->
+                        (& cells x) = state
+                        x .== width
+                        % true -> | break: cells
+                          false ->
+                            | continue:
+                                & x: (x .+ 1)
+                                  cells:
+                                    cells
+                                    . set (width .* y .+ x) (generator (& x y)) 
+  & size cells
+
+get_maybe matrix: (Matrix a) x: Int y: Int -> (Maybe a) =
+  0 .to (matrix.size.width) .contains x
+  % false -> | none
+    true ->
+      0 .to (matrix.size.height) .contains y
+      % false -> | none
+        true -> | some: matrix.cells .get (y .* (matrix.size.width))
+
+get_maybe matrix: (Matrix a) at: Position -> (Maybe a) =
+  matrix .get_maybe (at.x) (at.y)
+
+get matrix: (Matrix t) at: Position -> t =
+  matrix .get_maybe at .unwrap "out of bounds"
+
+get matrix: (Matrix t) x: Int y: Int -> t = matrix .get (& x y)
+
+set matrix: (Matrix t) x: Int y: Int value: t -> (Matrix t) =
+  & size: matrix.size
+    cells: matrix.cells .set (y .* (matrix.size.width) .+ x) value
+
+set matrix: (Matrix t) at: Position value: t -> (Matrix t) =
+  matrix .set (at.x) (at.y) value

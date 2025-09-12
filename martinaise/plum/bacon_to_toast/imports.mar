@@ -3,24 +3,9 @@ import mod.mar
 fun parse_import(bacon: Bacon): Result[Maybe[ToastImport], Error] {
   if bacon.line == "import" then {
     | Multiline import.
-
     var modules = list[StringAndSrc]()
-    for child in bacon.children do {
-      var parser = parser(child.line, child.src)
-
-      modules.&.push(
-        parser.&.parse_string()? or
-          return bad_input[ToastImport](error(
-            "Expected module to import.", parser.src_of_rest()))
-      )
-
-      parser.&.consume_whitespace()
-      parser.&.ensure_is_at_end()?
-      child.children.is_empty() or
-        return bad_input[ToastImport](error(
-          "Import modules can't have children.", parser.src_of_rest()
-        ))
-    }
+    for child in bacon.children do
+      if child.parse_module_path()? is some(path) then modules.&.push(path)
     var modules = modules.to_slice()
 
     return parsed(ToastImport { keyword = bacon.line @ bacon.src, modules })
@@ -34,18 +19,44 @@ fun parse_import(bacon: Bacon): Result[Maybe[ToastImport], Error] {
 
   bacon.children.is_empty() or
     return bad_input[ToastImport](error(
-      "Multi-line import should just have a line that says import.",
+      "Multi-line import should have a line that just says import.",
       bacon.children.first().src ... bacon.children.last().src,
     ))
 
-  var modules = list[StringAndSrc]()
-  loop modules.&.push(parser.&.parse_string()? or break)
-  parser.&.ensure_is_at_end()?
-  var modules = modules.to_slice()
-
-  if modules.is_empty() then
+  var module = parser.&.parse_module_path() or
     return bad_input[ToastImport](error(
-      "Expected imported modules.", parser.src_of_rest()))
+      "Expected imported module.", parser.src_of_rest()
+    ))
+  parser.&.ensure_is_at_end()?
 
-  parsed(ToastImport { keyword, modules })
+  parsed(ToastImport { keyword, modules = list(module).to_slice() })
+}
+
+fun parse_module_path(bacon: Bacon): Result[Maybe[StringAndSrc], Error] {
+  bacon.children.is_empty() or
+    return error[Maybe[StringAndSrc], Error](error(
+      "Module paths can't have children.", bacon.src
+    ))
+
+  var parser = parser(bacon.line, bacon.src)
+  var path = parser.&.parse_module_path()
+  parser.&.consume_whitespace()
+  parser.&.ensure_is_at_end()?
+  ok[Maybe[StringAndSrc], Error](path)
+}
+
+fun parse_module_path(parser: &LineParser): Maybe[StringAndSrc] {
+  parser.consume_whitespace()
+  var start = parser.cursor
+  loop {
+    if parser.is_at_end() or parser.current() == space then break
+    parser.advance()
+  }
+  var end = parser.cursor
+  if start == end then
+    none[StringAndSrc]()
+  else
+    some(
+      parser.input.substr(start..end) @ parser.input_src.with_range(start..end)
+    )
 }

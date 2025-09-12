@@ -1,7 +1,9 @@
 | Converting Toast To Egg
 
 import ../plum.mar
-import lookup.mar
+import lookup_fun.mar
+import lookup_named_funs.mar
+import lookup_type.mar
 import types/mod.mar
 import visible.mar
 
@@ -47,10 +49,11 @@ fun check(
   type_def: ToastTypeDef, module: Module, toasts: Map[Module, Toast]
 ): Result[Nothing, Error] {
   | TODO: check that the same type var doesn't appear twice
-  var env = map[String, EggType]()
-  for param in type_def.params do
-    env.&.put(param.string, type_variable(param.string))
-  type_def.type.compile(env, module, toasts)?
+  | TODO: check that the resulting type doesn't contain any other unbound type variables
+  | var env = map[String, EggType]()
+  | for param in type_def.params do
+  |   env.&.put(param.string, type_variable(param.string))
+  type_def.type.compile(module, toasts)?
   ok[Nothing, Error]({})
 }
 
@@ -108,7 +111,7 @@ fun check(
 |   )
 | }
 
-struct OngoingTypeCall { name: String, args: Slice[EggType], depth: Int }
+struct OngoingTypeCall { name: String, args: Slice[ToastType], depth: Int }
 
 fun write[W](writer: W, call: OngoingTypeCall) {
   writer."{call.name}"
@@ -117,16 +120,54 @@ fun write[W](writer: W, call: OngoingTypeCall) {
 
 fun compile(
   type: ToastType,
-  env: Map[String, EggType],
   module: Module,
   toasts: Map[Module, Toast],
 ): Result[EggType, Error] {
-  type.compile(env, module, toasts, list[OngoingTypeCall]().&, 0)
+  type
+    .prefix_with_module(module)
+    .compile(module, toasts, list[OngoingTypeCall]().&, 0)
+}
+
+fun prefix_with_module(type: ToastType, module: Module): ToastType {
+  switch type
+  case primitive(primitive) ToastType.primitive(primitive)
+  case variable(variable) ToastType.variable(variable)
+  case call(call) {
+    var name = "{module}.{call.name.string}" @ call.name.src
+    var args = list[ToastType]()
+    for arg in call.args do
+      args.&.push(arg.prefix_with_module(module))
+    ToastType.call(ToastTypeCall { name, args = args.to_slice() })
+  }
+  case struct_(struct_) {
+    var fields = list[ToastTypeField]()
+    for field in struct_ do
+      fields.&.push(ToastTypeField {
+        name = field.name, type = field.type.prefix_with_module(module)
+      })
+    ToastType.struct_(fields.to_slice())
+  }
+  case enum_(enum_) {
+    var variants = list[ToastTypeVariant]()
+    for variant in enum_ do
+      variants.&.push(ToastTypeVariant {
+        name = variant.name, type = variant.type.prefix_with_module(module)
+      })
+    ToastType.enum_(variants.to_slice())
+  }
+  case lambda(lambda) {
+    var args = list[ToastType]()
+    for arg in lambda.args do
+      args.&.push(arg.prefix_with_module(module))
+    var return_type = lambda.return_type.prefix_with_module(module)
+    ToastType.lambda(ToastTypeLambda {
+      args = args.to_slice(), return_type = return_type.put_on_heap()
+    })
+  }
 }
 
 fun compile(
   type: ToastType,
-  env: Map[String, EggType],
   module: Module,
   toasts: Map[Module, Toast],
   stack: &List[OngoingTypeCall],
@@ -142,11 +183,11 @@ fun compile(
       else if name == "Int"   then type_int
       else if name == "Box" then
         type_box_without_canonicalizing(
-          primitive.args.get(0).compile(env, module, toasts, stack, depth + 1)?
+          primitive.args.get(0).compile(module, toasts, stack, depth + 1)?
         )
       else if name == "Array" then
         type_array_without_canonicalizing(
-          primitive.args.get(0).compile(env, module, toasts, stack, depth + 1)?
+          primitive.args.get(0).compile(module, toasts, stack, depth + 1)?
         )
       else unreachable()
     }
@@ -154,32 +195,37 @@ fun compile(
     case call(call) {
       var name = call.name
 
-      var args = list[EggType]()
-      for arg in call.args do
-        args.&.push(arg.compile(env, module, toasts, stack, depth))
-      var args = args.to_slice()
-
       | Are we recursively lowering a type? If so, we need to insert a recursive
       | type instead of endlessly digging down into the type.
       for parent in stack do
-        if parent.name == name.string and parent.args == args then
+        if parent.name == name.string and parent.args == call.args then
           return ok[EggType, Error](type_recursive(depth - parent.depth))
+
+      stack.&.push(OngoingTypeCall {
+        name = call.name.string, args = call.args, depth
+      })
+
+      var split = name.string.split(".")
+      split.len == 2 or panic("expected module prefixed type: {name.string}")
+      var module = Module { path = split.get(0) }
+      var name = split.get(1) @ name.src
 
       | Look for a type with the name.
       var called_def = lookup_type(
-        name.string, args.len, module, toasts, name.src
+        name.string, call.args.len, module, toasts, name.src
       )?
-      called_def.params.len == args.len or panic("bad lookup")
+      called_def.params.len == call.args.len or panic("bad lookup")
 
-      var env = map[String, EggType]()
-      for arg in zip(called_def.params.iter(), args.iter()) do
+      var env = map[String, ToastType]()
+      for arg in zip(called_def.params.iter(), call.args.iter()) do
         env.&.put(arg.a.string, arg.b)
-      var called = called_def.type.specialize(env)?
+      var called = called_def.type
+        .prefix_with_module(called_def.name.src.module)
+        .specialize(env)?
 
-      stack.&.push(OngoingTypeCall { name = name.string, args, depth })
-      var type = called.compile(env, module, toasts, stack, depth)?
+      var type = called.compile(module, toasts, stack, depth)?
+
       stack.&.pop()
-
       type
     }
     case struct_(struct_) {
@@ -191,7 +237,8 @@ fun compile(
             field.name.src,
           ))
         fields.&.put(
-          field.name.string, field.type.compile(stack, depth + 1, defs)?
+          field.name.string,
+          field.type.compile(module, toasts, stack, depth + 1)?,
         )
       }
       type_struct_without_canonicalizing(fields)
@@ -206,7 +253,7 @@ fun compile(
           ))
         variants.&.put(
           variant.name.string,
-          variant.type.compile(stack, depth + 1, defs)?
+          variant.type.compile(module, toasts, stack, depth + 1)?
         )
       }
       type_enum_without_canonicalizing(variants)
@@ -214,11 +261,11 @@ fun compile(
     case lambda(lambda) {
       var args = list[EggType]()
       for arg in lambda.args do
-        args.&.push(arg.compile(stack, depth + 1, defs)?)
+        args.&.push(arg.compile(module, toasts, stack, depth + 1)?)
       var args = args.to_slice()
 
       var return_type =
-        lambda.return_type.compile(stack, depth + 1, defs)?
+        lambda.return_type.compile(module, toasts, stack, depth + 1)?
 
       type_lambda_without_canonicalizing(args, return_type)
     }
