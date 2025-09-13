@@ -1,0 +1,202 @@
+import mod.mar
+
+fun count_references(expr: WaffleExpr, out: &Map[WaffleId, Int]) {
+  switch expr
+  case param {}
+  case padding {}
+  case local(id) {
+    var count = out.get_ref_or_put_default(id, 0)
+    count.* = count.* + 1
+  }
+  case byte {}
+  case lower_byte(arg) arg.count_references(out)
+  case byte_to_int(arg) arg.count_references(out)
+  case int {}
+  case add(args) args.count_references(out)
+  case subtract(args) args.count_references(out)
+  case multiply(args) args.count_references(out)
+  case divide(args) args.count_references(out)
+  case modulo(args) args.count_references(out)
+  case and_(args) args.count_references(out)
+  case or_(args) args.count_references(out)
+  case xor(args) args.count_references(out)
+  case compare_zero(arg) arg.count_references(out)
+  case aggregate(aggregate) for part in aggregate do part.count_references(out)
+  case member(member) member.of.count_references(out)
+  case switch_(switch_) {
+    switch_.byte.count_references(out)
+    for case_ in switch_.cases do case_.count_references(out)
+  }
+  case call(call) call.args.count_references(out)
+  case call_indirect(call) {
+    call.function_ptr.count_references(out)
+    call.args.count_references(out)
+  }
+  case function_ptr(signature) {}
+  case malloc(size) size.count_references(out)
+  case free(args) args.count_references(out)
+  case load(load) load.ptr.count_references(out)
+  case store(store) {
+    store.ptr.count_references(out)
+    store.value.count_references(out)
+  }
+  case store_bytes(store) store.ptr.count_references(out)
+  case crash(args) args.count_references(out)
+  case unreachable {}
+  case halt {}
+  case loop_(loop_) {
+    loop_.initial.count_references(out)
+    loop_.body.count_references(out)
+  }
+  case continue_(continue_) continue_.next.count_references(out)
+}
+fun count_references(body: WaffleBody, out: &Map[WaffleId, Int]) {
+  for local in body.locals do local.resolve().count_references(out)
+  body.returns.count_references(out)
+}
+
+fun must_have_been_used(used: Bool): Result[Nothing, Nothing] {
+  if used then ok[Nothing, Nothing]({}) else error[Nothing, Nothing]({})
+}
+
+| Tries to nest the local inside the expression. If an impure expression happens
+| before the previous local is used (such as a call, store, etc.), then we
+| cannot nest the previous local directly in here because that would change the
+| order of impure expressions. In that case, this function returns none.
+fun try_nest_local(
+  expr: WaffleExpr, local: WaffleId, used: &Bool
+): Result[WaffleExpr, Nothing] {
+  ok[WaffleExpr, Nothing](
+    switch expr
+    case param unreachable()
+    case padding expr
+    case local(id) {
+      if id == local then {
+        used.* = true
+        id.resolve()
+      } else
+        waffle_local(id)
+    }
+    case byte(byte) waffle_byte(byte)
+    case lower_byte(arg) waffle_lower_byte(arg.try_nest_local(local, used)?)
+    case byte_to_int(arg) waffle_byte_to_int(arg.try_nest_local(local, used)?)
+    case int(int) waffle_int(int)
+    case add(args) waffle_add(args.try_nest_local(local, used)?)
+    case subtract(args) waffle_subtract(args.try_nest_local(local, used)?)
+    case multiply(args) waffle_multiply(args.try_nest_local(local, used)?)
+    case divide(args) waffle_divide(args.try_nest_local(local, used)?)
+    case modulo(args) waffle_modulo(args.try_nest_local(local, used)?)
+    case and_(args) waffle_and(args.try_nest_local(local, used)?)
+    case or_(args) waffle_or(args.try_nest_local(local, used)?)
+    case xor(args) waffle_xor(args.try_nest_local(local, used)?)
+    case compare_zero(arg) waffle_compare_zero(arg.try_nest_local(local, used)?)
+    case aggregate(aggregate) {
+      var parts = list[WaffleExpr]()
+      for part in aggregate do
+        parts.&.push(part.try_nest_local(local, used)?)
+      waffle_aggregate(parts.to_slice())
+    }
+    case member(member)
+      waffle_member(
+        member.of.try_nest_local(local, used)?,
+        member.offset,
+        member.size,
+        member.alignment,
+      )
+    case switch_(switch_) {
+      var byte = switch_.byte.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_switch(byte, switch_.cases)
+    }
+    case call(call) {
+      var args = call.args.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_call(call.function, args, call.size, call.alignment)
+    }
+    case call_indirect(call) {
+      var function_ptr = call.function_ptr.try_nest_local(local, used)?
+      var args = call.args.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_call_indirect(function_ptr, args, call.size, call.alignment)
+    }
+    case function_ptr(signature) waffle_function_ptr(signature)
+    case malloc(size) {
+      var size = size.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_malloc(size)
+    }
+    case free(free) {
+      var free = free.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_free(free)
+    }
+    case load(load) {
+      var ptr = load.ptr.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_load(ptr, load.size, load.alignment)
+    }
+    case store(store) {
+      var ptr = store.ptr.try_nest_local(local, used)?
+      var value = store.value.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_store(ptr, value)
+    }
+    case store_bytes(store) {
+      var ptr = store.ptr.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_store_bytes(ptr, store.bytes)
+    }
+    case crash(args) {
+      var args = args.try_nest_local(local, used)?
+      used.must_have_been_used()?
+      waffle_crash(args)
+    }
+    default return error[WaffleExpr, Nothing]({})
+  )
+}
+
+fun try_nest_local(
+  expr: WaffleExpr, previous: Maybe[WaffleId],
+  num_references: Map[WaffleId, Int],
+): Maybe[WaffleExpr] {
+  var previous = previous or return none[WaffleExpr]()
+  if previous.resolve() is param then return none[WaffleExpr]()
+  {num_references.get_maybe(previous) or 0} == 1 or return none[WaffleExpr]()
+
+  var used = false
+  var new_version =
+    expr.try_nest_local(previous, used.&) or return none[WaffleExpr]()
+  if used then some(new_version) else none[WaffleExpr]()
+}
+
+| If (pure or unpure) locals are defined and then immediately used without an
+| impure expression in between, we move them.
+fun nest_locals(body: WaffleBody): WaffleBody {
+  var num_references = map[WaffleId, Int]()
+  body.count_references(num_references.&)
+
+  var locals = list[WaffleId]()
+  for i in 0..body.locals.len do {
+    var local = body.locals.get(i)
+    locals.&.push(local)
+
+    if local.resolve().try_nest_local(locals.get_maybe(i - 1), num_references)
+    is some(new_version)
+    then {
+      update(local, new_version)
+      locals.&.pop() | pop current
+      locals.&.pop() | pop previous
+      locals.&.push(local) | push current
+    }
+  }
+
+  var returns = body.returns
+  if returns.try_nest_local(locals.last_maybe(), num_references)
+  is some(new_version)
+  then {
+    returns = new_version
+    locals.&.pop().ignore()
+  }
+
+  WaffleBody { locals = locals.to_slice(), returns }
+}

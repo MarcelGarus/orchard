@@ -1,0 +1,172 @@
+import mod.mar
+
+fun make_switches_branchless(id: EggId, builder: &EggBodyBuilder): EggId {
+  var switch_ = id.resolve().switch_on_byte or return id
+
+  | TODO: make absolutely sure that the branches have no side effects
+  | Turn switches with two cases into branchless code if that's cheap enough:
+  | (condition.to_int * else + (1 - condition.to_int) * then).to_byte
+  if switch_.cases.len == 2 then {
+    var else_ = switch_.cases.get(0)
+    var then_ = switch_.cases.get(1)
+    var combined_runtime = then_.estimate_runtime() + else_.estimate_runtime()
+    if combined_runtime < 5 then {
+      if id.type().memory_layout().size == 1 then {
+        var condition = builder.byte_to_int(switch_.condition)
+        for child in then_.children do builder.push(child)
+        for child in else_.children do builder.push(child)
+        return builder.lower_byte(builder.add(
+          builder.multiply(condition, builder.byte_to_int(then_.returns)),
+          builder.multiply(
+            builder.subtract(builder.int(1), condition),
+            builder.byte_to_int(else_.returns),
+          ),
+        ))
+      }
+      if id.type().memory_layout().size == 8 then {
+        var condition = builder.byte_to_int(switch_.condition)
+        for child in then_.children do builder.push(child)
+        for child in else_.children do builder.push(child)
+        return builder.add(
+          builder.multiply(condition, then_.returns),
+          builder.multiply(
+            builder.subtract(builder.int(1), condition), else_.returns
+          ),
+        )
+      }
+    }
+  }
+
+  | Detect switches that are simply a mapping of literal bytes.
+  if id.type().memory_layout().size == 1 then {
+    var is_simple_mapping = true
+    for case_ in switch_.cases do {
+      if not(case_.returns.resolve() is byte) then is_simple_mapping = false
+      if case_.children.len >= 2 then is_simple_mapping = false
+      if case_.children.len == 1 then
+        if case_.children.get(0) != case_.returns then
+          is_simple_mapping = false
+    }
+    if is_simple_mapping then {
+      var mapping = map[Byte, Byte]()
+      for case_ in switch_.cases.iter().enumerate() do
+        mapping.&.put(
+          case_.index.lower_byte(),
+          case_.item.returns.resolve().byte.unwrap(),
+        )
+      if figure_out_ops_for_mapping(mapping) is some(op) then
+        return builder.apply(switch_.condition, op)
+    }
+  }
+
+  id
+}
+
+enum ByteMappingOp {
+  x,
+  x_and_a: Byte,
+  x_or_a: Byte,
+  x_shift_left_by_a: Byte,
+  x_shift_right_by_a: Byte,
+  a_shift_right_by_x_and_b: Tuple2[Int, Byte],
+}
+
+fun apply(x: Byte, op: ByteMappingOp): Byte {
+  switch op
+  case x x
+  case x_and_a(a) x & a
+  case x_or_a(a) or(x, a)
+  case x_shift_left_by_a(a) {x.to_int() << a.to_int()}.lower_byte()
+  case x_shift_right_by_a(a) {x.to_int() >> a.to_int()}.lower_byte()
+  case a_shift_right_by_x_and_b(args)
+    {args.a >> x.to_int()}.lower_byte() & args.b
+}
+
+fun models_mapping(op: ByteMappingOp, mapping: Map[Byte, Byte]): Bool {
+  for entry in mapping do
+    if entry.key.apply(op) != entry.value then return false
+  true
+}
+
+fun figure_out_ops_for_mapping(mapping: Map[Byte, Byte]): Maybe[ByteMappingOp] {
+  | Is this the identity mapping?
+  if ByteMappingOp.x.models_mapping(mapping) then return some(ByteMappingOp.x)
+
+  | Does a single "and" instruction do the job?
+  for a in 0..256 do {
+    var op = ByteMappingOp.x_and_a(a.lower_byte())
+    if op.models_mapping(mapping) then return some(op)
+  }
+
+  | Does a single "or" instruction do the job?
+  for a in 0..256 do {
+    var op = ByteMappingOp.x_or_a(a.lower_byte())
+    if op.models_mapping(mapping) then return some(op)
+  }
+
+  | Does a single "shift_left" instruction do the job?
+  for a in 0..8 do {
+    var op = ByteMappingOp.x_shift_left_by_a(a.lower_byte())
+    if op.models_mapping(mapping) then return some(op)
+  }
+
+  | Does a single "shift_right" instruction do the job?
+  for a in 0..8 do {
+    var op = ByteMappingOp.x_shift_right_by_a(a.lower_byte())
+    if op.models_mapping(mapping) then return some(op)
+  }
+
+  | Can we encode the mapping in an int, shift that right by the input and mask
+  | our entry?
+  var max_from = 0
+  var max_to = 0
+  for entry in mapping do {
+    max_from = max(max_from, entry.key.to_int())
+    max_to = max(max_to, entry.value.to_int())
+  }
+  var bits_to = bits_needed_to_represent(max_to)
+  if max_from * bits_to < 64 then { | TODO: use <= ?
+    var map = 0
+    for entry in mapping do {
+      map = or(map, entry.value.to_int() << entry.key.to_int())
+    }
+    var mask = 2 ** bits_to - 1
+    return some(
+      ByteMappingOp.a_shift_right_by_x_and_b(tuple(map, mask.lower_byte()))
+    )
+  }
+
+  | No efficient mapping possible.
+  none[ByteMappingOp]()
+}
+
+fun bits_needed_to_represent(number: Int): Int {
+  for bits in 0..64 do if number < {2 ** bits} then return bits
+  64
+}
+
+fun apply(builder: &EggBodyBuilder, x: EggId, op: ByteMappingOp): EggId {
+  switch op
+  case x x
+  case x_and_a(a)
+    builder.lower_byte(builder.and_(
+      builder.byte_to_int(x), builder.int(a.to_int())
+    ))
+  case x_or_a(a)
+    builder.lower_byte(builder.or_(
+      builder.byte_to_int(x), builder.int(a.to_int())
+    ))
+  case x_shift_left_by_a(a)
+    builder.lower_byte(builder.shift_left(
+      builder.byte_to_int(x), builder.int(a.to_int())
+    ))
+  case x_shift_right_by_a(a)
+    builder.lower_byte(builder.shift_right(
+      builder.byte_to_int(x), builder.int(a.to_int())
+    ))
+  case a_shift_right_by_x_and_b(args)
+    builder.lower_byte(builder.and_(
+      builder.shift_right(builder.int(args.a), builder.byte_to_int(x)),
+      builder.int(args.b.to_int()),
+    ))
+}

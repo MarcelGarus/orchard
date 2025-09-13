@@ -1,0 +1,87 @@
+import mod.mar
+
+enum NumInhabitants { zero, one, many }
+
+fun +(a: NumInhabitants, b: NumInhabitants): NumInhabitants {
+  switch a
+  case zero b
+  case one {
+    switch b
+    case zero NumInhabitants.one
+    case one NumInhabitants.many
+    case many NumInhabitants.many
+  }
+  case many NumInhabitants.many
+}
+
+fun *(a: NumInhabitants, b: NumInhabitants): NumInhabitants {
+  switch a
+  case zero NumInhabitants.zero
+  case one b
+  case many {
+    switch b
+    case zero NumInhabitants.zero
+    case one NumInhabitants.many
+    case many NumInhabitants.many
+  }
+}
+
+fun <=>(a: NumInhabitants, b: NumInhabitants): Ordering {
+  var a = switch a case zero 0 case one 1 case many 2
+  var b = switch b case zero 0 case one 1 case many 2
+  a <=> b
+}
+fun ==(a: NumInhabitants, b: NumInhabitants): Bool { a <=> b is equal }
+
+fun num_inhabitants(type: EggType): NumInhabitants {
+  switch type.plum_not_extended()
+  case variable NumInhabitants.many
+  case never NumInhabitants.zero
+  case byte NumInhabitants.many
+  case int NumInhabitants.many
+  case type NumInhabitants.many | TODO: correct?
+  case struct_(fields) {
+    var result = NumInhabitants.one
+    for field in fields do result = result * field.value.num_inhabitants()
+    result
+  }
+  case enum_(variants) {
+    var result = NumInhabitants.zero
+    for variant in variants do result = result + variant.value.num_inhabitants()
+    result
+  }
+  case lambda NumInhabitants.many
+  case box(inner) inner.num_inhabitants()
+  case array(item_type) {
+    if item_type.num_inhabitants() is zero then
+      NumInhabitants.one | the empty array
+    else
+      NumInhabitants.many
+  }
+  case recursive NumInhabitants.many
+}
+
+fun construct_inhabitant(builder: &EggBodyBuilder, type: EggType): EggId {
+  if type.num_inhabitants() != NumInhabitants.one then panic()
+  switch type.plum()
+  case variable unreachable()
+  case never unreachable()
+  case byte unreachable()
+  case int unreachable()
+  case type unreachable() | TODO: correct?
+  case struct_(struct_) {
+    var fields = map[String, EggId]()
+    for field in struct_ do
+      fields.&.put(field.key, builder.construct_inhabitant(field.value))
+    builder.struct_(fields)
+  }
+  case enum_(variants) {
+    var variant = variants.iter().&.next().unwrap()
+    builder.enum_(
+      type, variant.key, builder.construct_inhabitant(variant.value)
+    )
+  }
+  case lambda unreachable()
+  case box(inner) builder.box(builder.construct_inhabitant(inner)) | TODO: correct?
+  case array(item_type) builder.array(empty_slice[EggId](), item_type)
+}

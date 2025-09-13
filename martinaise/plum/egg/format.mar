@@ -1,0 +1,323 @@
+import mod.mar
+
+fun write[W](writer: W, egg: Egg) {
+  var first = true
+  for fun_ in egg.funs do {
+    if first then first = false else writer."\n"
+    writer.write(fun_.key, fun_.value)
+  }
+}
+
+fun pretty(id: EggId, names: &Namespace): _ {
+  PrettyEggId { id, names }
+}
+struct PrettyEggId { id: EggId, names: &Namespace }
+fun write[W](writer: W, pretty: PrettyEggId) {
+  writer."{pretty.names.get(pretty.id.id.index).styled(style_of_id)}"
+  writer."{":{pretty.id.id.index}".styled(style_of_id)}"
+}
+
+fun write[W](writer: W, signature: String, fun_: EggFun) {
+  var names = namespace().&
+  writer."{pretty_signature_def(signature)}"
+  for param in fun_.body.params do
+    writer." {pretty(param, names)} {pretty(param.type())}"
+  writer." =\n"
+  writer.write(fun_.body, names, indentation(1))
+}
+fun write[W](
+  writer: W, body: EggBody, names: &Namespace, indentation: Indentation
+) {
+  for id in body.children do {
+    writer."{indentation}{pretty(id, names)} = "
+    writer.write(id, names, indentation + 1)
+    writer."\n"
+  }
+  writer."{indentation}{pretty(body.returns, names)}"
+}
+fun write[W](
+  writer: W, id: EggId, names: &Namespace, indentation: Indentation
+) {
+  var type = id.type()
+  switch id.resolve()
+  case param writer."{pretty_op("param")} {pretty(type)}"
+  case case_param(param) writer."{pretty_op("case param")} {pretty(type)}"
+  case type(type) writer."{pretty_op("type")} {type}"
+  case int(int) writer."{pretty_op("int")} {int}"
+  case string(string)
+    writer."{pretty_op("string")} {string.debug()} {pretty(type)}"
+  case struct_(struct_) {
+    writer."{pretty_op("&")}"
+    for field in struct_ do writer." {field.key}: {pretty(field.value, names)}"
+    writer." {pretty(type)}"
+  }
+  case enum_(enum_)
+    writer."{pretty_op("|")} {enum_.variant}: {pretty(enum_.payload, names)}
+      ' {pretty(type)}"
+  case inline_lambda(body) {
+    writer."{pretty_op("inline lambda")}"
+    for param in body.params do writer." {pretty(param, names)}"
+    writer."\n"
+    writer.write(body, names, indentation)
+  }
+  case raw_lambda(lambda)
+    writer."{pretty_op("lambda")} {pretty_signature(lambda.fun_)}
+      ' {pretty(lambda.closure, names)} {pretty(type)}"
+  case member(member)
+    writer."{pretty_op("member")}
+      ' {pretty(member.of, names)}.{member.name} {pretty(type)}"
+  case switch_(switch_) {
+    writer."\n
+      '{indentation}{pretty_op("switch")} {pretty(switch_.condition, names)}"
+    for case_ in switch_.cases do {
+      writer."\n{indentation + 1}{case_.key}:"
+      for param in case_.value.params do
+        writer." {pretty(param, names)} {pretty(param.type())}"
+      writer."\n"
+      writer.write(case_.value, names, indentation + 2)
+    }
+  }
+  case call_generic_fun(call) {
+    writer."{pretty_op("call")} {pretty_signature(call.fun_)}"
+    if call.substitutions.substitutions.is_not_empty() then
+      writer." with {call.substitutions}"
+    for arg in call.args do writer." {pretty(arg, names)}"
+    writer." {pretty(type)}"
+  }
+  case call_fun(call) {
+    writer."{pretty_op("call")} {pretty_signature(call.fun_)}"
+    for arg in call.args do writer." {pretty(arg, names)}"
+    writer." {pretty(type)}"
+  }
+  case call_lambda(call) {
+    writer."{pretty_op("call lambda")} {pretty(call.lambda, names)}"
+    if call.args.is_not_empty() then writer." with"
+    for arg in call.args do writer." {pretty(arg, names)}"
+    writer." {pretty(type)}"
+  }
+  case call_builtin(call) {
+    writer."{pretty_op("call")} {pretty_signature(call.builtin.format())}"
+    if call.substitutions.substitutions.is_not_empty() then
+      writer." with {call.substitutions}"
+    for arg in call.args do writer." {pretty(arg, names)}"
+    writer." {pretty(type)}"
+  }
+  case cast(cast)
+    writer."{pretty_op("cast")} {pretty(cast.what, names)} to {pretty(type)}"
+  case byte(arg) writer."{pretty_op("byte")} {arg}"
+  case lower_byte(arg)
+    writer."{pretty_op("lower byte")} {pretty(arg, names)}"
+  case byte_to_int(arg)
+    writer."{pretty_op("byte to int")} {pretty(arg, names)}"
+  case add(args)
+    writer."{pretty_op("add")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case subtract(args)
+    writer."{pretty_op("subtract")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case multiply(args)
+    writer."{pretty_op("multiply")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case divide(args)
+    writer."{pretty_op("divide")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case modulo(args)
+    writer."{pretty_op("modulo")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case compare(args)
+    writer."{pretty_op("compare")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case and_(args)
+    writer."{pretty_op("and")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case or_(args)
+    writer."{pretty_op("or")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case xor(args)
+    writer."{pretty_op("xor")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case shift_left(args)
+    writer."{pretty_op("shift left")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case shift_right(args)
+    writer."{pretty_op("shift right")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case unchecked_divide(args)
+    writer."{pretty_op("unchecked divide")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case unchecked_modulo(args)
+    writer."{pretty_op("unchecked modulo")}
+      ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case box(arg) writer."{pretty_op("box")} {pretty(arg, names)}"
+  case unbox(arg)
+    writer."{pretty_op("unbox")} {pretty(arg, names)} {pretty(type)}"
+  case array(array) {
+    writer."{pretty_op("array")} of {pretty(array.item_type)}:"
+    for item in array.items do writer." {pretty(item, names)}"
+    if array.items.is_empty() then writer." <empty>"
+    writer." {pretty(type)}"
+  }
+  case generate_array(args) {
+    writer."\n
+      '{indentation}{pretty_op("generate array")} {pretty(args.length, names)}\n
+      '{indentation + 1}generator
+      ' {pretty(args.generator.params.get(0), names)}:\n"
+    writer.write(args.generator, names, indentation + 2)
+  }
+  case array_get(args)
+    writer."{pretty_op("array get")}
+      ' {pretty(args.array, names)} {pretty(args.index, names)} {pretty(type)}"
+  case array_set(args)
+    writer."{pretty_op("array set")}
+      ' {pretty(args.array, names)}
+      ' {pretty(args.index, names)}
+      ' {pretty(args.item, names)}"
+  case array_slice(args)
+    writer."{pretty_op("array slice")}
+      ' {pretty(args.array, names)}
+      ' {pretty(args.start, names)}
+      ' {pretty(args.end, names)}
+      ' {pretty(type)}"
+  case array_len(arg) writer."{pretty_op("array length")} {pretty(arg, names)}"
+  case unchecked_generate_non_empty_array(args) {
+    writer."\n
+      '{indentation}{pretty_op("unchecked generate non-empty array")}
+      ' {pretty(args.length, names)}\n
+      '{indentation + 1}generator
+      ' {pretty(args.generator.params.get(0), names)}:\n"
+    writer.write(args.generator, names, indentation + 2)
+  }
+  case unchecked_array_get(args)
+    writer."{pretty_op("unchecked array get")}
+      ' {pretty(args.array, names)} {pretty(args.index, names)}"
+  case unchecked_array_set(args)
+    writer."{pretty_op("unchecked array set")}
+      ' {pretty(args.array, names)}
+      ' {pretty(args.index, names)}
+      ' {pretty(args.item, names)}"
+  case unchecked_array_slice(args)
+    writer."{pretty_op("unchecked array slice")}
+      ' {pretty(args.array, names)}
+      ' {pretty(args.start, names)}
+      ' {pretty(args.end, names)}
+      ' {pretty(type)}"
+  case type_info(arg) writer."{pretty_op("type info")} {pretty(arg, names)}"
+  case static_to_dynamic(arg)
+    writer."{pretty_op("static to dynamic")} {pretty(arg, names)}"
+  case dynamic_to_static(arg)
+    writer."{pretty_op("dynamic to static")}
+      ' {pretty(arg.dynamic, names)} {pretty(type)}"
+  case crash(crash)
+    writer."{pretty_op("crash")} {pretty(crash.message, names)}
+      ' {pretty(crash.type)}"
+  case unreachable writer."{pretty_op("unreachable")} {pretty(type)}"
+  case halt writer."{pretty_op("halt")} {pretty(type)}"
+  case loop_(loop_) {
+    writer."\n{indentation}{pretty_op("loop")}"
+    for arg in loop_.initial do writer." {pretty(arg, names)}"
+    writer."\n{indentation + 1}body"
+    for param in loop_.body.params do writer." {pretty(param, names)}"
+    writer.":\n"
+    writer.write(loop_.body, names, indentation + 2)
+  }
+  case continue_(continue_) {
+    writer."{pretty_op("continue")}"
+    for arg in continue_.next do writer." {pretty(arg, names)}"
+    writer." {pretty(type)}"
+  }
+  case dup(dup)
+    writer."{pretty_op("dup")} {pretty(dup.type)} {pretty(dup.id, names)}"
+  case drop(drop)
+    writer."{pretty_op("drop")} {pretty(drop.type)} {pretty(drop.id, names)}"
+  case function_ptr(signature)
+    writer."{pretty_op("ptr")} to {pretty_signature(signature)}"
+  case call_indirect(call) {
+    writer."{pretty_op("call indirect")} {pretty(call.function_ptr, names)}"
+    if call.args.is_not_empty() then writer." with"
+    for arg in call.args do writer." {pretty(arg, names)}"
+    writer." {pretty(type)}"
+  }
+  case null_ptr writer."{pretty_op("null ptr")}"
+  case object_new(id) writer."{pretty_op("new object")} {pretty(id, names)}"
+  case object_load(load)
+    writer."{pretty_op("load object")} {pretty(load.ptr, names)} {pretty(type)}"
+  case object_free(free)
+    writer."{pretty_op("free object")} {pretty(free.ptr, names)} of
+      ' {pretty(free.type)}"
+  case get_refcount(get)
+    writer."{pretty_op("get refcount")} {pretty(get.ptr, names)}"
+  case set_refcount(set)
+    writer."{pretty_op("set refcount")}
+      ' {pretty(set.ptr, names)} {pretty(set.refcount, names)}"
+  case new_buffer(new)
+    writer."{pretty_op("new buffer")} of {pretty(new.item_type)},
+      ' length {pretty(new.length, names)}"
+  case get_buffer_length(buffer)
+    writer."{pretty_op("buffer length")} {pretty(buffer, names)}"
+  case load_buffer_item(load)
+    writer."{pretty_op("load item")}
+      ' {pretty(load.buffer, names)}[{pretty(load.index, names)}]
+      ' {pretty(load.item_type)}"
+  case store_buffer_item(store)
+    writer."{pretty_op("store item")}
+      ' {pretty(store.buffer, names)}[{pretty(store.index, names)}] =
+      ' {pretty(store.item, names)} {pretty(store.item_type)}"
+  case store_buffer_bytes(store) {
+    writer."{pretty_op("store bytes")} {pretty(store.buffer, names)} <-"
+    if store.bytes.is_empty() then
+      writer." (no bytes)"
+    else {
+      for byte in store.bytes do writer." {byte.radix(16)}"
+      writer." \""
+      for byte in store.bytes do
+        if byte >= 32.lower_byte() and byte <= 126.lower_byte() then
+          writer."{byte.to_char()}"
+        else
+          writer."?"
+      writer."\""
+    }
+  }
+  case free_buffer(free)
+    writer."{pretty_op("free buffer")}
+      ' {pretty(free.buffer, names)} {pretty(free.item_type)}"
+  case padding(amount) writer."{pretty_op("padding")} {amount} bytes"
+  case aggregate(parts) {
+    writer."{pretty_op("[")}"
+    for part in parts do writer." {pretty(part, names)}"
+    writer." {pretty_op("]")} {pretty(type)}"
+  }
+  case part(part)
+    writer."{pretty_op("part")} {pretty(part.of, names)}.{part.offset}
+      ' {pretty(type)}"
+  case switch_on_byte(switch_) {
+    writer."\n
+      '{indentation}{pretty_op("switch")} {pretty(switch_.condition, names)}"
+    for case_ in switch_.cases.iter().enumerate() do {
+      writer."\n{indentation + 1}{case_.index}:\n"
+      writer.write(case_.item, names, indentation + 2)
+    }
+  }
+  case malloc(id) writer."{pretty_op("malloc")} {pretty(id, names)} bytes"
+  case free(free)
+    writer."{pretty_op("free")}
+      ' {pretty(free.ptr, names)} ({pretty(free.size, names)} bytes)"
+  case load(load)
+    writer."{pretty_op("load")} {pretty(load.ptr, names)} ({load.size} bytes)"
+  case store(store)
+    writer."{pretty_op("store")}
+      ' {pretty(store.ptr, names)} {pretty(store.value, names)}"
+  case load_word(load)
+    writer."{pretty_op("load word")} {pretty(load.ptr, names)}"
+  case load_byte(load)
+    writer."{pretty_op("load byte")} {pretty(load.ptr, names)}"
+  case store_word(store)
+    writer."{pretty_op("store word")}
+      ' {pretty(store.ptr, names)} {pretty(store.value, names)}"
+  case store_byte(store)
+    writer."{pretty_op("store byte")}
+      ' {pretty(store.ptr, names)} {pretty(store.value, names)}"
+  case store_bytes(store)
+    writer."{pretty_op("store bytes")}
+      ' {pretty(store.ptr, names)} {store.bytes.debug()}"
+}
+fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }

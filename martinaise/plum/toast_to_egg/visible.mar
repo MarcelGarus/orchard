@@ -1,0 +1,30 @@
+| Variable Scoping  
+|
+| Tracks which names are in scope using a simple vector:
+| - When new names are defined, appends items to the vector.
+| - When names are referenced, walks the vector from the back, searching for the
+|   name. Names that are defined later shadow previously defined names.
+| - When bodies are compiled, save the length of the vector before entering the
+|   body. When exiting the body, trim the vector to that length – all names
+|   defined inside the body automatically go out of scope.
+
+import mod.mar
+
+struct Visible { vars: List[NameBinding] }
+struct NameBinding { name: String, id: EggId }
+fun visible(): _ { Visible { vars = list[NameBinding]() } }
+fun define(visible: &Visible, name: String, id: EggId) {
+  visible.vars.&.push(NameBinding { name, id })
+}
+fun lookup(visible: Visible, name: String): Maybe[EggId] {
+  for binding in visible.vars.to_slice().rev_iter() do
+    if binding.name == name then return some(binding.id)
+  none[EggId]()
+}
+struct VisibleSnapshot { vars_len: Int }
+fun snapshot(visible: Visible): _ {
+  VisibleSnapshot { vars_len = visible.vars.len }
+}
+fun restore(visible: &Visible, snapshot: VisibleSnapshot) {
+  visible.vars.len = snapshot.vars_len
+}

@@ -1,0 +1,147 @@
+import mod.mar
+
+| Checks if an expression definitely diverges. Unreachable expressions will also
+| be treated as diverging.
+fun definitely_diverges_biased(id: EggId): Bool {
+  switch id.diverges()
+  case unreachable true
+  case yes true
+  case no false
+  case maybe false
+}
+fun definitely_diverges_biased(body: EggBody): Bool {
+  switch body.diverges()
+  case unreachable true
+  case yes true
+  case no false
+  case maybe false
+}
+
+fun is_unreachable(body: EggBody): Bool { body.diverges() is unreachable }
+
+| Stronger diversion guarantees enable optimizations: For example, if we know
+| for certain that an expression diverges, we can optimize later expression. If
+| we know for certain that an expression does not diverge, we can e.g. move it
+| outside of lambdas.
+| For the unreachable expression, we don't want to decide on a behavior in
+| isolation, but treat it as diverging or non-diverging so that we get the
+| strongest overall guarantee. That's what the unreachable variant is for.
+enum Diverges { unreachable, yes, no, maybe }
+
+| Given that both a *and* b are executed and exhibit the given behavior, what's
+| the overall behavior? This is used for expressions appearing after each other
+| in a body.
+fun both(a: Diverges, b: Diverges): Diverges {
+  switch a
+  case unreachable Diverges.unreachable
+  case yes Diverges.yes
+  case no b
+  case maybe {
+    switch b
+    case unreachable Diverges.yes  | a must have diverged
+    case yes Diverges.yes
+    case no Diverges.maybe
+    case maybe Diverges.maybe
+  }
+}
+
+| Given that either a *or* b is executed and they exhibit the given behavior,
+| what's the overall behavior? This is used for switches.
+fun one_of(a: Diverges, b: Diverges): Diverges {
+  switch a
+  case unreachable b
+  case yes {
+    switch b
+    case unreachable Diverges.yes
+    case yes Diverges.yes
+    case no Diverges.maybe
+    case maybe Diverges.maybe
+  }
+  case no {
+    switch b
+    case unreachable Diverges.no
+    case yes Diverges.maybe
+    case no Diverges.no
+    case maybe Diverges.maybe
+  }
+  case maybe Diverges.maybe
+}
+
+fun diverges(body: EggBody): Diverges {
+  var result = Diverges.no
+  for child in body.children do result = both(result, child.diverges())
+  result
+}
+fun diverges(id: EggId): Diverges {
+  switch id.resolve()
+  case param panic("param")
+  case case_param panic("case param")
+  case type Diverges.no
+  case int Diverges.no
+  case string Diverges.no
+  case struct_ Diverges.no
+  case enum_ Diverges.no
+  case inline_lambda Diverges.no
+  case raw_lambda Diverges.no
+  case member Diverges.no
+  case switch_(switch_) {
+    var result = none[Diverges]()
+    for case_ in switch_.cases do {
+      var case_behavior = case_.value.diverges()
+      result = some(
+        switch result
+        case some(existing_behavior) one_of(existing_behavior, case_behavior)
+        case none case_behavior
+      )
+    }
+    result or Diverges.yes
+  }
+  case call_fun(call)
+    if call.return_type == type_never then Diverges.yes else Diverges.maybe
+  case call_lambda(call)
+    if call.lambda.type().plum().lambda.unwrap().return_type == type_never then
+      Diverges.yes
+    else
+      Diverges.maybe
+  case call_builtin
+    | Note: We don't care about a precise assessment here because builtins are
+    | immediately desugared into more specific expressions anyways.
+    Diverges.maybe
+  case cast Diverges.no
+  case byte Diverges.no
+  case lower_byte Diverges.no
+  case byte_to_int Diverges.no
+  case add Diverges.no
+  case subtract Diverges.no
+  case multiply Diverges.no
+  case divide Diverges.maybe
+  case modulo Diverges.maybe
+  case compare Diverges.no
+  case and_ Diverges.no
+  case or_ Diverges.no
+  case xor Diverges.no
+  case shift_left Diverges.no
+  case shift_right Diverges.no
+  case unchecked_divide Diverges.no
+  case unchecked_modulo Diverges.no
+  case box Diverges.no
+  case unbox Diverges.no
+  case array Diverges.no
+  case generate_array Diverges.maybe
+  case array_get Diverges.maybe
+  case array_set Diverges.maybe
+  case array_slice Diverges.maybe
+  case array_len Diverges.no
+  case unchecked_generate_non_empty_array(gen) gen.generator.diverges()
+  case unchecked_array_get(args) Diverges.no
+  case unchecked_array_set(args) Diverges.no
+  case unchecked_array_slice(args) Diverges.no
+  case type_info Diverges.maybe | Leave this here for possible compiler errors.
+  case static_to_dynamic Diverges.no
+  case dynamic_to_static Diverges.maybe
+  case crash Diverges.yes
+  case unreachable Diverges.unreachable
+  case dup Diverges.no
+  case drop Diverges.no
+  default Diverges.maybe
+}

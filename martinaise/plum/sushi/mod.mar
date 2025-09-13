@@ -1,0 +1,141 @@
+| Sea of Unstructured Sections Holding Instructions  
+|
+| Plum code runs in a stack-based virtual machine (VM), something like a
+| mini-computer implemented in software. The VM has its own data stack and call
+| stack and operates on instructions (called byte code instructions). From the
+| point of view of the VM, Plum types no longer exist. Instead, the instructions
+| operate on memory directly, reading from and writing to addresses.
+|
+| This compiler stage contains many tiny fragments/sections, each holding
+| instruction that are executed in a linear way. In the compiler literature,
+| these are often called basic blocks.
+|
+| Because we don't yet decide on the order in which the sections will be encoded
+| into the final program, we can later group related sections close to each
+| other and move "cold" sections (ones that are rarely executed) at the end of
+| the binary.
+
+import ../plum.mar
+import builder.mar
+| import run.mar
+
+struct Sushi { entry_point: SectionIndex, sections: Slice[SushiSection] }
+
+struct SectionIndex { index: Int }
+
+struct SushiSection {
+  name: String,
+  instructions: Slice[SushiInstruction],
+}
+
+| The Sushi instructions. See the Ground specification (also in this repo) for
+| explanations.
+enum SushiInstruction {
+  nop,
+
+  | arithmetic stuff
+  add_8,
+  sub_8,
+  signed_mul_8,
+  signed_div_8,
+  signed_mod_8,
+  compare_zero_8,
+
+  | bitwise stuff
+  and_8,
+  or_8,
+  xor_8,
+  lower_byte,
+  byte_to_int,
+
+  | stack stuff
+  push_padding: Byte,
+  push_1: Byte,
+  push_8: Int,
+  push_1_from_stack: Int,
+  push_8_from_stack: Int,
+  pop: Byte,
+  pop_below_top: Tuple2[Int, Byte],
+
+  | memory stuff
+  malloc_8_aligned,
+  free_8_aligned,
+  store_1,
+  store_8,
+  load_1,
+  load_8,
+  store_bytes: Slice[Byte],
+
+  | error stuff
+  crash,
+
+  | control flow stuff
+  jump: SectionIndex,
+  jump_table: Slice[SectionIndex],
+  call: SectionIndex,
+  push_indirect: SectionIndex,
+  call_indirect: Byte,
+  return_,
+}
+
+fun write[W](writer: W, sushi: Sushi) {
+  var first = true
+  for section in sushi.sections.iter().enumerate() do {
+    if first then first = false else writer."\n"
+    writer.write(section.index, section.item)
+  }
+}
+fun write[W](writer: W, section: SectionIndex) {
+  writer."{pretty_signature("{section.index}")}"
+}
+fun write[W](writer: W, index: Int, section: SushiSection) {
+  writer."{pretty_signature_def("{index.format().pad_left(4)}")}
+    ' {"|".styled(style_of_secondary)}{pretty_signature(" {section.name}")}"
+  for instruction in section.instructions do
+    writer."\n     {"|".styled(style_of_secondary)} {instruction}"
+}
+fun write[W](writer: W, instruction: SushiInstruction) {
+  switch instruction
+  case nop writer."{pretty_op("nop")}"
+  case add_8 writer."{pretty_op("add")}"
+  case sub_8 writer."{pretty_op("subtract")}"
+  case signed_mul_8 writer."{pretty_op("signed_multiply")}"
+  case signed_div_8 writer."{pretty_op("signed_divide")}"
+  case signed_mod_8 writer."{pretty_op("signed_modulo")}"
+  case compare_zero_8 writer."{pretty_op("compare_zero")}"
+  case and_8 writer."{pretty_op("and")}"
+  case or_8 writer."{pretty_op("or")}"
+  case xor_8 writer."{pretty_op("xor")}"
+  case lower_byte writer."{pretty_op("lower_byte")}"
+  case byte_to_int writer."{pretty_op("byte_to_int")}"
+  case push_padding(amount) writer."{pretty_op("push_padding")} {amount}"
+  case push_1(byte) writer."{pretty_op("push_byte")} {byte}"
+  case push_8(int) writer."{pretty_op("push_word")} {int}"
+  case push_1_from_stack(offset) writer."{pretty_op("push_byte_from_stack")} {offset}"
+  case push_8_from_stack(offset) writer."{pretty_op("push_word_from_stack")} {offset}"
+  case pop(amount) writer."{pretty_op("pop")} {amount}"
+  case pop_below_top(tuple) writer."{pretty_op("pop_below_top")} {tuple.a} {tuple.b}"
+  case malloc_8_aligned writer."{pretty_op("malloc_word_aligned")}"
+  case free_8_aligned writer."{pretty_op("free_word_aligned")}"
+  case store_1 writer."{pretty_op("store_byte")}"
+  case store_8 writer."{pretty_op("store_word")}"
+  case load_1 writer."{pretty_op("load_byte")}"
+  case load_8 writer."{pretty_op("load_word")}"
+  case store_bytes(bytes) {
+    writer."{pretty_op("store_bytes")}"
+    for byte in bytes do writer." {byte.radix(16)}"
+  }
+  case crash writer."{pretty_op("crash")}"
+  case jump(target) writer."{pretty_op("jump")} {target}"
+  case jump_table(table) {
+    writer."{pretty_op("jump_table")}"
+    for target in table do writer." {target}"
+  }
+  case call(target) writer."{pretty_op("call")} {target}"
+  case push_indirect(target) writer."{pretty_op("push_indirect")} {target}"
+  case call_indirect(pop_amount) writer."{pretty_op("call_indirect")} {pop_amount}"
+  case return_ writer."{pretty_op("return")}"
+}
+
+fun ==(a: SectionIndex, b: SectionIndex): Bool { a.index == b.index }
+fun hash[H](hasher: &H, index: SectionIndex) { hasher.hash(index.index) }

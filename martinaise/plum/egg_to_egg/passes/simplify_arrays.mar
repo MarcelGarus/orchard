@@ -1,0 +1,80 @@
+import mod.mar
+
+fun simplify_arrays(id: EggId, builder: &EggBodyBuilder): EggId {
+  switch id.resolve()
+  case unchecked_array_get(args) {
+    | Constant fold.
+    if args.array.resolve() is array(array) then
+      if args.index.resolve() is int(index) then
+        return if (0..array.items.len).contains(index) then
+          array.items.get(index)
+        else
+          builder.unreachable(array.item_type)
+  }
+  case unchecked_array_set(args) {
+    | Constant fold.
+    if args.array.resolve() is array(array) then
+      if args.index.resolve() is int(index) then
+        return if (0..array.items.len).contains(index) then {
+          var new_items = list[EggId]()
+          for item in array.items do new_items.&.push(item)
+          new_items.&.set(index, args.item)
+          builder.array(new_items.to_slice(), array.item_type)
+        } else
+          builder.unreachable(type_array(array.item_type))
+  }
+  case unchecked_array_slice(args) {
+    var start = args.start
+    var end = args.end
+
+    | Note: We intentionally do not constant-fold array slices of array literals
+    | into new array literals, even though this would be a correct
+    | transformation. In some scenarios, such as when the original array is
+    | never used again, this transformation makes sense.
+    | However, because the newly created array literal has a completely new
+    | identity and is not related to the original array, this prevents other
+    | important optimizations such as fixpoint analysis.
+
+    switch args.array.resolve()
+    | case array(array) {
+    |   | Constant fold.
+    |   if start.resolve() is int(start) then if end.resolve() is int(end) then
+    |     return
+    |       if (0..array.items.len).contains(start)
+    |         and (0..=array.items.len).contains(end)
+    |         and start <= end
+    |       then builder.array(array.items.subslice(start..end), array.item_type)
+    |       else builder.unreachable(type_array(array.item_type))
+    | }
+    case unchecked_array_slice(inner_args)
+      | Merge the two nested slice operations into one.
+      return builder.unchecked_array_slice(
+        inner_args.array,
+        builder.add(inner_args.start, args.start),
+        builder.add(inner_args.start, args.end),
+      )
+    default {}
+  }
+  case array_len(array) {
+    switch array.resolve()
+    case array(array)
+      | Constant fold.
+      return builder.int(array.items.len)
+    case generate_array(gen)
+      | length(generate_array(length, generator)) = length
+      return gen.length
+    case unchecked_generate_non_empty_array(gen)
+      | length(unchecked_generate_non_empty_array(length, generator)) = length
+      return gen.length
+    case array_slice(args)
+      | length(array_slice(array, start, end)) = end - start
+      return builder.subtract(args.end, args.start)
+    case unchecked_array_slice(args)
+      | length(unchecked_array_slice(array, start, end)) = end - start
+      return builder.subtract(args.end, args.start)
+    default {}
+  }
+  default {}
+
+  id
+}

@@ -1,0 +1,40 @@
+import mod.mar
+
+fun choose_optimization_order(egg: Egg): Slice[String] {
+  var dependencies = map[String, Slice[String]]()
+  for fun_ in egg.funs do
+    dependencies.&.put(fun_.key, fun_.value.collect_dependencies())
+
+  var order = list[String]()
+  choose_order(egg.entry_point, list[String]().&, dependencies, order.&)
+  | eprintln("chose order:")
+  | for sig in order do eprintln("- {sig}")
+  order.to_slice()
+}
+fun choose_order(
+  fun_: String,
+  stack: &List[String],
+  dependencies: Map[String, Slice[String]],
+  out: &List[String],
+) {
+  if stack.iter().&.contains(fun_) then return {}
+  if out.iter().&.contains(fun_) then return {}
+  stack.push(fun_)
+  for dep in dependencies.get(fun_) do
+    choose_order(dep, stack, dependencies, out)
+  stack.pop()
+  out.push(fun_)
+}
+
+fun collect_dependencies(fun_: EggFun): Slice[String] {
+  var out = list[String]()
+  fun_.visit(CollectDependencies { out = out.& })
+  out.to_slice()
+}
+struct CollectDependencies { out: &List[String] }
+fun visit(id: EggId, collect: CollectDependencies) {
+  if id.resolve() is call_fun(call) then collect.out.push(call.fun_)
+  if id.resolve() is raw_lambda(lambda) then collect.out.push(lambda.fun_)
+  if id.resolve() is function_ptr(signature) then collect.out.push(signature)
+  id.visit_children(collect)
+}

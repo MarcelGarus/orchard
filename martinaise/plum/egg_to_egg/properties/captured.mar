@@ -1,0 +1,170 @@
+import mod.mar
+
+fun captured(id: EggId): Set[EggId] {
+  var out = set[EggId]()
+  id.visit(CollectCaptured { ignore = set[EggId]().&, out = out.& })
+  out
+}
+fun captured(body: EggBody): Set[EggId] {
+  var out = set[EggId]()
+  body.visit(CollectCaptured { ignore = set[EggId]().&, out = out.& })
+  out
+}
+fun uses_params(body: EggBody): Bool {
+  var collect = CollectCaptured { ignore = set[EggId]().&, out = set[EggId]().& }
+  for child in body.children do {
+    child.visit(collect)
+    collect.ignore.put(child)
+  }
+  collect.add(body.returns)
+  for param in body.params do
+    if collect.out.contains(param) then return true
+  false
+}
+
+struct CollectCaptured { ignore: &Set[EggId], out: &Set[EggId] }
+fun add(collect: CollectCaptured, id: EggId) {
+  if not(collect.ignore.contains(id)) then collect.out.put(id)
+}
+fun visit(body: EggBody, collect: CollectCaptured) {
+  for param in body.params do collect.ignore.put(param)
+  for child in body.children do {
+    child.visit(collect)
+    collect.ignore.put(child)
+  }
+  collect.add(body.returns)
+}
+fun visit(id: EggId, collect: CollectCaptured) {
+  switch id.resolve()
+  case param panic("param")
+  case case_param panic("case param")
+  case type {}
+  case int {}
+  case string {}
+  case struct_(fields) for field in fields do collect.add(field.value)
+  case enum_(enum_) collect.add(enum_.payload)
+  case inline_lambda(body) body.visit(collect)
+  case raw_lambda(lambda) collect.add(lambda.closure)
+  case member(member) collect.add(member.of)
+  case switch_(switch_) {
+    collect.add(switch_.condition)
+    for case_ in switch_.cases do case_.value.visit(collect)
+  }
+  case call_generic_fun(call) for arg in call.args do collect.add(arg)
+  case call_fun(call) for arg in call.args do collect.add(arg)
+  case call_lambda(call) {
+    collect.add(call.lambda)
+    for arg in call.args do collect.add(arg)
+  }
+  case call_builtin(call) for arg in call.args do collect.add(arg)
+  case cast(cast) collect.add(cast.what)
+  case byte {}
+  case lower_byte(arg)  collect.add(arg)
+  case byte_to_int(arg) collect.add(arg)
+  case add(args)      { collect.add(args.a)  collect.add(args.b) }
+  case subtract(args) { collect.add(args.a)  collect.add(args.b) }
+  case multiply(args) { collect.add(args.a)  collect.add(args.b) }
+  case divide(args)   { collect.add(args.a)  collect.add(args.b) }
+  case modulo(args)   { collect.add(args.a)  collect.add(args.b) }
+  case compare(args)  { collect.add(args.a)  collect.add(args.b) }
+  case and_(args)     { collect.add(args.a)  collect.add(args.b) }
+  case or_(args)      { collect.add(args.a)  collect.add(args.b) }
+  case xor(args)      { collect.add(args.a)  collect.add(args.b) }
+  case shift_left(args)  { collect.add(args.a)  collect.add(args.b) }
+  case shift_right(args) { collect.add(args.a)  collect.add(args.b) }
+  case unchecked_divide(args) { collect.add(args.a)  collect.add(args.b) }
+  case unchecked_modulo(args) { collect.add(args.a)  collect.add(args.b) }
+  case box(arg)   collect.add(arg)
+  case unbox(arg) collect.add(arg)
+  case array(array) for item in array.items do collect.add(item)
+  case generate_array(args) {
+    collect.add(args.length)
+    args.generator.visit(collect)
+  }
+  case array_get(args) { collect.add(args.array)  collect.add(args.index) }
+  case array_set(args) {
+    collect.add(args.array)
+    collect.add(args.index)
+    collect.add(args.item)
+  }
+  case array_slice(args) {
+    collect.add(args.array)
+    collect.add(args.start)
+    collect.add(args.end)
+  }
+  case array_len(arg) collect.add(arg)
+  case unchecked_generate_non_empty_array(args) {
+    collect.add(args.length)
+    args.generator.visit(collect)
+  }
+  case unchecked_array_get(args) {
+    collect.add(args.array)
+    collect.add(args.index)
+  }
+  case unchecked_array_set(args) {
+    collect.add(args.array)
+    collect.add(args.index)
+    collect.add(args.item)
+  }
+  case unchecked_array_slice(args) {
+    collect.add(args.array)
+    collect.add(args.start)
+    collect.add(args.end)
+  }
+  case type_info(arg) collect.add(arg)
+  case static_to_dynamic(static) collect.add(static)
+  case dynamic_to_static(convert) collect.add(convert.dynamic)
+  case crash(crash) collect.add(crash.message)
+  case unreachable {}
+  case halt(type) {}
+  case loop_(loop_) {
+    for arg in loop_.initial do collect.add(arg)
+    loop_.body.visit(collect)
+  }
+  case continue_(continue_) for arg in continue_.next do collect.add(arg)
+  case dup(dup) collect.add(dup.id)
+  case drop(drop) collect.add(drop.id)
+  case function_ptr {}
+  case call_indirect(call) {
+    collect.add(call.function_ptr)
+    for arg in call.args do collect.add(arg)
+  }
+  case null_ptr {}
+  case object_new(id) collect.add(id)
+  case object_load(load) collect.add(load.ptr)
+  case object_free(free) collect.add(free.ptr)
+  case get_refcount(get) collect.add(get.ptr)
+  case set_refcount(set) {
+    collect.add(set.ptr)
+    collect.add(set.refcount)
+  }
+  case new_buffer(new) collect.add(new.length)
+  case get_buffer_length(buffer) collect.add(buffer)
+  case load_buffer_item(load) {
+    collect.add(load.buffer)
+    collect.add(load.index)
+  }
+  case store_buffer_item(store) {
+    collect.add(store.buffer)
+    collect.add(store.index)
+    collect.add(store.item)
+  }
+  case store_buffer_bytes(store) collect.add(store.buffer)
+  case free_buffer(free) collect.add(free.buffer)
+  case padding {}
+  case aggregate(parts) for part in parts do collect.add(part)
+  case part(part) collect.add(part.of)
+  case switch_on_byte(switch_) {
+    collect.add(switch_.condition)
+    for case_ in switch_.cases do case_.visit(collect)
+  }
+  case malloc(id) collect.add(id)
+  case free(free) { collect.add(free.ptr) collect.add(free.size) }
+  case load(load) collect.add(load.ptr)
+  case store(store) { collect.add(store.ptr) collect.add(store.value) }
+  case load_word(load) collect.add(load.ptr)
+  case load_byte(load) collect.add(load.ptr)
+  case store_word(store) { collect.add(store.ptr) collect.add(store.value) }
+  case store_byte(store) { collect.add(store.ptr) collect.add(store.value) }
+  case store_bytes(store) collect.add(store.ptr)
+}

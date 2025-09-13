@@ -1,0 +1,30 @@
+import mod.mar
+
+fun simplify_casts(id: EggId, builder: &EggBodyBuilder): EggId {
+  var cast = id.resolve().cast or return id
+
+  | Remove unnecessary casts.
+  |
+  | a = int 2
+  | ------------------
+  | cast a (Int)  |  a
+  if cast.what.type() == cast.type then return cast.what
+
+  | Instead of casting enums, construct them directly with the correct type.
+  |
+  | a = &
+  | b = | none: a (| none: (&))
+  | ------------------------------------------------------------------------
+  | cast b (| none: (&) some: (Int))  |  | none: a (| none: (&) some: (Int))
+  if cast.what.resolve() is enum_(enum_) then {
+    return builder.enum_(
+      cast.type,
+      enum_.variant,
+      builder.cast(
+        enum_.payload, cast.type.plum().enum_.unwrap().get(enum_.variant)
+      ),
+    )
+  }
+
+  id
+}

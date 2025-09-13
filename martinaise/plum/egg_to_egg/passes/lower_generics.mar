@@ -1,0 +1,142 @@
+import mod.mar
+
+fun lower_generics(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  var entry_point = egg.entry_point.lower_generics(no_substitutions, egg, funs.&)
+  Egg { funs, entry_point }
+}
+fun lower_generics(
+  signature: String, substitutions: Substitutions,
+  egg: Egg, out: &Map[String, EggFun],
+): String {
+  var unspecialized_fun = egg.funs.get(signature)
+
+  if substitutions.substitutions.is_not_empty() then
+    signature = "{signature} with {substitutions}"
+  if out.contains(signature) then return signature
+
+  out.put(signature, uninitialized[EggFun]().*) | placeholder
+  var specialized_fun = unspecialized_fun
+    .specialize(substitutions) | specialize all types
+    .map(Monomorphize { egg, funs = out }) | replace call_fun exprs by monoing
+  out.put(signature, specialized_fun)
+  signature
+}
+struct Monomorphize { egg: Egg, funs: &Map[String, EggFun] }
+fun map(
+  id: EggId, mono: Monomorphize,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(mono, mapping)
+  return
+    if expr is call_generic_fun(call) then
+      builder.call(
+        call.fun_.lower_generics(call.substitutions, mono.egg, mono.funs),
+        call.args,
+        call.return_type,
+      )
+    else builder.push(expr)
+}
+
+fun specialize(fun_: EggFun, substitutions: Substitutions): EggFun {
+  EggFun { body = fun_.body.specialize(substitutions, map[EggId, EggId]().&) }
+}
+fun specialize(
+  body: EggBody, substitutions: Substitutions, mapping: &Map[EggId, EggId]
+): EggBody {
+  body.map(substitutions, mapping)
+}
+fun map(
+  body: EggBody, substitutions: Substitutions, mapping: &Map[EggId, EggId]
+): EggBody {
+  var builder = egg_body_builder().&
+  for param in body.params do
+    mapping.put(param, param.map(substitutions, builder, mapping))
+  for child in body.children do
+    mapping.put(child, child.map(substitutions, builder, mapping))
+  builder.finish(mapping.get(body.returns))
+}
+fun map(
+  id: EggId, substitutions: Substitutions,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(substitutions, mapping)
+  switch expr
+  case param(type) return builder.param(type.specialize(substitutions))
+  case case_param {}
+  case type(type) return builder.type(type.specialize(substitutions))
+  case int {}
+  case string {}
+  case struct_ {}
+  case enum_(enum_)
+    return builder.enum_(
+      enum_.type.specialize(substitutions), enum_.variant, enum_.payload
+    )
+  case inline_lambda {}
+  case raw_lambda panic("raw lambdas should only exist after monomorphization")
+  case member(member) return builder.member(member.of, member.name)
+  case switch_(switch_) return builder.switch_(switch_.condition, switch_.cases)
+  case call_generic_fun(call)
+    return builder.call(
+      call.fun_,
+      call.substitutions.specialize(substitutions),
+      call.args,
+      call.return_type.specialize(substitutions),
+    )
+  case call_fun(call)
+    return builder.call(
+      call.fun_, call.args, call.return_type.specialize(substitutions)
+    )
+  case call_lambda {}
+  case call_builtin(call)
+    return builder.call(
+      call.builtin, call.substitutions.specialize(substitutions), call.args
+    )
+  case cast(cast)
+    return builder.cast(cast.what, cast.type.specialize(substitutions))
+  case byte {}
+  case lower_byte {}
+  case byte_to_int {}
+  case add {}
+  case subtract {}
+  case multiply {}
+  case divide {}
+  case modulo {}
+  case and_ {}
+  case or_ {}
+  case xor {}
+  case compare {}
+  case unchecked_divide {}
+  case unchecked_modulo {}
+  case box {}
+  case unbox {}
+  case array(array)
+    return builder.array(array.items, array.item_type.specialize(substitutions))
+  case generate_array {}
+  case array_get {}
+  case array_set {}
+  case array_slice {}
+  case array_len {}
+  case unchecked_generate_non_empty_array {}
+  case unchecked_array_get {}
+  case unchecked_array_set {}
+  case unchecked_array_slice {}
+  case type_info {}
+  case static_to_dynamic {}
+  case dynamic_to_static(convert)
+    return builder.dynamic_to_static(
+      convert.dynamic, convert.static.specialize(substitutions)
+    )
+  case crash(crash)
+    return builder.crash(crash.message, crash.type.specialize(substitutions))
+  case unreachable(type) return builder.unreachable(type)
+  case loop_(loop_)
+    return builder.loop_(loop_.initial, loop_.body.map(substitutions, mapping))
+  case continue_(continue_)
+    return builder.continue_(
+      continue_.next, continue_.type.specialize(substitutions)
+    )
+  default unreachable("unexpected expression {expr.debug()}")
+
+  return builder.push(expr)
+}

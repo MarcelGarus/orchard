@@ -1,0 +1,24 @@
+import mod.mar
+
+fun unroll_small_arrays(id: EggId, builder: &EggBodyBuilder): EggId {
+  var args = id.resolve().unchecked_generate_non_empty_array or return id
+
+  | For small arrays, specialize and constant fold the generator for each
+  | index.
+  |
+  | a = int 4
+  | ----------------------------------------------------------
+  | unchecked_generate_non_empty_array a  |  b = multiply 0 0
+  |   generator b:                        |  c = multiply 1 1
+  |     c = multiply b b                  |  d = multiply 2 2
+  |     c                                 |  e = multiply 3 3
+  |                                       |  f = array b c d e
+  if args.length.resolve() is int(length) then if length <= 10 then {
+    var items = list[EggId]()
+    for index in 0..length do
+      items.&.push(args.generator.fill(builder.int(index), builder))
+    return builder.array(items.to_slice(), args.generator.returns.type())
+  }
+
+  id
+}

@@ -1,0 +1,72 @@
+import plum.mar
+
+struct Indentation { amount: Int }
+
+var no_indentation = indentation(0)
+
+fun indentation(amount: Int): _ { Indentation { amount } }
+fun +(indentation: Indentation, extra: Int): _ { indentation(indentation.amount + extra) }
+fun write[W](writer: W, indentation: Indentation) {
+  writer."{ansi_escape}[{style_of_secondary}m"
+  for i in 0..indentation.amount do writer."| "
+  writer."{ansi_escape}[0m"
+}
+
+struct FormatWithoutWhitespace[T] { value: T }
+
+fun without_whitespace[T](value: T): _ { FormatWithoutWhitespace { value } }
+
+var colored = true
+
+var ansi_escape = AnsiEscape {}
+struct AnsiEscape {}
+fun write[W](writer: W, ansi_escape: AnsiEscape) {
+  writer.write_byte(27.lower_byte())
+}
+
+var style_of_secondary = "37;1"
+var style_of_id = "32;1"
+var style_of_op = "35;1"
+var style_of_type = "36"
+var style_of_black_hole = "40;37"
+
+fun styled[T](content: T, style: String): Styled[T] {
+  Styled { content, style }
+}
+struct Styled[T] { style: String, content: T }
+fun write[W, T](writer: W, styled: Styled[T]) {
+  writer."{ansi_escape}[{styled.style}m{styled.content}{ansi_escape}[0m"
+}
+
+fun pretty(id: Id): Styled[Id] { id.styled(style_of_id) }
+fun pretty_op(op: String): Styled[String] { op.styled(style_of_op) }
+fun pretty(type: EggType): Styled[EggType] { type.styled(style_of_type) }
+fun pretty(type: PestoType): Styled[_] { "pesto:{type}".styled(style_of_type) }
+fun pretty_signature(signature: String): Styled[String] {
+  signature.styled("31")
+}
+fun pretty_signature_def(signature: String): Styled[String] {
+  signature.styled("31;1")
+}
+
+struct Namespace { ints: List[Int] }
+fun namespace(): Namespace { Namespace { ints = list[Int]() } }
+fun get_index(namespace: &Namespace, int: Int): Int {
+  for existing in namespace.ints.iter().enumerate() do
+    if int == existing.item then return existing.index
+  var index = namespace.ints.len
+  namespace.ints.&.push(int)
+  index
+}
+fun get(namespace: &Namespace, int: Int): String {
+  var index = namespace.get_index(int)
+  var name = ""
+  loop {
+    var letter = #a + {{index % 26}.lower_byte()}
+    index = index / 26
+    name = "{letter}{name}"
+    if index == 0 then break
+    index = index - 1
+  }
+  name
+}

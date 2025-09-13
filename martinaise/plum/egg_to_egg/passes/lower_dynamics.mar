@@ -1,0 +1,307 @@
+import mod.mar
+
+fun lower_dynamics(
+  id: EggId, funs: &Map[String, EggFun], builder: &EggBodyBuilder
+): EggId {
+  switch id.resolve()
+  case static_to_dynamic(static_to_dynamic)
+    builder.desugared_static_to_dynamic(static_to_dynamic, funs)
+  case dynamic_to_static(dynamic_to_static)
+    builder.desugared_dynamic_to_static(
+      dynamic_to_static.dynamic, dynamic_to_static.static, funs
+    )
+  default id
+}
+
+fun desugared_static_to_dynamic(
+  builder: &EggBodyBuilder, static: EggId, funs: &Map[String, EggFun]
+): EggId {
+  builder.call(
+    compile_static_to_dynamic_fun(static.type(), funs),
+    list(static).to_slice(),
+    type_dynamic,
+  )
+}
+fun desugared_dynamic_to_static(
+  builder: &EggBodyBuilder, dynamic: EggId, static: EggType,
+  funs: &Map[String, EggFun],
+): EggId {
+  builder.call(
+    compile_dynamic_to_static_fun(static, funs),
+    list(dynamic).to_slice(),
+    static,
+  )
+}
+
+fun compile_static_to_dynamic_fun(
+  type: EggType, funs: &Map[String, EggFun]
+): String {
+  var signature = "{type} to dynamic"
+  if funs.contains(signature) then return signature
+  funs.put(signature, uninitialized[EggFun]().*) | placeholder
+  funs.put(signature, EggFun {
+    body = {
+      var builder = egg_body_builder().&
+      var value = builder.param(type)
+      builder.finish(
+        switch type.plum()
+        case variable panic("type var in static to dynamic")
+        case never builder.unreachable(type_dynamic)
+        case type builder.enum_(type_dynamic, "type", builder.nothing())
+        case byte builder.enum_(type_dynamic, "byte", value)
+        case int builder.enum_(type_dynamic, "int", value)
+        case array(item_type)
+          builder.enum_(type_dynamic, "array", {
+            builder.generate_array(builder.array_len(value), {
+              var builder = egg_body_builder().&
+              var index = builder.param(type_int)
+              builder.finish(
+                builder.desugared_static_to_dynamic(
+                  builder.array_get(value, index), funs
+                )
+              )
+            })
+          })
+        case struct_(field_types)
+          builder.enum_(type_dynamic, "struct", {
+            var dynamic_fields = list[EggId]()
+            for field in field_types do {
+              var name = field.key
+              var field_type = field.value
+              dynamic_fields.&.push(builder.struct_(map(
+                "name" -> builder.desugared_string(name),
+                "value" -> builder.desugared_static_to_dynamic(
+                  builder.member(value, name), funs
+                ),
+              )))
+            }
+            builder.array(dynamic_fields.to_slice(), type_dynamic_fields)
+          })
+        case enum_(variant_types)
+          builder.enum_(type_dynamic, "enum", {
+            builder.switch_(value, {
+              var cases = map[String, EggBody]()
+              for variant in variant_types do
+                cases.&.put(variant.key, {
+                  var builder = egg_body_builder().&
+                  var payload_value = builder.case_param(value, variant.key)
+                  var name_and_value = builder.struct_(map(
+                    "name" -> builder.desugared_string(variant.key),
+                    "value" -> builder.desugared_static_to_dynamic(
+                      payload_value, funs
+                    ),
+                  ))
+                  builder.finish(name_and_value)
+                })
+              cases
+            })
+          })
+        case lambda(lambda_type)
+          builder.enum_(type_dynamic, "lambda", {
+            builder.inline_lambda({
+              var builder = egg_body_builder().&
+              var args = builder.param(type_array(type_dynamic))
+              | Make sure the number of arguments is correct.
+              builder.assert_is_equal(
+                builder.array_len(args),
+                builder.int(lambda_type.args.len),
+                "bad shape",
+              )
+              | Convert the arguments into static ones.
+              var static_args = list[EggId]()
+              for arg in lambda_type.args.iter().enumerate() do
+                static_args.&.push(
+                  builder.desugared_dynamic_to_static(
+                    builder.array_get(args, builder.int(arg.index)),
+                    arg.item,
+                    funs,
+                  )
+                )
+              builder.finish(
+                builder.desugared_static_to_dynamic(
+                  builder.call(value, static_args.to_slice()), funs
+                )
+              )
+            })
+          })
+        case box
+          builder.enum_(type_dynamic, "box", {
+            builder.desugared_static_to_dynamic(builder.unbox(value), funs)
+          })
+      )
+    }
+  })
+  signature
+}
+
+fun compile_dynamic_to_static_fun(
+  type: EggType, funs: &Map[String, EggFun]
+): String {
+  var signature = "dynamic to {type}"
+  if funs.contains(signature) then return signature
+  funs.put(signature, uninitialized[EggFun]().*) | placeholder
+  funs.put(signature, EggFun {
+    body = {
+      var builder = egg_body_builder().&
+      var value = builder.param(type_dynamic)
+      builder.finish(
+        switch type.plum()
+        case variable panic("type var in static to dynamic")
+        case never builder.crash("bad shape", type)
+        case type {
+          | Note: We don't need to re-create the exact type, as you can't inspect
+          | non-statically-known types – during runtime, Types don't store
+          | anything. So, we just return _any_ type.
+          builder.expect_variant_or_crash(value, "type")
+          builder.type(type_never)
+        }
+        case byte builder.expect_variant_or_crash(value, "byte")
+        case int builder.expect_variant_or_crash(value, "int")
+        case array(item_type) {
+          var dynamic_array = builder.expect_variant_or_crash(value, "array")
+          builder.generate_array(builder.array_len(dynamic_array), {
+            var builder = egg_body_builder().&
+            var index = builder.param(type_int)
+            builder.finish(
+              builder.desugared_dynamic_to_static(
+                builder.unchecked_array_get(dynamic_array, index),
+                item_type,
+                funs
+              )
+            )
+          })
+        }
+        case struct_(field_types) {
+          var dynamic_fields = builder.expect_variant_or_crash(value, "struct")
+          builder.struct_({
+            var fields = map[String, EggId]()
+            for field in field_types do {
+              var name = field.key
+              var field_type = field.value
+              var dynamic_field = builder.loop_(
+                list(builder.int(0)).to_slice(),
+                {
+                  var builder = egg_body_builder().&
+                  var index = builder.param(type_int)
+                  builder.finish(
+                    builder.switch_on_ordering(
+                      builder.compare(index, builder.array_len(dynamic_fields)),
+                      {
+                        var builder = egg_body_builder().&
+                        var field = builder.unchecked_array_get(
+                          dynamic_fields, index
+                        )
+                        builder.finish(
+                          builder.if_(
+                            builder.compare_strings(
+                              builder.desugared_string(name),
+                              builder.member(field, "name"),
+                            ),
+                            {
+                              var builder = egg_body_builder().&
+                              builder.finish(builder.member(field, "value"))
+                            },
+                            {
+                              var builder = egg_body_builder().&
+                              builder.finish(
+                                builder.continue_(
+                                  list(
+                                    builder.add(index, builder.int(1))
+                                  ).to_slice(),
+                                  type_dynamic,
+                                )
+                              )
+                            }
+                          )
+                        )
+                      },
+                      egg_body_builder()
+                        .finish_with_crash("bad shape", type_dynamic),
+                      egg_body_builder().finish_with_unreachable(type_dynamic),
+                    )
+                  )
+                },
+              )
+              fields.&.put(
+                name,
+                builder.desugared_dynamic_to_static(
+                  dynamic_field, field_type, funs
+                ),
+              )
+            }
+            fields
+          })
+        }
+        case enum_(variants) {
+          var dynamic_enum = builder.expect_variant_or_crash(value, "enum")
+
+          var inner_body =
+            egg_body_builder().finish_with_crash("No enum case matches.", type)
+          for variant in variants do {
+            var builder = egg_body_builder().&
+            inner_body = builder.finish(
+              builder.if_(
+                builder.compare_strings(
+                  builder.member(dynamic_enum, "name"),
+                  builder.desugared_string(variant.key),
+                ),
+                {
+                  var builder = egg_body_builder().&
+                  builder.finish(
+                    builder.enum_(
+                      type,
+                      variant.key,
+                      builder.desugared_dynamic_to_static(
+                        builder.member(dynamic_enum, "value"),
+                        variant.value,
+                        funs,
+                      ),
+                    )
+                  )
+                },
+                inner_body,
+              )
+            )
+          }
+          for child in inner_body.children do builder.push(child)
+          inner_body.returns
+        }
+        case lambda(lambda_type) {
+          var dynamic_lambda = builder.expect_variant_or_crash(value, "lambda")
+          builder.inline_lambda({
+            var builder = egg_body_builder().&
+
+            var static_params = list[EggId]()
+            for param in lambda_type.args do
+              static_params.&.push(builder.param(param))
+
+            var dynamic_params = list[EggId]()
+            for param in static_params do
+              dynamic_params.&.push(
+                builder.desugared_static_to_dynamic(param, funs)
+              )
+
+            var dynamic_returned = builder.call(
+              dynamic_lambda,
+              list(
+                builder.array(dynamic_params.to_slice(), type_dynamic)
+              ).to_slice(),
+            )
+            builder.finish(
+              builder.desugared_dynamic_to_static(
+                dynamic_returned, lambda_type.return_type, funs
+              )
+            )
+          })
+        }
+        case box(inner_type) {
+          var dynamic_inner = builder.expect_variant_or_crash(value, "box")
+          builder.box(
+            builder.desugared_dynamic_to_static(dynamic_inner, inner_type, funs)
+          )
+        }
+      )
+    }
+  })
+  signature
+}

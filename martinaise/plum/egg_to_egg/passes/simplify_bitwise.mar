@@ -1,0 +1,80 @@
+import mod.mar
+
+fun simplify_bitwise(id: EggId, builder: &EggBodyBuilder): EggId {
+  switch id.resolve()
+  case lower_byte(arg) {
+    | Constant fold.
+    if arg.resolve() is int(int) then return builder.byte(int.lower_byte())
+
+    | lower_byte(byte_to_int(a)) = a
+    if arg.resolve() is byte_to_int(a) then return a
+  }
+  case byte_to_int(arg) {
+    | Constant fold.
+    if arg.resolve() is byte(byte) then return builder.int(byte.to_int())
+
+    | byte_to_int(lower_byte(a)) = and(a, 0xff)
+    if arg.resolve() is lower_byte(int) then
+      return builder.and_(int, builder.int(16#ff))
+  }
+  case and_(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a & b)
+
+    | Normalize so that constants are on the right.
+    if a.resolve() is int then return builder.and_(b, a)
+
+    | x & 0 = 0
+    if b.resolve() is int(b) then if b == 0 then return builder.int(0)
+
+    | x & -1 = x
+    if b.resolve() is int(b) then if b == -1 then return a
+
+    | (x & a) & b = x & (a & b)
+    if a.resolve() is and_(inner) then
+      if inner.b.resolve() is int(a) then
+        if b.resolve() is int(b) then
+          return builder.and_(inner.a, builder.int(a & b))
+  }
+  case or_(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(or(a, b))
+
+    | Normalize so that constants are on the right.
+    if a.resolve() is int then return builder.or_(b, a)
+  
+    | x or 0 = x
+    if b.resolve() is int(b) then if b == 0 then return a
+
+    | x or -1 = -1
+    if b.resolve() is int(b) then if b == -1 then return builder.int(-1)
+
+    | (x or a) or b = x or (a or b)
+    if a.resolve() is or_(inner) then
+      if inner.b.resolve() is int(a) then
+        if b.resolve() is int(b) then
+          return builder.or_(inner.a, builder.int(or(a, b)))
+  }
+  case xor(args) {
+    var a = args.a
+    var b = args.b
+
+    | Constant fold.
+    if a.resolve() is int(a) then if b.resolve() is int(b) then
+      return builder.int(a ^ b)
+    
+    | x xor x = 0
+    if a == b then return builder.int(0)
+  }
+  default {}
+
+  id
+}

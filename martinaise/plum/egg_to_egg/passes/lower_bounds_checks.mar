@@ -1,0 +1,48 @@
+import mod.mar
+
+fun lower_bounds_checks(id: EggId, builder: &EggBodyBuilder): EggId {
+  switch id.resolve()
+  case generate_array(args) {
+    var item_type = args.generator.returns.type()
+    var cmp_length_zero = builder.compare(args.length, builder.int(0))
+    builder.switch_on_ordering(
+      cmp_length_zero,
+      egg_body_builder()
+        .finish_with_crash("negative length", type_array(item_type)),
+      {
+        var builder = egg_body_builder().&
+        builder.finish(builder.array(empty_slice[EggId](), item_type))
+      },
+      {
+        var builder = egg_body_builder().&
+        builder.finish(
+          builder.unchecked_generate_non_empty_array(
+            args.length, args.generator
+          )
+        )
+      },
+    )
+  }
+  case array_get(args) {
+    builder.assert_is_greater_equal(args.index, builder.int(0), "out of bounds")
+    builder.assert_is_less(
+      args.index, builder.array_len(args.array), "out of bounds"
+    )
+    builder.unchecked_array_get(args.array, args.index)
+  }
+  case array_set(args) {
+    builder.assert_is_greater_equal(args.index, builder.int(0), "out of bounds")
+    builder.assert_is_less(
+      args.index, builder.array_len(args.array), "out of bounds"
+    )
+    builder.unchecked_array_set(args.array, args.index, args.item)
+  }
+  case array_slice(args) {
+    var length = builder.array_len(args.array)
+    builder.assert_is_greater_equal(args.start, builder.int(0), "bad bounds")
+    builder.assert_is_less_equal(args.start, args.end, "bad bounds")
+    builder.assert_is_less_equal(args.end, length, "bad bounds")
+    builder.unchecked_array_slice(args.array, args.start, args.end)
+  }
+  default id
+}

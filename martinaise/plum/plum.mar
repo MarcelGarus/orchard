@@ -1,0 +1,442 @@
+| The Plum Compiler  
+|
+| Welcome to the entry file to the compiler for Plum, a simple, functional, cozy
+| programming language.
+|
+| TODO: comment is out of date; update
+|
+| Like most compilers, the Plum compiler represents the program as a series of
+| compiler stages. Unlike some other compilers, the abstraction gaps between
+| these stages are quite small. If you want to do further research, this design
+| is sometimes called "microstages". It makes the transformations between
+| stages more obvious and simple, but it does require a lot more stages for the
+| entire pipeline.
+|
+| These are the stages of the Plum compiler:
+|
+| - Code:   Just a string.
+| - Bacon:  The lines of the file turned into a tree according to the
+|           indentation.
+| - Toast:  A parsed representation of the language constructs, suitable for
+|           formatting.
+| - Egg:    The expressions organized as a graph. Names and functions are
+|           resolved.
+| - Waffle: Data structures have been memory layouted.
+| - Ground: Everything has been compiled into a series of stack-based
+|           instructions.
+|
+| Most of these compiler stages have a corresponding Martinaise file in this
+| directory. These also contain a more detailed explanation.
+
+import ../../../martinaise/stdlib.mar
+import bytes.mar
+import module.mar
+import error.mar
+import formatting.mar
+import dag.mar
+
+import bacon/mod.mar
+import toast/mod.mar
+import egg/mod.mar
+import waffle/mod.mar
+import sushi/mod.mar
+import ground/mod.mar
+
+import string_to_bacon/mod.mar
+import bacon_to_toast/mod.mar
+import toast_to_egg/mod.mar
+import egg_to_egg/mod.mar
+import egg_to_waffle/mod.mar
+import waffle_to_waffle/mod.mar
+import waffle_to_sushi/mod.mar
+import sushi_to_ground/mod.mar
+
+fun main(): Never {
+  eprintln("Welcome to the Plum compiler!")
+
+  var args = get_process_args()
+  var path = args.get_maybe(1) or exit(1, "You didn't specify a file.\n")
+  var ground = module(path).compile("main (Int)") or(error)
+    exit(1, "Oh no! An error occurred:\n\n{error}\n")
+  write_file("{path}.ground", ground.bytes)
+
+  exit(0)
+}
+
+fun exit(status: Int, message: String): Never {
+  stderr.write(message)
+  exit(status)
+}
+
+fun print_compile_step(step: String) { print(step.pad_right(32)) }
+fun print_time(duration: Duration) {
+  print("{duration.in_milliseconds().to_int().format().pad_left(5)} ms")
+}
+fun print_stats(egg: Egg) {
+  print(", {egg.funs.size} funs, {egg.count_expressions()} exprs")
+}
+
+fun lower(egg: Egg, pass: LoweringPass): Egg {
+  print_compile_step("  {pass.debug()}")
+  var timer = start_timer()
+  var egg = egg.apply(pass)
+  print_time(timer.read_duration())
+  print_stats(egg)
+  println()
+  egg
+}
+
+fun optimize(egg: Egg, passes: List[OptPass]): Egg {
+  print_compile_step("  optimize")
+  var timer = start_timer()
+  var egg = egg.apply_until_stable(passes.to_slice())
+  print_time(timer.read_duration())
+  print_stats(egg)
+  println()
+  egg
+}
+
+
+fun compile(module: Module, function: String): Result[Ground, Error] {
+  var total_timer = start_timer()
+
+  | Parsing the code  
+  | This is compilation pipeline. We start with an input module and parse it
+  | into lines nested by indentation (Bacon) and then an abstract syntax tree
+  | (Toast). This allows us to inspect the imports and parse those modules as
+  | well.
+
+  print_compile_step("Bacon & Toast")
+  var timer = start_timer()
+  var toasts = map[Module, Toast]()
+  module.parse_toasts(toasts.&)?
+  print_time(timer.read_duration())
+  println()
+
+  | Type checking  
+  | Once we've parsed the entry point module and all imported modules, we
+  | type-check everything, resolve identifiers, and figure out types for all
+  | expressions. This results in the Egg.
+
+  print_compile_step("Egg")
+  var timer = start_timer()
+  var egg = toasts.to_egg("{module}.{function}")?
+  print_time(timer.read_duration())
+  println()
+
+  | What is the Egg?  
+  | Similar to the MLIR (Multi-Level Intermediate Representation) [0] compiler
+  | architecture, we don't have a bunch of type-safe compiler stages, as that
+  | would require implementing formatting, hashing, and (most importantly)
+  | optimizations for a bunch of stages.
+  |
+  | Instead, the Egg covers all abstraction levels from a "type checked AST" to
+  | a "low-level instructions on bytes". The individual nodes can represent
+  | high-level ideas like "generate_array" to low-level ones like "store_word".
+  | In one Egg instance, only a subset of all possible nodes is used.
+  |
+  | Note that we are intentionally pragmatic here: We trade a bit of type-safety
+  | (expressing in types which subset of nodes our representation contains) for
+  | flexibility: We can re-use the validation, formatting, hashing, and
+  | optimizations across multiple abstraction levels and easily change the order
+  | that language features are lowered.
+  |
+  | [0]: https://mlir.llvm.org/
+  
+  | Terminology note: The lower_* passes eliminate a kind of node from the Egg,
+  | replacing it with lower-level concepts. The other passes (simplify_*, etc.)
+  | emit code that is on a similar abstraction level as before.
+
+  egg.assert_only(list(
+    "param", "case_param", "int", "struct_", "member", "enum_", "switch_",
+    "inline_lambda", "call_generic_fun", "call_fun", "call_builtin",
+    "call_lambda", "string", "type", "cast",
+  ))
+
+  | Monomorphization  
+  | We specialize generic functions for the concrete types they are used with
+  | (also called "monomorphization"), starting at the program entry point. After
+  | this, our Egg contains only the code reachable from main specialized for
+  | concrete types.
+  var egg = egg.lower(LoweringPass.lower_generics)
+
+  egg.assert_only(list(
+    "param", "case_param", "int", "struct_", "member", "enum_", "switch_",
+    "inline_lambda", "call_fun", "call_builtin", "call_lambda", "string",
+    "type", "cast",
+  ))
+
+  | Replacing Strings  
+  | We replace strings with structs of arrays of bytes.
+  var egg = egg.lower(LoweringPass.lower_strings)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "int", "struct_", "member", "enum_",
+    "switch_", "array", "inline_lambda", "call_fun", "call_builtin",
+    "call_lambda", "type", "cast",
+  ))
+
+  | Specializing call_builtin  
+  | We turn the rather unspecific call_builtin nodes into a variety of
+  | specialized nodes, one for each builtin.
+  var egg = egg.lower(LoweringPass.lower_builtin_calls)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
+    "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
+    "inline_lambda", "call_fun", "call_lambda", "box", "unbox", "array",
+    "generate_array", "array_get", "array_set", "array_slice", "array_len",
+    "type", "cast", "type_info", "static_to_dynamic", "dynamic_to_static",
+    "crash",
+  ))
+
+  | Remove first-class types  
+  | Because all types are concrete, we turn expressions that operate with types
+  | into literal expressions or functions that deal with values of the
+  | corresponding type. For example, instead of a cast node, we call a function
+  | that traverses the old value and builds up a parallel new value of the new
+  | type.
+  var egg = egg.lower(LoweringPass.lower_casts)
+  var egg = egg.lower(LoweringPass.lower_type_infos)
+  var egg = egg.lower(LoweringPass.lower_dynamics)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
+    "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
+    "inline_lambda", "call_fun", "call_lambda", "box", "unbox", "array",
+    "generate_array", "array_get", "array_set", "array_slice", "array_len",
+    "type", "crash", "unreachable", "loop_", "continue_",
+  ))
+
+  | Eliminate inline lambdas  
+  | For every inline_lambda, we create a top-level function that accepts an
+  | additional parameter – a Box of all captured values, also called a closure.
+  | The inline_lambda expressions become raw_lambdas.
+  var egg = egg.lower(LoweringPass.lower_lambdas_to_funs)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
+    "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
+    "raw_lambda", "call_fun", "call_lambda", "string", "box", "unbox", "array",
+    "generate_array", "array_get", "array_set", "array_slice", "array_len",
+    "type", "crash", "unreachable", "loop_", "continue_",
+  ))
+
+  | Optimize the code  
+  | Now that the most tricky language features (first-class types and lambdas)
+  | have been eliminated/simplified, we optimize the code using a set of
+  | idempotent passes, applying them over and over until the Egg stabilizes.
+  var optimizations = list(
+    OptPass.deduplicate,
+    OptPass.hoist_known_switch_results,
+    OptPass.inline_functions,
+    OptPass.simplify_arithmetics,
+    OptPass.simplify_arrays,
+    OptPass.simplify_bitwise,
+    OptPass.simplify_compare_to_enum,
+    OptPass.unroll_small_arrays,
+    OptPass.use_enum_flows,
+    OptPass.factor_out_loop_fixpoints,
+    OptPass.hoist_out_of_generators,
+    OptPass.hoist_out_of_loops,
+    OptPass.sink_continues,
+    OptPass.tree_shake,
+  )
+  var egg = egg.optimize(optimizations)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "divide", "modulo", "compare", "and_", "or_", "xor",
+    "shift_left", "shift_right", "struct_", "member", "enum_", "switch_",
+    "raw_lambda", "call_fun", "call_lambda", "box", "unbox", "array",
+    "generate_array", "array_get", "array_set", "array_slice", "array_len",
+    "type", "crash", "unreachable", "halt", "loop_", "continue_",
+  ))
+
+  | Make checks explicit  
+  | Some operations (divide, modulo, generate_array, array_get, array_set,
+  | array_slice) validate their inputs, for example, to check that you don't
+  | divide by zero or that you don't try to generate an array with a negative
+  | length. Otherwise, they crash.
+  | Because of this, they are not considered pure and some optimizations such as
+  | tree shaking or loop hoisting don't apply to them. Here, we desugar these
+  | checked expressions into explicit checks followed by unchecked versions of
+  | the expressions that can assume that the inputs are valid.
+  
+  var egg = egg.lower(LoweringPass.lower_bounds_checks)
+  var egg = egg.optimize(optimizations)
+  var egg = egg.lower(LoweringPass.lower_divide_and_modulo_checks)
+  var egg = egg.optimize(optimizations)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
+    "and_", "or_", "xor", "shift_left", "shift_right", "struct_", "member",
+    "enum_", "switch_", "raw_lambda", "call_fun", "call_lambda", "box", "unbox",
+    "array", "unchecked_generate_non_empty_array", "unchecked_array_get",
+    "unchecked_array_set", "unchecked_array_slice", "array_len", "type",
+    "crash", "unreachable", "halt", "loop_", "continue_",
+  ))
+
+  | Track ownership  
+  | Until now, we assumed that expressions are values that are somehow garbage
+  | collected. Now, we make that garbage collection explicit: We decide which
+  | parts of values are stored on the heap and where we have pointer
+  | indirections. All heap allocations are reference counted, so we also insert
+  | code for adjusting the reference count and freeing values when it reaches
+  | zero.
+
+  | Recursive enums can't be stored in a single place/allocation: Because their
+  | size is possibly infinite, we need pointer indirections and multiple
+  | allocations. So first, we wrap recursive variants of enums with Boxes.
+  var egg = egg.lower(LoweringPass.lower_recursive_enums)
+
+  | After that, we insert dup and drop expressions into the code. When a value
+  | is created, we are responsible for dropping it when it's no longer used. If
+  | it is used multiple times, we need to dup it.
+  var egg = egg.lower(LoweringPass.lower_ownership)
+
+  | TODO: optimize on the abstraction level of dup/drop
+
+  | Now, we turn expressions into lower-level ones where we already know the
+  | pointer indirections:
+  | - lambdas are turned into structs of function pointers and closures
+  |   containing the captured variables
+  | - noxes are turned into objects
+  | - arrays are turned into buffers
+  | - dup/drop expressions are turned into function calls
+  var egg = egg.lower(LoweringPass.lower_memory_layouts_1)
+  var egg = egg.optimize(optimizations)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
+    "and_", "or_", "xor", "shift_left", "shift_right", "struct_", "member",
+    "enum_", "switch_", "function_ptr", "call_fun", "call_indirect", "crash",
+    "unreachable", "halt", "loop_", "continue_", "null_ptr", "object_new",
+    "object_load", "object_free", "get_refcount", "set_refcount", "new_buffer",
+    "get_buffer_length", "load_buffer_item", "store_buffer_item",
+    "store_buffer_bytes", "free_buffer",
+  ))
+
+  | Memory layout  
+  | Now, think of concrete memory layouts for structs and enums. Every
+  | expression is now conceptually just a slice of bytes.
+
+  var egg = egg.lower(LoweringPass.lower_memory_layouts_2)
+  | println(egg)
+
+  var optimizations = list(
+    OptPass.deduplicate,
+    | OptPass.hoist_known_switch_results, | TODO: does this apply?
+    OptPass.inline_functions,
+    OptPass.simplify_aggregates_parts_loads_and_stores,
+    OptPass.simplify_arithmetics,
+    OptPass.simplify_bitwise,
+    OptPass.hoist_out_of_loops,
+    OptPass.make_switches_branchless,
+    OptPass.sink_continues,
+    OptPass.tree_shake,
+  )
+  var egg = egg.optimize(optimizations)
+  | println(egg)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
+    "and_", "or_", "xor", "shift_left", "shift_right", "function_ptr",
+    "call_fun", "call_indirect", "crash", "unreachable", "halt", "loop_",
+    "continue_", "null_ptr", "padding", "aggregate", "part", "switch_on_byte",
+    "malloc", "load", "store", "store_bytes", "free",
+  ))
+
+  | var passes = passes + list(OptPass.lower_loads_and_stores)
+
+  | Egg nodes:
+  |   param, case_param, byte, lower_byte, byte_to_int, int, add, subtract,
+  |   multiply, unchecked_divide, unchecked_modulo, compare, and, or, xor,
+  |   shift_left, shift_right, call_fun, call_indirect, crash, unreachable,
+  |   halt, loop, continue, null_ptr, padding, aggregate, part, switch_on_byte,
+  |   malloc, load_byte, load_word, store_byte, store_word, store_bytes, free
+
+  | print_compile_step("Waffle")
+  | var timer = start_timer()
+  | var waffle = egg.to_waffle()
+  | print_time(timer.read_duration())
+  | if false then println(waffle)
+
+  | print_compile_step("  optimize")
+  | var timer = start_timer()
+  | var waffle = waffle.optimize()
+  | print_time(timer.read_duration())
+  | if false then println(waffle)
+  | | if false then {
+  | |   println("Running Waffle")
+  | |   println(waffle.run(5.to_bytes()))
+  | | }
+
+  | print_compile_step("Sushi")
+  | var timer = start_timer()
+  | var sushi = waffle.to_sushi()
+  | print_time(timer.read_duration())
+  | if false then println(sushi)
+
+  | | TODO: optimize Sushi:
+  | | - put cold blocks at the end
+  | | - put frequently-used-together blocks near each other
+  | | - merge blocks
+  | | - peephole optimizations
+  | | - tail call elimination
+
+  | print_compile_step("Ground")
+  | var timer = start_timer()
+  | var ground = sushi.to_ground()
+  | print_time(timer.read_duration())
+  | if false then println(ground)
+  | | if false then {
+  | |   println("Running Ground")
+  | |   println(ground.run(5.to_bytes()).debug())
+  | | }
+
+  print_compile_step("Total")
+  print_time(total_timer.read_duration())
+  println()
+
+  todo("fds")
+  | ok[Ground, Error](ground)
+}
+
+fun parse_toasts(
+  module: Module, out: &Map[Module, Toast]
+): Result[Nothing, Error] {
+  if out.contains(module) or module.is_builtin() then
+    return ok[Nothing, Error]({})
+
+  var content = none[String]()
+  for path in module.file_paths() do {
+    var bytes = read_file(path) or continue
+    content = some(bytes.to_string())
+    break
+  }
+  var content = content or
+    return error[Nothing, Error](error(
+      "Couldn't read file from {module.file_paths()}", invalid_src
+    ))
+
+  var bacon = content.to_bacon(module)
+  var toast = bacon.to_toast()?
+  out.put(module, toast)
+
+  for def in toast.defs do
+    if def is import_(import_) then {
+      for part in import_.parts do {
+        var imported = module.resolve_import(part.module) or(error)
+          return error[Nothing, Error](error(error, import_.keyword.src))
+        imported.parse_toasts(out)?
+      }
+    }
+  ok[Nothing, Error]({})
+}

@@ -1,0 +1,31 @@
+import mod.mar
+
+fun simplify_compare_to_enum(id: EggId, builder: &EggBodyBuilder): EggId {
+  var args = id.resolve().compare or return id
+  var a = args.a
+  var b = args.b
+
+  | Constant fold.
+  if a.resolve() is int(a) then if b.resolve() is int(b) then
+    return builder.enum_(
+      type_ordering,
+      switch a <=> b
+      case less "less"
+      case equal "equal"
+      case greater "greater",
+      builder.nothing()
+    )
+
+  | compare(x, x) == equals
+  if a == b then
+    return builder.enum_(type_ordering, "equal", builder.nothing())
+
+  | compare((x - y), 0) = compare(x, y)
+  if a.resolve() is subtract(sub) then if b.resolve() is int(b) then
+    if b == 0 then return builder.compare(sub.a, sub.b)
+  
+  | Note: Because add and subtract wrap around, we can't optimize something
+  | like compare(x + 1, x) to greater.
+
+  id
+}

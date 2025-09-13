@@ -1,0 +1,125 @@
+| Enum Flow  
+|
+| Often, the generated code contains asserts. For example, consider this code:
+|
+| foo a =
+|   3000 ./ a .% a
+|
+| After making division-by-zero and modulo-by-zero checks explicit, the Egg will
+| look something like this:
+|
+| foo a =
+|   b = int 3000
+|   c = int 0
+|   d = compare a c
+|   f = &
+|   g =
+|     switch d
+|       less: h
+|         f
+|       equal: i
+|         j = string "divide by zero"
+|         k = crash j
+|         k
+|       greater: l
+|         f
+|   m =
+|     switch d
+|       less: n
+|         f
+|       equal: o
+|         p = string "divide by zero"
+|         q = crash p
+|         q
+|       greater: r
+|         f
+|   s = unchecked divide b a
+|   t = unchecked modulo s a
+|   t
+|
+| We want to remove the second switch as this can never be reached! Similarly,
+| if you switch on an enum, and within one branch you switch on that same enum
+| again, we want to remove the switch and instead inline the correct body, using
+| the extracted payload from the outer switch.
+|
+| We do this by walking the code and aggregating facts that we know about enum
+| values. In particular:
+|
+| - If we switch on an enum, within the case bodies, we can use the fact that
+|   we know the exact variant and have extracted the payload.
+| - After we switched on an enum, we know that it's not one of the variants that
+|   had diverging cases.
+
+import mod.mar
+
+fun use_enum_flows(body: EggBody): EggBody {
+  body.map(UseEnumFlow { facts = list[EnumFact]().& }, map[EggId, EggId]().&)
+}
+struct UseEnumFlow { facts: &List[EnumFact] }
+enum EnumFact { subset: EnumSubset, payload_in_scope: EnumPayloadInScope }
+struct EnumSubset { enum_: EggId, unreachable: Slice[String] }
+struct EnumPayloadInScope { enum_: EggId, variant: String, payload: EggId }
+fun map(
+  id: EggId, mapper: UseEnumFlow,
+  builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
+): EggId {
+  var switch_ = id.resolve().switch_ or
+    return builder.push(id.map_children(mapper, mapping))
+
+  | If we are inside a switch on the same enum value, the outer switch tells us
+  | which variant this is and what the payload is. Thus, we can just specialize
+  | the correct case.
+  for fact in mapper.facts do
+    if fact is payload_in_scope(fact) then
+      if fact.enum_ == switch_.condition then
+        return switch_.cases.get(fact.variant).fill(fact.payload, builder)
+
+  | If we switched on this enum before and some cases diverged, that limits the
+  | possible variants.
+  var possible_variants = set[String]()
+  for case_ in switch_.cases do possible_variants.&.put(case_.key)
+  for fact in mapper.facts do
+    if fact is subset(fact) then
+      if fact.enum_ == switch_.condition then
+        for variant in fact.unreachable do
+          if possible_variants.contains(variant) then
+            possible_variants.&.remove(variant)
+
+  var cases = map[String, EggBody]()
+  for case_ in switch_.cases do {
+    mapper.facts.push(EnumFact.payload_in_scope(EnumPayloadInScope {
+      enum_ = switch_.condition,
+      variant = case_.key,
+      payload = case_.value.params.get(0),
+    }))
+    cases.&.put(
+      case_.key,
+      if possible_variants.contains(case_.key) then
+        case_.value.map(mapper, mapping)
+      else {
+        var builder = egg_body_builder().&
+        builder.params.&.push(case_.value.params.get(0))
+        builder.finish(builder.unreachable(case_.value.returns.type()))
+      }
+    )
+    mapper.facts.pop()
+  }
+  var new = builder.switch_(switch_.condition.map(mapping.*), cases)
+  var variants_causing_diversion = list[String]()
+  for case_ in switch_.cases do
+    if case_.value.definitely_diverges_biased() then
+      variants_causing_diversion.&.push(case_.key)
+  mapper.facts.push(EnumFact.subset(EnumSubset {
+    enum_ = switch_.condition,
+    unreachable = variants_causing_diversion.to_slice(),
+  }))
+  new
+}
+fun map(
+  body: EggBody, mapper: UseEnumFlow, mapping: &Map[EggId, EggId]
+): EggBody {
+  var num_facts = mapper.facts.len
+  var body = body.map_children(mapper, mapping)
+  mapper.facts.len = num_facts
+  body
+}
