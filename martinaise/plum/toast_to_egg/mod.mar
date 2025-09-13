@@ -10,106 +10,87 @@ import visible.mar
 fun to_egg(
   toasts: Map[Module, Toast], entry_module: Module, entry_fun: String
 ): Result[Egg, Error] {
-  var funs = map[String, EggFun]()
-  for toast in toasts do {
+  var toasty = map[Module, Toasty]()
+  for toast in toasts do
+    toasty.&.put(toast.key, toast.value.to_toasty(toast.key)?)
+
+  | Check exports and type definitions. This also pre-fills caches.
+  for toast in toasty do {
     var module = toast.key
     var toast = toast.value
-    for def in toast.defs do
-      switch def
-      case import_(import_) check(import_)
-      case export(export) check(export, module, toasts)?
-      case type(type) check(type, module, toasts)?
-      case fun_(fun_) funs.&.put(compile(fun_, module, toasts)?)
+    for type in toast.exported_types do
+      lookup_type(
+        type.name.string, type.args.len, module, toasty, type.name.src
+      )?.ignore()
+    for fun_ in toast.exported_funs do {
+      | TODO: Ensure that {fun_.name.string} exists in {module}
+    }
+    for type in toast.types do {
+      | TODO: check that the same type var doesn't appear twice
+      | TODO: check that the resulting type doesn't contain any other unbound type variables
+      | var env = map[String, EggType]()
+      | for param in type_def.params do
+      |   env.&.put(param.string, type_variable(param.string))
+      type.type.compile(module, toasty)?
+    }
   }
+
+  | Compile the functions.
+  var funs = map[String, EggFun]()
+  for toast in toasty do
+    for fun_ in toast.value.funs do
+      funs.&.put(compile(fun_, toast.key, toasty)?)
+
   ok[Egg, Error](Egg { entry_point = "{entry_module}.{entry_fun}", funs })
 }
 
-fun check(import_: ToastImport) {
-  | We don't actually need to do anything. During the creation of the
-  | Map[Module, Toast], we have already looked at all the imports and parsed
-  | the respective imported files, crashing with a compiler error if a file was
-  | not found.
+| Something very similar to a Toast but organized in a way so that declarations
+| of the same kind are grouped together. This makes it a little bit easier to
+| lookup types or functions, or follow imports.
+struct Toasty {
+  imports: Slice[Module],
+  exported_types: Slice[ToastTypeSignature],
+  exported_funs: Slice[ToastFunSignature],
+  types: Slice[ToastTypeDef],
+  funs: Slice[ToastFun],
 }
 
-fun check(
-  export: ToastExport, module: Module, toasts: Map[Module, Toast]
-): Result[Nothing, Error] {
-  | TODO: Check that the exported items actually exist.
-  for item in export.items do
-    switch item
-    case type(type)
-      lookup_type(
-        type.name.string, type.args.len, module, toasts, type.name.src
-      )?.ignore()
-    case fun_(fun_) eprintln("TODO: Ensure that {fun_.name.string} exists in {module}")
-  ok[Nothing, Error]({})
+fun to_toasty(toast: Toast, module: Module): Result[Toasty, Error] {
+  var imports = list[Module]()
+  var exported_types = list[ToastTypeSignature]()
+  var exported_funs = list[ToastFunSignature]()
+  var types = list[ToastTypeDef]()
+  var funs = list[ToastFun]()
+
+  for def in toast.defs do
+    switch def
+    case import_(import_)
+      for imported in import_.modules do
+        imports.&.push(module.resolve_import(imported)?)
+    case export(export)
+      for item in export.items do {
+        switch item
+        case type(type) exported_types.&.push(type)
+        case fun_(fun_) exported_funs.&.push(fun_)
+      }
+    case type(type) types.&.push(type)
+    case fun_(fun_) funs.&.push(fun_)
+
+  ok[Toasty, Error](Toasty {
+    imports = imports.to_slice(),
+    exported_types = exported_types.to_slice(),
+    exported_funs = exported_funs.to_slice(),
+    types = types.to_slice(),
+    funs = funs.to_slice(),
+  })
 }
 
 fun check(
   type_def: ToastTypeDef, module: Module, toasts: Map[Module, Toast]
 ): Result[Nothing, Error] {
-  | TODO: check that the same type var doesn't appear twice
-  | TODO: check that the resulting type doesn't contain any other unbound type variables
-  | var env = map[String, EggType]()
-  | for param in type_def.params do
-  |   env.&.put(param.string, type_variable(param.string))
-  type_def.type.compile(module, toasts)?
+  
   ok[Nothing, Error]({})
 }
-
-| fun compile(
-|   type: ToastType, module: Module, toasts: Map[Module, Toast]
-| ): Result[EggType, Error] {
-|   ok[ToastType, Error](
-|     switch type
-|     case primitive(primitive) {
-|       var args = list[ToastType]()
-|       for arg in primitive.args do args.&.push(arg.specialize(env)?)
-|       var args = args.to_slice()
-      
-|       ToastType.primitive(ToastTypePrimitive { name = primitive.name, args })
-|     }
-|     case variable(variable)
-|       env.get_maybe(variable.string) or
-|         return error[ToastType, Error](error(
-|           "Tried to use {variable.string}, but that type doesn't exist. (speci.)",
-|           variable.src
-|         ))
-|     case call(call) {
-|       var args = list[ToastType]()
-|       for arg in call.args do args.&.push(arg.specialize(env)?)
-|       var args = args.to_slice()
-|       ToastType.call(ToastTypeCall { name = call.name, args })
-|     }
-|     case struct_(struct_) {
-|       var fields = list[ToastTypeField]()
-|       for field in struct_ do
-|         fields.&.push(ToastTypeField {
-|           name = field.name, type = field.type.specialize(env)?
-|         })
-|       var fields = fields.to_slice()
-|       ToastType.struct_(fields)
-|     }
-|     case enum_(enum_) {
-|       var variants = list[ToastTypeVariant]()
-|       for variant in enum_ do
-|         variants.&.push(ToastTypeVariant {
-|           name = variant.name, type = variant.type.specialize(env)?
-|         })
-|       var variants = variants.to_slice()
-|       ToastType.enum_(variants)
-|     }
-|     case lambda(lambda) {
-|       var args = list[ToastType]()
-|       for arg in lambda.args do args.&.push(arg.specialize(env)?)
-|       var args = args.to_slice()
-|       var return_type = lambda.return_type.specialize(env)?
-|       ToastType.lambda(ToastTypeLambda {
-|         args, return_type = return_type.put_on_heap()
-|       })
-|     }
-|   )
-| }
 
 struct OngoingTypeCall { name: String, args: Slice[ToastType], depth: Int }
 
@@ -121,7 +102,7 @@ fun write[W](writer: W, call: OngoingTypeCall) {
 fun compile(
   type: ToastType,
   module: Module,
-  toasts: Map[Module, Toast],
+  toasts: Map[Module, Toasty],
 ): Result[EggType, Error] {
   type
     .prefix_with_module(module)
@@ -169,7 +150,7 @@ fun prefix_with_module(type: ToastType, module: Module): ToastType {
 fun compile(
   type: ToastType,
   module: Module,
-  toasts: Map[Module, Toast],
+  toasts: Map[Module, Toasty],
   stack: &List[OngoingTypeCall],
   depth: Int,
 ): Result[EggType, Error] {
@@ -327,7 +308,7 @@ fun specialize(
 }
 
 fun compile(
-  fun_: ToastFun, module: Module, toasts: Map[Module, Toast]
+  fun_: ToastFun, module: Module, toasts: Map[Module, Toasty]
 ): Result[EggFun, Error] {
   var params = list[FunParam]()
   for param in fun_.params do
@@ -386,7 +367,7 @@ fun compile(
   builder: &EggBodyBuilder,
   module: Module,
   visible: &Visible,
-  toasts: Map[Module, Toast],
+  toasts: Map[Module, Toasty],
 ): Result[EggId, Error] {
   ok[EggId, Error](
     switch expr
@@ -624,7 +605,7 @@ fun compile_pattern(
   builder: &EggBodyBuilder,
   module: Module,
   visible: &Visible,
-  toasts: Map[Module, Toast],
+  toasts: Map[Module, Toasty],
 ): Result[Nothing, Error] {
   switch pattern
   case todo error[Nothing, Error](error("Todo in pattern.", pattern.src()))

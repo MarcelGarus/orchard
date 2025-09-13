@@ -2,14 +2,20 @@ import mod.mar
 
 fun lookup_exported_type(
   name: String, num_args: Int,
-  module: Module, toasts: Map[Module, Toast],
+  module: Module, toasts: Map[Module, Toasty],
 ): Result[Maybe[ToastTypeDef], Error] {
-  lookup_exported_type(name, num_args, module, toasts, list[Module]().&)
+  var cache_key = tuple(name, num_args, module)
+  if exported_types_cache.get_maybe(cache_key) is some(result) then
+    return ok[Maybe[ToastTypeDef], Error](result)
+  var result =
+    lookup_exported_type(name, num_args, module, toasts, list[Module]().&)?
+  exported_types_cache.put(cache_key, result)
+  ok[Maybe[ToastTypeDef], Error](result)
 }
 
 fun lookup_type(
   name: String, num_args: Int,
-  module: Module, toasts: Map[Module, Toast], src: Src,
+  module: Module, toasts: Map[Module, Toasty], src: Src,
 ): Result[ToastTypeDef, Error] {
   lookup_type(name, num_args, module, toasts, src, list[Module]().&)
 }
@@ -18,7 +24,7 @@ fun lookup_exported_type(
   name: String,
   num_args: Int,
   module: Module,
-  toasts: Map[Module, Toast],
+  toasts: Map[Module, Toasty],
   stack: &List[Module],
 ): Result[Maybe[ToastTypeDef], Error] {
   if module == builtin_module then {
@@ -43,16 +49,13 @@ fun lookup_exported_type(
         }))
     return ok[Maybe[ToastTypeDef], Error](none[ToastTypeDef]())
   }
-  for def in toasts.get(module).defs do
-    if def is export(export) then
-      for item in export.items do
-        if item is type(type) then
-          if type.name.string == name and type.args.len == num_args then
-            return ok[Maybe[ToastTypeDef], Error](some(
-              lookup_type(
-                type.name.string, num_args, module, toasts, type.name.src, stack
-              )?
-            ))
+  for type in toasts.get(module).exported_types do
+    if type.name.string == name and type.args.len == num_args then
+      return ok[Maybe[ToastTypeDef], Error](some(
+        lookup_type(
+          type.name.string, num_args, module, toasts, type.name.src, stack
+        )?
+      ))
   ok[Maybe[ToastTypeDef], Error](none[ToastTypeDef]())
 }
 
@@ -60,7 +63,7 @@ fun lookup_type(
   name: String,
   num_args: Int,
   module: Module,
-  toasts: Map[Module, Toast],
+  toasts: Map[Module, Toasty],
   src: Src,
   stack: &List[Module],
 ): Result[ToastTypeDef, Error] {
@@ -73,24 +76,18 @@ fun lookup_type(
   }
 
   var candidates = set[ToastTypeDef]()
-  for def in toasts.get(module).defs do
-    switch def
-    case type(type) {
-      if type.name.string == name and type.params.len == num_args then
-        candidates.&.put(type)
-    }
-    case import_(import_) {
-      for imported in import_.modules do {
-        var imported = module.resolve_import(imported)?
-        if stack.iter().&.contains(imported) then continue
-        stack.push(imported)
-        if lookup_exported_type(name, num_args, imported, toasts, stack)?
-        is some(exported)
-        then candidates.&.put(exported)
-        stack.pop()
-      }
-    }
-    default {}
+  var toast = toasts.get(module)
+  for type in toast.types do
+    if type.name.string == name and type.params.len == num_args then
+      candidates.&.put(type)
+  for imported in toast.imports do {
+    if stack.iter().&.contains(imported) then continue
+    stack.push(imported)
+    if lookup_exported_type(name, num_args, imported, toasts, stack)?
+    is some(exported)
+    then candidates.&.put(exported)
+    stack.pop()
+  }
 
   if candidates.is_empty() then
     return error[ToastTypeDef, Error](error(

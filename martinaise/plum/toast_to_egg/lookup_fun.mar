@@ -1,15 +1,25 @@
 import mod.mar
 
+var exported_funs_cache =
+  map[Tuple3[String, Slice[FunArg], Module], Maybe[MatchingCallee]]()
+    .put_on_heap()
+
 fun lookup_exported_fun(
   name: String, args: Slice[FunArg],
-  module: Module, toasts: Map[Module, Toast],
+  module: Module, toasts: Map[Module, Toasty],
 ): Result[Maybe[MatchingCallee], Error] {
-  lookup_exported_fun(name, args, module, toasts, list(module).&)
+  var cache_key = tuple(name, args, module)
+  if exported_funs_cache.get_maybe(cache_key) is some(result) then
+    return ok[Maybe[MatchingCallee], Error](result)
+  var result =
+    lookup_exported_fun(name, args, module, toasts, list[Module]().&)?
+  exported_funs_cache.put(cache_key, result)
+  ok[Maybe[MatchingCallee], Error](result)
 }
 
 fun lookup_fun(
   name: String, args: Slice[FunArg],
-  module: Module, toasts: Map[Module, Toast], src: Src,
+  module: Module, toasts: Map[Module, Toasty], src: Src,
 ): Result[MatchingCallee, Error] {
   lookup_fun(name, args, module, toasts, src, list(module).&)
 }
@@ -61,6 +71,11 @@ fun write[W](writer: W, param: FunParam) {
 | value.
 struct FunArg { value: Maybe[EggType], type: EggType }
 
+fun ==(a: FunArg, b: FunArg): Bool { a.value == b.value and a.type == b.type }
+fun hash[H](hasher: H, arg: FunArg) {
+  hasher.hash(arg.value)
+  hasher.hash(arg.type)
+}
 fun write[W](writer: W, arg: FunArg) {
   if arg.value is some(type) then writer."{type}:"
   writer."{arg.type}"
@@ -70,9 +85,13 @@ fun lookup_exported_fun(
   name: String,
   args: Slice[FunArg],
   module: Module,
-  toasts: Map[Module, Toast],
+  toasts: Map[Module, Toasty],
   stack: &List[Module],
 ): Result[Maybe[MatchingCallee], Error] {
+  var cache_key = tuple(name, args, module)
+  if exported_funs_cache.get_maybe(cache_key) is some(result) then
+    return ok[Maybe[MatchingCallee], Error](result)
+
   if module == builtin_module then {
     for fun_ in builtin_funs do {
       if fun_.format() == name then {
@@ -101,33 +120,32 @@ fun lookup_exported_fun(
     }
     return ok[Maybe[MatchingCallee], Error](none[MatchingCallee]())
   }
-  for def in toasts.get(module).defs do
-    if def is export(export) then {
-      for item in export.items do
-        if item is fun_(fun_) then
-          if fun_.name.string == name then {
-            var params = list[FunParam]()
-            for param in fun_.args.iter().&.enumerate() do
-              params.&.push(FunParam {
-                name = param.item.name.string,
-                type = param.item.type.compile(module, toasts)?,
-              })
-            var params = params.to_slice()
+  for fun_ in toasts.get(module).exported_funs do
+    if fun_.name.string == name then {
+      var params = list[FunParam]()
+      for param in fun_.args.iter().&.enumerate() do
+        params.&.push(FunParam {
+          name = param.item.name.string,
+          type = param.item.type.compile(module, toasts)?,
+        })
+      var params = params.to_slice()
 
-            switch args.match_against(params)
-            case ok(substitutions) {
-              switch substitutions
-              case none continue
-              case some
-                return ok[Maybe[MatchingCallee], Error](some(
-                  lookup_fun(name, args, module, toasts, fun_.name.src, stack)?
-                ))
-            }
-            case error(message)
-              return error[Maybe[MatchingCallee], Error](error(
-                message, fun_.name.src
-              ))
-          }
+      switch args.match_against(params)
+      case ok(substitutions) {
+        switch substitutions
+        case none continue
+        case some {
+          var result = some(
+            lookup_fun(name, args, module, toasts, fun_.name.src, stack)?
+          )
+          exported_funs_cache.put(cache_key, result)
+          return ok[Maybe[MatchingCallee], Error](result)
+        }
+      }
+      case error(message)
+        return error[Maybe[MatchingCallee], Error](error(
+          message, fun_.name.src
+        ))
     }
   ok[Maybe[MatchingCallee], Error](none[MatchingCallee]())
 }
@@ -202,7 +220,7 @@ fun lookup_fun(
   name: String,
   args: Slice[FunArg],
   module: Module,
-  toasts: Map[Module, Toast],
+  toasts: Map[Module, Toasty],
   src: Src,
   stack: &List[Module],
 ): Result[MatchingCallee, Error] {
@@ -235,50 +253,45 @@ fun lookup_fun(
   }
 
   var matches = set[MatchingCallee]()
-  for def in toasts.get(module).defs do
-    switch def
-    case fun_(fun_) {
-      fun_.name.string == name or continue
+  var toast = toasts.get(module)
+  for fun_ in toast.funs do {
+    fun_.name.string == name or continue
 
-      var params = list[FunParam]()
-      for param in fun_.params do
-        params.&.push(FunParam {
-          name = param.name.string, type = param.type.compile(module, toasts)?
-        })
-      var params = params.to_slice()
-
-      var signature = signature(module, fun_.name.string, params)
-
-      var substitutions = args.match_against(params) or(message)
-        return error[MatchingCallee, Error](error(message, src))
-      var substitutions = substitutions or continue
-
-      var param_types = list[EggType]()
-      for param in params do
-        param_types.&.push(param.type.specialize(substitutions))
-      var param_types = param_types.to_slice()
-      var return_type =
-        fun_.return_type.compile(module, toasts)?.specialize(substitutions)
-
-      matches.&.put(MatchingCallee {
-        kind = MatchingCalleeKind.fun_(signature),
-        substitutions,
-        param_types,
-        return_type,
+    var params = list[FunParam]()
+    for param in fun_.params do
+      params.&.push(FunParam {
+        name = param.name.string, type = param.type.compile(module, toasts)?
       })
-    }
-    case import_(import_) {
-      for imported in import_.modules do {
-        var imported = module.resolve_import(imported)?
-        if stack.iter().&.contains(imported) then continue
-        stack.push(imported)
-        if lookup_exported_fun(name, args, imported, toasts, stack)?
-        is some(fun_)
-        then matches.&.put(fun_)
-        stack.pop()
-      }
-    }
-    default {}
+    var params = params.to_slice()
+
+    var signature = signature(module, fun_.name.string, params)
+
+    var substitutions = args.match_against(params) or(message)
+      return error[MatchingCallee, Error](error(message, src))
+    var substitutions = substitutions or continue
+
+    var param_types = list[EggType]()
+    for param in params do
+      param_types.&.push(param.type.specialize(substitutions))
+    var param_types = param_types.to_slice()
+    var return_type =
+      fun_.return_type.compile(module, toasts)?.specialize(substitutions)
+
+    matches.&.put(MatchingCallee {
+      kind = MatchingCalleeKind.fun_(signature),
+      substitutions,
+      param_types,
+      return_type,
+    })
+  }
+  for imported in toast.imports do {
+    if stack.iter().&.contains(imported) then continue
+    stack.push(imported)
+    if lookup_exported_fun(name, args, imported, toasts, stack)?
+    is some(fun_)
+    then matches.&.put(fun_)
+    stack.pop()
+  }
 
   if matches.is_empty() then
     return error[MatchingCallee, Error]({
