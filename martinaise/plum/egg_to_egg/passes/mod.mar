@@ -84,6 +84,7 @@ enum OptPass {
   hoist_out_of_generators,
   hoist_out_of_loops,
   inline_functions,
+  inline_functions_only_used_once,
   make_switches_branchless,
   merge_switch_chains,
   nest_into_switches_with_a_single_case,
@@ -166,6 +167,7 @@ fun apply(
 fun apply(egg: Egg, pass: OptPass): Egg {
   switch pass
   case tree_shake egg.tree_shake()
+  case inline_functions_only_used_once egg.inline_functions_only_used_once()
   default egg
 }
 
@@ -204,6 +206,7 @@ fun apply(
   case simplify_arrays id.simplify_arrays(builder)
   case simplify_bitwise id.simplify_bitwise(builder)
   case simplify_boxes id.simplify_boxes(builder)
+  case simplify_compare_to_enum id.simplify_compare_to_enum(builder)
   case simplify_casts id.simplify_casts(builder)
   case simplify_loops id.simplify_loops(builder)
   case sink_continues id.sink_continues(builder)
@@ -245,38 +248,25 @@ fun apply(
 | which in turn enables other optimizations.
 
 fun apply_until_stable(egg: Egg, passes: Slice[OptPass]): Egg {
-  | var hash_before = egg.hash()
-  | loop {
-  |   var funs = map[String, EggFun]()
-  |   for signature in egg.choose_optimization_order() do {
-  |     var mapped = egg.funs.get(signature)
-  |       .map(ApplyUntilStable { passes, processed_funs = funs.& })
-  |     eprintln("Mapping {pretty_signature(signature)}")
-  |     stderr.write(signature, mapped)
-  |     stderr."\n"
-  |     mapped.verify()
-  |     funs.&.put(signature, mapped)
-  |   }
-  |   var new_egg = Egg { funs, entry_point = egg.entry_point }.apply(passes)
-  |   var hash_after = new_egg.hash()
-  |   eprintln("{hash_before} -> {hash_after}")
-  |   if hash_before == hash_after then break
-  |   hash_before = hash_after
-  | }
-  | egg
-
-  var funs = map[String, EggFun]()
-  for signature in egg.choose_optimization_order() do {
-    var mapped = egg.funs.get(signature).map(ApplyUntilStable {
-      passes, cache = cache_for_passes(passes), processed_funs = funs.&
-    })
-    | eprintln("Mapped {pretty_signature(signature)}")
-    | stderr.write(signature, mapped)
-    | stderr."\n"
-    mapped.verify()
-    funs.&.put(signature, mapped)
+  var hash_before = egg.hash()
+  loop {
+    var funs = map[String, EggFun]()
+    for signature in egg.choose_optimization_order() do {
+      var mapped = egg.funs.get(signature)
+        .map(ApplyUntilStable { passes, cache = cache_for_passes(passes), processed_funs = funs.& })
+      | eprintln("Mapping {pretty_signature(signature)}")
+      | stderr.write(signature, mapped)
+      | stderr."\n"
+      mapped.verify()
+      funs.&.put(signature, mapped)
+    }
+    egg = Egg { funs, entry_point = egg.entry_point }.apply(passes)
+    var hash_after = egg.hash()
+    | eprintln("{hash_before} -> {hash_after}")
+    if hash_before == hash_after then break
+    hash_before = hash_after
   }
-  Egg { funs, entry_point = egg.entry_point }.apply(passes)
+  egg
 }
 
 | Used by loop fixpoint analysis.
