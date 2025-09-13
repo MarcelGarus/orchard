@@ -3,7 +3,7 @@
 | Often, the generated code contains asserts. For example, consider this code:
 |
 | foo a =
-|   3000 ./ a .% a
+|   3000 ./ a .mod a
 |
 | After making division-by-zero and modulo-by-zero checks explicit, the Egg will
 | look something like this:
@@ -56,13 +56,30 @@ fun use_enum_flows(body: EggBody): EggBody {
   body.map(UseEnumFlow { facts = list[EnumFact]().& }, map[EggId, EggId]().&)
 }
 struct UseEnumFlow { facts: &List[EnumFact] }
+
 enum EnumFact { subset: EnumSubset, payload_in_scope: EnumPayloadInScope }
 struct EnumSubset { enum_: EggId, unreachable: Slice[String] }
 struct EnumPayloadInScope { enum_: EggId, variant: String, payload: EggId }
+
 fun map(
   id: EggId, mapper: UseEnumFlow,
   builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
+  if id.resolve() is compare(args) then {
+    var a_range = args.a.int_range()
+    var b_range = args.b.int_range()
+    var unreachable = list[String]()
+    if a_range.high is some(a_high) then if b_range.low is some(b_low) then
+      if a_high <= b_low then
+        unreachable.&.push("greater")
+    if a_range.low is some(a_low) then if b_range.high is some(b_high) then
+      if a_low >= b_high then
+        unreachable.&.push("less")
+    mapper.facts.push(EnumFact.subset(EnumSubset {
+      enum_ = id, unreachable = unreachable.to_slice()
+    }))
+  }
+  
   var switch_ = id.resolve().switch_ or
     return builder.push(id.map_children(mapper, mapping))
 
