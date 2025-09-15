@@ -38,13 +38,21 @@ fun try_merging_switches(
   | Make sure that every case of the first switch refers to a different case of
   | the second switch.
   var reached_cases_of_second = set[String]()
+  var extra_complexity = 0
+  var mapping = map[String, String]()
   for case_ in a_switch.cases do
     if not(case_.value.definitely_diverges_biased()) then {
-      var maps_to = {case_.value.returns.resolve().enum_ or return not_possible}
-        .variant
-      if reached_cases_of_second.contains(maps_to) then return not_possible
-      reached_cases_of_second.&.put(maps_to)
+      var enum_shape = case_.value.returns.shape().enum_ or return not_possible
+      enum_shape.variants.size == 1 or return not_possible
+      var variant = enum_shape.variants.iter().&.next().unwrap().key
+      if reached_cases_of_second.contains(variant) then
+        extra_complexity = extra_complexity
+          + b_switch.cases.get(variant).num_exprs()
+      reached_cases_of_second.&.put(variant)
+      mapping.&.put(case_.key, variant)
     }
+
+  if extra_complexity > 5 then return not_possible
 
   |eprintln("todo: merge:")
   |stderr.write(a, namespace().&, indentation(1))
@@ -61,10 +69,19 @@ fun try_merging_switches(
       if a_case.value.definitely_diverges_biased() then {
         builder.unreachable(b.type())
       } else {
-        var a_result = a_result.resolve().enum_.unwrap()
-        var b_case = b_switch.cases.get(a_result.variant)
-        var b_payload = a_result.payload
-        var b_result = b_case.fill(b_payload, builder)
+        var b_case = mapping.get(a_case.key)
+        var b_result = builder.switch_(a_result, {
+          var cases = map[String, EggBody]()
+          for case_ in b_switch.cases do
+            cases.&.put(case_.key, {
+              if case_.key == b_case then case_.value else {
+                var builder = egg_body_builder().&
+                builder.case_param(a_result, case_.key)
+                builder.finish_with_unreachable(b.type())
+              }
+            })
+          cases
+        })
         b_result
       }
     var body = builder.finish(total_result)
