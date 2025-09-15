@@ -69,12 +69,26 @@ fun write[W](
   case switch_(switch_) {
     writer."\n
       '{indentation}{pretty_op("switch")} {pretty(switch_.condition, names)}"
+    | Merge cases that have the exact same content. Group from body to
+    | variant/payload.
+    var body_to_variants = map[EggBody, List[Tuple2[String, EggId]]]()
     for case_ in switch_.cases do {
-      writer."\n{indentation + 1}{case_.key}:"
-      for param in case_.value.params do
-        writer." {pretty(param, names)} {pretty(param.type())}"
+      var variant = tuple(case_.key, case_.value.params.first())
+      var body = case_.value.without_params()
+      if body_to_variants.&.get_maybe_ref(body) is some(cases) then
+        cases.push(variant)
+      else
+        body_to_variants.&.put(body, list(variant))
+    }
+    for case_ in body_to_variants do {
+      | var first = true
+      for variant in case_.value do {
+        writer."\n{indentation + 1}"
+        | if first then first = false else writer." | "
+        writer."{variant.a} {pretty(variant.b, names)} {pretty(variant.b.type())}:"
+      }
       writer."\n"
-      writer.write(case_.value, names, indentation + 2)
+      writer.write(case_.key, names, indentation + 2)
     }
   }
   case call_generic_fun(call) {
