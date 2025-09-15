@@ -84,11 +84,26 @@ fun type(shape: Shape): EggType {
   case hole(type) type
 }
 
-| Returns the shape of an ID (not Shape.id, but something less precise).
+fun as_struct(shape: Shape): Maybe[ShapeStruct] {
+  switch shape
+  case id(id) id.shape().as_struct()
+  case struct_(struct_) some(struct_)
+  default none[ShapeStruct]()
+}
+
+fun as_enum(shape: Shape): Maybe[ShapeEnum] {
+  switch shape
+  case id(id) id.shape().as_enum()
+  case enum_(enum_) some(enum_)
+  default none[ShapeEnum]()
+}
+
+| Returns the shape of an ID.
 fun shape(id: EggId): Shape {
+  | eprintln("  getting shape of {id.id}")
   switch id.resolve()
   case case_param(param) {
-    if param.switch_on.shape() is enum_(enum_shape) then
+    if param.switch_on.shape().as_enum() is some(enum_shape) then
       if enum_shape.variants.get_maybe(param.variant) is some(shape) then
         return shape
     id.type().shape()
@@ -98,21 +113,23 @@ fun shape(id: EggId): Shape {
     for field in struct_ do fields.&.put(field.key, Shape.id(field.value))
     Shape.struct_(ShapeStruct { fields, type = id.type() })
   }
-  case member(member)
-    if member.of.shape() is struct_(struct_) then
-      struct_.fields.get(member.name)
+  case member(member) {
+    var of_shape = member.of.shape()
+    if of_shape.as_struct() is some(struct_shape) then
+      struct_shape.fields.get(member.name)
     else
       id.type().shape()
+  }
   case enum_(enum_)
     Shape.enum_(ShapeEnum {
-      variants = map(enum_.variant -> enum_.payload.shape()),
-      type = id.type(),
+      variants = map(enum_.variant -> enum_.payload.shape()), type = id.type()
     })
   case box(inner) Shape.box(inner.shape().put_on_heap())
   case switch_(switch_) {
     var shapes = list[Shape]()
     for case_ in switch_.cases do
-      shapes.&.push(case_.value.returns.shape())
+      if not(case_.value.definitely_diverges_biased()) then
+        shapes.&.push(case_.value.returns.shape())
     if shapes.is_empty() then return id.type().shape()
     var common = shapes.get(0)
     for shape in shapes.to_slice().without_first() do
@@ -132,6 +149,7 @@ fun shape(id: EggId): Shape {
       start = Shape.id(slice.start).put_on_heap(),
       end = Shape.id(slice.end).put_on_heap(),
     })
+  case loop_(loop_) loop_.body.returns.shape()
   default id.type().shape()
 }
 fun shape(type: EggType): Shape {
@@ -158,8 +176,8 @@ fun merge(a: Shape, b: Shape): Shape {
   if b is self then return a
   if a is id(a_id) then
     if b is id(b_id) then if a_id == b_id then return Shape.id(a_id)
-  if a is id(a_id) then return merge(a_id.shape(), b)
   if b is id(b_id) then return merge(a, b_id.shape())
+  if a is id(a_id) then return merge(a_id.shape(), b)
   if a is int(a_int) then
     if b is int(b_int) then if a_int == b_int then return a
   if a is struct_(a_struct) then
