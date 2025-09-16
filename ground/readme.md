@@ -2,34 +2,24 @@
 
 Ground is a byte code format for a stack-based virtual machine (VM).
 
-While a Ground program executes, there are three separate parts of state:
+While a Ground program executes, there are separate parts of state:
 
 - **Byte Code:**
   Byte code consists of instructions.
-  By default, they are executed sequentially, but there are also jump and call instructions.
+  The byte code is considered to be static during the execution.
+  TODO: change that
+
+- **Instruction Pointer and Call Stack**
+  By default, instructions are executed sequentially starting at the first one.
+  There are also instructions for non-linear control flow (`jump`, `jump_table`, `call`, `call_indirect`).
   Going through instructions requires an instruction pointer and a call stack.
 
 - **Data Stack:**
-  The byte code operates on a stack.
-  All instructions inspect the stack, for example by popping and pushing values.
+  The byte code operates on a data stack (also just called "the stack").
+  All instructions operate on the stack, for example by popping and pushing values.
 
 - **Heap Memory:**
-  Some instructions (malloc, free, load, store) operate on heap memory.
-
-## Limitations
-
-The byte code cannot store pointers to instructions or the stack – this gives Ground implementations the freedom to compile the byte code to machine code on startup.
-
-Programs may not depend on the endianness of numbers.
-
-## Communication with the Outside
-
-Ground programs can't directly trigger behavior in the host.
-
-Depending on the program, you are expected to initialize the stack with some arguments.
-After running, the stack contains the result.
-
-For example, a Ground program may expect a pointer to a string on the stack and return the number of words in that string.
+  Some instructions (`malloc_[word/byte]_aligned`, `free_[word/byte]_aligned`, `load_[word/byte]`, `store_[word/byte]`) operate on heap memory.
 
 ## Encoding of Ground Programs
 
@@ -38,25 +28,25 @@ A program is an encoding of the instructions, one after another.
 The instructions are not aligned to a common size, but tightly packed together.
 
 Next is a list of all instructions along with their encoding in hexadecimal notation.
-Two letters in the encoding correspond to a single byte, using `xx` and `yy` to mark variables.
-The encoded uses little endian encoding for 64-bit integers; VMs are free to choose any 8-byte encoding on the stack.
+Two digits/letters in the encoding correspond to a single byte (i.e. `a0`), using `xx` and `yy` to mark variables.
+The encoding uses little endian encoding for 64-bit integers; VMs are free to choose any 8-byte encoding on the stack.
 64-bit integers are always signed from -2^63 to 2^63 - 1, inclusive.
 
 - `00`: **nop**: Does nothing.
-- `a0`: **add_8**:
+- `a0`: **add**:
   Pops two 64-bit integers, adds them, and pushes the result as a 64-bit integer.
-- `a1`: **sub_8**:
+- `a1`: **sub**:
   Pops two 64-bit integers, subtracts the second (further up on the stack) from the first (further down on the stack) them, and pushes the result as a 64-bit integer.
-- `a2`: **signed_mul_8**:
+- `a2`: **multiply**:
   Pops two signed 64-bit integers, multiplies them, and pushes the result as a 64-bit signed integer.
-- `a3`: **signed_div_8**:
+- `a3`: **divide**:
   Pops two signed 64-bit integers, divides the first (further down on the stack) by the second (further up on the stack), and pushes the result as a 64-bit integer.
   Division always rounds towards zero (`@divTrunc` in Zig).
-- `a4`: **signed_mod_8**:
+- `a4`: **modulo**:
   Pops two 64-bit integers, mods the first (further down on the stack) by the second (further up on the stack), and pushes the result as a 64-bit integer.
   This is true modulo, not the remainder (so, not `%` in C).
   As a consequence, the result is always positive.
-- `a5`: **compare_zero_8**:
+- `a5`: **compare_zero**:
   Pops a signed 64-bit integer and compares it to zero.
   Then pushes a byte indicating the result:
   | value | byte |
@@ -64,69 +54,59 @@ The encoded uses little endian encoding for 64-bit integers; VMs are free to cho
   | == 0 | 0 |
   | > 0 | 1 |
   | < 0 | 2 |
-- `a6`: **add_1**: Pops two bytes, adds them, and pushes the result as a byte.
-- `a7`: **sub_1**:
-  Pops two bytes, subtracts the second (further up on the stack) from the first (further down on the stack), and pushes the result as a byte.
-- `a8`: **compare_zero_1**:
-  Pops a signed byte and compares it to zero.
-  Then pushes a byte indicating the result:
-  | value | byte |
-  | ----- | ---- |
-  | == 0 | 0 |
-  | > 0 | 1 |
-  | < 0 | 2 |
-- `b0`: **and_8**:
+- `b0`: **and**:
   Pops two 64-bit integers, bitwise-ands them, and pushes the result as a 64-bit integer.
-- `b1`: **or_8**:
+- `b1`: **or**:
   Pops two 64-bit integers, bitwise-ors them, and pushes the result as a 64-bit integer.
-- `b2`: **xor_8**:
+- `b2`: **xor**:
   Pops two 64-bit integers, bitwise-xors them, and pushes the result as a 64-bit integer.
 - `b3`: **lower_byte**:
   Pops a 64-bit integer, pushes its lower byte.
+  TODO: describe in more detail
 - `b4`: **byte_to_int**:
   Pops a byte, pushes a 64-bit integer with the upper 7 bytes zero.
 - `c0 xx`: **push_padding**:
   Push x bytes of padding to the stack.
-- `c1 xx`: **push_1**:
+- `c1 xx`: **push_byte**:
   Push the byte x to the stack.
-- `c2 xx xx xx xx xx xx xx xx`: **push_8**:
+- `c2 xx xx xx xx xx xx xx xx`: **push_word**:
   Pushes x on the stack.
   The stack must be aligned to 8 bytes.
-- `c3 xx xx xx xx xx xx xx xx`: **push_1_from_stack**:
+- `c3 xx xx xx xx xx xx xx xx`: **push_byte_from_stack**:
   Pushes a byte from the offset x from the stack (0 = top, etc.)
-- `c4 xx xx xx xx xx xx xx xx`: **push_8_from_stack**:
+- `c4 xx xx xx xx xx xx xx xx`: **push_word_from_stack**:
   Pushes 8 bytes from the offset x from the stack (0 = top, etc.)
 - `c5 xx`: **pop**:
   Pops x bytes from the stack.
 - `c6 xx xx xx xx xx xx xx xx yy`: **pop_below_top**:
   Pops y bytes below the top x bytes.
-- `d0`: **malloc_8_aligned**:
+- `d0`: **malloc_word_aligned**:
   Pops a size (8 bytes).
   Allocates memory of the alignment 8 and the given size.
   If that worked, pushes the address (8 bytes).
   If that didn't work, pushes 0 (8 bytes).
-- `d1`: **free_8_aligned**:
+- `d1`: **free_word_aligned**:
   First pops a size (8 bytes), then an address (8 bytes).
   Frees the memory at that address, which has to have the given size and the alignment 8.
-- `d2`: **store_1**:
+- `d2`: **store_byte**:
   First pops a value (1 byte), then an address (8 bytes), and stores the value to the memory at that address.
-- `d3`: **store_8**:
+- `d3`: **store_word**:
   First pops a value (8 bytes), then an address (8 bytes), and stores the value to the memory at that address.
-- `d4`: **load_1**:
+- `d4`: **load_byte**:
   Pops an address (8 bytes), loads a byte from that address, and pushes that byte to the stack.
-- `d5`: **load_8**:
+- `d5`: **load_word**:
   Pops an address (8 bytes), loads 8 bytes from that address, and pushes them to the stack.
 - `d6 xx xx xx xx xx xx xx xx ...`: **store_bytes**:
   This instruction directly contains bytes to be stored in memory.
   The x indicates the number of the bytes.
   After the first 9 bytes, there are another x bytes.
   The _store_bytes_ instruction pops an address (8 bytes) and stores the literal bytes to that address.
-- `d7`: **malloc_1_aligned**:
+- `d7`: **malloc_byte_aligned**:
   Pops a size (8 bytes).
   Allocates memory of the alignment 1 and the given size.
   If that worked, pushes the address (8 bytes).
   If that didn't work, pushes 0 (8 bytes).
-- `d8`: **free_1_aligned**:
+- `d8`: **free_byte_aligned**:
   First pops a size (8 bytes), then an address (8 bytes).
   Frees the memory at that address, which has to have the given size and the alignment 1.
 - `e0`: **crash**:
@@ -150,3 +130,20 @@ The encoded uses little endian encoding for 64-bit integers; VMs are free to cho
   The target has to be an "indirect call token" previously created using _push_indirect_.
 - `f5`: **return**:
   Returns from a function call.
+
+## Limitations
+
+The byte code cannot store pointers to instructions or the stack.
+Even indirect calls (`call_indirect`) don't reference pointers to instructios directly, but only opaque "indirect call tokens" that you have to create using `push_indirect`.
+This gives Ground implementations the freedom to compile the byte code to machine code on startup.
+
+Programs may not depend on the endianness of numbers.
+
+## Communication with the Outside
+
+Ground programs can't directly trigger behavior in the host.
+
+Depending on the program, you are expected to initialize the stack with some arguments.
+After running, the stack contains the result.
+
+For example, a Ground program may expect a pointer to a string on the stack and return the number of words in that string.
