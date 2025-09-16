@@ -12,18 +12,20 @@
 #
 # Grass stands for Ground assembly (because I use it to write Ground byte code),
 # but really it's encoding agnostic. The compiler just goes through the file
-# and turns words into bytes. It's somewhat similar to Forth, but also not
+# and turns names into bytes. It's somewhat similar to Forth, but also not
 # really.
 #
-# - The words 00 to ff are predefined, each stands for a single byte.
-# - You can define new words using:
+# - The 255 names "00" to "ff" are predefined, each stands for a single byte.
+# - You can define new names using:
 #   - A colon (:) to start a definition.
-#   - The word to be defined.
-#   - The words that make up the definition (forward references allowed).
+#   - The name to be defined.
+#   - The names that make up the definition (forward references allowed, but
+#     please avoid cycles).
 #   - A semicolon (;) to end the definition.
 # - You can use @label in the top-level scope (not inside a definition) to
-#   define a label. Every reference ^label then gets replaced by the absolute
-#   offset of the corresponding label (64-bits, little endian encoded).
+#   define a label. Every reference ^label (allowed in definitions) then gets
+#   replaced by the absolute offset of the corresponding label (64-bits, little
+#   endian encoded).
 
 jump ^main
 
@@ -76,15 +78,15 @@ jump ^main
 # those by hand is tedious, so I did it only once here and re-use those below.
 
 : dec_0   00 00 00 00 00 00 00 00 ;
-: dec_1   00 00 00 00 00 00 00 01 ;
-: dec_2   00 00 00 00 00 00 00 02 ;
-: dec_3   00 00 00 00 00 00 00 03 ;
-: dec_4   00 00 00 00 00 00 00 04 ;
-: dec_8   00 00 00 00 00 00 00 08 ;
-: dec_16  00 00 00 00 00 00 00 10 ;
-: dec_24  00 00 00 00 00 00 00 18 ;
-: dec_32  00 00 00 00 00 00 00 20 ;
-: dec_40  00 00 00 00 00 00 00 28 ;
+: dec_1   01 00 00 00 00 00 00 00 ;
+: dec_2   02 00 00 00 00 00 00 00 ;
+: dec_3   03 00 00 00 00 00 00 00 ;
+: dec_4   04 00 00 00 00 00 00 00 ;
+: dec_8   08 00 00 00 00 00 00 00 ;
+: dec_16  10 00 00 00 00 00 00 00 ;
+: dec_24  18 00 00 00 00 00 00 00 ;
+: dec_32  20 00 00 00 00 00 00 00 ;
+: dec_40  28 00 00 00 00 00 00 00 ;
 : dec_-1  ff ff ff ff ff ff ff ff ;
 
 ## Character and String Constants
@@ -103,13 +105,43 @@ jump ^main
 
 ## Higher Level Instructions
 #
-# Some stack operations are quite common, such as pushing words from a bit
-# further back on the stack. Here, we define some operations that help
-# manipulate the stack more easily.
+# Writing a lot of low-level stuff is cumbersome. Take this piece of assembly:
+#
+# push_word dec_2
+# push_word dec_3
+# add
+#
+# In order to keep my sanity, I try to get to the feeling of stack-based /
+# concatenative programming languages such as Forth. In Forth, you can write
+# code like this:
+#
+# 2 3 +
+#
+# My plan to get a Forth-like feel in here and to keep my sanity:
+#
+# - I define number literals that push their value to the stack. To avoid
+#   confusion with the predefined byte literals, I use an underscore prefix.
+# - I use short names and symbols for operations, like "+" instead of "add".
+# - I define lots of little helper functions such as "dup", "swap", etc. that
+#   make stack manipulation bearable.
+# - I use 8-byte words as the unit of calculation for stack operations. Instead
+#   of "push_word_from_stack dec_16", I write "over2".
+# - I avoid postfix arguments whenever possible. Instead of "pop 08", I define
+#   "pop1". This allows me to visually parse names as a unit. The only situation
+#   where this is not possible is for operations that expect labels, like
+#   "jump".
+# - I use multiple operations on the same row, but I separate them with two
+#   spaces to make the distinction between arguments and operations clear.
+# - I define names for operations, even if those just do "call ^operation".
+# - I document the stack effect of defined operations in parentheses. For
+#   example, swap has the effect (a b -> b a).
+# - Sometimes I document the current state of the stack in comments.
 
-: _0          push_word dec_0 ; # (-> 0)
-: _1          push_word dec_1 ; # (-> 1)
-: _3          push_word dec_3 ; # (-> 3)
+: _0          push_word dec_0 ;# ( -> 0)
+: _1          push_word dec_1 ;# ( -> 1)
+: _3          push_word dec_3 ;# ( -> 3)
+: true        push_byte 01 ;# ( -> bool)
+: false       push_byte 00 ;# ( -> bool)
 : dup         push_word_from_stack dec_0  ;#           (a -> a a)
 : over        push_word_from_stack dec_8  ;#         (a b -> a b a)
 : over2       push_word_from_stack dec_16 ;#       (a b c -> a b c a)
@@ -121,25 +153,27 @@ jump ^main
 : keep2_pop1  pop_below_top dec_16 08 ;#           (a b c -> b c)
 : keep2_pop2  pop_below_top dec_16 10 ;#         (a b c d -> c d)
 : swap        over keep1_pop1 ;#                     (a b -> b a)
-: inc         _1  add ;# (c -> c+1)
-: compare     sub compare_zero ;# (a b -> ord)
-: negate      # (bool -> bool)
-              call ^negate ;
-              @negate jump_table 02 ^negate.true ^negate.false
-              @negate.true   false  return
-              @negate.false  true   return
-: ord_neq     # (ord -> bool)
-              byte_to_int  _3  over  shift_right  _1  and  lower_byte ;
-: if_not      # CAREFUL: Needs postfix targets: bool if ^then ^else
-              jump_table 02 ;
-: if_ord_eq   # CAREFUL: Needs postfix targets: ord if_zero ^then ^else
-              ord_neq  if_not ;
-: if_zero     # CAREFUL: Needs postfix targets: num if_zero ^then ^else
-              compare_zero  if_ord_eq ;
-: if_eq       # CAREFUL: Needs postfix targets: a if_eq ^then ^else
-              compare  if_ord_eq ;
+: +           add ;#         (int int -> int)
+: -           subtract ;#    (int int -> int)
+: *           multiply ;#    (int int -> int)
+: /           divide ;#      (int int -> int)
+: +1          _1 + ;#            (int -> int)
+: *2          _1 << ;#           (int -> int)
+: <<          shift_left ;#  (int int -> int)
+: >>          shift_right ;# (int int -> int)
+: compare     sub  compare_zero ;# (a b -> ord)
+: not         # (bool -> bool)
+              call ^not ;
+              @not jump_table 02 ^not.true ^not.false
+              @not.true   false  return
+              @not.false  true   return
+: !=          compare byte_to_int  _3  over  shift_right  _1  and  lower_byte ;
+: ==          != not ;
+: 0?          0 == ;# (int -> bool)
 : if          # CAREFUL: Needs postfix targets: bool if ^then ^else
-              negate  jump_table 02 ;
+              !  jump_table 02 ;
+: if_not      # CAREFUL: Needs postfix targets: bool if_not ^then ^else
+              jump_table 02 ;
 : safe_malloc  # (size -> ptr)
               call ^safe_malloc ;
               @safe_malloc       malloc_word_aligned
@@ -153,15 +187,15 @@ jump ^main
               # Just for symmetry with safe_malloc; freeing is always safe.
 : unreachable  call ^unreachable ;
               @unreachable
-               push_word _11  safe_malloc_byte_aligned  dup  store_bytes _11 "unreachable"
-               push_word _11 crash
+               push_word _11  safe_malloc_byte_aligned  dup
+               store_bytes _11 "unreachable"  push_word _11 crash
 : memcopy     # (from to amount ->)
               call ^memcopy ;
               @memcopy       push_word _0
               @memcopy.loop  over  over  if_num_eq ^@memcopy.done ^memcopy.copy
+              @memcopy.copy  over2  over  +  over4  over2  +
+                             load_byte  store_byte  +1  jump ^memcopy.loop
               @memcopy.done  pop4  return
-              @memcopy.copy  over2  over  add  over4  over2  add
-                             load_byte  store_byte  inc  jump ^memcopy.loop
 
 ## Tuples
 #
@@ -175,26 +209,37 @@ jump ^main
 #   v
 # ( a | b | c )
 
-: make_a      _8   safe_malloc ;#         ( -> tuple)
-: make_ab     _16  safe_malloc ;#         ( -> tuple)
-: make_abc    _24  safe_malloc ;#         ( -> tuple)
-: make_abcd   _32  safe_malloc ;#         ( -> tuple)
-: make_abcde  _40  safe_malloc ;#         ( -> tuple)
+: make_a      TODO _8   safe_malloc ;#         (a -> tuple)
+: make_ab     TODO _16  safe_malloc ;#         (a b -> tuple)
+: make_abc    TODO _24  safe_malloc ;#         (a b c -> tuple)
+: make_abcd   TODO _32  safe_malloc ;#         (a b c d -> tuple)
+: make_abcde  TODO _40  safe_malloc ;#         (a b c d e -> tuple)
 : free_a      _8   safe_free ;#      (tuple -> )
 : free_ab     _16  safe_free ;#      (tuple -> )
 : free_abc    _24  safe_free ;#      (tuple -> )
 : free_abcd   _32  safe_free ;#      (tuple -> )
 : free_abcde  _40  safe_free ;#      (tuple -> )
 : a           load_word ;#           (tuple -> field)
-: b           _8   add  load_word ;# (tuple -> field)
-: c           _16  add  load_word ;# (tuple -> field)
-: d           _24  add  load_word ;# (tuple -> field)
-: e           _32  add  load_word ;# (tuple -> field)
-: a=          store_word ;#                             (tuple field -> )
-: b=          over  _8   add  over  store_word  pop2 ;# (tuple field -> )
-: c=          over  _16  add  over  store_word  pop2 ;# (tuple field -> )
-: d=          over  _24  add  over  store_word  pop2 ;# (tuple field -> )
-: e=          over  _32  add  over  store_word  pop2 ;# (tuple field -> )
+: b           _8   +  load_word ;# (tuple -> field)
+: c           _16  +  load_word ;# (tuple -> field)
+: d           _24  +  load_word ;# (tuple -> field)
+: e           _32  +  load_word ;# (tuple -> field)
+: a=          store_word ;#                           (tuple field -> )
+: b=          over  _8   +  over  store_word  pop2 ;# (tuple field -> )
+: c=          over  _16  +  over  store_word  pop2 ;# (tuple field -> )
+: d=          over  _24  +  over  store_word  pop2 ;# (tuple field -> )
+: e=          over  _32  +  over  store_word  pop2 ;# (tuple field -> )
+
+# Some of my data structures have a ptr (pointer), len (length), and
+# and cap (capacity). I use the same memory layout for those: (ptr | len | cap).
+# This allows me to reuse these common getters and setters.
+
+: ptr a ;
+: len b ;
+: cap c ;
+: ptr a= ;
+: len b= ;
+: cap c= ;
 
 ## Str
 #
@@ -206,56 +251,77 @@ jump ^main
 #    v
 # ( bytes )
 
-: make_str  # (ptr len -> str)
-            make_ab  dup  over3  a=  dup  over2  b=  keep1_pop2 ;
-: free_str  keep_load_b  free_slots_ab  safe_free ;# (str ->)
-: str.ptr   a ;# (str -> ptr)
-: str.len   b ;# (str -> len)
-: str_eq # (str str -> bool)
-            call ^str_eq ;
-            @str_eq             over  str.len  over  str.len
-                                if_eq ^str_eq.len_same ^str.len_diff
-            @str_eq.len_diff    pop2  false return
-            @str_eq.len_same    # a b
-                                over  str.ptr  over  str.ptr  over2  str.len
-                                keep3_pop2  _0
-            @str_eq.loop        # a_ptr b_ptr len cursor
-                                over  over  if_eq ^str_eq.done ^str_eq.cmp_bytes
-            @str_eq.cmp_bytes   over3  over   add  load_byte  byte_to_int
-                                over3  over2  add  load_byte  byte_to_int
-                                if_eq ^str_eq.bytes_same ^str_eq.bytes_diff
-            @str_eq.bytes_same  inc  jump ^str_eq.loop
-            @str_eq.bytes_diff  pop4  false  return
-            @str_eq.done        pop4  true   return
-: if_str_eq # CAREFUL: Needs postfix targets: a b if_str_eq ^then ^else
-            str_eq ;
+: make_str make_ab ;# (ptr len -> str)
+: free_str free_ab ;# (str ->)  Note that this does not free the buffer.
+: str==  # (str str -> bool)
+         call ^se ;
+         @se             over  len  over  len  ==  if ^se.len_same ^se.len_diff
+         @se.len_diff    pop2  false  return
+         @se.len_same    over  ptr  over  ptr  over2  len  keep3_pop2  _0
+         @se.loop        # a_ptr b_ptr len cursor
+                         over  over  ==  if ^se.done ^se.cmp_bytes
+         @se.cmp_bytes   over3  over   +  load_byte  byte_to_int
+                         over3  over2  +  load_byte  byte_to_int
+                         ==  if ^se.bytes_same ^se.bytes_diff
+         @se.bytes_same  +1  jump ^se.loop
+         @se.bytes_diff  pop4  false  return
+         @se.done        pop4  true   return
+: starts_with  # (str str -> bool)
+               # We backup the length of the first str on the stack, temporarily
+               # give it the length of the second str, and then do a str==.
+               call ^sw ;
+               @sw                over  len  over  len  <
+                                  if ^sw.prefix_longer ^sw.doit
+               @sw.prefix_longer  pop2  false  return
+               @sw.do_it          over  len  over2  over2  len  len=
+                                  over2  over2  # a b a_len a b
+                                  str==  byte_to_int  # a b a_len res
+                                  over3  over2  len=  keep1_pop3
+                                  int_to_byte  return
+: starts_with_byte  # (str byte -> bool)
+                    call ^swb ;
+                    @swb            byte_to_int  over  len  0?
+                                    if ^swb.empty ^swb.not_empty
+                    @swb.empty      pop2  false  return
+                    @swb.not_empty  over  ptr  load_byte  byte_to_int  ==
+                                    pop_below_top 08 dec_1
+: first ;
+: trim_first  dup  ptr  +1  ptr= ;# (str -> )
 
-@str.starts_with  # str prefix
+## List
+#
+# An automatically growing buffer of words.
+#
+# ( list )
+#    │
+#    v
+# ( ptr | len | cap )
+#    │
+#    v
+# ( bytes )
 
- TODO
-
-@str.starts_with_byte  # str byte
- TODO
-
-# Before calling, make sure that len > 0.
-@keep_starts_with  # ptr len byte
- byte_to_int       # ptr len byte
- over2             # ptr len byte ptr
- load_byte         # ptr len byte actual_byte
- compare           # ptr len same?
- jump_table 03 ^keep_starts_with.yes ^keep_starts_with.no ^keep_starts_with.no
-@keep_starts_with.yes  # ptr len
- push_byte 01          # ptr len 01
- return
-@keep_starts_with.no  # ptr len
- push_byte 00         # ptr len 00
- return
-
-
+: make_list  _16  safe_malloc  _2  _0  make_abc ;# ( -> list)
+: free_list  dup  ptr  over  cap  safe_free  free_abc ;# (list -> )
+: push       # (list word -> )
+             call ^push ;
+             @push       over  len  over2  cap  ==  if ^push.grow ^push.push
+             @push.grow  over  ptr  over2  cap  # list word ptr cap
+                         dup  *2            # list word ptr cap new_cap
+                         dup  safe_malloc   # list word ptr cap new_cap new_ptr
+                         over3  over  over4  memcopy
+                         over5  # list word ptr cap new_cap new_ptr list
+                         dup  over2  ptr=
+                         dup  over3  cap=
+                         pop3  safe_free           # list word
+             @push.push  over  ptr  over2  len  +  # list word ptr+len
+                         over  store_word          # list word
+                         pop1  dup  len  +1  len=  return
+: get        # (list index -> item)
+             _8  *  over  ptr  +  load_word  keep1_pop1 ;
 
 ## Out
 #
-# An automatically growing output buffer for bytes.
+# An automatically growing buffer for bytes.
 #
 # ( out )
 #    │
@@ -265,45 +331,35 @@ jump ^main
 #    v
 # ( bytes )
 
-: make_out  # (-> out)
-            _16  safe_malloc  _16  _0
-            make_abc  keep_c=  keep_b=  keep_a= ;
-: free_out  # (out ->)
-            keep_load_a  keep_load_b  free_slots_abc  safe_free ;
-: out.ptr   a ;# (out -> ptr)
-: out.cap   b ;# (out -> cap)
-: out.len   c ;# (out -> len)
-: out.ptr=  a= ;# (out ptr -> )
-: out.cap=  b= ;# (out cap -> )
-: out.len=  c= ;# (out len -> )
-: out.len++ dup  out.len  inc  out.len= ;# (out -> )
+: make_out  _16  safe_malloc  _16  _0  make_abc ;# (-> out)
+: free_out  dup  ptr  over  cap  safe_free  free_abc ;# (out ->)
 : emit      # (out byte -> )
             call ^emit ;
-            @emit       byte_to_int  over  out.cap  over2  out.len
-                        if_eq ^emit.grow ^emit.push
-            @emit.grow  over  out.ptr  over2  out.cap  # out byte ptr cap
-                        dup  _1  shift_left  # out byte ptr cap new_cap
-                        dup  safe_malloc     # out byte ptr cap new_cap new_ptr
+            @emit       byte_to_int  over  cap  over2  len  ==
+                        if ^emit.grow ^emit.push
+            @emit.grow  over  ptr  over2  cap  # out byte ptr cap
+                        dup  *2               # out byte ptr cap new_cap
+                        dup  safe_malloc      # out byte ptr cap new_cap new_ptr
                         over3  over  over4  memcopy
                         over5  # out byte ptr cap new_cap new_ptr out
-                        dup  over2  out.ptr=
-                        dup  over3  out.cap=
-                        pop3  safe_free  # out byte  (old buffer freed)
-            @emit.push  over  out.ptr  over2  out.len  add  # out byte ptr+len
+                        dup  over2  ptr=
+                        dup  over3  cap=
+                        pop3  safe_free               # out byte
+            @emit.push  over  ptr  over2  len  +      # out byte ptr+len
                         over  lower_byte  store_byte  # out byte
-                        pop1  out.len++  return
+                        pop1  dup  len  +1  len=  return
 : append    # (out str -> )
             call ^append ;
-            @append           dup  str.ptr  over  str.len  keep2_pop1  _0
+            @append           dup  ptr  over  len  keep2_pop1  _0
             @append.loop      # out ptr len cursor
-                              over  over  if_eq ^append.done ^append.not_done
+                              over  over  ==  if ^append.done ^append.not_done
             @append.done      pop4 return
             @append.not_done  over3  over3  over2  # out ptr len cursor out ptr cursor
-                              add  load_byte  emit  # out ptr len cursor
-                              inc  jump ^append.loop
+                              +  load_byte  emit   # out ptr len cursor
+                              +1  jump ^append.loop
 : shrink    # (out -> str)
-            dup  out.ptr  swap dup  out.cap  swap dup  out.len  # ptr cap len out
-            swap  free_abc               # ptr cap len
+            dup  ptr  swap  dup  cap  swap  dup  len  swap  # ptr cap len out
+            free_abc                     # ptr cap len
             dup  safe_malloc             # ptr cap len new_ptr
             over3  over  over3  memcopy  # ptr cap len new_ptr
             over3  over3  safe_free      # ptr cap len new_ptr
@@ -311,287 +367,122 @@ jump ^main
 
 ## Dictionary
 #
-# A dictionary from strings to some values. Uses a linear search for lookup.
-# The capacity and length are stored in number of entries.
+# A dictionary from strings to words. Uses a linear search for lookup.
+# The capacity and length are stored as the number of entries.
 #
 # ( dict )
 #   │
 #   v
-# ( ptr | cap | len )
-#   │
-#   v
-# ( key | val | key | val | ... )
+# ( list ) where items are key, value, key, value, ...
 
-: make_dict  # ( -> dict)
-             make_abc
-             dup  _16  safe_malloc  dict.ptr=
-             dup  _1  dict.cap=
-             dup  _0  dict.len=
-             _16  safe_malloc  _16  _0
-  make_abc  keep_c=  keep_b=  keep_a= ;
-: dict.ptr   a ;# (dict -> ptr)
-: dict.cap   b ;# (dict -> cap)
-: dict.len   c ;# (dict -> len)
-: dict.ptr=  a= ;# (dict ptr -> )
-: dict.cap=  b= ;# (dict cap -> )
-: dict.len=  c= ;# (dict len -> )
-: lookup     # (dict key -> value)
+: make_dict  _16  safe_malloc  _1  _0  make_abc ;# ( -> dict)
+: free_dict  dup  ptr  over  cap  _16  *  safe_free  free_abc ;# (dict -> )
+: put       # (dict str word -> )
+            call ^put ; @put  over2  over2  push  keep1_pop1  push  return
+: lookup    #      (dict str -> ...)
+            # if found: (... -> value true)
+            # if not:   (... -> false)
+            call ^lookup ;
+            @lookup       _0
+            @lookup.loop  # dict str index
+                          dup  *2  over3  len  ==  if ^lookup.nope ^lookup.check
+            @lookup.check # dict str index
+                          over2  over  *2  get  over2  str==
+                          if ^lookup.found ^lookup.next
+            @lookup.next  # dict str index
+                          +1  jump ^lookup.loop
+            @lookup.found # dict str index
+                          keep1_pop1  *2  +1  get  true  return
+            @lookup.nope  # dict str index
+                          pop3  false  return
 
-
-@lookup_num  # dict key_ptr key_len -> value_ptr value_len
-
-@lookup_string  # dict key_ptr key_len -> value_ptr value_len
-
-@put_num  # dict key_ptr key_len value ->
-
-@put_string  # dict key_ptr key_len value ->
-
-@free_dict_of_nums
-
-@free_dict_of_strings
-
-
-
-
-
-
-@main                  # ptr length
- call ^make_parser     # parser
- push_word _0          # parser parent
- over                  # parser parent parser
- pop_below_top _16 08  # parent parser
- call ^make_output     # parent parser output
- call ^make_dict       # parent parser output words
- TODO: init dict with hex digits
- call ^make_dict       # parent parser output words labels
- jump ^compile
-
-@compile               # parent parser output words labels
- over3                 # parent parser output words labels parser
- call ^next            # parent parser output words labels ptr len
- dup                   # parent parser output words labels ptr len len
- compare_zero          # parent parser output words labels ptr len at_end?
- jump_table 03 ^compile.done ^compile.not_done ^compile.not_done
-@compile.not_done  # parent parser output words labels ptr len
- dup               # parent parser output words labels ptr len len
- push_word _1      # parent parser output words labels ptr len len 1
- compare           # parent parser output words labels ptr len is_len_1?
- jump_table 03 ^compile.len_is_1 ^compile.len_not_1 ^unreachable
-@compile.len_is_1        # parent parser output words labels ptr len
- push_byte colon         # parent parser output words labels ptr len colon
- call ^keep_starts_with  # parent parser output words labels ptr len colon?
- jump_table 02 ^compile.not_colon ^compile.is_colon
-@compile.is_colon  # parent parser output words labels ptr len
- pop 10            # parent parser output words labels
- jump ^word_def
-@compile.not_colon       # parent parser output words labels ptr len
- push_byte bang          # parent parser output words labels ptr len bang
- call ^keep_starts_with  # parent parser output words labels ptr len bang?
- jump_table 02 ^word_ref ^compiler.is_bang
-@compile.is_bang  # parent parser output words labels ptr len
- pop 10           # parent parser output words labels
- jump ^import
-@compile.len_not_1       # parent parser output words labels ptr len
- push_byte at            # parent parser output words labels ptr len at
- call ^keep_starts_with  # parent parser output words labels ptr len at?
- jump_table 02 ^compile.not_label_def ^label_def
-@compile.not_label_def   # parent parser output words labels ptr len
- push_byte tick          # parent parser output words labels ptr len tick
- call ^keep_starts_with  # parent parser output words labels ptr len tick?
- jump_table 02 ^word_ref ^label_ref
-@compile.done  # parent parser output words labels ptr len
- pop 10        # parent parser output words labels
- over4         # parent parser output words labels parent
- compare_zero  # parent parser output words labels has_parent?
- jump_table 03 ^compile.totally_done ^compile.back_to_parent ^compile.back_to_parent
-@compile.back_to_parent  # parent parser output words labels
- pop 20                  # parent
- keep_load_a       # context parent
- keep_load_b       # context parser parent
- keep_load_c       # context parser output parent
- keep_load_d       # context parser output words parent
- load_e            # context parser output words labels
- jump ^compile
-@compile.totally_done        # parent parser output words labels
- call ^free_dict_of_nums     # parent parser output words
- call ^free_dict_of_strings  # parent parser output
- over                        # parent parser output parser
- call ^free_parser           # parent parser output
- pop_below_top _8 10         # output
- call ^shrink                # ptr len
-
-# Imports a file. Pack up everything into a context closure that the environment
-# will pass on to our continuation.
+## Tokenization
 #
-# ┌─────────┐
-# │ context │
-# └─────────┘
-#     │
-#     v
-# ┌────────┬────────┬────────┬────────┬────────┐
-# │ parent | parser | output | words  │ labels |
-# └────────┴────────┴────────┴────────┴────────┘
-@import                      # parent parser output words labels
- over3                       # parent parser output words labels parser
- call ^next                  # parent parser output words labels ptr len
- over6                       # parent parser output words labels ptr len parent
- over6                       # parent parser output words labels ptr len parent parser
- over6                       # parent parser output words labels ptr len parent parser output
- over6                       # parent parser output words labels ptr len parent parser output words
- over6                       # parent parser output words labels ptr len parent parser output words labels
- pop_below_top _56 28        # ptr len parent parser output words labels
- call ^make_slots_a_b_c_d_e  # ptr len parent parser output words labels context
- keep_store_e          # ptr len parent parser output words context
- keep_store_d          # ptr len parent parser output context
- keep_store_c          # ptr len parent parser context
- keep_store_b          # ptr len parent context
- keep_store_a          # ptr len context
- push_indirect ^import.cont  # ptr len context cont
- push_byte 00                # ptr len context cont 0
- return
-@import.cont        # context ptr len
- call ^make_parser  # context parser
- over               # context parser context
- keep_load_c  # context parser output context
- keep_load_d  # context parser output words context
- load_e       # context parser output words labels
- jump ^compile
+# The first step to compiling Grass is to convert the giant string into a list
+# of names. At this point, ":" and ";" as well as labels and references are also
+# considered names. At the end of the list, we add an empty name that marks the
+# end of the file.
 
-# Compiles a definition. The colon and name have already been consumed, we only
-# need to parse the actual content up to the semicolon. Note that definitions
-# can't contain other definitions, imports, label definitions, or label
-# references.
-@word_def              # parser output words labels
- over                  # parser output words labels words
- over4                 # parser output words labels words parser
- call ^next            # parser output words labels words ptr len
- over6                 # parser output words labels words ptr len parser
- call ^make_output     # parser output words labels words ptr len parser word_output
- over4                 # parser output words labels words ptr len parser word_output words
- call ^compile_def     # parser output words labels words ptr len def_ptr def_len
- call ^make_slots_a_b  # parser output words labels words ptr len def_ptr def_len entry
- keep_store_b    # parser output words labels words ptr len def_ptr entry
- keep_store_a    # parser output words labels words ptr len entry
- call ^put             # parser output words labels
- jump ^compile
+: tok # (str -> tokens)
+      call ^tok ;
+      @tok                  make_list
+      @tok.loop             # str list
+                            over  b  if_zero ^@tok.done ^tok.skip_whitespace
+      @tok.skip_whitespace  # str list
+                            over  first_char  byte_to_int
+                            push_byte 'space  byte_to_int
+                            ==  if ^tok.advance ^tok.name
+                            TODO skip newline
+                            TODO skip comments
+      @tok.is_whitespace    # str list
+                            over  without_first  over  keep2_pop1
+                            jump ^tok.loop
+      @tok.name             # str list
+                            over  a
+      @tok.name.loop        # str list start
+                            over2  first_char  byte_to_int  dup
+                            push_byte 'space  byte_to_int
+                            ==  if ^tok.name.done ^tok.name.more
+      @tok.name.more        # str list start char
+                            pop1  over2  without_first  over2  over2
+                            jump ^tok.name.loop
+      @tok.name.done        # str list start char
+                            pop1  over2  a  over  subtract  make_str
+                            over  over  push  pop1
+                            jump ^tok.loop
+      @tok.done             # str list
+                            keep1_pop1  return
 
-@compile_def   # parser output dict
- over2         # parser output dict parser
- call ^next    # parser output dict word_ptr word_len
- dup           # parser output dict word_ptr word_len word_len
- push_word _1  # parser output dict word_ptr word_len word_len 1
- compare       # parser output dict word_ptr word_len is_len_1?
- jump_table 03 ^compile_def.len_is_1 ^compile_def.not_semicolon ^unreachable
-@compile_def.len_is_1  # parser output dict word_ptr word_len
- over                  # parser output dict word_ptr word_len word_ptr
- load_byte             # parser output dict word_ptr word_len byte
- byte_to_int           # parser output dict word_ptr word_len byte
- push_word TODO        # parser output dict word_ptr word_len byte ;
- compare               # parser output dict word_ptr word_len is_semicolon?
- jump_table 03 ^compile_def.is_semicolon ^compile_def.not_semicolon ^compile_def.not_semicolon
-@compile_def.not_semicolon  # parser output dict word_ptr word_len
- over3                      # parser output dict word_ptr word_len output
- over3                      # parser output dict word_ptr word_len output dict
- over3                      # parser output dict word_ptr word_len output dict word_ptr
- over3                      # parser output dict word_ptr word_len output dict word_ptr word_len
- call ^lookup_string        # parser output dict word_ptr word_len output def_ptr def_len
- call ^append               # parser output dict word_ptr word_len
- pop 10                     # parser output dict
- jump ^compile_def
-@compile_def.is_semicolon  # parser output dict word_ptr word_len
- pop 18                    # parser output
- pop_below_top _8 08       # output
- call ^shrink              # ptr len
- return
+## Inspecting Tokens
 
-@word_ref      # parser output words labels ptr len
- over4         # parser output words labels ptr len output
- over4         # parser output words labels ptr len output words
- over3         # parser output words labels ptr len output words ptr
- over3         # parser output words labels ptr len output words ptr len
- call ^lookup  #
+: eof?        len  0? ;# (str -> bool)
+: semicolon?  # (str -> bool)
+              call ^is_semicolon ;
+              @is_semicolon        dup  len  _1  ==
+                                   if ^is_semicolon.len_1 ^is_semicolon.nope
+              @is_semicolon.len_1  ptr  load_byte  byte_to_int
+                                   push_byte 'semicolon  byte_to_int == return
+              @is_semicolon.nope   pop1  false  return
+: colon?      # (str -> bool)
+              call ^is_colon ;
+              @is_colon        dup  len  _1  ==
+                               if ^is_colon.len_1 ^is_colon.nope
+              @is_colon.len_1  ptr  load_byte  byte_to_int
+                               push_byte 'colon  byte_to_int == return
+              @is_colon.nope   pop1  false  return
+: label?      # (str -> bool)
+              call ^is_label ;
+              @is_label  ptr  load_byte  byte_to_int
+                         push_byte 'at  byte_to_int  ==  return
+: ref?        # (str -> bool)
+              call ^is_ref ;
+              @is_ref  ptr  load_byte  byte_to_int  push_byte 'tick  byte_to_int
+                       ==  return
 
-
-@label_def # parser output words labels ptr len
- TODO
-
-@label_ref # parser output words labels ptr len
- TODO
-
-
-
-
-
-
-
-@hex_to_num   # char
-
-
-@unreachable
-todo
-
-
-# Parser
-# The parser offers a way to step through bytes (the textual input). It
-# maintains a cursor that starts at the beginning. You can ^peek the current
-# character, ^advance the cursor by one character, and do higher-level
-# operations such as consuming all leading whitespace or consuming a word.
+## Gathering Definitions
 #
-# ┌────────┐
-# │ parser │
-# └────────┘
-#     │
-#     v
-# ┌────────┬────────┬────────┐
-# │ ptr    | length | cursor │
-# └────────┴────────┴────────┘
-#     │
-#     v
-# ┌───────────────────────────────────────────┐
-# │ bytes                                     │
-# └───────────────────────────────────────────┘
+# In order to allow forward-definitions, we first collect all definitions into a
+# dictionary. Only then, we look at the stuff between the definitions, that will
+# be emitted into the output.
 
-@make_parser              # ptr length
- push_word _0             # ptr length 0
- call ^alloc_slots_a_b_c  # ptr length 0 parser
- keep_store_c       # ptr length parser
- keep_store_b       # ptr parser
- keep_store_a       # parser
- return
+: gather_defs  # (tokens -> defs)
+               call ^gather ;
+               @gather         clone_str  make_dict  _0
+               @gather.loop    # tokens dict cursor
+                               over2  over  get  colon?
+                               if ^gather.def ^gather.no_def
+               @gather.no_def  # tokens dict cursor
+                               +1  jump ^gather.loop
+               @gather.def     +1  over2  over  get  _0
+               @gather.def.loop  # tokens dict cursor name def_len
+                                 over4  over3  over2  add  get
+                                 dup  semicolon?
+                                 if ^gather.def.done ^gather.def.not_done
+               @gather.def.not_done  colon?  if ^error.def_in_def ^gather.def.loop
+               @gather.def.done
+                               
 
-@free_parser             # parser
- dup                     # parser parser
- keep_load_a       # parser ptr parser
- load_b            # parser ptr length
- free_byte_aligned       # parser
- free_slots_a_b_c  #
- return
 
-# Turns a parser into its current character or zero if it's at the end.
-@peek                     # parser
- dup                      # parser parser
- keep_load_b        # parser length parser
- load_c             # parser length cursor
- compare                  # parser at_end?
- jump_table 03 ^peek.return_0 ^peek.char ^unreachable
-@peek.return_0   # parser
- pop 08          #
- push_byte 00    # 0
- return
-@peek.char      # parser
- keep_load_a  # ptr parser
- load_c       # ptr cursor
- add                # ptr+cursor
- load_byte          # char
- return
-
-# Advances the parser's cursor by one character.
-@advance        # parser
- dup            # parser parser
- load_c   # parser cursor
- push_word _1   # parser cursor 1
- add            # parser cursor+1
- over           # parser cursor+1 parser
- store_c  # parser
- pop 08         #
- return
+@main  # ptr len
+ make_str  tok  dup  gather_defs  # tokens defs
+ compile
