@@ -100,8 +100,8 @@ jump ^main
 : 'm TODO ;
 : 'n TODO ;
 : 'o TODO ;
-: "oom" 'o 'o 'm ;# length 3
-: "unreachable" 'u 'n 'r 'e 'a 'c 'h 'a 'b 'l 'e ;# length 11
+: store_"oom"  store_bytes dec_3 'o 'o 'm ;
+: store_"unreachable"  store_bytes dec_11 'u 'n 'r 'e 'a 'c 'h 'a 'b 'l 'e ;
 
 ## Higher Level Instructions
 #
@@ -124,12 +124,13 @@ jump ^main
 # - I use short names and symbols for operations, like "+" instead of "add".
 # - I define lots of little helper functions such as "dup", "swap", etc. that
 #   make stack manipulation bearable.
-# - I use 8-byte words as the unit of calculation for stack operations. Instead
-#   of "push_word_from_stack dec_16", I write "over2".
+# - All items on the stack are one word (8 bytes) in size, including bools,
+#   chars, and strings. Operations are phrased in word-amounts: Instead of
+#   "push_word_from_stack dec_16", I write "over2".
 # - I avoid postfix arguments whenever possible. Instead of "pop 08", I define
 #   "pop1". This allows me to visually parse names as a unit. The only situation
 #   where this is not possible is for operations that expect labels, like
-#   "jump".
+#   "if".
 # - I use multiple operations on the same row, but I separate them with two
 #   spaces to make the distinction between arguments and operations clear.
 # - I define names for operations, even if those just do "call ^operation".
@@ -140,8 +141,8 @@ jump ^main
 : _0          push_word dec_0 ;# ( -> 0)
 : _1          push_word dec_1 ;# ( -> 1)
 : _3          push_word dec_3 ;# ( -> 3)
-: true        push_byte 01 ;# ( -> bool)
-: false       push_byte 00 ;# ( -> bool)
+: true        push_word dec_1 ;# ( -> bool)
+: false       push_word dec_0 ;# ( -> bool)
 : dup         push_word_from_stack dec_0  ;#           (a -> a a)
 : over        push_word_from_stack dec_8  ;#         (a b -> a b a)
 : over2       push_word_from_stack dec_16 ;#       (a b c -> a b c a)
@@ -157,27 +158,27 @@ jump ^main
 : -           subtract ;#    (int int -> int)
 : *           multiply ;#    (int int -> int)
 : /           divide ;#      (int int -> int)
-: +1          _1 + ;#            (int -> int)
-: *2          _1 << ;#           (int -> int)
+: +1          _1  + ;#           (int -> int)
+: *2          _1  << ;#          (int -> int)
 : <<          shift_left ;#  (int int -> int)
 : >>          shift_right ;# (int int -> int)
-: compare     sub  compare_zero ;# (a b -> ord)
-: not         # (bool -> bool)
-              call ^not ;
-              @not jump_table 02 ^not.true ^not.false
-              @not.true   false  return
-              @not.false  true   return
-: !=          compare byte_to_int  _3  over  shift_right  _1  and  lower_byte ;
-: ==          != not ;
+: compare     sub  compare_zero  byte_to_int ;# (a b -> ord)
+: not         _1  swap  - ;# (bool -> bool)
+: !=          compare  _3  over  shift_right  _1  and  lower_byte ;
+: ==          !=  not ;
 : 0?          0 == ;# (int -> bool)
+: space?      push_byte 'space      byte_to_int  == ;# (word -> bool)
+: newline?    push_byte 'newline    byte_to_int  == ;# (word -> bool)
+: colon?      push_byte 'colon      byte_to_int  == ;# (word -> bool)
+: semicolon?  push_byte 'semicolon  byte_to_int  == ;# (word -> bool)
 : if          # CAREFUL: Needs postfix targets: bool if ^then ^else
-              !  jump_table 02 ;
+              not  if_not ;
 : if_not      # CAREFUL: Needs postfix targets: bool if_not ^then ^else
               jump_table 02 ;
 : safe_malloc  # (size -> ptr)
               call ^safe_malloc ;
               @safe_malloc       malloc_word_aligned
-                                 dup  if_zero ^safe_malloc.oom ^safe_malloc.yeah
+                                 dup  0?  if ^safe_malloc.oom ^safe_malloc.yeah
               @safe_malloc.yeah  return
               @safe_malloc.oom   _3  malloc_byte_aligned  # allocate for "oom"
                                  dup  if_zero ^safe_malloc.shit ^safe_malloc.meh
@@ -185,14 +186,16 @@ jump ^main
               @safe_malloc.meh   dup  store_bytes _3 "oom"  _3  crash
 : safe_free   free_word_aligned ;# (ptr ->)
               # Just for symmetry with safe_malloc; freeing is always safe.
+: load_byte_as_word   load_byte  byte_to_int ;# (ptr -> word)
+: store_word_as_byte  lower_byte  store_byte ;# (ptr byte -> )
 : unreachable  call ^unreachable ;
               @unreachable
-               push_word _11  safe_malloc_byte_aligned  dup
-               store_bytes _11 "unreachable"  push_word _11 crash
+               _11  safe_malloc_byte_aligned  dup
+               store_"unreachable"  _11  crash
 : memcopy     # (from to amount ->)
               call ^memcopy ;
-              @memcopy       push_word _0
-              @memcopy.loop  over  over  if_num_eq ^@memcopy.done ^memcopy.copy
+              @memcopy       _0
+              @memcopy.loop  over  over  ==  if ^@memcopy.done ^memcopy.copy
               @memcopy.copy  over2  over  +  over4  over2  +
                              load_byte  store_byte  +1  jump ^memcopy.loop
               @memcopy.done  pop4  return
@@ -234,12 +237,13 @@ jump ^main
 # and cap (capacity). I use the same memory layout for those: (ptr | len | cap).
 # This allows me to reuse these common getters and setters.
 
-: ptr a ;
-: len b ;
-: cap c ;
-: ptr a= ;
-: len b= ;
-: cap c= ;
+: ptr     a ;
+: len     b ;
+: cap     c ;
+: ptr     a= ;
+: len     b= ;
+: cap     c= ;
+: empty?  len  0? ;
 
 ## Str
 #
@@ -260,8 +264,8 @@ jump ^main
          @se.len_same    over  ptr  over  ptr  over2  len  keep3_pop2  _0
          @se.loop        # a_ptr b_ptr len cursor
                          over  over  ==  if ^se.done ^se.cmp_bytes
-         @se.cmp_bytes   over3  over   +  load_byte  byte_to_int
-                         over3  over2  +  load_byte  byte_to_int
+         @se.cmp_bytes   over3  over   +  load_byte_as_word
+                         over3  over2  +  load_byte_as_word
                          ==  if ^se.bytes_same ^se.bytes_diff
          @se.bytes_same  +1  jump ^se.loop
          @se.bytes_diff  pop4  false  return
@@ -277,15 +281,15 @@ jump ^main
                                   over2  over2  # a b a_len a b
                                   str==  byte_to_int  # a b a_len res
                                   over3  over2  len=  keep1_pop3
-                                  int_to_byte  return
+                                  lower_byte  return
 : starts_with_byte  # (str byte -> bool)
                     call ^swb ;
                     @swb            byte_to_int  over  len  0?
                                     if ^swb.empty ^swb.not_empty
                     @swb.empty      pop2  false  return
-                    @swb.not_empty  over  ptr  load_byte  byte_to_int  ==
+                    @swb.not_empty  over  ptr  load_byte_as_word  ==
                                     pop_below_top 08 dec_1
-: first ;
+: first_char ;
 : trim_first  dup  ptr  +1  ptr= ;# (str -> )
 
 ## List
@@ -405,84 +409,83 @@ jump ^main
 
 : tok # (str -> tokens)
       call ^tok ;
-      @tok                  make_list
-      @tok.loop             # str list
-                            over  b  if_zero ^@tok.done ^tok.skip_whitespace
-      @tok.skip_whitespace  # str list
-                            over  first_char  byte_to_int
-                            push_byte 'space  byte_to_int
-                            ==  if ^tok.advance ^tok.name
-                            TODO skip newline
-                            TODO skip comments
-      @tok.is_whitespace    # str list
-                            over  without_first  over  keep2_pop1
-                            jump ^tok.loop
-      @tok.name             # str list
-                            over  a
-      @tok.name.loop        # str list start
-                            over2  first_char  byte_to_int  dup
-                            push_byte 'space  byte_to_int
-                            ==  if ^tok.name.done ^tok.name.more
-      @tok.name.more        # str list start char
-                            pop1  over2  without_first  over2  over2
-                            jump ^tok.name.loop
-      @tok.name.done        # str list start char
-                            pop1  over2  a  over  subtract  make_str
-                            over  over  push  pop1
-                            jump ^tok.loop
-      @tok.done             # str list
-                            keep1_pop1  return
+      @tok                  clone_str  make_list
+      @tok.loop             # str defs
+                            over  empty?  if ^tok.done ^tok.skip_whitespace
+      @tok.skip_whitespace  over  first_char  byte_to_int
+                            dup  octothorpe?  if ^tok.comment  ^tok.not_comment
+      @tok.comment          over  trim_first  over  first_char  byte_to_int
+                            newline?  if ^tok.loop ^tok.comment
+      @tok.not_comment      dup  space?  swap  newline?  or
+                            if ^tok.whitespace ^tok.not_whitespace
+      @tok.whitespace       over  trim_first jump ^tok.loop
+      @tok.name             # str defs
+                            over  ptr
+      @tok.name.loop        # str defs start
+                            over2  empty?  if ^tok.name.done ^tok.name.check
+      @tok.name.check       over2  first_char  byte_to_int
+                            dup  space?  swap  dup  newline?  swap  octothorpe?
+                            or  or  if ^tok.name.done ^tok.name.more
+      @tok.name.more        # str defs start
+                            over2  trim_first  jump ^tok.name.loop
+      @tok.name.done        # str defs start
+                            over2  ptr  over  subtract  make_str # str defs name
+                            over  over  push  pop1  jump ^tok.loop
+      @tok.done             # str defs
+                            over  free_str  keep1_pop1  return
 
 ## Inspecting Tokens
 
-: eof?        len  0? ;# (str -> bool)
-: semicolon?  # (str -> bool)
-              call ^is_semicolon ;
-              @is_semicolon        dup  len  _1  ==
-                                   if ^is_semicolon.len_1 ^is_semicolon.nope
-              @is_semicolon.len_1  ptr  load_byte  byte_to_int
-                                   push_byte 'semicolon  byte_to_int == return
-              @is_semicolon.nope   pop1  false  return
-: colon?      # (str -> bool)
-              call ^is_colon ;
-              @is_colon        dup  len  _1  ==
-                               if ^is_colon.len_1 ^is_colon.nope
-              @is_colon.len_1  ptr  load_byte  byte_to_int
-                               push_byte 'colon  byte_to_int == return
-              @is_colon.nope   pop1  false  return
-: label?      # (str -> bool)
-              call ^is_label ;
-              @is_label  ptr  load_byte  byte_to_int
-                         push_byte 'at  byte_to_int  ==  return
-: ref?        # (str -> bool)
-              call ^is_ref ;
-              @is_ref  ptr  load_byte  byte_to_int  push_byte 'tick  byte_to_int
-                       ==  return
+: eoi?    len  0? ;# (str -> bool) checks for end of input
+: def?    # (str -> bool)
+          call ^def? ;
+          @def?        dup  len  _1  ==  if ^def?.len_1 ^def?.nope
+          @def?.len_1  ptr  load_byte_as_word  semicolon?  return
+          @def?.nope   pop1  false  return
+: eod?    # (str -> bool) checks for end of definition
+          call ^eod? ;
+          @eod?        dup  len  _1  ==  if ^eod?.len_1 ^eod?.nope
+          @eod?.len_1  ptr  load_byte_as_word  colon?  return
+          @eod?.nope   pop1  false  return
+: label?  # (str -> bool)
+          call ^is_label ;
+          @is_label  ptr  load_byte_as_word  at?  return
+: ref?    # (str -> bool)
+          call ^is_ref ;
+          @is_ref  ptr  load_byte_as_word  tick?  return
 
 ## Gathering Definitions
 #
 # In order to allow forward-definitions, we first collect all definitions into a
-# dictionary. Only then, we look at the stuff between the definitions, that will
-# be emitted into the output.
+# dictionary. The keys of the dictionary are the names, the values the indices
+# into the list of tokens.
 
-: gather_defs  # (tokens -> defs)
-               call ^gather ;
-               @gather         clone_str  make_dict  _0
-               @gather.loop    # tokens dict cursor
-                               over2  over  get  colon?
-                               if ^gather.def ^gather.no_def
-               @gather.no_def  # tokens dict cursor
-                               +1  jump ^gather.loop
-               @gather.def     +1  over2  over  get  _0
-               @gather.def.loop  # tokens dict cursor name def_len
-                                 over4  over3  over2  add  get
-                                 dup  semicolon?
-                                 if ^gather.def.done ^gather.def.not_done
-               @gather.def.not_done  colon?  if ^error.def_in_def ^gather.def.loop
-               @gather.def.done
-                               
+: defs  # (tokens -> defs)
+  call ^defs ;
+  @defs            make_dict  _0
+  @defs.loop       # tokens dict cursor
+                   over2  over  get  eoi?  if ^defs.done ^defs.0
+  @defs.0          over2  over  get  eod?  if ^error.top_level_eod ^defs.1
+  @defs.1          over2  over  get  def?  if ^defs.def ^defs.no_def
+  @defs.no_def     +1  jump ^defs.loop
+  @defs.def        +1
+                   over2  over  get  eod?  if ^error.def_imm_eod ^defs.2
+  @defs.2          over2  over  get  eoi?  if ^error.def_imm_eoi ^defs.3
+  @defs.3          over  over3  over2  get  over2  put
+  @defs.def.loop   # tokens dict cursor
+                   +1  over2  over  get  eoi?
+                   if ^error.def_does_not_end ^defs.4
+  @defs.4          over2  over  get  eod?  if ^defs.loop ^defs.done
+  @defs.def.done   +1  jump ^defs.loop
+  @defs.done       pop1  keep1_pop1  return
 
+## Compiling Code
+
+: compile  # (tokens defs out patches cursor -> )
+  call ^comp ;
+  @comp   TODO
 
 @main  # ptr len
- make_str  tok  dup  gather_defs  # tokens defs
+ make_str  dup  tok  dup  defs  # str tokens defs
+ make_out  make_list  _0  # str tokens defs out patches cursor
  compile
