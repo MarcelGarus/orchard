@@ -8,7 +8,7 @@ The most interesting bits:
 
 - **Ground**:
   A low-level stack-based byte code.  
-  The `ground` directory contains the specification.
+  [`ground`](ground) contains the specification.
   I wrote an interpreter in Zig, but that's private for now.
 - **Grass** (Ground Assembly):
   A simple assembly dialect for writing Ground programs.
