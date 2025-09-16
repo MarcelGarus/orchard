@@ -1,38 +1,58 @@
-# Integers  
+## Integers
+#
 # If you write a number such as 3 in the code, it's an Int.
 
-import
-  "builtins"
-    Int
-    add_ints Int Int
-    and_ints Int Int
-    compare_ints Int Int
-    div_ints Int Int
-    mod_ints Int Int
-    mul_ints Int Int
-    or_ints Int Int
-    sub_ints Int Int
-    xor_ints Int Int
-  "..bool" Bool
-  "..ordering"
-    Ordering
-    is_== Ordering
-    is_!= Ordering
-    is_< Ordering
-    is_<= Ordering
-    is_> Ordering
-    is_>= Ordering
-  "..string" String, + String String
-  "..never" crash String
 export
-  Int, + Int Int, - Int Int, * Int Int, / Int Int, mod Int Int, and Int Int,
-  or Int Int, xor Int Int, shift_left Int Int, shift_right Int Int, pow Int Int,
-  negate Int, abs Int, compare Int Int, < Int Int, > Int Int,
-  round_up_to_multiple_of Int, round_up_to_power_of Int, sqrt Int, log_two Int,
-  == Int Int, format Int, min Int Int, max Int Int
+  Int
+  + Int Int -> Int
+  - Int Int -> Int
+  * Int Int -> Int
+  / Int Int -> Int
+  == Int Int -> Bool
+  != Int Int -> Bool
+  < Int Int -> Bool
+  <= Int Int -> Bool
+  > Int Int -> Bool
+  >= Int Int -> Bool
+  << Int Int -> Int
+  >> Int Int -> Int
+  abs Int -> Int
+  and Int Int -> Int
+  compare Int Int -> Ordering
+  format Int -> String
+  is_negative Int -> Bool
+  is_non_negative Int -> Bool
+  is_non_positive Int -> Bool
+  is_positive Int -> Bool
+  log_2 Int -> Int
+  max Int Int -> Int
+  min Int Int -> Int
+  mod Int Int -> Int
+  negate Int -> Int
+  or Int Int -> Int
+  pow Int Int -> Int
+  round_up_to_multiple_of Int Int -> Int
+  round_up_to_power_of Int Int -> Int
+  sqrt Int -> Int
+  xor Int Int -> Int
+  binary String -> Int
+  hex String -> Int
 
-# var min_int = 0 - 9223372036854775806
-# var max_int = 9223372036854775807
+import
+  builtins
+  ..array
+  ..bool
+  ..byte
+  ..ordering
+  ..string
+  ..test
+  ..never
+  ..loop
+
+# var max_int = 9223372036854775806
+# var min_int = max_int + 1  # wraps around
+
+# assert min_int < max_int
 
 + a: Int b: Int -> Int = add_ints a b
 - a: Int b: Int -> Int = sub_ints a b
@@ -58,7 +78,7 @@ is_non_negative a: Int -> Bool = a .>= 0
 is_non_positive a: Int -> Bool = a .<= 0
 
 << int: Int by: Int -> Int =
-  by.== 0
+  by .== 0
   % true -> int
     false -> int .* 2 .<< (by .- 1)
 
@@ -84,94 +104,46 @@ round_up_to_multiple_of number: Int factor: Int -> Int =
   number .+ factor .- 1 ./ factor .* factor
 
 round_up_to_power_of number: Int base: Int -> Int =
-  round_up_to_power_of_rec 1 number base
-round_up_to_power_of_rec power: Int number: Int base: Int -> Int =
-  # TODO: do this more efficiently
-  is_big_enough =
-    compare power number
-    % less -> | false
-      equal -> | true
-      greater -> | true
-  is_big_enough
-  % true -> power
-    false -> round_up_to_power_of_rec (power .* base) number base
+  loop
+    1
+    \ candidate: Int ->
+      candidate .>= number
+      % true -> | break: candidate
+        false -> | continue: candidate .* base
 
 sqrt num: Int -> Int =
-  # num >= 0 or panic("you can't take the sqrt of a negative number")
-  sqrt_rec 0 num
-sqrt_rec candidate: Int target: Int -> Int =
-  next = candidate .+ 1
-  next .* next .compare target
-  % less -> sqrt_rec next target
-    equal -> next
-    greater -> candidate
+  assert (num .>= 0) "you can't take the sqrt of a negative number"
+  loop
+    0
+    \ candidate: Int ->
+      next = candidate .+ 1
+      next .* next .compare num
+      % less -> | continue: next
+        equal -> | break: next
+        greater -> | break: candidate
 
-log2 value: Int -> Int =
+log_2 value: Int -> Int =
   value .== 1
   % true -> 0
-    false -> log2 (value ./ 2) .+ 1
+    false -> log_2 (value ./ 2) .+ 1
 
-# lower_byte int: Int -> Byte = lower_byte int
-
-min a: Int b: Int -> Int =
-  a .< b
-  % true -> a
-    false -> b
-
-max a: Int b: Int -> Int =
-  a .> b
-  % true -> a
-    false -> b
-
-#fun parse_int(string: String): Maybe[Int] {
-#  var num = 0
-#  for char in string do {
-#    if not({#0..=#9}.contains(char))
-#    then return none[Int]()
-#    num = num * 10 + {char - #0}.to_int()
-#  }
-#  some(num)
-#}
+min a: Int b: Int -> Int = if (a .< b) a b
+max a: Int b: Int -> Int = if (a .> b) a b
 
 # TODO: support different radixes
 format int: Int -> String =
   int.is_negative
-  % true -> + "-" (negate int .format)
-    false ->
-      +
-        int .< 10
-        % true -> ""
-          false -> int ./ 10 .format
-        int .mod 10 .format_digit
+  % true -> "-" .++ (int.negate.format_non_negative)
+    false -> int.format_non_negative
+
+format_non_negative int: Int -> String =
+  ++
+    int .< 10
+    % true -> ""
+      false -> int ./ 10 .format
+    int .mod 10 .format_digit
+
 format_digit digit: Int -> String =
-  digit .== 0
-  % true -> "0"
-    false ->
-      digit .== 1
-      % true -> "1"
-        false ->
-          digit .== 2
-          % true -> "2"
-            false ->
-              digit .== 3
-              % true -> "3"
-                false ->
-                  digit .== 4
-                  % true -> "4"
-                    false ->
-                      digit .== 5
-                      % true -> "5"
-                        false ->
-                          digit .== 6
-                          % true -> "6"
-                            false ->
-                              digit .== 7
-                              % true -> "7"
-                                false ->
-                                  digit .== 8
-                                  % true -> "8"
-                                    false ->
-                                      digit .== 9
-                                      % true -> "9"
-                                        false ->
-                                          crash "unreachable"
+  ascii_of_zero = "0".utf8_bytes .get 0
+  ascii_of_digit = ascii_of_zero.to_int .+ digit .lower_byte
+  & utf8_bytes: (array ascii_of_digit)

@@ -1,0 +1,370 @@
+| Comptime Evaluation Pass
+|
+| This pass looks for function calls where all arguments are compile-time known
+| and attempts to execute them at compile time with limited resources.
+
+import mod.mar
+
+fun evaluate_comptime(
+  id: EggId, funs: Map[String, EggFun], builder: &EggBodyBuilder
+): EggId {
+  var call = id.resolve().call_fun or return id
+
+  var fun_ = funs.get_maybe(call.fun_) or return id
+
+  var args = list[ComptimeValue]()
+  for arg in call.args do
+    switch arg.to_comptime_value()
+    case some(value) args.&.push(value)
+    case none return id
+
+  | eprintln("comptime evaling {call.fun_}")
+
+  |if call.fun_ == "plum/core/map.map (& array: (Array (& key: (& utf8_bytes: (Array (Byte))) value: (v))) length: (Int)) with v = (Int)" then
+  |eprintln(Egg { entry_point = call.fun_, funs }) |.run(list(EggPlumValue.int(5)).to_slice())
+
+  switch
+    fun_.eval(args.to_slice(), funs, ComptimeResources { num_exprs = 10000 }.&)
+  case ok(value) value.to_code(builder)
+  case error(error) {
+    switch error
+    case unsupported_operation id
+    case resources_exhausted id
+    case continue_ unreachable()
+    case crashed(message) {
+      eprintln("crashed: {message}")
+      builder.crash(builder.desugared_string(message), fun_.body.returns.type())
+    }
+  }
+}
+
+enum ComptimeValue {
+  type: EggType,
+  int: Int,
+  byte: Byte,
+  struct_: Map[String, ComptimeValue],
+  enum_: ComptimeEnum,
+  box: &ComptimeValue,
+  array: ComptimeArray,
+  lambda: ComptimeLambda,
+}
+struct ComptimeEnum { type: EggType, variant: String, payload: &ComptimeValue }
+struct ComptimeArray { item_type: EggType, items: Slice[ComptimeValue] }
+struct ComptimeLambda { fun_: String, closure: &ComptimeValue, type: EggType }
+
+fun to_comptime_value(id: EggId): Maybe[ComptimeValue] {
+  switch id.resolve()
+  case type(type) some(ComptimeValue.type(type))
+  case int(value) some(ComptimeValue.int(value))
+  case byte(value) some(ComptimeValue.byte(value))
+  case struct_(struct_) {
+    var fields = map[String, ComptimeValue]()
+    for field in struct_ do {
+      var field_value = field.value.to_comptime_value() or
+        return none[ComptimeValue]()
+      fields.&.put(field.key, field_value)
+    }
+    some(ComptimeValue.struct_(fields))
+  }
+  case enum_(enum_) {
+    var payload =
+      enum_.payload.to_comptime_value() or return none[ComptimeValue]()
+    some(ComptimeValue.enum_(ComptimeEnum {
+      type = enum_.type,
+      variant = enum_.variant,
+      payload = payload.put_on_heap(),
+    }))
+  }
+  case box(inner) {
+    var inner = inner.to_comptime_value() or return none[ComptimeValue]()
+    some(ComptimeValue.box(inner.put_on_heap()))
+  }
+  case array(array) {
+    var items = list[ComptimeValue]()
+    for item in array.items do {
+      var item_value = item.to_comptime_value() or
+        return none[ComptimeValue]()
+      items.&.push(item_value)
+    }
+    some(ComptimeValue.array(ComptimeArray {
+      item_type = array.item_type,
+      items = items.to_slice(),
+    }))
+  }
+  case raw_lambda(lambda) {
+    var closure =
+      lambda.closure.to_comptime_value() or return none[ComptimeValue]()
+    some(ComptimeValue.lambda(ComptimeLambda {
+      fun_ = lambda.fun_, closure = closure.put_on_heap(), type = lambda.type
+    }))
+  }
+  default none[ComptimeValue]()
+}
+
+fun to_code(value: ComptimeValue, builder: &EggBodyBuilder): EggId {
+  switch value
+  case type(type) builder.type(type)
+  case int(int) builder.int(int)
+  case byte(byte) builder.byte(byte)
+  case struct_(fields) {
+    var egg_fields = map[String, EggId]()
+    for field in fields do
+      egg_fields.&.put(field.key, field.value.to_code(builder))
+    builder.struct_(egg_fields)
+  }
+  case enum_(enum_)
+    builder.enum_(enum_.type, enum_.variant, enum_.payload.to_code(builder))
+  case box(inner) builder.box(inner.to_code(builder))
+  case array(array) {
+    var items = list[EggId]()
+    for item in array.items do items.&.push(item.to_code(builder))
+    builder.array(items.to_slice(), array.item_type)
+  }
+  case lambda(lambda)
+    builder.raw_lambda(
+      lambda.fun_, lambda.closure.to_code(builder), lambda.type
+    )
+}
+
+enum ComptimeError {
+  unsupported_operation,
+  resources_exhausted,
+  continue_: Slice[ComptimeValue], | not really an error, just non-local control flow
+  crashed: String,
+}
+
+struct ComptimeResources { num_exprs: Int }
+
+fun consume_expr(res: &ComptimeResources): Result[Nothing, ComptimeError] {
+  if res.num_exprs == 0 then
+    return error[Nothing, ComptimeError](ComptimeError.resources_exhausted)
+  res.num_exprs = res.num_exprs - 1
+  ok[Nothing, ComptimeError]({})
+}
+
+enum ComptimeResult { returns: ComptimeValue, crashes: String }
+
+fun eval(
+  fun_: EggFun,
+  args: Slice[ComptimeValue],
+  funs: Map[String, EggFun],
+  res: &ComptimeResources,
+): Result[ComptimeValue, ComptimeError] {
+  fun_.body.eval(args, map[EggId, ComptimeValue]().&, funs, res)
+}
+
+fun eval(
+  body: EggBody,
+  args: Slice[ComptimeValue],
+  env: &Map[EggId, ComptimeValue],
+  funs: Map[String, EggFun],
+  res: &ComptimeResources,
+): Result[ComptimeValue, ComptimeError] {
+  for both in zip(body.params.iter(), args.iter()) do
+    env.put(both.a, both.b)
+  for child in body.children do
+    env.put(child, child.eval(env, funs, res)?)
+  ok[ComptimeValue, ComptimeError](env.get(body.returns))
+}
+
+fun eval(
+  id: EggId,
+  env: &Map[EggId, ComptimeValue],
+  funs: Map[String, EggFun],
+  res: &ComptimeResources
+): Result[ComptimeValue, ComptimeError] {
+  res.consume_expr()?
+  | eprintln("evaling {id.resolve().debug()}")
+  var value =
+    switch id.resolve()
+    case type(type) ComptimeValue.type(type)
+    case byte(value) ComptimeValue.byte(value)
+    case lower_byte(arg) ComptimeValue.byte(env.get(arg).int.unwrap().lower_byte())
+    case byte_to_int(arg) ComptimeValue.int(env.get(arg).byte.unwrap().to_int())
+    case int(value) ComptimeValue.int(value)
+    case add(args)
+      ComptimeValue.int(env.get(args.a).int.unwrap() + env.get(args.b).int.unwrap())
+    case subtract(args)
+      ComptimeValue.int(env.get(args.a).int.unwrap() - env.get(args.b).int.unwrap())
+    case multiply(args)
+      ComptimeValue.int(env.get(args.a).int.unwrap() * env.get(args.b).int.unwrap())
+    case divide(args) {
+      var a = env.get(args.a).int.unwrap()
+      var b = env.get(args.b).int.unwrap()
+      if b == 0 then
+        return error[ComptimeValue, ComptimeError](
+          ComptimeError.crashed("divide by zero")
+        )
+      ComptimeValue.int(a / b)
+    }
+    case modulo(args) {
+      var a = env.get(args.a).int.unwrap()
+      var b = env.get(args.b).int.unwrap()
+      if b == 0 then
+        return error[ComptimeValue, ComptimeError](
+          ComptimeError.crashed("modulo by zero")
+        )
+      ComptimeValue.int(a % b)
+    }
+    case shift_left(args)
+      ComptimeValue.int(env.get(args.a).int.unwrap() << env.get(args.b).int.unwrap())
+    case shift_right(args)
+      ComptimeValue.int(env.get(args.a).int.unwrap() >> env.get(args.b).int.unwrap())
+    case compare(args)
+      ComptimeValue.enum_(ComptimeEnum {
+        type = type_ordering,
+        variant =
+          switch env.get(args.a).int.unwrap() <=> env.get(args.b).int.unwrap()
+          case less "less"
+          case equal "equal"
+          case greater "greater",
+        payload = ComptimeValue.struct_(map[String, ComptimeValue]()).put_on_heap(),
+      })
+    case struct_(struct_) {
+      var fields = map[String, ComptimeValue]()
+      for field in struct_ do fields.&.put(field.key, env.get(field.value))
+      ComptimeValue.struct_(fields)
+    }
+    case member(member) env.get(member.of).struct_.unwrap().get(member.name)
+    case enum_(enum_expr)
+      ComptimeValue.enum_(ComptimeEnum {
+        type = enum_expr.type,
+        variant = enum_expr.variant,
+        payload = env.get(enum_expr.payload).put_on_heap(),
+      })
+    case switch_(switch_) {
+      var condition = env.get(switch_.condition).enum_.unwrap()
+      switch_.cases.get(condition.variant).eval(
+        list(condition.payload.*).to_slice(), env, funs, res
+      )?
+    }
+    case box(inner) ComptimeValue.box(env.get(inner).put_on_heap())
+    case unbox(box) env.get(box).box.unwrap().*
+    case array(array) {
+      var items = list[ComptimeValue]()
+      for item in array.items do items.&.push(env.get(item))
+      ComptimeValue.array(ComptimeArray {
+        item_type = array.item_type, items = items.to_slice()
+      })
+    }
+    case generate_array(gen) {
+      var items = list[ComptimeValue]()
+      for index in 0..env.get(gen.length).int.unwrap() do
+        items.&.push(
+          gen.generator
+            .eval(list(ComptimeValue.int(index)).to_slice(), env, funs, res)?
+        )
+      ComptimeValue.array(ComptimeArray {
+        item_type = gen.generator.returns.type(), items = items.to_slice()
+      })
+    }
+    case array_get(get) {
+      var items = env.get(get.array).array.unwrap().items
+      var index = env.get(get.index).int.unwrap()
+      items.get_maybe(index) or
+        return error[ComptimeValue, ComptimeError](
+          ComptimeError.crashed("out of bounds")
+        )
+    }
+    case array_set(set) {
+      var array = env.get(set.array).array.unwrap()
+      var index = env.get(set.index).int.unwrap()
+      var item = env.get(set.item)
+      if not({0..array.items.len}.contains(index)) then
+        return error[ComptimeValue, ComptimeError](
+          ComptimeError.crashed("out of bounds")
+        )
+      var copy = list[ComptimeValue]()
+      for item in array.items do copy.&.push(item)
+      copy.&.set(index, item)
+      ComptimeValue.array(ComptimeArray {
+        item_type = array.item_type, items = copy.to_slice()
+      })
+    }
+    case array_slice(args) {
+      var array = env.get(args.array).array.unwrap()
+      var start = env.get(args.start).int.unwrap()
+      var end = env.get(args.end).int.unwrap()
+      if start < 0 or end > array.items.len or start > end then
+        return error[ComptimeValue, ComptimeError](
+          ComptimeError.crashed("bad bounds")
+        )
+      ComptimeValue.array(ComptimeArray {
+        item_type = array.item_type,
+        items = array.items.subslice(start..end),
+      })
+    }
+    case array_len(array)
+      ComptimeValue.int(env.get(array).array.unwrap().items.len)
+    case unchecked_array_get(get) {
+      var items = env.get(get.array).array.unwrap().items
+      var index = env.get(get.index).int.unwrap()
+      items.get(index)
+    }
+    case raw_lambda(lambda)
+      ComptimeValue.lambda(ComptimeLambda {
+        fun_ = lambda.fun_,
+        closure = env.get(lambda.closure).put_on_heap(),
+        type = lambda.type,
+      })
+    case call_fun(call) {
+      var fun_ = funs.get_maybe(call.fun_) or
+        return error[ComptimeValue, ComptimeError](
+          ComptimeError.unsupported_operation
+        )
+      var args = list[ComptimeValue]()
+      for arg in call.args do args.&.push(env.get(arg))
+      fun_.eval(args.to_slice(), funs, res)?
+    }
+    case call_lambda(call) {
+      var lambda = env.get(call.lambda).lambda.unwrap()
+      var fun_ = funs.get_maybe(lambda.fun_) or
+        return error[ComptimeValue, ComptimeError](
+          ComptimeError.unsupported_operation
+        )
+      var args = list[ComptimeValue]()
+      for arg in call.args do args.&.push(env.get(arg))
+      args.&.push(lambda.closure.*)
+      fun_.eval(args.to_slice(), funs, res)?
+    }
+    case loop_(loop_) {
+      var initial = list[ComptimeValue]()
+      for arg in loop_.initial do initial.&.push(env.get(arg))
+      var loop_vars = initial.to_slice()
+      loop {
+        switch loop_.body.eval(loop_vars, env, funs, res)
+        case ok(value) break(value)
+        case error(error) {
+          if error is continue_(next) then
+            loop_vars = next
+          else
+            return error[ComptimeValue, ComptimeError](error)
+        }
+      }
+    }
+    case continue_(continue_) {
+      var next = list[ComptimeValue]()
+      for arg in continue_.next do next.&.push(env.get(arg))
+      return error[ComptimeValue, ComptimeError](
+        ComptimeError.continue_(next.to_slice())
+      )
+    }
+    case crash(crash) {
+      var bytes = list[Byte]()
+      for byte
+      in env.get(crash.message).struct_.unwrap()
+        .get("utf8_bytes").array.unwrap().items
+      do
+        bytes.&.push(byte.byte.unwrap())
+      return error[ComptimeValue, ComptimeError](
+        ComptimeError.crashed(bytes.to_slice().to_string())
+      )
+    }
+    default {
+      eprintln("Todo: run at comptime: {id.resolve().debug()}")
+      return error[ComptimeValue, ComptimeError](
+        ComptimeError.unsupported_operation
+      )
+    }
+  ok[ComptimeValue, ComptimeError](value)
+}

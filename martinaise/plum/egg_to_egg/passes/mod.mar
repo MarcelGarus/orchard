@@ -9,7 +9,12 @@
 import ../mod.mar
 import choose_order.mar
 import deduplicate.mar
+import defunctionalize.mar
+import devirtualize_lambda_calls.mar
+import evaluate_comptime.mar
 import factor_out_loop_fixpoints.mar
+import fold_members.mar
+import fold_switches.mar
 import hoist_helper.mar
 import hoist_known_switch_results.mar
 import hoist_out_of_generators.mar
@@ -18,6 +23,8 @@ import inline_functions.mar
 import lower_bounds_checks.mar
 import lower_builtin_calls.mar
 import lower_casts.mar
+import lower_compare.mar
+import lower_crash.mar
 import lower_divide_and_modulo_checks.mar
 import lower_dynamics.mar
 import lower_generics.mar
@@ -31,12 +38,16 @@ import lower_strings.mar
 import lower_type_infos.mar
 import lower_types_to_nothing.mar
 import make_switches_branchless.mar
+import merge_switch_chains.mar
+import nest_into_switches_with_a_single_case.mar
 import simplify_aggregates_parts_loads_and_stores.mar
 import simplify_arithmetics.mar
 import simplify_arrays.mar
 import simplify_bitwise.mar
+import simplify_boxes.mar
 import simplify_casts.mar
 import simplify_compare_to_enum.mar
+import simplify_loops.mar
 import sink_continues.mar
 import tree_shake.mar
 import unroll_small_arrays.mar
@@ -47,38 +58,50 @@ enum LoweringPass {
   lower_strings,
   lower_builtin_calls,
   lower_casts,
+  lower_compare,
+  lower_crash,
   lower_type_infos,
   lower_dynamics,
   lower_lambdas_to_funs,
+  defunctionalize,
   lower_bounds_checks,
   lower_divide_and_modulo_checks,
   lower_recursive_enums,
   lower_ownership,
   lower_memory_layouts_1,
   lower_memory_layouts_2,
+  lower_loads_and_stores,
 }
 
 enum OptPass {
   deduplicate,
+  devirtualize_lambda_calls,
+  evaluate_comptime,
   factor_out_loop_fixpoints,
+  fold_members,
+  fold_switches,
   hoist_known_switch_results,
   hoist_out_of_generators,
   hoist_out_of_loops,
   inline_functions,
+  inline_functions_only_used_once,
   make_switches_branchless,
+  merge_switch_chains,
+  nest_into_switches_with_a_single_case,
   simplify_aggregates_parts_loads_and_stores,
   simplify_arithmetics,
   simplify_arrays,
   simplify_bitwise,
+  simplify_boxes,
   simplify_casts,
   simplify_compare_to_enum,
+  simplify_loops,
   sink_continues,
   tree_shake,
   unroll_small_arrays,
   use_enum_flows,
   | TODO: more optimizations? see https://llvm.org/docs/Passes.html
   | sink_allocations
-  | run_functions_at_comptime,
   | dead_argment_elimination
   | canonicalize_comparisons,
   | delete_dead_finite_pure_loops,
@@ -94,6 +117,7 @@ fun hash[H](hasher: H, pass: OptPass) { hasher.hash(pass.debug().format()) }
 fun apply(egg: Egg, pass: LoweringPass): Egg {
   switch pass
   case lower_generics egg.lower_generics()
+  case defunctionalize egg.defunctionalize()
   case lower_recursive_enums egg.lower_recursive_enums()
   case lower_ownership egg.lower_ownership()
   case lower_memory_layouts_1 egg.lower_memory_layouts_1()
@@ -126,11 +150,14 @@ fun apply(
   case lower_strings id.lower_strings(builder)
   case lower_builtin_calls id.lower_builtin_calls(builder)
   case lower_casts id.lower_casts(funs, builder)
+  case lower_compare id.lower_compare(builder)
+  case lower_crash id.lower_crash(builder)
   case lower_type_infos id.lower_type_infos(builder)
   case lower_dynamics id.lower_dynamics(funs, builder)
   case lower_lambdas_to_funs id.lower_lambdas_to_funs(funs, builder)
   case lower_bounds_checks id.lower_bounds_checks(builder)
   case lower_divide_and_modulo_checks id.lower_divide_and_modulo_checks(builder)
+  case lower_loads_and_stores id.lower_loads_and_stores(builder)
   default unreachable()
 }
 
@@ -140,6 +167,7 @@ fun apply(
 fun apply(egg: Egg, pass: OptPass): Egg {
   switch pass
   case tree_shake egg.tree_shake()
+  case inline_functions_only_used_once egg.inline_functions_only_used_once()
   default egg
 }
 
@@ -148,6 +176,9 @@ fun apply(body: EggBody, pass: OptPass): EggBody {
   case deduplicate body.deduplicate()
   case tree_shake body.tree_shake()
   case use_enum_flows body.use_enum_flows()
+  case merge_switch_chains body.merge_switch_chains()
+  case nest_into_switches_with_a_single_case
+    body.nest_into_switches_with_a_single_case()
   default body
 }
 
@@ -159,10 +190,14 @@ fun apply(
   | eprintln("apply {pass.debug()} to {id.id} {id.resolve().debug()}")
   switch pass
   | case lower_loads_and_stores id.lower_loads_and_stores(builder)
+  case devirtualize_lambda_calls id.devirtualize_lambda_calls(builder)
+  case evaluate_comptime id.evaluate_comptime(funs.*, builder)
+  case fold_members id.fold_members(builder)
+  case fold_switches id.fold_switches(builder)
   case make_switches_branchless id.make_switches_branchless(builder)
   case simplify_aggregates_parts_loads_and_stores
     id.simplify_aggregates_parts_loads_and_stores(builder)
-  case factor_out_loop_fixpoints id.factor_out_loop_fixpoints(funs.*, builder)
+  case factor_out_loop_fixpoints id.factor_out_loop_fixpoints(builder)
   case hoist_known_switch_results id.hoist_known_switch_results(builder)
   case hoist_out_of_generators id.hoist_out_of_generators(builder)
   case hoist_out_of_loops id.hoist_out_of_loops(builder)
@@ -170,7 +205,10 @@ fun apply(
   case simplify_arithmetics id.simplify_arithmetics(builder)
   case simplify_arrays id.simplify_arrays(builder)
   case simplify_bitwise id.simplify_bitwise(builder)
+  case simplify_boxes id.simplify_boxes(builder)
+  case simplify_compare_to_enum id.simplify_compare_to_enum(builder)
   case simplify_casts id.simplify_casts(builder)
+  case simplify_loops id.simplify_loops(builder)
   case sink_continues id.sink_continues(builder)
   case unroll_small_arrays id.unroll_small_arrays(builder)
   default id
@@ -194,10 +232,14 @@ fun apply(
   funs: &Map[String, EggFun],
   builder: &EggBodyBuilder,
 ): EggId {
-  var original = id
-  for pass in passes do id = id.apply(pass, funs, builder)
-  if id == original then builder.push(id).ignore()
-  id
+  for pass in passes do {
+    var new = id.apply(pass, funs, builder)
+    if new != id then {
+      | eprintln("Optimized {id.id} using {pass.debug()}")
+      return new
+    }
+  }
+  builder.push(id)
 }
 
 | Some passes take a while to stabilize. For example, optimizations might
@@ -206,38 +248,25 @@ fun apply(
 | which in turn enables other optimizations.
 
 fun apply_until_stable(egg: Egg, passes: Slice[OptPass]): Egg {
-  | var hash_before = egg.hash()
-  | loop {
-  |   var funs = map[String, EggFun]()
-  |   for signature in egg.choose_optimization_order() do {
-  |     var mapped = egg.funs.get(signature)
-  |       .map(ApplyUntilStable { passes, processed_funs = funs.& })
-  |     eprintln("Mapping {pretty_signature(signature)}")
-  |     stderr.write(signature, mapped)
-  |     stderr."\n"
-  |     mapped.verify()
-  |     funs.&.put(signature, mapped)
-  |   }
-  |   var new_egg = Egg { funs, entry_point = egg.entry_point }.apply(passes)
-  |   var hash_after = new_egg.hash()
-  |   eprintln("{hash_before} -> {hash_after}")
-  |   if hash_before == hash_after then break
-  |   hash_before = hash_after
-  | }
-  | egg
-
-  var funs = map[String, EggFun]()
-  for signature in egg.choose_optimization_order() do {
-    var mapped = egg.funs.get(signature).map(ApplyUntilStable {
-      passes, cache = cache_for_passes(passes), processed_funs = funs.&
-    })
-    | eprintln("Mapped {pretty_signature(signature)}")
-    | stderr.write(signature, mapped)
-    | stderr."\n"
-    mapped.verify()
-    funs.&.put(signature, mapped)
+  var hash_before = egg.hash()
+  loop {
+    var funs = map[String, EggFun]()
+    for signature in egg.choose_optimization_order() do {
+      var mapped = egg.funs.get(signature)
+        .map(ApplyUntilStable { passes, cache = cache_for_passes(passes), processed_funs = funs.& })
+      | eprintln("Mapping {pretty_signature(signature)}")
+      | stderr.write(signature, mapped)
+      | stderr."\n"
+      mapped.verify()
+      funs.&.put(signature, mapped)
+    }
+    egg = Egg { funs, entry_point = egg.entry_point }.apply(passes)
+    var hash_after = egg.hash()
+    | eprintln("{hash_before} -> {hash_after}")
+    if hash_before == hash_after then break
+    hash_before = hash_after
   }
-  Egg { funs, entry_point = egg.entry_point }
+  egg
 }
 
 | Used by loop fixpoint analysis.
@@ -331,7 +360,6 @@ fun map(
   case case_param panic("should not be mapped")
   default {}
 
-  | TODO: cache from passes to optimized?
   if mapper.cache.get_maybe(old) is some(new) then {
     for child in new.children do builder.push(child)
     return new.returns
@@ -442,10 +470,11 @@ fun fill(body: EggBody, mapping: Map[EggId, EggId]): EggBody {
 }
 struct Fill {}
 fun map(
-  expr: EggId, fill: Fill, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]
+  id: EggId, fill: Fill, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]
 ): EggId {
-  builder.push(expr.map_children(fill, mapping))
+  builder.push(id.map_children(fill, mapping))
 }
+
 fun without_params(body: EggBody): EggBody {
   EggBody {
     params = empty_slice[EggId](),
@@ -453,23 +482,3 @@ fun without_params(body: EggBody): EggBody {
     returns = body.returns,
   }
 }
-| fun replace_recurses_with_lambda(body: EggBody, params: Slice[EggId]): EggBody {
-|   body.map(ReplaceRecursesWithLambda { params }, map[EggId, EggId]().&)
-| }
-| struct ReplaceRecursesWithLambda { params: Slice[EggId] }
-| fun map(id: EggId, mapper: ReplaceRecursesWithLambda, builder: &EggBodyBuilder, mapping: &Map[EggId, EggId]): EggId {
-|   var expr = id.map_children(mapper, mapping)
-|   if expr is recurse(rec) then
-|     builder.lambda({
-|       var builder = egg_body_builder().&
-|       for param in mapper.params do builder.params.&.push(param)
-|       builder.finish(builder.recurse({
-|         var args = list[EggId]()
-|         for arg in rec.next do args.&.push(arg)
-|         for param in mapper.params do args.&.push(param)
-|         args.to_slice()
-|       }, rec.type.plum().lambda.unwrap().return_type))
-|     })
-|   else
-|     builder.push(expr)
-| }

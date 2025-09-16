@@ -21,19 +21,17 @@ fun inline_functions(
   | --------------------------------
   | call + a b  |  add a b  |  int 5
   if funs.get_maybe(call.fun_) is some(fun_) then {
-    if fun_.body.num_exprs() <= 50 then {
-      if not(fun_.recurses(call.fun_)) and not(fun_.contains_lambda()) then {
+    if fun_.body.num_exprs() <= 50 and not(fun_.contains_lambda()) then {
+      if not(fun_.recurses(call.fun_)) then {
         | eprintln("inlining {call.fun_}")
         | eprintln("fun:\n")
         | stderr.write(Egg { funs = map(call.fun_ -> fun_), entry_point = "" })
         | stderr."\n"
         return fun_.body.fill(call.args, builder)
       } else if fun_.only_recurses_in_tail_position(call.fun_) then {
-        | TODO:
-        | return builder.loop_(
-        |   call.args,
-        |   fun_.body.call_to_continue_(call.fun_, call.return_type),
-        | )
+        return builder.loop_(
+          call.args, fun_.body.call_to_continue_(call.fun_, call.return_type)
+        )
       } else {
         | We don't inline general recursive functions.
       }
@@ -41,4 +39,43 @@ fun inline_functions(
   }
 
   id
+}
+
+fun inline_functions_only_used_once(egg: Egg): Egg {
+  var num_usages = egg.count_usages()
+  egg.map(InlineFunctionsOnlyUsedOnce { funs = egg.funs, num_usages })
+}
+
+fun count_usages(egg: Egg): Map[String, Int] {
+  var counts = map[String, Int]()
+  for fun_ in egg.funs do fun_.value.visit(CountUsages { counts = counts.& })
+  counts
+}
+struct CountUsages { counts: &Map[String, Int] }
+fun add(count: CountUsages, signature: String) {
+  count.counts.put(
+    signature,
+    if count.counts.get_maybe(signature) is some(count) then count + 1 else 1
+  )
+}
+fun visit(id: EggId, count: CountUsages) {
+  switch id.resolve()
+  case call_fun(call) count.add(call.fun_)
+  case raw_lambda(lambda) count.add(lambda.fun_)
+  default id.visit_children(count)
+}
+
+struct InlineFunctionsOnlyUsedOnce {
+  funs: Map[String, EggFun], num_usages: Map[String, Int]
+}
+fun map(
+  id: EggId,
+  inline: InlineFunctionsOnlyUsedOnce,
+  builder: &EggBodyBuilder,
+  mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(inline, mapping)
+  var call = expr.call_fun or return builder.push(expr)
+  inline.num_usages.get_maybe(call.fun_) == some(1) or return builder.push(expr)
+  inline.funs.get(call.fun_).body.fill(call.args, builder)
 }

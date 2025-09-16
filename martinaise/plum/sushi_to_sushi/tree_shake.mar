@@ -1,0 +1,50 @@
+import mod.mar
+
+fun tree_shake(sushi: Sushi): Sushi {
+  var order = sushi.find_reachable_sections()
+
+  var mapping = map[SectionIndex, SectionIndex]()
+  for new_index in 0..order.len do {
+    var old_index = order.get(new_index)
+    mapping.&.put(old_index, SectionIndex { index = new_index })
+  }
+
+  var sections = list[SushiSection]()
+  for index in order do
+    sections.&.push(sushi.sections.get(index.index).map(mapping))
+  
+  Sushi {
+    entry_point = mapping.get(sushi.entry_point),
+    sections = sections.to_slice(),
+  }
+}
+
+fun find_reachable_sections(sushi: Sushi): Slice[SectionIndex] {
+  var visited = set[SectionIndex]()
+  var order = list[SectionIndex]()
+  sushi.dfs_traverse(sushi.entry_point, visited.&, order.&)
+  order.to_slice()
+}
+
+fun dfs_traverse(
+  sushi: Sushi, 
+  current: SectionIndex, 
+  visited: &Set[SectionIndex], 
+  order: &List[SectionIndex],
+) {
+  if visited.contains(current) then return {}
+  visited.put(current)
+  order.push(current)
+
+  for instruction in sushi.sections.get(current.index).instructions do {
+    switch instruction
+    case jump(target) dfs_traverse(sushi, target, visited, order)
+    case jump_table(targets) {
+      for target in targets do
+        dfs_traverse(sushi, target, visited, order)
+    }
+    case call(target) dfs_traverse(sushi, target, visited, order)
+    case push_indirect(target) dfs_traverse(sushi, target, visited, order)
+    default {}
+  }
+}

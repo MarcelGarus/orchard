@@ -45,7 +45,7 @@
 |               r
 |         l
 |   g
-| 
+|
 | See how the call of fold with three arguments became a loop with three
 | variables (h, i, j) and three initial arguments (a, b, c)? The recursive call
 | of fold became a continue expression with (o, q, j).
@@ -120,13 +120,12 @@
 
 import mod.mar
 
-fun factor_out_loop_fixpoints(
-  id: EggId, funs: Map[String, EggFun], builder: &EggBodyBuilder
-): EggId {
+fun factor_out_loop_fixpoints(id: EggId, builder: &EggBodyBuilder): EggId {
   var loop_ = id.resolve().loop_ or return id
 
-  var fixpoint = loop_.find_fixpoint(funs)
+  var fixpoint = loop_.find_fixpoint()
   if fixpoint.is_trivial() then return id
+  | eprintln("Found fixpoint: {fixpoint}")
 
   var dehydrated_initial = fixpoint.dehydrate(loop_.initial, builder)
   var new_body = {
@@ -147,13 +146,14 @@ fun optimize_for_fixpoint_analysis(body: EggBody): EggBody {
   | We do some cheap optimizations. In particular, we don't need to generate
   | clean code, so we don't need deduplication or tree shaking.
   body.apply_until_stable(list(
+    OptPass.fold_members,
     OptPass.hoist_known_switch_results,
     OptPass.inline_functions,
     OptPass.simplify_aggregates_parts_loads_and_stores,
     OptPass.simplify_arithmetics,
     OptPass.simplify_arrays,
     OptPass.simplify_bitwise,
-    OptPass.factor_out_loop_fixpoints,
+    | OptPass.factor_out_loop_fixpoints,
     OptPass.sink_continues,
     OptPass.use_enum_flows,
   ).to_slice())
@@ -170,12 +170,13 @@ fun write[W](writer: W, fixpoint: Fixpoint) {
 }
 
 fun is_trivial(fixpoint: Fixpoint): Bool {
-  var all_holes = true
-  for shape in fixpoint.shapes do if not(shape is hole) then all_holes = false
-  all_holes
+  var all_trivial = true
+  for shape in fixpoint.shapes do
+    if not(shape is hole) then all_trivial = false
+  all_trivial
 }
 
-fun find_fixpoint(loop_: EggLoop, funs: Map[String, EggFun]): Fixpoint {
+fun find_fixpoint(loop_: EggLoop): Fixpoint {
   var candidate = {
     var shapes = list[Shape]()
     for arg in loop_.initial do shapes.&.push(Shape.id(arg))
@@ -183,11 +184,11 @@ fun find_fixpoint(loop_: EggLoop, funs: Map[String, EggFun]): Fixpoint {
   }
 
   loop {
+    | eprintln("fixpoint candidate: {candidate}")
     var builder = egg_body_builder().&
     candidate.holes_to_params(builder)
     var rehydrated = candidate.hydrate(builder.params.iter().&, builder)
     var body = builder.finish(loop_.body.fill(rehydrated, builder))
-    | var body = body.map(funs, map[EggId, EggId]().&)
     var body = body.optimize_for_fixpoint_analysis()
 
     | stderr."Fixpoint propagation:\n"
@@ -202,13 +203,30 @@ fun find_fixpoint(loop_: EggLoop, funs: Map[String, EggFun]): Fixpoint {
       for id in continue_.next do continue_shapes.&.push(Shape.id(id))
 
       | eprint("Merging {candidate} and {continue_shapes} ")
-      candidate = merge(candidate, continue_shapes.to_slice(), funs)
+      candidate = merge(candidate, continue_shapes.to_slice())
+        .loosen_for_fixpoint()
       | eprintln("-> {candidate}")
     }
     if candidate == previous then break
   }
 
   Fixpoint { shapes = candidate }
+}
+
+fun loosen_for_fixpoint(shapes: Slice[Shape]): Slice[Shape] {
+  var loosened = list[Shape]()
+  for shape in shapes do loosened.&.push(shape.loosen_for_fixpoint())
+  loosened.to_slice()
+}
+fun loosen_for_fixpoint(shape: Shape): Shape {
+  switch shape
+  case enum_(enum_) {
+    if enum_.variants.size == 1 then
+      shape
+    else
+      Shape.hole(enum_.type)
+  }
+  default shape
 }
 
 fun holes_to_params(shapes: Slice[Shape], builder: &EggBodyBuilder) {
@@ -221,7 +239,12 @@ fun holes_to_params(shape: Shape, builder: &EggBodyBuilder) {
   case int {}
   case struct_(struct_)
     for field in struct_.fields do field.value.holes_to_params(builder)
-  case enum_(enum_) builder.param(enum_.type).ignore()
+  case box(inner) inner.holes_to_params(builder)
+  case enum_(enum_) {
+    if not(enum_.variants.size == 1) then panic("bad enum shape")
+    var only_variant = enum_.variants.iter().&.next().unwrap()
+    only_variant.value.holes_to_params(builder)
+  }
   case array_slice(slice) {
     slice.start.holes_to_params(builder)
     slice.end.holes_to_params(builder)
@@ -258,12 +281,30 @@ fun dehydrate(
 ) {
   switch shape
   case self unreachable()
-  case id(fix) if id != fix then panic("bad id")
+  case id {}
   case int {}
   case struct_(struct_)
     for field in struct_.fields do
       field.value.dehydrate(builder.member(id, field.key), builder, out)
-  case enum_ out.push(id)
+  case enum_(enum_) {
+    if not(enum_.variants.size == 1) then panic("bad enum shape")
+    var only_variant = enum_.variants.iter().&.next().unwrap()
+    var cases = map[String, EggBody]()
+    for variant in id.type().plum().enum_.unwrap() do {
+      cases.&.put(variant.key, {
+        var builder = egg_body_builder().&
+        var payload = builder.case_param(id, variant.key)
+        if variant.key == only_variant.key then
+          builder.finish(payload)
+        else
+          builder.finish_with_unreachable(enum_.type)
+      })
+    }
+    var payload = builder.switch_(id, cases)
+    only_variant.value.dehydrate(payload, builder, out)
+  }
+  case box(inner_shape)
+    inner_shape.dehydrate(builder.unbox(id), builder, out)
   case array_slice(slice_shape) {
     switch id.resolve()
     case array(array) {
@@ -307,7 +348,16 @@ fun hydrate[I](
       fields.&.put(field.key, field.value.hydrate(ids, builder))
     builder.struct_(fields)
   }
-  case enum_ ids.next().unwrap()
+  case enum_(enum_) {
+    if not(enum_.variants.size == 1) then panic("bad enum shape")
+    var only_variant = enum_.variants.iter().&.next().unwrap()
+    builder.enum_(
+      enum_.type,
+      only_variant.key,
+      only_variant.value.hydrate(ids, builder),
+    )
+  }
+  case box(inner_shape) builder.box(inner_shape.hydrate(ids, builder))
   case array_slice(slice_shape) {
     var start = slice_shape.start.hydrate(ids, builder)
     var end = slice_shape.end.hydrate(ids, builder)

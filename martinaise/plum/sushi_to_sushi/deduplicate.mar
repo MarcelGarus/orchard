@@ -1,0 +1,132 @@
+import mod.mar
+
+fun deduplicate(sushi: Sushi): Sushi {
+  var canonical = map[SectionIndex, SectionIndex]()
+  for i in 0..sushi.sections.len do {
+    if canonical.contains(SectionIndex { index = i }) then continue
+    for j in {i + 1}..sushi.sections.len do {
+      if sushi
+        .are_equivalent(SectionIndex { index = i }, SectionIndex { index = j })
+      then
+        canonical.&.put(SectionIndex { index = j }, SectionIndex { index = i })
+    }
+  }
+  for i in 0..sushi.sections.len do
+    if not(canonical.contains(SectionIndex { index = i })) then
+      canonical.&.put(SectionIndex { index = i }, SectionIndex { index = i })
+
+  | Remap all sections to use the canonical sections.
+  var sections = list[SushiSection]()
+  for section in sushi.sections do sections.&.push(section.map(canonical))
+  Sushi {
+    entry_point = canonical.get(sushi.entry_point),
+    sections = sections.to_slice(),
+  }
+}
+
+fun are_equivalent(sushi: Sushi, a: SectionIndex, b: SectionIndex): Bool {
+  if a == b then return true
+
+  | Use breadth-first search to compare sections that can reference each other.
+  var visited = set[Tuple2[SectionIndex, SectionIndex]]()
+  var queue = queue[Tuple2[SectionIndex, SectionIndex]]()
+  queue.&.push_back(tuple(a, b))
+
+  loop {
+    var sections = queue.&.pop_front_maybe() or return true
+    if visited.contains(sections) then continue
+    visited.&.put(sections)
+
+    var a = sushi.sections.get(sections.a.index)
+    var b = sushi.sections.get(sections.b.index)
+
+    if a.instructions.len != b.instructions.len then return false
+
+    for instructions in zip(a.instructions.iter(), b.instructions.iter()) do {
+      var a = instructions.a
+      var b = instructions.b
+
+      if not(queue.&.are_equivalent(a, b)) then return false
+    }
+  }
+
+  true
+}
+
+fun are_equivalent(
+  queue: &Queue[Tuple2[SectionIndex, SectionIndex]],
+  a: SushiInstruction,
+  b: SushiInstruction,
+): Bool {
+  switch a
+  case nop                  b is nop
+  case add_8                b is add_8
+  case sub_8                b is sub_8
+  case signed_mul_8         b is signed_mul_8
+  case signed_div_8         b is signed_div_8
+  case signed_mod_8         b is signed_mod_8
+  case compare_zero_8       b is compare_zero_8
+  case and_8                b is and_8
+  case or_8                 b is or_8
+  case xor_8                b is xor_8
+  case shift_left_8         b is shift_left_8
+  case shift_right_8        b is shift_right_8
+  case lower_byte           b is lower_byte
+  case byte_to_int          b is byte_to_int
+  case push_padding(a)      if b is push_padding(b) then a == b else false
+  case push_1(a)            if b is push_1(b) then a == b else false
+  case push_8(a)            if b is push_8(b) then a == b else false
+  case push_1_from_stack(a) if b is push_1_from_stack(b) then a == b else false
+  case push_8_from_stack(a) if b is push_8_from_stack(b) then a == b else false
+  case pop(a)               if b is pop(b) then a == b else false
+  case pop_below_top(a)     if b is pop_below_top(b) then a == b else false
+  case malloc_8_aligned     b is malloc_8_aligned
+  case free_8_aligned       b is free_8_aligned
+  case store_1              b is store_1
+  case store_8              b is store_8
+  case load_1               b is load_1
+  case load_8               b is load_8
+  case store_bytes(a)       if b is store_bytes(b) then a == b else false
+  case crash                b is crash
+  case unreachable          b is unreachable
+  case halt                 b is halt
+  case jump(a)
+    if b is jump(b) then { queue.push_back(tuple(a, b))  true } else false
+  case jump_table(a)
+    if b is jump_table(b) then {
+      if a.len != b.len then return false
+      for both in zip(a.iter(), b.iter()) do
+        queue.push_back(tuple(both.a, both.b))
+      true
+    } else false
+  case call(a)
+    if b is call(b) then { queue.push_back(tuple(a, b))  true } else false
+  case push_indirect(a)
+    if b is push_indirect(b) then {
+      queue.push_back(tuple(a, b))
+      true
+    } else false
+  case call_indirect(a) if b is call_indirect(b) then a == b else false
+  case return_ b is return_
+}
+
+fun map(section: SushiSection, mapping: Map[SectionIndex, SectionIndex]): SushiSection {
+  var instructions = list[SushiInstruction]()
+
+  for instruction in section.instructions do
+    instructions.&.push(
+      switch instruction
+      case jump(target) SushiInstruction.jump(mapping.get(target))
+      case jump_table(table) {
+        var targets = list[SectionIndex]()
+        for target in table do targets.&.push(mapping.get(target))
+        SushiInstruction.jump_table(targets.to_slice())
+      }
+      case call(target) SushiInstruction.call(mapping.get(target))
+      case push_indirect(target)
+        SushiInstruction.push_indirect(mapping.get(target))
+      default instruction
+    )
+  
+  SushiSection { name = section.name, instructions = instructions.to_slice() }
+}

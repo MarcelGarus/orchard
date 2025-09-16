@@ -72,6 +72,10 @@ fun compare(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
   builder.push(EggExpr.compare(tuple(a, b)))
 }
 
+fun compare_zero(builder: &EggBodyBuilder, a: EggId): EggId {
+  builder.push(EggExpr.compare_zero(a))
+}
+
 fun and_(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
   builder.push(EggExpr.and_(tuple(a, b)))
 }
@@ -87,7 +91,7 @@ fun xor(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
 fun shift_left(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
   builder.push(EggExpr.shift_left(tuple(a, b)))
 }
-  
+
 fun shift_right(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
   builder.push(EggExpr.shift_right(tuple(a, b)))
 }
@@ -119,6 +123,7 @@ fun switch_(
   condition: EggId,
   cases: Map[String, EggBody],
 ): EggId {
+  if cases.is_empty() then panic("switch with no cases")
   for case_ in cases do
     if case_.value.params.len != 1 then
       panic("case with {case_.value.params.len} params")
@@ -136,7 +141,7 @@ fun raw_lambda(
 }
 
 fun call(
-  builder: &EggBodyBuilder, 
+  builder: &EggBodyBuilder,
   fun_: String,
   substitutions: Substitutions,
   args: Slice[EggId],
@@ -153,7 +158,7 @@ fun call(
 }
 
 fun call(
-  builder: &EggBodyBuilder, 
+  builder: &EggBodyBuilder,
   fun_: String,
   args: Slice[EggId],
   return_type: EggType,
@@ -168,8 +173,8 @@ fun call(builder: &EggBodyBuilder, lambda: EggId, args: Slice[EggId]): EggId {
 }
 
 fun call(
-  builder: &EggBodyBuilder, 
-  builtin: EggBuiltin, substitutions: Substitutions, args: Slice[EggId],
+  builder: &EggBodyBuilder,
+  builtin: EggBuiltinFun, substitutions: Substitutions, args: Slice[EggId],
 ): EggId {
   builder.push(EggExpr.call_builtin(EggCallBuiltin {
     builtin, substitutions, args
@@ -283,6 +288,10 @@ fun crash(builder: &EggBodyBuilder, message: String, type: EggType): EggId {
   builder.crash(builder.desugared_string(message), type)
 }
 
+fun raw_crash(builder: &EggBodyBuilder, ptr: EggId, len: EggId): EggId {
+  builder.push(EggExpr.raw_crash(EggRawCrash { ptr, len }))
+}
+
 fun unreachable(builder: &EggBodyBuilder, type: EggType): EggId {
   builder.push(EggExpr.unreachable(type))
 }
@@ -311,18 +320,18 @@ fun drop(builder: &EggBodyBuilder, id: EggId, type: EggType): EggId {
   builder.push(EggExpr.drop(EggDrop { id, type }))
 }
 
-fun function_ptr(builder: &EggBodyBuilder, signature: String): EggId {
-  builder.push(EggExpr.function_ptr(signature))
+fun fun_ptr(builder: &EggBodyBuilder, signature: String): EggId {
+  builder.push(EggExpr.fun_ptr(signature))
 }
 
 fun call_indirect(
   builder: &EggBodyBuilder,
-  function_ptr: EggId,
+  fun_ptr: EggId,
   args: Slice[EggId],
   return_type: EggType,
 ): EggId {
   builder.push(EggExpr.call_indirect(EggCallIndirect {
-    function_ptr, args, return_type
+    fun_ptr, args, return_type
   }))
 }
 
@@ -367,7 +376,7 @@ fun load_buffer_item(
 }
 
 fun store_buffer_item(
-  builder: &EggBodyBuilder, 
+  builder: &EggBodyBuilder,
   buffer: EggId,
   item_type: EggType,
   index: EggId,
@@ -400,8 +409,10 @@ fun aggregate(builder: &EggBodyBuilder, parts: Slice[EggId]): EggId {
   builder.push(EggExpr.aggregate(parts))
 }
 
-fun part(builder: &EggBodyBuilder, of: EggId, offset: Int, size: Int): EggId {
-  builder.push(EggExpr.part(EggPart { of, offset, size }))
+fun part(builder: &EggBodyBuilder, of: EggId, offset: Int, layout: MemoryLayout): EggId {
+  if offset + layout.size > of.type().memory_layout().size then
+    panic("bad part")
+  builder.push(EggExpr.part(EggPart { of, offset, layout }))
 }
 
 fun switch_on_byte(
@@ -418,8 +429,8 @@ fun free(builder: &EggBodyBuilder, ptr: EggId, size: EggId): EggId {
   builder.push(EggExpr.free(EggFree { ptr, size }))
 }
 
-fun load(builder: &EggBodyBuilder, ptr: EggId, size: Int): EggId {
-  builder.push(EggExpr.load(EggLoad { ptr, size }))
+fun load(builder: &EggBodyBuilder, ptr: EggId, layout: MemoryLayout): EggId {
+  builder.push(EggExpr.load(EggLoad { ptr, layout }))
 }
 
 fun store(builder: &EggBodyBuilder, ptr: EggId, value: EggId): EggId {
@@ -442,7 +453,9 @@ fun store_byte(builder: &EggBodyBuilder, ptr: EggId, value: EggId): EggId {
   builder.push(EggExpr.store_byte(EggSmolStore { ptr, value }))
 }
 
-fun store_bytes(builder: &EggBodyBuilder, ptr: EggId, bytes: Slice[Byte]): EggId {
+fun store_bytes(
+  builder: &EggBodyBuilder, ptr: EggId, bytes: Slice[Byte]
+): EggId {
   builder.push(EggExpr.store_bytes(EggStoreBytes { ptr, bytes }))
 }
 

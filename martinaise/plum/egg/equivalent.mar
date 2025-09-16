@@ -28,6 +28,7 @@ fun ==(a: EggExpr, b: EggExpr): Bool {
   case divide(a)            if b is divide(b)            then a == b else false
   case modulo(a)            if b is modulo(b)            then a == b else false
   case compare(a)           if b is compare(b)           then a == b else false
+  case compare_zero(a)      if b is compare_zero(b)      then a == b else false
   case and_(a)              if b is and_(b)              then a == b else false
   case or_(a)               if b is or_(b)               then a == b else false
   case xor(a)               if b is xor(b)               then a == b else false
@@ -51,13 +52,14 @@ fun ==(a: EggExpr, b: EggExpr): Bool {
   case static_to_dynamic(a) if b is static_to_dynamic(b) then a == b else false
   case dynamic_to_static(a) if b is dynamic_to_static(b) then a == b else false
   case crash(a)             if b is crash(b)             then a == b else false
+  case raw_crash(a)         if b is raw_crash(b)         then a == b else false
   case unreachable(a)       if b is unreachable(b)       then a == b else false
   case halt(a)              if b is halt(b)              then a == b else false
   case loop_(a)             if b is loop_(b)             then a == b else false
   case continue_(a)         if b is continue_(b)         then a == b else false
   case dup(a)               if b is dup(b)               then a == b else false
   case drop(a)              if b is drop(b)              then a == b else false
-  case function_ptr(a)      if b is function_ptr(b)      then a == b else false
+  case fun_ptr(a)           if b is fun_ptr(b)      then a == b else false
   case call_indirect(a)     if b is call_indirect(b)     then a == b else false
   case null_ptr(a)          if b is null_ptr(b)          then a == b else false
   case object_new(a)        if b is object_new(b)        then a == b else false
@@ -118,7 +120,7 @@ fun ==(a: EggCallBuiltin, b: EggCallBuiltin): Bool {
   a.builtin == b.builtin and a.substitutions == b.substitutions
     and a.args == b.args
 }
-fun ==(a: EggBuiltin, b: EggBuiltin): Bool {
+fun ==(a: EggBuiltinFun, b: EggBuiltinFun): Bool {
   a.debug().format() == b.debug().format()
 }
 fun ==(a: EggCast, b: EggCast): Bool { a.what == b.what and a.type == b.type }
@@ -143,6 +145,9 @@ fun ==(a: EggDynamicToStatic, b: EggDynamicToStatic): Bool {
 fun ==(a: EggCrash, b: EggCrash): Bool {
   a.message == b.message and a.type == b.type
 }
+fun ==(a: EggRawCrash, b: EggRawCrash): Bool {
+  a.ptr == b.ptr and a.len == b.len
+}
 fun ==(a: EggLoop, b: EggLoop): Bool {
   a.initial == b.initial and a.body == b.body
 }
@@ -152,8 +157,7 @@ fun ==(a: EggContinue, b: EggContinue): Bool {
 fun ==(a: EggDup, b: EggDup): Bool { a.id == b.id and a.type == b.type }
 fun ==(a: EggDrop, b: EggDrop): Bool { a.id == b.id and a.type == b.type }
 fun ==(a: EggCallIndirect, b: EggCallIndirect): Bool {
-  a.function_ptr == b.function_ptr and a.args == b.args
-    and a.return_type == b.return_type
+  a.fun_ptr == b.fun_ptr and a.args == b.args and a.return_type == b.return_type
 }
 fun ==(a: EggObjectLoad, b: EggObjectLoad): Bool { a.ptr == b.ptr and a.type == b.type }
 fun ==(a: EggObjectFree, b: EggObjectFree): Bool { a.ptr == b.ptr and a.type == b.type }
@@ -178,13 +182,13 @@ fun ==(a: EggFreeBuffer, b: EggFreeBuffer): Bool {
   a.buffer == b.buffer and a.item_type == b.item_type
 }
 fun ==(a: EggPart, b: EggPart): Bool {
-  a.of == b.of and a.offset == b.offset and a.size == b.size
+  a.of == b.of and a.offset == b.offset and a.layout == b.layout
 }
 fun ==(a: EggSwitchOnByte, b: EggSwitchOnByte): Bool {
   a.condition == b.condition and a.cases == b.cases
 }
 fun ==(a: EggFree, b: EggFree): Bool { a.ptr == b.ptr and a.size == b.size }
-fun ==(a: EggLoad, b: EggLoad): Bool { a.ptr == b.ptr and a.size == b.size }
+fun ==(a: EggLoad, b: EggLoad): Bool { a.ptr == b.ptr and a.layout == b.layout }
 fun ==(a: EggStore, b: EggStore): Bool { a.ptr == b.ptr and a.value == b.value }
 fun ==(a: EggSmolLoad, b: EggSmolLoad): Bool { a.ptr == b.ptr }
 fun ==(a: EggSmolStore, b: EggSmolStore): Bool {
@@ -194,7 +198,11 @@ fun ==(a: EggStoreBytes, b: EggStoreBytes): Bool {
   a.ptr == b.ptr and a.bytes == b.bytes
 }
 
-fun hash[H](hasher: H, egg: Egg) { for fun_ in egg.funs do hasher.hash(fun_) }
+fun hash[H](hasher: H, egg: Egg) {
+  var common = 0
+  for fun_ in egg.funs do common = common ^ fun_.value.hash()
+  hasher.hash(common)
+}
 fun hash[H](hasher: H, fun_: EggFun) { hasher.hash(fun_.body.returns) }
 fun hash[H](hasher: H, body: EggBody) {
   for param in body.params do hasher.hash(param)
@@ -228,6 +236,7 @@ fun hash[H](hasher: H, expr: EggExpr) {
   case divide(args)              { hasher.hash("divide")            hasher.hash(args.a)  hasher.hash(args.b) }
   case modulo(args)              { hasher.hash("modulo")            hasher.hash(args.a)  hasher.hash(args.b) }
   case compare(args)             { hasher.hash("compare")           hasher.hash(args.a)  hasher.hash(args.b) }
+  case compare_zero(arg)         { hasher.hash("compare_zero")      hasher.hash(arg) }
   case and_(args)                { hasher.hash("and_")              hasher.hash(args.a)  hasher.hash(args.b) }
   case or_(args)                 { hasher.hash("or_")               hasher.hash(args.a)  hasher.hash(args.b) }
   case xor(args)                 { hasher.hash("xor")               hasher.hash(args.a)  hasher.hash(args.b) }
@@ -251,13 +260,14 @@ fun hash[H](hasher: H, expr: EggExpr) {
   case static_to_dynamic(arg)    { hasher.hash("static_to_dynamic") hasher.hash(arg) }
   case dynamic_to_static(convert) { hasher.hash("dynamic_to_static") hasher.hash(convert) }
   case crash(crash)              { hasher.hash("crash")             hasher.hash(crash) }
+  case raw_crash(raw_crash)      { hasher.hash("raw_crash")         hasher.hash(raw_crash) }
   case unreachable(type)         { hasher.hash("unreachable")       hasher.hash(type) }
   case halt(type)                { hasher.hash("halt")              hasher.hash(type) }
   case loop_(loop_)              { hasher.hash("loop_")             hasher.hash(loop_) }
   case continue_(continue_)      { hasher.hash("continue_")         hasher.hash(continue_) }
   case dup(dup)                  { hasher.hash("dup")               hasher.hash(dup) }
   case drop(drop)                { hasher.hash("drop")              hasher.hash(drop) }
-  case function_ptr(signature)   { hasher.hash("function_ptr")      hasher.hash(signature) }
+  case fun_ptr(signature)        { hasher.hash("fun_ptr")      hasher.hash(signature) }
   case call_indirect(call)       { hasher.hash("call_indirect")     hasher.hash(call) }
   case null_ptr                  { hasher.hash("null_ptr") }
   case object_new(id)            { hasher.hash("object_new")        hasher.hash(id) }
@@ -327,7 +337,7 @@ fun hash[H](hasher: H, call: EggCallBuiltin) {
   hasher.hash(call.substitutions)
   for arg in call.args do hasher.hash(arg)
 }
-fun hash[H](hasher: H, builtin: EggBuiltin) {
+fun hash[H](hasher: H, builtin: EggBuiltinFun) {
   hasher.hash(builtin.format())
 }
 fun hash[H](hasher: H, substitutions: Substitutions) {
@@ -367,6 +377,10 @@ fun hash[H](hasher: H, crash: EggCrash) {
   hasher.hash(crash.message)
   hasher.hash(crash.type)
 }
+fun hash[H](hasher: H, raw_crash: EggRawCrash) {
+  hasher.hash(raw_crash.ptr)
+  hasher.hash(raw_crash.len)
+}
 fun hash[H](hasher: H, loop_: EggLoop) {
   hasher.hash(loop_.initial)
   hasher.hash(loop_.body)
@@ -384,7 +398,7 @@ fun hash[H](hasher: H, drop: EggDrop) {
   hasher.hash(drop.type)
 }
 fun hash[H](hasher: H, call: EggCallIndirect) {
-  hasher.hash(call.function_ptr)
+  hasher.hash(call.fun_ptr)
   for arg in call.args do hasher.hash(arg)
   hasher.hash(call.return_type)
 }
@@ -429,7 +443,7 @@ fun hash[H](hasher: H, free: EggFreeBuffer) {
 fun hash[H](hasher: H, part: EggPart) {
   hasher.hash(part.of)
   hasher.hash(part.offset)
-  hasher.hash(part.size)
+  hasher.hash(part.layout)
 }
 fun hash[H](hasher: H, switch_: EggSwitchOnByte) {
   hasher.hash(switch_.condition)
@@ -441,7 +455,7 @@ fun hash[H](hasher: H, free: EggFree) {
 }
 fun hash[H](hasher: H, load: EggLoad) {
   hasher.hash(load.ptr)
-  hasher.hash(load.size)
+  hasher.hash(load.layout)
 }
 fun hash[H](hasher: H, store: EggStore) {
   hasher.hash(store.ptr)

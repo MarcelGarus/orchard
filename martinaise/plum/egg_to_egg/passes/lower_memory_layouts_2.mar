@@ -31,8 +31,7 @@ fun map(
     builder.part(
       member.of.map(mapping.*),
       struct_layout.field_to_offset.get(member.name),
-      field_layout.size,
-      | field_layout.alignment,
+      field_layout,
     )
   }
   case enum_(enum_) {
@@ -59,11 +58,11 @@ fun map(
     var cases = uninitialized_slice[EggBody](layout.tag_to_variant.size)
     for entry in layout.tag_to_variant do {
       var case_ = switch_.cases.get(entry.value)
-      var payload_layout = enum_type.plum().enum_.unwrap()
+      var payload_layout = enum_type.pesto().enum_.unwrap()
         .get(entry.value).memory_layout()
       var builder = egg_body_builder().&
       mapping.put(
-        case_.params.get(0), builder.part(condition, 0, payload_layout.size)
+        case_.params.get(0), builder.part(condition, 0, payload_layout)
       )
       for child in case_.children do {
         var mapped = child.map(mapper, builder, mapping)
@@ -81,7 +80,7 @@ fun map(
         var builder = egg_body_builder().&
         var body = builder.finish(
           builder.switch_on_byte(
-            builder.part(condition, layout.tag_offset + offset_in_tag, 1),
+            builder.part(condition, layout.tag_offset + offset_in_tag, MemoryLayout { size = 1, alignment = 1 }),
             | cases.subslice()
             cases.subslice({i * 256}..min(i + 1 * 256, cases.len)),
           )
@@ -110,7 +109,7 @@ fun map(
     var ptr = load.ptr.map(mapping.*)
     var layout = load.type.memory_layout()
     builder.load(
-      builder.add(ptr, builder.int(8)), layout.size, | layout.alignment
+      builder.add(ptr, builder.int(8)), layout
     )
   }
   case object_free(free) {
@@ -120,7 +119,7 @@ fun map(
   }
   case get_refcount(get) {
     var ptr = get.ptr.map(mapping.*)
-    builder.load(ptr, 8)
+    builder.load(ptr, MemoryLayout { size = 8, alignment = 8 })
   }
   case set_refcount(set) {
     var ptr = set.ptr.map(mapping.*)
@@ -142,7 +141,9 @@ fun map(
   }
   case get_buffer_length(ptr) {
     var ptr = ptr.map(mapping.*)
-    builder.load(builder.add(ptr, builder.int(8)), 8)
+    builder.load(
+      builder.add(ptr, builder.int(8)), MemoryLayout { size = 8, alignment = 8 }
+    )
   }
   case load_buffer_item(load) {
     var item_layout = load.item_type.memory_layout()
@@ -153,7 +154,7 @@ fun map(
       builder.multiply(index, builder.int(item_layout.stride_size())),
     )
     builder.load(
-      builder.add(buffer, offset), item_layout.size, | item_layout.alignment
+      builder.add(buffer, offset), item_layout
     )
   }
   case store_buffer_item(store) {
@@ -177,7 +178,7 @@ fun map(
   case free_buffer(free) {
     var item_layout = free.item_type.memory_layout()
     var buffer = free.buffer.map(mapping.*)
-    var length = builder.load(builder.add(buffer, builder.int(8)), 8)
+    var length = builder.load(builder.add(buffer, builder.int(8)), MemoryLayout { size = 8, alignment = 8 })
     var size = builder.add(
       builder.int(16), | refcount + length
       builder.multiply(length, builder.int(item_layout.stride_size())),

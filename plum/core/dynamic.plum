@@ -1,16 +1,20 @@
+export
+  Dynamic
+  format Dynamic -> String
+  to_dynamic t -> Dynamic
+  to_static Dynamic a:Type -> a
+
 import
-  "builtins" static_to_dynamic t, dynamic_to_static Dynamic t:Type
-  "..array" Array t, iterate (Array t), is_empty (Array t)
-  "..bool" Bool
-  "..box" Box t, unbox (Box t)
-  "..byte" Byte, format Byte
-  "..int" Int, format Int
-  "..iterator"
-    Iterator t, map (Iterator a) (\ a -> b), join (Iterator String) String,
-    find (Iterator a) (\ a -> Bool), join (Iterator String)
-  "..maybe" Maybe t, unwrap (Maybe t)
-  "..string" String, + String String, == String String
-  "..type" Type
+  builtins
+  ..array
+  ..bool
+  ..box
+  ..byte
+  ..int
+  ..iterator
+  ..maybe
+  ..string
+  ..type
 
 to_dynamic value: t -> Dynamic = static_to_dynamic value
 to_static dynamic: Dynamic t: Type -> t = dynamic_to_static dynamic t
@@ -27,35 +31,31 @@ Dynamic =
 
 get fields: (Array (& name: String value: Dynamic)) name: String -> Dynamic =
   fields
-  .iterate
-  .find \ field: (& name: String value: Dynamic) -> field.name .== name
-  .unwrap
-  .value
+  . iterate
+  . find \ field: (& name: String value: Dynamic) -> field.name .== name
+  . unwrap
+  . value
 
 format dynamic: Dynamic -> String =
   dynamic
   % byte: byte -> byte.format
     int: int -> int.format
     type -> "type"
-    box: inner -> "(box " .+ (inner.format) .+ ")"
+    box: inner -> "(box " .++ (inner.format) .++ ")"
     array: items ->
       "(array "
-      . +
-        items
-        . iterate
-        . map \ item: Dynamic -> " " .+ (item.format)
-        . join
-      . + ")"
+      . ++ (items.iterate .map (\ item: Dynamic -> " " .++ (item.format)) .join)
+      . ++ ")"
     struct: fields ->
       "(&"
-      . +
-        fields
-        . iterate
-        . map
-            \ field: (& name: String value: Dynamic) ->
-              " " .+ (field.name) .+ ": " .+ (field.value.format)
-        . join
-      . + ")"
+      . ++
+          fields
+          . iterate
+          . map
+              \ field: (& name: String value: Dynamic) ->
+                " " .++ (field.name) .++ ": " .++ (field.value.format)
+          . join
+      . ++ ")"
     enum: (& name value) ->
       value
       % byte  -> | show_value
@@ -69,6 +69,6 @@ format dynamic: Dynamic -> String =
             false -> | show_value
         enum   -> | show_value
         lambda -> | show_value
-      % show_value -> "(| " .+ name .+ ": " .+ (value.format) .+ ")"
-        omit_value -> "(| " .+ name .+ ")"
+      % show_value -> "(| " .++ name .++ ": " .++ (value.format) .++ ")"
+        omit_value -> "(| " .++ name .++ ")"
     lambda -> "(\\ ...)"

@@ -1,0 +1,106 @@
+import mod.mar
+
+fun lookup_exported_type(
+  name: String, num_args: Int,
+  module: Module, toasts: Map[Module, Toasty],
+): Result[Maybe[ToastTypeDef], Error] {
+  var cache_key = tuple(name, num_args, module)
+  if exported_types_cache.get_maybe(cache_key) is some(result) then
+    return ok[Maybe[ToastTypeDef], Error](result)
+  var result =
+    lookup_exported_type(name, num_args, module, toasts, list[Module]().&)?
+  exported_types_cache.put(cache_key, result)
+  ok[Maybe[ToastTypeDef], Error](result)
+}
+
+fun lookup_type(
+  name: String, num_args: Int,
+  module: Module, toasts: Map[Module, Toasty], src: Src,
+): Result[ToastTypeDef, Error] {
+  lookup_type(name, num_args, module, toasts, src, list[Module]().&)
+}
+
+fun lookup_exported_type(
+  name: String,
+  num_args: Int,
+  module: Module,
+  toasts: Map[Module, Toasty],
+  stack: &List[Module],
+): Result[Maybe[ToastTypeDef], Error] {
+  if module == builtin_module then {
+    for type in builtin_types do
+      if type.name == name and type.args == num_args then
+        return ok[Maybe[ToastTypeDef], Error](some(ToastTypeDef {
+          name = name @ invalid_src,
+          params = {
+            var params = list[StringAndSrc]()
+            for arg in 0..num_args do params.&.push("{arg}" @ invalid_src)
+            params.to_slice()
+          },
+          type = ToastType.primitive(ToastTypePrimitive {
+            name,
+            args = {
+              var the_args = list[ToastType]()
+              for arg in 0..num_args do
+                the_args.&.push(ToastType.variable("{arg}" @ invalid_src))
+              the_args.to_slice()
+            },
+          })
+        }))
+    return ok[Maybe[ToastTypeDef], Error](none[ToastTypeDef]())
+  }
+  for type in toasts.get(module).exported_types do
+    if type.name.string == name and type.args.len == num_args then
+      return ok[Maybe[ToastTypeDef], Error](some(
+        lookup_type(
+          type.name.string, num_args, module, toasts, type.name.src, stack
+        )?
+      ))
+  ok[Maybe[ToastTypeDef], Error](none[ToastTypeDef]())
+}
+
+fun lookup_type(
+  name: String,
+  num_args: Int,
+  module: Module,
+  toasts: Map[Module, Toasty],
+  src: Src,
+  stack: &List[Module],
+): Result[ToastTypeDef, Error] {
+  if module == builtin_module then {
+    | The lookup_exported_type function already resolves the type defs from the
+    | builtin module instead of using this function. As there is also no code
+    | inside the builtin module that could depend on internal types, this should
+    | never be reached.
+    unreachable()
+  }
+
+  var candidates = set[ToastTypeDef]()
+  var toast = toasts.get(module)
+  for type in toast.types do
+    if type.name.string == name and type.params.len == num_args then
+      candidates.&.put(type)
+  for imported in toast.imports do {
+    if stack.iter().&.contains(imported) then continue
+    stack.push(imported)
+    if lookup_exported_type(name, num_args, imported, toasts, stack)?
+    is some(exported)
+    then candidates.&.put(exported)
+    stack.pop()
+  }
+
+  if candidates.is_empty() then
+    return error[ToastTypeDef, Error](error(
+      "Type {name} with {num_args} args does not exist in {module}.", src
+    ))
+  if candidates.map.size > 1 then
+    return error[ToastTypeDef, Error](error({
+      var b = string_builder().&
+      b."Multiple types named {name} with {num_args} args exist here:"
+      for candidate in candidates do
+        b."\n - {candidate.debug()}"
+      b.to_string()
+    }, src))
+
+  ok[ToastTypeDef, Error](candidates.iter().&.next().unwrap())
+}

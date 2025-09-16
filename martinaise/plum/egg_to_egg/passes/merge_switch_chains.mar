@@ -1,0 +1,93 @@
+import mod.mar
+
+fun merge_switch_chains(body: EggBody): EggBody {
+  var num_references = body.count_references()
+  |eprintln("{num_references.debug()}")
+
+  var builder = egg_body_builder().&
+  for param in body.params do builder.push(param)
+  for i in 0..{body.children.len - 1} do {
+    var a = body.children.get(i)
+    var b = body.children.get(i + 1)
+
+    switch try_merging_switches(a, b, num_references, builder)
+    case error builder.push(a)
+    case ok(merged) {
+      | eprintln("todo: merged switches {a.debug()} and {b.debug()} into {merged.debug()}")
+      var mapping = map(b -> merged).&
+      | eprintln("original ids: {body.children.debug()}. i = {i}")
+      for id in body.children.without_first(i + 2) do
+        mapping.put(id, builder.push(id.map_children(Fill {}, mapping)))
+      return builder.finish(body.returns.map(mapping.*))
+    }
+  }
+
+  body
+}
+fun try_merging_switches(
+  a: EggId, b: EggId, num_references: Map[EggId, Int], builder: &EggBodyBuilder
+): Result[EggId, Nothing] {
+  var not_possible = error[EggId, Nothing]({})
+
+  var a_switch = a.resolve().switch_ or return not_possible
+  var b_switch = b.resolve().switch_ or return not_possible
+
+  b_switch.condition == a or return not_possible
+  {num_references.get_maybe(a) or 0} == 1 or return not_possible
+
+  | Make sure that every case of the first switch refers to a different case of
+  | the second switch.
+  var reached_cases_of_second = set[String]()
+  var extra_complexity = 0
+  var mapping = map[String, String]()
+  for case_ in a_switch.cases do
+    if not(case_.value.definitely_diverges_biased()) then {
+      var enum_shape = case_.value.returns.shape().enum_ or return not_possible
+      enum_shape.variants.size == 1 or return not_possible
+      var variant = enum_shape.variants.iter().&.next().unwrap().key
+      if reached_cases_of_second.contains(variant) then
+        extra_complexity = extra_complexity
+          + b_switch.cases.get(variant).num_exprs()
+      reached_cases_of_second.&.put(variant)
+      mapping.&.put(case_.key, variant)
+    }
+
+  if extra_complexity > 5 then return not_possible
+
+  |eprintln("todo: merge:")
+  |stderr.write(a, namespace().&, indentation(1))
+  |stderr."\n"
+  |stderr.write(b, namespace().&, indentation(1))
+  |stderr."\n"
+
+  var cases = map[String, EggBody]()
+  for a_case in a_switch.cases do {
+    var builder = egg_body_builder().&
+    var a_payload = builder.case_param(a_switch.condition, a_case.key)
+    var a_result = a_case.value.fill(a_payload, builder)
+    var total_result =
+      if a_case.value.definitely_diverges_biased() then {
+        builder.unreachable(b.type())
+      } else {
+        var b_case = mapping.get(a_case.key)
+        var b_result = builder.switch_(a_result, {
+          var cases = map[String, EggBody]()
+          for case_ in b_switch.cases do
+            cases.&.put(case_.key, {
+              if case_.key == b_case then case_.value else {
+                var builder = egg_body_builder().&
+                builder.case_param(a_result, case_.key)
+                builder.finish_with_unreachable(b.type())
+              }
+            })
+          cases
+        })
+        b_result
+      }
+    var body = builder.finish(total_result)
+    cases.&.put(a_case.key, body)
+  }
+  var merged = builder.switch_(a_switch.condition, cases)
+
+  ok[EggId, Nothing](merged)
+}

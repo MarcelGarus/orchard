@@ -69,12 +69,26 @@ fun write[W](
   case switch_(switch_) {
     writer."\n
       '{indentation}{pretty_op("switch")} {pretty(switch_.condition, names)}"
+    | Merge cases that have the exact same content. Group from body to
+    | variant/payload.
+    var body_to_variants = map[EggBody, List[Tuple2[String, EggId]]]()
     for case_ in switch_.cases do {
-      writer."\n{indentation + 1}{case_.key}:"
-      for param in case_.value.params do
-        writer." {pretty(param, names)} {pretty(param.type())}"
+      var variant = tuple(case_.key, case_.value.params.first())
+      var body = case_.value.without_params()
+      if body_to_variants.&.get_maybe_ref(body) is some(cases) then
+        cases.push(variant)
+      else
+        body_to_variants.&.put(body, list(variant))
+    }
+    for case_ in body_to_variants do {
+      | var first = true
+      for variant in case_.value do {
+        writer."\n{indentation + 1}"
+        | if first then first = false else writer." | "
+        writer."{variant.a} {pretty(variant.b, names)} {pretty(variant.b.type())}:"
+      }
       writer."\n"
-      writer.write(case_.value, names, indentation + 2)
+      writer.write(case_.key, names, indentation + 2)
     }
   }
   case call_generic_fun(call) {
@@ -127,6 +141,8 @@ fun write[W](
   case compare(args)
     writer."{pretty_op("compare")}
       ' {pretty(args.a, names)} {pretty(args.b, names)}"
+  case compare_zero(arg)
+    writer."{pretty_op("compare zero")} {pretty(arg, names)}"
   case and_(args)
     writer."{pretty_op("and")}
       ' {pretty(args.a, names)} {pretty(args.b, names)}"
@@ -210,13 +226,17 @@ fun write[W](
   case crash(crash)
     writer."{pretty_op("crash")} {pretty(crash.message, names)}
       ' {pretty(crash.type)}"
+  case raw_crash(raw_crash)
+    writer."{pretty_op("raw crash")}
+      ' {pretty(raw_crash.ptr, names)} {pretty(raw_crash.len, names)}"
   case unreachable writer."{pretty_op("unreachable")} {pretty(type)}"
   case halt writer."{pretty_op("halt")} {pretty(type)}"
   case loop_(loop_) {
     writer."\n{indentation}{pretty_op("loop")}"
     for arg in loop_.initial do writer." {pretty(arg, names)}"
     writer."\n{indentation + 1}body"
-    for param in loop_.body.params do writer." {pretty(param, names)}"
+    for param in loop_.body.params do
+      writer." {pretty(param, names)} {pretty(param.type())}"
     writer.":\n"
     writer.write(loop_.body, names, indentation + 2)
   }
@@ -229,10 +249,10 @@ fun write[W](
     writer."{pretty_op("dup")} {pretty(dup.type)} {pretty(dup.id, names)}"
   case drop(drop)
     writer."{pretty_op("drop")} {pretty(drop.type)} {pretty(drop.id, names)}"
-  case function_ptr(signature)
+  case fun_ptr(signature)
     writer."{pretty_op("ptr")} to {pretty_signature(signature)}"
   case call_indirect(call) {
-    writer."{pretty_op("call indirect")} {pretty(call.function_ptr, names)}"
+    writer."{pretty_op("call indirect")} {pretty(call.fun_ptr, names)}"
     if call.args.is_not_empty() then writer." with"
     for arg in call.args do writer." {pretty(arg, names)}"
     writer." {pretty(type)}"
@@ -302,7 +322,7 @@ fun write[W](
     writer."{pretty_op("free")}
       ' {pretty(free.ptr, names)} ({pretty(free.size, names)} bytes)"
   case load(load)
-    writer."{pretty_op("load")} {pretty(load.ptr, names)} ({load.size} bytes)"
+    writer."{pretty_op("load")} {pretty(load.ptr, names)} ({load.layout.size} bytes)"
   case store(store)
     writer."{pretty_op("store")}
       ' {pretty(store.ptr, names)} {pretty(store.value, names)}"
@@ -320,4 +340,4 @@ fun write[W](
     writer."{pretty_op("store bytes")}
       ' {pretty(store.ptr, names)} {store.bytes.debug()}"
 }
-fun write[W](writer: W, builtin: EggBuiltin) { writer."{builtin.debug()}" }
+fun write[W](writer: W, builtin: EggBuiltinFun) { writer."{builtin.debug()}" }

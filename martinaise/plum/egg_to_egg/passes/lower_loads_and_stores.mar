@@ -5,13 +5,13 @@ fun lower_loads_and_stores(id: EggId, builder: &EggBodyBuilder): EggId {
   case load(load) {
     var cursor = 0
     var parts = list[EggId]()
-    loop if cursor + 8 > load.size then break else {
+    loop if cursor + 8 > load.layout.size then break else {
       parts.&.push(
         builder.load_word(builder.add(load.ptr, builder.int(cursor)))
       )
       cursor = cursor + 8
     }
-    loop if cursor == load.size then break else {
+    loop if cursor == load.layout.size then break else {
       parts.&.push(
         builder.load_byte(builder.add(load.ptr, builder.int(cursor)))
       )
@@ -20,19 +20,19 @@ fun lower_loads_and_stores(id: EggId, builder: &EggBodyBuilder): EggId {
     builder.aggregate(parts.to_slice())
   }
   case store(store) {
-    var size = store.value.type().size()
+    var size = store.value.type().memory_layout().size
     var cursor = 0
     loop if cursor + 8 > size then break else {
       builder.store_word(
         builder.add(store.ptr, builder.int(cursor)),
-        builder.part(store.value, cursor, 8),
+        builder.part(store.value, cursor, MemoryLayout { size = 8, alignment = 8 }),
       )
       cursor = cursor + 8
     }
     loop if cursor == size then break else {
       builder.store_byte(
         builder.add(store.ptr, builder.int(cursor)),
-        builder.part(store.value, cursor, 1),
+        builder.part(store.value, cursor, MemoryLayout { size = 1, alignment = 1 }),
       )
       cursor = cursor + 1
     }

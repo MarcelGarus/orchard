@@ -19,18 +19,13 @@ fun to_waffle(fun_: EggFun): WaffleFun {
     types.to_slice()
   }
   var param_layout = param_types.memory_layout_args()
-  var param = create(WaffleExpr.param(WaffleParam {
-    size = param_layout.size, alignment = param_layout.alignment
-  }))
+  var param = create(waffle_param(param_layout.size, param_layout.alignment))
   for p in fun_.body.params.iter().enumerate() do {
     var layout = param_types.get(p.index).memory_layout()
     mapping.&.put(
       p.item,
-      waffle_member(
-        waffle_local(param),
-        param_layout.offsets.get(p.index),
-        layout.size,
-        layout.alignment,
+      waffle_part(
+        waffle_local(param), param_layout.offsets.get(p.index), layout
       ),
     )
   }
@@ -61,100 +56,53 @@ fun to_waffle(
   case lower_byte(int) waffle_lower_byte(mapping.get(int))
   case byte_to_int(byte) waffle_byte_to_int(mapping.get(byte))
   case int(int) waffle_int(int)
-  case add(args) waffle_add(mapping.get(args.a), mapping.get(args.b))
-  case subtract(args) waffle_subtract(mapping.get(args.a), mapping.get(args.b))
-  case multiply(args) waffle_multiply(mapping.get(args.a), mapping.get(args.b))
+  case add(args)
+    waffle_add(waffle_int_operands(mapping.get(args.a), mapping.get(args.b)))
+  case subtract(args)
+    waffle_subtract(
+      waffle_int_operands(mapping.get(args.a), mapping.get(args.b))
+    )
+  case multiply(args)
+    waffle_multiply(
+      waffle_int_operands(mapping.get(args.a), mapping.get(args.b))
+    )
   case unchecked_divide(args)
-    waffle_divide(mapping.get(args.a), mapping.get(args.b))
+    waffle_divide(waffle_int_operands(mapping.get(args.a), mapping.get(args.b)))
   case unchecked_modulo(args)
-    waffle_modulo(mapping.get(args.a), mapping.get(args.b))
-  case and_(args) waffle_and(mapping.get(args.a), mapping.get(args.b))
-  case or_(args)  waffle_or( mapping.get(args.a), mapping.get(args.b))
-  case xor(args) waffle_xor(mapping.get(args.a), mapping.get(args.b))
+    waffle_modulo(waffle_int_operands(mapping.get(args.a), mapping.get(args.b)))
+  case shift_left(args)
+    waffle_shift_left(
+      waffle_int_operands(mapping.get(args.a), mapping.get(args.b))
+    )
+  case shift_right(args)
+    waffle_shift_right(
+      waffle_int_operands(mapping.get(args.a), mapping.get(args.b))
+    )
+  case and_(args)
+    waffle_and(waffle_int_operands(mapping.get(args.a), mapping.get(args.b)))
+  case or_(args)
+    waffle_or(waffle_int_operands(mapping.get(args.a), mapping.get(args.b)))
+  case xor(args)
+    waffle_xor(waffle_int_operands(mapping.get(args.a), mapping.get(args.b)))
   | Note: The return byte of the compare_ints waffle expression matches the
   | tag for the Ordering enum (| equal greater less).
-  | TODO: Move the subtraction into the Egg so that it can be optimized.
-  case compare(args)
-    waffle_compare_zero(
-      waffle_subtract(mapping.get(args.a), mapping.get(args.b))
-    )
-  case struct_(struct_) {
-    var layout = id.type().memory_layout_struct()
-    var parts = list[WaffleExpr]()
-    for part in layout.parts do
-      parts.&.push(
-        switch part
-        case field(name) mapping.get(struct_.get(name))
-        case padding(amount) waffle_padding(amount)
+  case compare_zero(arg) waffle_compare_zero(mapping.get(arg))
+  case struct_(fields) {
+    if fields.is_not_empty() then
+      panic(
+        "Only Nothing is allowed when converting to Waffle; other structs 
+        'should be layouted."
       )
-    waffle_aggregate(parts.to_slice())
+    waffle_aggregate(empty_slice[WaffleExpr]())
   }
-  case member(member) {
-    var struct_layout = member.of.type().memory_layout_struct()
-    var field_layout = id.type().memory_layout()
-    mapping.get(member.of).waffle_member(
-      struct_layout.field_to_offset.get(member.name),
-      field_layout.size,
-      field_layout.alignment,
-    )
-  }
-  case enum_(enum_) {
-    var enum_layout = id.type().memory_layout_enum()
-    var variant_layout = enum_layout.variants.get(enum_.variant)
-    var parts = list[WaffleExpr]()
-    for part in variant_layout.parts do
-      switch part
-      case payload parts.&.push(mapping.get(enum_.payload))
-      case padding(amount) parts.&.push(waffle_padding(amount))
-      case tag(tag) {
-        for i in 0..enum_layout.tag_size do {
-          parts.&.push(waffle_byte(tag.lower_byte()))
-          tag = tag / 256
-        }
-      }
-    waffle_aggregate(parts.to_slice())
-  }
-  case switch_(switch_) {
+  case switch_on_byte(switch_) {
     var condition = mapping.get(switch_.condition)
-    var layout = switch_.condition.type().memory_layout_enum()
-
-    for variant_layout in layout.variants do {
-      var payload = switch_.cases.get(variant_layout.key).params.get(0)
-      var layout = payload.type().memory_layout()
-      mapping.put(
-        payload, condition.waffle_member(0, layout.size, layout.alignment)
-      )
-    }
-
-    var cases = uninitialized_slice[WaffleBody](layout.tag_to_variant.size)
-    for entry in layout.tag_to_variant do {
-      var body = switch_.cases.get(entry.value)
+    var cases = list[WaffleBody]()
+    for case_ in switch_.cases do {
       var builder = waffle_body_builder().&
-      cases.&.set(entry.key, builder.finish(body.to_waffle(builder, mapping)))
+      cases.&.push(builder.finish(case_.to_waffle(builder, mapping)))
     }
-
-    for offset_in_tag in 0..layout.tag_size do {
-      | Group groups of 256 cases into a single case.
-      var num_new_cases = cases.len + 255 / 256
-      var new_cases = uninitialized_slice[WaffleBody](num_new_cases)
-      for i in 0..num_new_cases do {
-        new_cases.&.set(
-          i,
-          waffle_body_builder().finish(
-            waffle_switch(
-              waffle_member(condition, layout.tag_offset + offset_in_tag, 1, 1),
-              cases.subslice({i * 256}..min(i + 1 * 256, cases.len)),
-            )
-          )
-        )
-      }
-      cases = new_cases
-    }
-    if cases.len != 1 then unreachable()
-
-    var case_body = cases.get(0)
-    for local in case_body.locals do builder.locals.&.push(local)
-    case_body.returns
+    waffle_switch(condition, cases.to_slice())
   }
   case call_fun(call) {
     var arg_types = list[EggType]()
@@ -167,11 +115,11 @@ fun to_waffle(
         case arg(index) mapping.get(call.args.get(index))
         case padding(amount) waffle_padding(amount)
       )
-    var args = waffle_aggregate(parts.to_slice())
-    var return_layout = id.type().memory_layout()
-    waffle_call(call.fun_, args, return_layout.size, return_layout.alignment)
+    waffle_call(
+      call.fun_, waffle_aggregate(parts.to_slice()), id.type().memory_layout()
+    )
   }
-  case function_ptr(signature) waffle_function_ptr(signature)
+  case fun_ptr(signature) waffle_fun_ptr(signature)
   case call_indirect(call) {
     var arg_types = list[EggType]()
     for arg in call.args do arg_types.&.push(arg.type())
@@ -183,109 +131,18 @@ fun to_waffle(
         case arg(index) mapping.get(call.args.get(index))
         case padding(amount) waffle_padding(amount)
       )
-    var args = waffle_aggregate(parts.to_slice())
-    var return_layout = id.type().memory_layout()
     waffle_call_indirect(
-      mapping.get(call.function_ptr), args,
-      return_layout.size, return_layout.alignment,
+      mapping.get(call.fun_ptr),
+      waffle_aggregate(parts.to_slice()),
+      id.type().memory_layout(),
     )
   }
-  case object_new(value) {
-    var value = mapping.get(value)
-    var ptr = builder.local(waffle_malloc(waffle_int(8 + value.size())))
-    builder.local(waffle_store(ptr,
-      waffle_aggregate(list(waffle_int(1), value).to_slice())
-    ))
-    ptr
-  }
-  case object_load(load) {
-    var layout = id.type().memory_layout()
-    builder.local(waffle_load(
-      waffle_add(mapping.get(load.ptr), waffle_int(8)),
-      layout.size, layout.alignment
-    ))
-  }
-  case object_free(free)
-    builder.local(waffle_free(
-      mapping.get(free.ptr), waffle_int(8 + free.type.memory_layout().size)
-    ))
-  case new_buffer(new) {
-    | On the heap, we allocate space for the data with the following layout:
-    | [reference count][length][item][item][item]...
-    var item_layout = new.item_type.memory_layout()
-    var len = mapping.get(new.length)
-    var ptr = builder.local(waffle_malloc(
-      waffle_add(
-        waffle_int(8 + 8),
-        waffle_multiply(len, waffle_int(item_layout.stride_size())),
+  case raw_crash(crash) 
+    waffle_crash(
+      waffle_aggregate(
+        list(mapping.get(crash.ptr), mapping.get(crash.len)).to_slice()
       )
-    ))
-    builder.local(waffle_store(ptr, waffle_int(1)))
-    builder.local(waffle_store(waffle_add(ptr, waffle_int(8)), len))
-    ptr
-  }
-  case get_buffer_length(ptr)
-    builder.local(
-      waffle_load(waffle_add(mapping.get(ptr), waffle_int(8)), 8, 8)
     )
-  case load_buffer_item(load) {
-    var item_layout = load.item_type.memory_layout()
-    builder.local(waffle_load(
-      waffle_add(
-        waffle_add(mapping.get(load.buffer), waffle_int(16)),
-        waffle_multiply(
-          mapping.get(load.index), waffle_int(item_layout.stride_size())
-        )
-      ),
-      item_layout.size, item_layout.alignment
-    ))
-  }
-  case store_buffer_item(store) {
-    var item_layout = store.item_type.memory_layout()
-    builder.local(waffle_store(
-      waffle_add(
-        waffle_add(mapping.get(store.buffer), waffle_int(16)),
-        waffle_multiply(
-          mapping.get(store.index), waffle_int(item_layout.stride_size())
-        )
-      ),
-      mapping.get(store.item),
-    ))
-  }
-  case store_buffer_bytes(store)
-    builder.local(waffle_store_bytes(
-      waffle_add(mapping.get(store.buffer), waffle_int(16)), store.bytes
-    ))
-  case free_buffer(free) {
-    var item_layout = free.item_type.memory_layout()
-    var ptr = mapping.get(free.buffer)
-    var len = builder.local(waffle_load(waffle_add(ptr, waffle_int(8)), 8, 8))
-    var size = waffle_add(
-      waffle_int(8 + 8),
-      waffle_multiply(len, waffle_int(item_layout.stride_size())),
-    )
-    builder.local(waffle_free(ptr, size))
-  }
-  case get_refcount(get)
-    builder.&.local(waffle_load(mapping.get(get.ptr), 8, 8))
-  case set_refcount(set) {
-    var ptr = mapping.get(set.ptr)
-    var refcount = mapping.get(set.refcount)
-    builder.local(waffle_store(ptr, refcount))
-  }
-  case crash(crash) {
-    | Convert the Plum String to bytes ptr + len.
-    |
-    | String layout: [buffer][end][start]
-    |                 |
-    |                 v
-    |                [refcount][len][bytes]
-    var message = mapping.get(crash.message)
-    var ptr_to_buffer = waffle_member(message, 0, 8, 8)
-    var ptr_to_bytes = waffle_add(ptr_to_buffer, waffle_int(16))
-    var len = waffle_member(message, 8, 8, 8)
-    waffle_crash(waffle_aggregate(list(ptr_to_bytes, len).to_slice()))
-  }
   case unreachable waffle_unreachable
   case halt waffle_halt
   case loop_(loop_) {
@@ -305,18 +162,15 @@ fun to_waffle(
     var initial = waffle_aggregate(parts.to_slice())
 
     var body = {
-      for var_ in loop_.body.params.iter().enumerate() do {
-        var layout = var_.item.type().memory_layout()
+      for var_ in loop_.body.params.iter().enumerate() do
         mapping.&.put(
           var_.item,
-          waffle_member(
+          waffle_part(
             waffle_local(param),
             var_layout.offsets.get(var_.index),
-            layout.size,
-            layout.alignment,
+            var_.item.type().memory_layout(),
           ),
         )
-      }
       var builder = waffle_body_builder().&
       builder.finish(loop_.body.to_waffle(builder, mapping))
     }
@@ -334,17 +188,46 @@ fun to_waffle(
         case arg(index) mapping.get(continue_.next.get(index))
         case padding(amount) waffle_padding(amount)
       )
-    var next = waffle_aggregate(parts.to_slice())
-
-    var layout = id.type().memory_layout()
-
-    waffle_continue(next, layout.size, layout.alignment)
+    waffle_continue(
+      waffle_aggregate(parts.to_slice()), id.type().memory_layout()
+    )
   }
-  | case malloc(id) waffle_malloc(mapping.get(id))
-  | case free(free) waffle_free(mapping.get(free.ptr), free.size)
-  | case load(load) waffle_load(mapping.get(load.ptr), load.size, load.alignment)
-  | case store(store) waffle_store(mapping.get(store.ptr), mapping.get(store.value))
-  | case store_bytes(store) waffle_store_bytes(mapping.get(store.ptr), store.bytes)
+  case padding(amount) waffle_padding(amount)
+  case aggregate(aggregate) {
+    var parts = list[WaffleExpr]()
+    for part in aggregate do parts.&.push(mapping.get(part))
+    waffle_aggregate(parts.to_slice())
+  }
+  case part(part)
+    waffle_part(
+      mapping.get(part.of),
+      part.offset,
+      part.layout,
+    )
+  case malloc(size) waffle_malloc(mapping.get(size))
+  case null_ptr waffle_int(0)
+  case free(free)
+    waffle_free(
+      waffle_aggregate(
+        list(mapping.get(free.ptr), mapping.get(free.size)).to_slice()
+      )
+    )
+  case load_word(load) waffle_load_word(mapping.get(load.ptr))
+  case load_byte(load) waffle_load_byte(mapping.get(load.ptr))
+  case store_word(store)
+    waffle_store_word(
+      waffle_aggregate(
+        list(mapping.get(store.ptr), mapping.get(store.value)).to_slice()
+      )
+    )
+  case store_byte(store)
+    waffle_store_byte(
+      waffle_aggregate(
+        list(mapping.get(store.ptr), mapping.get(store.value)).to_slice()
+      )
+    )
+  case store_bytes(store)
+    waffle_store_bytes(mapping.get(store.ptr), store.bytes)
   default panic({
     var b = string_builder().&
     b."unexpected expression when converting to Waffle:\n"

@@ -1,7 +1,19 @@
 import mod.mar
 
+struct EggBuiltinType { name: String, args: Int }
+
+var builtin_types =
+  list(
+    EggBuiltinType { name = "Never", args = 0 },
+    EggBuiltinType { name = "Type", args = 0 },
+    EggBuiltinType { name = "Byte", args = 0 },
+    EggBuiltinType { name = "Int", args = 0 },
+    EggBuiltinType { name = "Box", args = 1 },
+    EggBuiltinType { name = "Array", args = 1 },
+  ).to_slice()
+
 | Plum code can import these functions from the "builtins" module.
-enum EggBuiltin {
+enum EggBuiltinFun {
   | byte operations
   lower_byte,        | Int -> Byte
   byte_to_int,       | Byte -> Int
@@ -45,65 +57,114 @@ enum EggBuiltin {
   dynamic_to_static, | Dynamic -> t. Or crash: "bad shape"
 }
 
-var egg_builtins = | Keep in sync with the builtins above!
+var builtin_funs = | Keep in sync with the builtins above!
   list(
-    EggBuiltin.lower_byte, EggBuiltin.byte_to_int,
-    EggBuiltin.add_ints, EggBuiltin.sub_ints, EggBuiltin.mul_ints,
-    EggBuiltin.div_ints, EggBuiltin.mod_ints, EggBuiltin.and_ints,
-    EggBuiltin.or_ints, EggBuiltin.xor_ints,
-    EggBuiltin.compare_ints,
-    EggBuiltin.box, EggBuiltin.unbox,
-    EggBuiltin.generate_array, EggBuiltin.array_get, EggBuiltin.array_set,
-    EggBuiltin.array_slice, EggBuiltin.array_len,
-    EggBuiltin.call,
-    EggBuiltin.crash,
-    EggBuiltin.type_of, EggBuiltin.type_info,
-    EggBuiltin.static_to_dynamic, EggBuiltin.dynamic_to_static,
+    EggBuiltinFun.lower_byte, EggBuiltinFun.byte_to_int,
+    EggBuiltinFun.add_ints, EggBuiltinFun.sub_ints, EggBuiltinFun.mul_ints,
+    EggBuiltinFun.div_ints, EggBuiltinFun.mod_ints, EggBuiltinFun.and_ints,
+    EggBuiltinFun.or_ints, EggBuiltinFun.xor_ints,
+    EggBuiltinFun.compare_ints,
+    EggBuiltinFun.box, EggBuiltinFun.unbox,
+    EggBuiltinFun.generate_array, EggBuiltinFun.array_get,
+    EggBuiltinFun.array_set, EggBuiltinFun.array_slice, EggBuiltinFun.array_len,
+    EggBuiltinFun.call,
+    EggBuiltinFun.crash,
+    EggBuiltinFun.type_of, EggBuiltinFun.type_info,
+    EggBuiltinFun.static_to_dynamic, EggBuiltinFun.dynamic_to_static,
   ).to_slice()
 
 
-struct BuiltinTypeSignature { params: Slice[EggType], return_type: EggType }
-fun type_signature(builtin: EggBuiltin): BuiltinTypeSignature {
+struct BuiltinTypeSignature { params: Slice[FunParam], return_type: EggType }
+fun type_signature(builtin: EggBuiltinFun): BuiltinTypeSignature {
   var params_and_return_type =
     switch builtin
-    case lower_byte tuple(list(type_int), type_byte)
-    case byte_to_int tuple(list(type_byte), type_int)
-    case add_ints tuple(list(type_int, type_int), type_int)
-    case sub_ints tuple(list(type_int, type_int), type_int)
-    case mul_ints tuple(list(type_int, type_int), type_int)
-    case div_ints tuple(list(type_int, type_int), type_int)
-    case mod_ints tuple(list(type_int, type_int), type_int)
-    case and_ints tuple(list(type_int, type_int), type_int)
-    case or_ints tuple(list(type_int, type_int), type_int)
-    case xor_ints tuple(list(type_int, type_int), type_int)
-    case compare_ints tuple(list(type_int, type_int), type_ordering)
-    case box tuple(list(type_var_t), type_box(type_var_t))
-    case unbox tuple(list(type_box(type_var_t)), type_var_t)
+    case lower_byte tuple(list(param("int", type_int)), type_byte)
+    case byte_to_int tuple(list(param("byte", type_byte)), type_int)
+    case add_ints
+      tuple(list(param("a", type_int), param("b", type_int)), type_int)
+    case sub_ints
+      tuple(list(param("a", type_int), param("b", type_int)), type_int)
+    case mul_ints
+      tuple(list(param("a", type_int), param("b", type_int)), type_int)
+    case div_ints
+      tuple(list(param("a", type_int), param("b", type_int)), type_int)
+    case mod_ints
+      tuple(list(param("a", type_int), param("b", type_int)), type_int)
+    case and_ints
+      tuple(list(param("a", type_int), param("b", type_int)), type_int)
+    case or_ints
+      tuple(list(param("a", type_int), param("b", type_int)), type_int)
+    case xor_ints
+      tuple(list(param("a", type_int), param("b", type_int)), type_int)
+    case compare_ints
+      tuple(list(param("a", type_int), param("b", type_int)), type_ordering)
+    case box
+      tuple(
+        list(param("value", type_variable("a"))), type_box(type_variable("a"))
+      )
+    case unbox
+      tuple(
+        list(param("box", type_box(type_variable("a")))), type_variable("a")
+      )
     case generate_array
       tuple(
-        list(type_int, type_lambda(list(type_int).to_slice(), type_var_t)),
-        type_array(type_var_t),
+        list(
+          param("length", type_int),
+          param(
+            "generator",
+            type_lambda(list(type_int).to_slice(), type_variable("a")),
+          ),
+        ),
+        type_array(type_variable("a")),
       )
-    case array_get tuple(list(type_array(type_var_t), type_int), type_var_t)
+    case array_get
+      tuple(
+        list(
+          param("array", type_array(type_variable("a"))),
+          param("index", type_int),
+        ),
+        type_variable("a"),
+      )
     case array_set
       tuple(
-        list(type_array(type_var_t), type_int, type_var_t),
-        type_array(type_var_t),
+        list(
+          param("array", type_array(type_variable("a"))),
+          param("index", type_int),
+          param("item", type_variable("a")),
+        ),
+        type_array(type_variable("a")),
       )
     case array_slice
       tuple(
-        list(type_array(type_var_t), type_range(type_int)),
-        type_array(type_var_t),
+        list(
+          param("array", type_array(type_variable("a"))),
+          param("range", type_range(type_int)),
+        ),
+        type_array(type_variable("a")),
       )
-    case array_len tuple(list(type_array(type_var_t)), type_int)
+    case array_len
+      tuple(list(param("array", type_array(type_variable("a")))), type_int)
     case call
-      tuple(list(type_lambda(empty_slice[EggType](), type_var_t)), type_var_t)
-    case crash tuple(list(type_string), type_never)
-    case type_of tuple(list(type_var_t), type_type)
-    case type_info tuple(list(type_type), type_type_info)
-    case static_to_dynamic tuple(list(type_var_t), type_dynamic)
+      tuple(
+        list(
+          param(
+            "lamdba", type_lambda(empty_slice[EggType](), type_variable("a"))
+          ),
+        ),
+        type_variable("a"),
+      )
+    case crash
+      tuple(list(param("message", type_string)), type_never)
+    case type_of tuple(list(param("value", type_variable("a"))), type_type)
+    case type_info tuple(list(param("type", type_type)), type_type_info)
+    case static_to_dynamic
+      tuple(list(param("value", type_variable("a"))), type_dynamic)
     case dynamic_to_static
-      tuple(list(type_dynamic, type_type), type_variable("arg_1"))
+      tuple(
+        list(param("dynamic", type_dynamic), param("t", type_type)),
+        type_variable("t"),
+      )
+
   BuiltinTypeSignature {
     params = params_and_return_type.a.to_slice(),
     return_type = params_and_return_type.b,

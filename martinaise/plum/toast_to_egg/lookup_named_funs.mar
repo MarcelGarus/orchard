@@ -1,0 +1,71 @@
+import mod.mar
+
+fun lookup_exported_named_funs(
+  name: String, module: Module, toasts: Map[Module, Toasty]
+): Result[Slice[MatchingName], Error] {
+  lookup_exported_named_funs(name, module, toasts, list[Module]().&)
+}
+
+fun lookup_named_funs(
+  name: String, module: Module, toasts: Map[Module, Toasty]
+): Result[Slice[MatchingName], Error] {
+  lookup_named_funs(name, module, toasts, list[Module]().&)
+}
+
+struct MatchingName { name: String, params: Slice[FunParam] }
+
+fun lookup_exported_named_funs(
+  name: String,
+  module: Module,
+  toasts: Map[Module, Toasty],
+  stack: &List[Module],
+): Result[Slice[MatchingName], Error] {
+  if module == builtin_module then {
+    for fun_ in builtin_funs do {
+      if fun_.format() == name then {
+        return ok[Slice[MatchingName], Error](list(
+          MatchingName { name, params = fun_.type_signature().params }
+        ).to_slice())
+      }
+    }
+    return ok[Slice[MatchingName], Error](empty_slice[MatchingName]())
+  }
+  var matches = list[MatchingName]()
+  for fun_ in toasts.get(module).exported_funs do
+    if fun_.name.string == name then {
+      var params = list[FunParam]()
+      for param in fun_.args.iter().&.enumerate() do
+        params.&.push(FunParam {
+          name = param.item.name.string,
+          type = param.item.type.compile(module, toasts)?,
+        })
+      matches.&.push(MatchingName { name, params = params.to_slice() })
+    }
+  ok[Slice[MatchingName], Error](matches.to_slice())
+}
+
+fun lookup_named_funs(
+  name: String,
+  module: Module,
+  toasts: Map[Module, Toasty],
+  stack: &List[Module],
+): Result[Slice[MatchingName], Error] {
+  if module == builtin_module then unreachable()
+
+  var matches = list[MatchingName]()
+  var toast = toasts.get(module)
+  for fun_ in toast.funs do {
+    fun_.name.string == name or continue
+    var params = list[FunParam]()
+    for param in fun_.params do
+      params.&.push(FunParam {
+        name = param.name.string, type = param.type.compile(module, toasts)?
+      })
+    matches.&.push(MatchingName { name, params = params.to_slice() })
+  }
+  for imported in toast.imports do
+    for match in lookup_exported_named_funs(name, imported, toasts, stack)? do
+      matches.&.push(match)
+
+  ok[Slice[MatchingName], Error](matches.to_slice())
+}

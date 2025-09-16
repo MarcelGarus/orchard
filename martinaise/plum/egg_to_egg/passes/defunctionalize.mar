@@ -1,0 +1,255 @@
+import mod.mar
+
+fun defunctionalize(egg: Egg): Egg {
+  var funs = map[String, EggFun]()
+  for fun_ in egg.funs do funs.&.put(fun_.key, fun_.value)
+  for fun_ in egg.funs do {
+    if fun_.value.lambda_crosses_call_boundary() then continue
+    var lambdas = fun_.value.collect_lambdas(egg.funs)
+    if lambdas.is_empty() then continue
+    var lambda_sets = map[EggType, LambdaSet]()
+    for lambda in lambdas do {
+      if lambda_sets.&.get_maybe_ref(lambda.type) is some(set) then
+        set.lambdas.&.push(lambda)
+      else
+        lambda_sets.&.put(lambda.type, LambdaSet { lambdas = list(lambda) })
+    }
+    var defunctionalized = fun_.key.defunctionalize(Defunctionalize {
+      for_ = fun_.key, lambda_sets, funs = egg.funs, out_funs = funs.&
+    })
+    funs.&.put(fun_.key, funs.get(defunctionalized))
+  }
+  Egg { entry_point = egg.entry_point, funs }
+}
+
+fun lambda_crosses_call_boundary(fun_: EggFun): Bool {
+  for param in fun_.body.params do
+    if param.type().contains_lambda() then return true
+  fun_.body.returns.type().contains_lambda()
+}
+fun contains_lambda(type: EggType): Bool { type.string.contains("\\") }
+
+struct LambdaSet { lambdas: List[LambdaInSet] }
+struct LambdaInSet { fun_: String, type: EggType, closure_type: EggType }
+
+fun ==(a: LambdaInSet, b: LambdaInSet): Bool {
+  a.fun_ == b.fun_ and a.type == b.type
+}
+fun hash[H](hasher: H, lambda: LambdaInSet) {
+  hasher.hash(lambda.fun_)
+  hasher.hash(lambda.type)
+}
+
+fun collect_lambdas(
+  fun_: EggFun, funs: Map[String, EggFun]
+): Set[LambdaInSet] {
+  var lambdas = set[LambdaInSet]()
+  fun_.body.visit(CollectLambdas {
+    lambdas = lambdas.&, funs, visited_funs = set[String]().&
+  })
+  lambdas
+}
+struct CollectLambdas {
+  lambdas: &Set[LambdaInSet],
+  funs: Map[String, EggFun],
+  visited_funs: &Set[String],
+}
+fun visit(id: EggId, collect: CollectLambdas) {
+  switch id.resolve()
+  case raw_lambda(lambda) {
+    collect.lambdas.put(LambdaInSet {
+      fun_ = lambda.fun_,
+      type = lambda.type,
+      closure_type = lambda.closure.type(),
+    })
+    if not(collect.visited_funs.contains(lambda.fun_)) then {
+      var fun_ = collect.funs.get(lambda.fun_)
+      collect.visited_funs.put(lambda.fun_)
+      collect.funs.get(lambda.fun_).visit(collect)
+    }
+  }
+  case call_fun(call)
+    if not(collect.visited_funs.contains(call.fun_)) then {
+      var fun_ = collect.funs.get(call.fun_)
+      if fun_.lambda_crosses_call_boundary() then {
+        collect.visited_funs.put(call.fun_)
+        collect.funs.get(call.fun_).visit(collect)
+      }
+    }
+  default id.visit_children(collect)
+}
+
+fun defunctionalize(
+  type: EggType, lambda_sets: Map[EggType, LambdaSet]
+): EggType {
+  | eprintln("lambda sets")
+  | for entry in lambda_sets do {
+  |   eprintln("  {entry.key}")
+  |   for lambda in entry.value.lambdas do
+  |     eprintln("    {lambda.fun_} capturing {lambda.closure_type}")
+  | }
+  var new = type.defunctionalize(lambda_sets, type, root_path)
+  | eprintln("defunctionalizing")
+  | eprintln("  {type}")
+  | eprintln("  {new}")
+  new
+}
+fun defunctionalize(
+  type: EggType,
+  lambda_sets: Map[EggType, LambdaSet],
+  root: EggType,
+  path: TypePath,
+): EggType {
+  switch type.plum_not_extended()
+  case variable unreachable()
+  case never type_never
+  case byte type_byte
+  case int type_int
+  case type type_type
+  case struct_(struct_) {
+    var fields = map[String, EggType]()
+    for field in struct_ do
+      fields.&.put(
+        field.key,
+        field.value.defunctionalize(
+          lambda_sets, root, path.struct_field(field.key)
+        ),
+      )
+    type_struct(fields)
+  }
+  case enum_(enum_) {
+    var variants = map[String, EggType]()
+    for variant in enum_ do
+      variants.&.put(
+        variant.key,
+        variant.value.defunctionalize(
+          lambda_sets, root, path.enum_variant(variant.key)
+        ),
+      )
+    type_enum(variants)
+  }
+  case lambda
+    root.get(path).defunctionalize_lambda(lambda_sets, map[EggType, Int]())
+  case box(inner)
+    type_box(inner.defunctionalize(lambda_sets, root, path.box_inner()))
+  case array(item)
+    type_array(item.defunctionalize(lambda_sets, root, path.array_item()))
+  case recursive(level) type_recursive(level)
+}
+fun defunctionalize_lambda(
+  type: EggType,
+  lambda_sets: Map[EggType, LambdaSet],
+  surrounding: Map[EggType, Int],
+): EggType {
+  if surrounding.get_maybe(type) is some(nesting) then
+    return type_recursive(nesting)
+  var original = type
+  if type.plum_not_extended() is lambda then
+    type = {
+      var set = lambda_sets.get(type)
+      var variants = map[String, EggType]()
+      for lambda in set.lambdas do
+        variants.&.put(lambda.fun_, lambda.closure_type)
+      type_enum_without_canonicalizing(variants)
+    }
+  var b = string_builder().&
+  var nesting = 0
+  var last_flushed = 0
+  var cursor = 0
+  loop {
+    if cursor == type.string.len then break
+    if type.string.get(cursor) == #( then nesting = nesting + 1
+    if type.string.get(cursor) == #) then nesting = nesting - 1
+    if type.string.get(cursor) == #\ then {
+      cursor = cursor - 1
+      nesting = nesting - 1
+      b.write(type.string.substr(last_flushed..cursor))
+      var end_cursor = cursor
+      var end_nesting = nesting
+      loop {
+        if type.string.get(end_cursor) == #( then end_nesting = end_nesting + 1
+        if type.string.get(end_cursor) == #) then end_nesting = end_nesting - 1
+        end_cursor = end_cursor + 1
+        if end_nesting == nesting then break
+      }
+      var lambda = EggType { string = type.string.substr(cursor..end_cursor) }
+      var inner_surrounding = map[EggType, Int]()
+      for entry in surrounding do
+        inner_surrounding.&.put(entry.key, entry.value + nesting)
+      inner_surrounding.&.put(original, nesting)
+      b.write(lambda.defunctionalize_lambda(lambda_sets, inner_surrounding))
+
+      cursor = end_cursor
+      last_flushed = end_cursor
+    }
+    cursor = cursor + 1
+  }
+  b.write(type.string.substr(last_flushed..type.string.len))
+  EggType { string = b.to_string() }
+}
+
+struct Defunctionalize {
+  for_: String,
+  lambda_sets: Map[EggType, LambdaSet],
+  funs: Map[String, EggFun],
+  out_funs: &Map[String, EggFun],
+}
+
+fun defunctionalize(fun_: String, mapper: Defunctionalize): String {
+  var signature = "{fun_} defunctionalized for {mapper.for_}"
+  if mapper.out_funs.contains(signature) then return signature
+
+  mapper.out_funs.put(signature, uninitialized[EggFun]().*)
+  mapper.out_funs.put(signature, mapper.funs.get(fun_).map(mapper))
+  signature
+}
+
+fun map(
+  id: EggId,
+  mapper: Defunctionalize,
+  builder: &EggBodyBuilder,
+  mapping: &Map[EggId, EggId],
+): EggId {
+  var expr = id.map_children(mapper, mapping)
+  switch expr
+  case raw_lambda(lambda) {
+    var type = id.resolve().raw_lambda.unwrap().type
+      .defunctionalize(mapper.lambda_sets)
+    builder.enum_(type, lambda.fun_, lambda.closure)
+  }
+  case call_lambda(call) {
+    var set = mapper.lambda_sets.get(
+      id.resolve().call_lambda.unwrap().lambda.type()
+    )
+    builder.switch_(call.lambda, {
+      var cases = map[String, EggBody]()
+      for lambda in set.lambdas do
+        cases.&.put(lambda.fun_, {
+          var builder = egg_body_builder().&
+          var closure = builder.case_param(call.lambda, lambda.fun_)
+          var args = list[EggId]()
+          for arg in call.args do args.&.push(arg)
+          args.&.push(closure)
+          builder.finish(builder.call(
+            lambda.fun_.defunctionalize(mapper), args.to_slice(), id.type().defunctionalize(mapper.lambda_sets)
+          ))
+        })
+      cases
+    })
+  }
+  case call_fun(call) {
+    var fun_ = mapper.funs.get(call.fun_)
+    if fun_.lambda_crosses_call_boundary() then {
+      builder.call(
+        call.fun_.defunctionalize(mapper), call.args, call.return_type
+      )
+    } else
+      builder.push(expr)
+  }
+  default builder.push(expr)
+}
+
+fun map(type: EggType, defunctionalize: Defunctionalize): EggType {
+  | eprintln("type: {type}; lambda sets: :{defunctionalize.lambda_sets.debug()}")
+  type.defunctionalize(defunctionalize.lambda_sets)
+}

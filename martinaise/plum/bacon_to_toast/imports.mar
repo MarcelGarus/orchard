@@ -1,0 +1,62 @@
+import mod.mar
+
+fun parse_import(bacon: Bacon): Result[Maybe[ToastImport], Error] {
+  if bacon.line == "import" then {
+    | Multiline import.
+    var modules = list[StringAndSrc]()
+    for child in bacon.children do
+      if child.parse_module_path()? is some(path) then modules.&.push(path)
+    var modules = modules.to_slice()
+
+    return parsed(ToastImport { keyword = bacon.line @ bacon.src, modules })
+  }
+
+  | Single-line import.
+  var parser = parser(bacon.line, bacon.src)
+
+  var keyword = parser.&.consume("import") or return no_match[ToastImport]()
+  parser.current().is_whitespace() or return no_match[ToastImport]()
+
+  bacon.children.is_empty() or
+    return bad_input[ToastImport](error(
+      "Multi-line import should have a line that just says import.",
+      bacon.children.first().src ... bacon.children.last().src,
+    ))
+
+  var module = parser.&.parse_module_path() or
+    return bad_input[ToastImport](error(
+      "Expected imported module.", parser.src_of_rest()
+    ))
+  parser.&.ensure_is_at_end()?
+
+  parsed(ToastImport { keyword, modules = list(module).to_slice() })
+}
+
+fun parse_module_path(bacon: Bacon): Result[Maybe[StringAndSrc], Error] {
+  bacon.children.is_empty() or
+    return error[Maybe[StringAndSrc], Error](error(
+      "Module paths can't have children.", bacon.src
+    ))
+
+  var parser = parser(bacon.line, bacon.src)
+  var path = parser.&.parse_module_path()
+  parser.&.consume_whitespace()
+  parser.&.ensure_is_at_end()?
+  ok[Maybe[StringAndSrc], Error](path)
+}
+
+fun parse_module_path(parser: &LineParser): Maybe[StringAndSrc] {
+  parser.consume_whitespace()
+  var start = parser.cursor
+  loop {
+    if parser.is_at_end() or parser.current() == space then break
+    parser.advance()
+  }
+  var end = parser.cursor
+  if start == end then
+    none[StringAndSrc]()
+  else
+    some(
+      parser.input.substr(start..end) @ parser.input_src.with_range(start..end)
+    )
+}

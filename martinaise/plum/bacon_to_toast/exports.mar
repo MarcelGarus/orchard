@@ -1,0 +1,63 @@
+import mod.mar
+
+fun parse_signature_param(
+  parser: &LineParser, default_name: String
+): Result[Maybe[ToastParam], Error] {
+  var name = parser.parse_name() or {
+    var type = parser.parse_type(false)? or return no_match[ToastParam]()
+    return parsed(ToastParam { name = default_name @ invalid_src, type })
+  }
+  if parser.consume(":") is some then {
+    var type = parser.parse_type(false)? or
+      return bad_input[ToastParam](error(
+        "Expected type.", parser.src_of_rest()
+      ))
+    parsed(ToastParam { name, type })
+  } else
+    parsed(ToastParam {
+      name = default_name @ invalid_src, type = ToastType.variable(name)
+    })
+}
+
+fun parse_export_item(
+  parser: &LineParser
+): Result[Maybe[ToastExportItem], Error] {
+  if parser.parse_type_name() is some(name) then {
+    var args = list[StringAndSrc]()
+    loop args.&.push(parser.parse_type_variable() or break)
+    var args = args.to_slice()
+    return parsed(ToastExportItem.type(ToastTypeSignature { name, args }))
+  }
+  if parser.parse_name() is some(name) then {
+    var args = list[ToastParam]()
+    loop args.&.push(parser.parse_signature_param("arg_{args.len}")? or break)
+    var args = args.to_slice()
+    if parser.consume("->") is some(arrow) then
+      if parser.parse_type(false)? is none then
+        return bad_input[ToastExportItem](error(
+          "Expected type after arrow.", arrow.src
+        ))
+    return parsed(ToastExportItem.fun_(ToastFunSignature { name, args }))
+  }
+  no_match[ToastExportItem]()
+}
+
+fun parse_export_item(bacon: Bacon): Result[ToastExportItem, Error] {
+  var parser = parser(bacon.line, bacon.src)
+  var item = parser.&.parse_export_item()? or
+    return error[ToastExportItem, Error](error(
+      "Expected a type or function to export.", bacon.src
+    ))
+  parser.&.ensure_is_at_end()?
+  ok[ToastExportItem, Error](item)
+}
+
+fun parse_export(bacon: Bacon): Result[Maybe[ToastExport], Error] {
+  bacon.line == "export" or return no_match[ToastExport]()
+
+  var items = list[ToastExportItem]()
+  for child in bacon.children do items.&.push(child.parse_export_item()?)
+  var items = items.to_slice()
+
+  parsed(ToastExport { keyword = bacon.line @ bacon.src, items })
+}

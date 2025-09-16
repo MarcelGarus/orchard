@@ -1,0 +1,42 @@
+import mod.mar
+
+fun nest_into_switches_with_a_single_case(body: EggBody): EggBody {
+  for i in 0..body.children.len do {
+    var id = body.children.get(i)
+    if id.resolve() is switch_(switch_) then {
+      var num_non_diverging_cases = 0
+      for case_ in switch_.cases do
+        if not(case_.value.definitely_diverges_biased()) then
+          num_non_diverging_cases = num_non_diverging_cases + 1
+
+      if num_non_diverging_cases == 1 and i < {body.children.len - 1} then {
+        | This is a switch with only one non-diverging case and there is code
+        | after it. Move that code into the switch.
+        var builder = egg_body_builder().&
+        for param in body.params do builder.push(param)
+        for child in body.children.first(i) do builder.push(child)
+
+        var overall_return_type = body.returns.type()
+        var cases = map[String, EggBody]()
+        for case_ in switch_.cases do {
+          var builder = egg_body_builder().&
+          for param in case_.value.params do builder.push(param)
+          for child in case_.value.children do builder.push(child)
+          var result =
+            if case_.value.definitely_diverges_biased() then {
+              builder.unreachable(overall_return_type)
+            } else {
+              var mapping = map(id -> case_.value.returns).&
+              for id in body.children.without_first(i + 1) do
+                mapping.put(id, builder.push(id.map_children(Fill {}, mapping)))
+              body.returns.map(mapping.*)
+            }
+          cases.&.put(case_.key, builder.finish(result))
+        }
+        return builder.finish(builder.switch_(switch_.condition, cases))
+      }
+    }
+  }
+
+  body
+}

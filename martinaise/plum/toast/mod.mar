@@ -1,4 +1,4 @@
-| Totally Okay Abstract Syntax Tree  
+| Totally Okay Abstract Syntax Tree
 |
 | Tree that represents the syntactical language constructs. This data structure
 | should roughly correspond to the content of Plum files.
@@ -13,16 +13,13 @@ enum ToastDef {
   fun_: ToastFun,
 }
 
-struct ToastImport { keyword: StringAndSrc, parts: Slice[ToastImportPart] }
-struct ToastImportPart {
-  module: String, items: Slice[ToastImportExportItem]
-}
-struct ToastExport {
-  keyword: StringAndSrc, items: Slice[ToastImportExportItem]
-}
-enum ToastImportExportItem { type: ToastTypeSignature, fun_: ToastFunSignature }
+struct ToastImport { keyword: StringAndSrc, modules: Slice[StringAndSrc] }
+struct ToastExport { keyword: StringAndSrc, items: Slice[ToastExportItem] }
+enum ToastExportItem { type: ToastTypeSignature, fun_: ToastFunSignature }
 struct ToastTypeSignature { name: StringAndSrc, args: Slice[StringAndSrc] }
-struct ToastFunSignature { name: StringAndSrc, args: Slice[ToastParam] }
+struct ToastFunSignature {
+  name: StringAndSrc, args: Slice[ToastParam]
+}
 
 struct ToastTypeDef {
   name: StringAndSrc, params: Slice[StringAndSrc], type: ToastType
@@ -85,6 +82,9 @@ struct StringAndSrc { string: String, src: Src }
 fun @(int: Int, src: Src): _ { IntAndSrc { int, src } }
 fun @(string: String, src: Src): _ { StringAndSrc { string, src } }
 
+fun ==(a: ToastTypeDef, b: ToastTypeDef): Bool {
+  a.name == b.name and a.params == b.params and a.type == b.type
+}
 fun ==(a: &ToastType, b: &ToastType): Bool { a.* == b.* }
 fun ==(a: ToastType, b: ToastType): Bool {
   switch a
@@ -110,6 +110,24 @@ fun ==(a: ToastTypeVariant, b: ToastTypeVariant): Bool {
 fun ==(a: ToastTypeLambda, b: ToastTypeLambda): Bool {
   a.args == b.args and a.return_type == b.return_type
 }
+fun ==(a: StringAndSrc, b: StringAndSrc): Bool {
+  a.string == b.string and a.src == b.src
+}
+
+fun hash[H](hasher: H, def: ToastTypeDef) {
+  hasher.hash(def.name)
+  hasher.hash(def.params)
+  hasher.hash(def.type)
+}
+fun hash[H](hasher: H, type: ToastType) {
+  hasher.hash(0)
+}
+fun hash[H](hasher: H, string: StringAndSrc) {
+  hasher.hash(string.string)
+  hasher.hash(string.src.module)
+  hasher.hash(string.src.range.start)
+  hasher.hash(string.src.range.end)
+}
 
 fun write[W](writer: W, toast: Toast) {
   var first = true
@@ -123,10 +141,8 @@ fun write[W](writer: W, def: ToastDef, indentation: Indentation) {
   switch def
   case import_(import_) {
     writer."import"
-    for part in import_.parts do {
+    for module in import_.modules do
       writer."\n  {part.module.debug()}"
-      for item in part.items do writer."\n    {item}"
-    }
   }
   case export(export) {
     writer."export"
@@ -145,7 +161,7 @@ fun write[W](writer: W, def: ToastDef, indentation: Indentation) {
     writer.write(fun_.body, indentation + 1)
   }
 }
-fun write[W](writer: W, item: ToastImportExportItem) {
+fun write[W](writer: W, item: ToastExportItem) {
   switch item
   case type(signature) writer."{signature}"
   case fun_(signature) writer."{signature}"

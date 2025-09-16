@@ -1,10 +1,19 @@
 import mod.mar
 
+var type_cache = map[EggId, EggType]().put_on_heap()
+
 fun type(id: EggId): EggType {
+  if type_cache.get_maybe(id) is some(type) then return type
+  var type = id.calculate_type()
+  type_cache.put(id, type)
+  type
+}
+fun calculate_type(id: EggId): EggType {
   switch id.resolve()
   case param(type) type
   case case_param(param)
-    param.switch_on.type().plum().enum_.unwrap().get(param.variant)
+    param.switch_on.type().plum().enum_.unwrap("case param of non-enum")
+      .get(param.variant)
   case type type_type
   case int type_int
   case string type_string
@@ -23,15 +32,17 @@ fun type(id: EggId): EggType {
   case member(member) {
     var of_type = member.of.type()
     if of_type.contains_recursion() then
-      of_type.plum().struct_.unwrap().get(member.name)
+      of_type.plum().struct_.unwrap("member  of non-struct").get(member.name)
     else
-      of_type.pesto().struct_.unwrap().get(member.name)
+      of_type.pesto().struct_.unwrap("member of non-struct").get(member.name)
   }
   case switch_(switch_)
-    switch_.cases.iter().&.next().unwrap().value.returns.type()
+    switch_.cases.iter().&.next().unwrap("switch with no cases")
+      .value.returns.type()
   case call_generic_fun(call) call.return_type
   case call_fun(call) call.return_type
-  case call_lambda(call) call.lambda.type().plum().lambda.unwrap().return_type
+  case call_lambda(call)
+    call.lambda.type().plum().lambda.unwrap("calling non-lambda").return_type
   case call_builtin(call)
     call.builtin.type_signature().return_type.specialize(call.substitutions)
   case cast(cast) cast.type
@@ -44,6 +55,7 @@ fun type(id: EggId): EggType {
   case divide type_int
   case modulo type_int
   case compare type_ordering
+  case compare_zero type_ordering
   case and_ type_int
   case or_ type_int
   case xor type_int
@@ -59,7 +71,8 @@ fun type(id: EggId): EggType {
   case array_set(args) args.array.type()
   case array_slice(args) args.array.type()
   case array_len type_int
-  case unchecked_generate_non_empty_array(args) type_array(args.generator.returns.type())
+  case unchecked_generate_non_empty_array(args)
+    type_array(args.generator.returns.type())
   case unchecked_array_get(args) args.array.type().plum().array.unwrap()
   case unchecked_array_set(args) args.array.type()
   case unchecked_array_slice(args) args.array.type()
@@ -67,12 +80,13 @@ fun type(id: EggId): EggType {
   case static_to_dynamic type_dynamic
   case dynamic_to_static(args) args.static
   case crash(crash) crash.type
+  case raw_crash type_never
   case unreachable(type) type
   case loop_(loop_) loop_.body.returns.type()
   case continue_(continue_) continue_.type
   case dup type_nothing
   case drop type_nothing
-  case function_ptr type_ptr
+  case fun_ptr type_ptr
   case call_indirect(call) call.return_type
   case null_ptr type_ptr
   case object_new(id) type_ptr
@@ -86,17 +100,22 @@ fun type(id: EggId): EggType {
   case store_buffer_item type_nothing
   case store_buffer_bytes type_nothing
   case free_buffer type_nothing
-  case padding(amount) type_bytes(amount)
+  case padding(amount) type_bytes(MemoryLayout { size = amount, alignment = 1 })
   case aggregate(parts) {
     var size = 0
-    for part in parts do size = size + part.type().memory_layout().size
-    type_bytes(size)
+    var alignment = 1
+    for part in parts do {
+      var layout = part.type().memory_layout()
+      size = size + layout.size
+      alignment = max(alignment, layout.alignment)
+    }
+    type_bytes(MemoryLayout { size, alignment })
   }
-  case part(part) type_bytes(part.size)
+  case part(part) type_bytes(part.layout)
   case switch_on_byte(switch_) switch_.cases.get(0).returns.type()
   case malloc type_ptr
   case free type_nothing
-  case load(load) type_bytes(load.size)
+  case load(load) type_bytes(load.layout)
   case store type_nothing
   case store_bytes type_nothing
   case load_word type_int

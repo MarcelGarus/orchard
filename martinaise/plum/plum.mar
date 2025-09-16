@@ -1,4 +1,4 @@
-| The Plum Compiler  
+| The Plum Compiler
 |
 | Welcome to the entry file to the compiler for Plum, a simple, functional, cozy
 | programming language.
@@ -49,6 +49,7 @@ import egg_to_egg/mod.mar
 import egg_to_waffle/mod.mar
 import waffle_to_waffle/mod.mar
 import waffle_to_sushi/mod.mar
+import sushi_to_sushi/mod.mar
 import sushi_to_ground/mod.mar
 
 fun main(): Never {
@@ -57,7 +58,7 @@ fun main(): Never {
   var args = get_process_args()
   var path = args.get_maybe(1) or exit(1, "You didn't specify a file.\n")
   var ground = module(path).compile("main (Int)") or(error)
-    exit(1, "Oh no! An error occurred:\n\n{error}\n")
+    exit(1, "\n{error}\n")
   write_file("{path}.ground", ground.bytes)
 
   exit(0)
@@ -72,8 +73,28 @@ fun print_compile_step(step: String) { print(step.pad_right(32)) }
 fun print_time(duration: Duration) {
   print("{duration.in_milliseconds().to_int().format().pad_left(5)} ms")
 }
+fun print_stats(toasts: Map[Module, Toast]) {
+  print(", {toasts.size} modules")
+}
 fun print_stats(egg: Egg) {
   print(", {egg.funs.size} funs, {egg.count_expressions()} exprs")
+}
+fun print_stats(waffle: Waffle) {
+  print(
+    ", {waffle.funs.size} funs
+    ', {waffle.count_locals()} locals
+    ', {waffle.count_exprs()} exprs"
+  )
+}
+fun print_stats(sushi: Sushi) {
+  print(
+    ", {sushi.sections.len} sections, {sushi.count_instructions()} instructions"
+  )
+}
+fun print_stats(ground: Ground) {
+  print(
+    ", {ground.bytes.len} bytes"
+  )
 }
 
 fun lower(egg: Egg, pass: LoweringPass): Egg {
@@ -96,11 +117,41 @@ fun optimize(egg: Egg, passes: List[OptPass]): Egg {
   egg
 }
 
+fun parse_toasts(
+  module: Module, out: &Map[Module, Toast], import_src: Src
+): Result[Nothing, Error] {
+  if out.contains(module) or module.is_builtin() then
+    return ok[Nothing, Error]({})
+
+  var content = none[String]()
+  for path in module.file_paths() do {
+    var bytes = read_file(path) or continue
+    content = some(bytes.to_string())
+    break
+  }
+  var content = content or
+    return error[Nothing, Error](error(
+      "Couldn't read file from {module.file_paths()}", import_src
+    ))
+
+  var bacon = content.to_bacon(module)
+  var toast = bacon.to_toast()?
+  out.put(module, toast)
+
+  for def in toast.defs do
+    if def is import_(import_) then
+      for imported_module in import_.modules do
+        module
+          .resolve_import(imported_module)?
+          .parse_toasts(out, imported_module.src)?
+
+  ok[Nothing, Error]({})
+}
 
 fun compile(module: Module, function: String): Result[Ground, Error] {
   var total_timer = start_timer()
 
-  | Parsing the code  
+  | Parsing the code
   | This is compilation pipeline. We start with an input module and parse it
   | into lines nested by indentation (Bacon) and then an abstract syntax tree
   | (Toast). This allows us to inspect the imports and parse those modules as
@@ -109,22 +160,24 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   print_compile_step("Bacon & Toast")
   var timer = start_timer()
   var toasts = map[Module, Toast]()
-  module.parse_toasts(toasts.&)?
+  module.parse_toasts(toasts.&, invalid_src)?
   print_time(timer.read_duration())
+  print_stats(toasts)
   println()
 
-  | Type checking  
+  | Type checking
   | Once we've parsed the entry point module and all imported modules, we
   | type-check everything, resolve identifiers, and figure out types for all
   | expressions. This results in the Egg.
 
   print_compile_step("Egg")
   var timer = start_timer()
-  var egg = toasts.to_egg("{module}.{function}")?
+  var egg = toasts.to_egg(module, function)?
   print_time(timer.read_duration())
+  print_stats(egg)
   println()
 
-  | What is the Egg?  
+  | What is the Egg?
   | Similar to the MLIR (Multi-Level Intermediate Representation) [0] compiler
   | architecture, we don't have a bunch of type-safe compiler stages, as that
   | would require implementing formatting, hashing, and (most importantly)
@@ -142,7 +195,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | that language features are lowered.
   |
   | [0]: https://mlir.llvm.org/
-  
+
   | Terminology note: The lower_* passes eliminate a kind of node from the Egg,
   | replacing it with lower-level concepts. The other passes (simplify_*, etc.)
   | emit code that is on a similar abstraction level as before.
@@ -150,10 +203,10 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   egg.assert_only(list(
     "param", "case_param", "int", "struct_", "member", "enum_", "switch_",
     "inline_lambda", "call_generic_fun", "call_fun", "call_builtin",
-    "call_lambda", "string", "type", "cast",
+    "call_lambda", "string", "type", "cast", "crash",
   ))
 
-  | Monomorphization  
+  | Monomorphization
   | We specialize generic functions for the concrete types they are used with
   | (also called "monomorphization"), starting at the program entry point. After
   | this, our Egg contains only the code reachable from main specialized for
@@ -163,20 +216,20 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   egg.assert_only(list(
     "param", "case_param", "int", "struct_", "member", "enum_", "switch_",
     "inline_lambda", "call_fun", "call_builtin", "call_lambda", "string",
-    "type", "cast",
+    "type", "cast", "crash",
   ))
 
-  | Replacing Strings  
+  | Replacing Strings
   | We replace strings with structs of arrays of bytes.
   var egg = egg.lower(LoweringPass.lower_strings)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "int", "struct_", "member", "enum_",
     "switch_", "array", "inline_lambda", "call_fun", "call_builtin",
-    "call_lambda", "type", "cast",
+    "call_lambda", "type", "cast", "crash",
   ))
 
-  | Specializing call_builtin  
+  | Specializing call_builtin
   | We turn the rather unspecific call_builtin nodes into a variety of
   | specialized nodes, one for each builtin.
   var egg = egg.lower(LoweringPass.lower_builtin_calls)
@@ -191,7 +244,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     "crash",
   ))
 
-  | Remove first-class types  
+  | Remove first-class types
   | Because all types are concrete, we turn expressions that operate with types
   | into literal expressions or functions that deal with values of the
   | corresponding type. For example, instead of a cast node, we call a function
@@ -210,7 +263,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     "type", "crash", "unreachable", "loop_", "continue_",
   ))
 
-  | Eliminate inline lambdas  
+  | Eliminate inline lambdas
   | For every inline_lambda, we create a top-level function that accepts an
   | additional parameter – a Box of all captured values, also called a closure.
   | The inline_lambda expressions become raw_lambdas.
@@ -225,27 +278,37 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     "type", "crash", "unreachable", "loop_", "continue_",
   ))
 
-  | Optimize the code  
+  | Optimize the code
   | Now that the most tricky language features (first-class types and lambdas)
   | have been eliminated/simplified, we optimize the code using a set of
   | idempotent passes, applying them over and over until the Egg stabilizes.
   var optimizations = list(
     OptPass.deduplicate,
+    OptPass.devirtualize_lambda_calls,
+    OptPass.evaluate_comptime,
+    OptPass.fold_members,
+    OptPass.fold_switches,
     OptPass.hoist_known_switch_results,
     OptPass.inline_functions,
     OptPass.simplify_arithmetics,
     OptPass.simplify_arrays,
     OptPass.simplify_bitwise,
+    OptPass.simplify_boxes,
     OptPass.simplify_compare_to_enum,
+    OptPass.simplify_loops,
     OptPass.unroll_small_arrays,
     OptPass.use_enum_flows,
+    OptPass.merge_switch_chains,
+    OptPass.nest_into_switches_with_a_single_case,
     OptPass.factor_out_loop_fixpoints,
     OptPass.hoist_out_of_generators,
     OptPass.hoist_out_of_loops,
     OptPass.sink_continues,
     OptPass.tree_shake,
+    OptPass.inline_functions_only_used_once,
   )
   var egg = egg.optimize(optimizations)
+  eprintln(egg)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
@@ -256,7 +319,12 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     "type", "crash", "unreachable", "halt", "loop_", "continue_",
   ))
 
-  | Make checks explicit  
+  | Defunctionalize
+  | TODO: Describe
+  var egg = egg.lower(LoweringPass.defunctionalize)
+  var egg = egg.optimize(optimizations)
+
+  | Make checks explicit
   | Some operations (divide, modulo, generate_array, array_get, array_set,
   | array_slice) validate their inputs, for example, to check that you don't
   | divide by zero or that you don't try to generate an array with a negative
@@ -265,7 +333,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | tree shaking or loop hoisting don't apply to them. Here, we desugar these
   | checked expressions into explicit checks followed by unchecked versions of
   | the expressions that can assume that the inputs are valid.
-  
+
   var egg = egg.lower(LoweringPass.lower_bounds_checks)
   var egg = egg.optimize(optimizations)
   var egg = egg.lower(LoweringPass.lower_divide_and_modulo_checks)
@@ -281,7 +349,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     "crash", "unreachable", "halt", "loop_", "continue_",
   ))
 
-  | Track ownership  
+  | Track ownership
   | Until now, we assumed that expressions are values that are somehow garbage
   | collected. Now, we make that garbage collection explicit: We decide which
   | parts of values are stored on the heap and where we have pointer
@@ -309,25 +377,36 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | - arrays are turned into buffers
   | - dup/drop expressions are turned into function calls
   var egg = egg.lower(LoweringPass.lower_memory_layouts_1)
-  var egg = egg.optimize(optimizations)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
     "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
     "and_", "or_", "xor", "shift_left", "shift_right", "struct_", "member",
-    "enum_", "switch_", "function_ptr", "call_fun", "call_indirect", "crash",
+    "enum_", "switch_", "fun_ptr", "call_fun", "call_indirect", "crash",
     "unreachable", "halt", "loop_", "continue_", "null_ptr", "object_new",
     "object_load", "object_free", "get_refcount", "set_refcount", "new_buffer",
     "get_buffer_length", "load_buffer_item", "store_buffer_item",
     "store_buffer_bytes", "free_buffer",
   ))
 
-  | Memory layout  
+  var egg = egg.optimize(optimizations)
+
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
+    "and_", "or_", "xor", "shift_left", "shift_right", "struct_", "member",
+    "enum_", "switch_", "fun_ptr", "call_fun", "call_indirect", "crash",
+    "unreachable", "halt", "loop_", "continue_", "null_ptr", "object_new",
+    "object_load", "object_free", "get_refcount", "set_refcount", "new_buffer",
+    "get_buffer_length", "load_buffer_item", "store_buffer_item",
+    "store_buffer_bytes", "free_buffer",
+  ))
+
+  | Memory layout
   | Now, think of concrete memory layouts for structs and enums. Every
   | expression is now conceptually just a slice of bytes.
 
   var egg = egg.lower(LoweringPass.lower_memory_layouts_2)
-  | println(egg)
 
   var optimizations = list(
     OptPass.deduplicate,
@@ -342,101 +421,114 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     OptPass.tree_shake,
   )
   var egg = egg.optimize(optimizations)
-  | println(egg)
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
     "subtract", "multiply", "unchecked_divide", "unchecked_modulo", "compare",
-    "and_", "or_", "xor", "shift_left", "shift_right", "function_ptr",
-    "call_fun", "call_indirect", "crash", "unreachable", "halt", "loop_",
-    "continue_", "null_ptr", "padding", "aggregate", "part", "switch_on_byte",
-    "malloc", "load", "store", "store_bytes", "free",
+    "and_", "or_", "xor", "shift_left", "shift_right", "fun_ptr", "call_fun",
+    "call_indirect", "crash", "unreachable", "halt", "loop_", "continue_",
+    "null_ptr", "padding", "aggregate", "part", "switch_on_byte", "malloc",
+    "load", "store", "store_bytes", "free",
   ))
 
-  | var passes = passes + list(OptPass.lower_loads_and_stores)
+  | Prepare for conversion to Waffle
+  | Now, we decompose some expression into even lower-level versions. In
+  | particular:
+  | - load -> load_word, load_byte
+  | - store -> store_word, store_byte
+  | - compare -> compare_zero
+  | - crash -> raw_crash
 
-  | Egg nodes:
-  |   param, case_param, byte, lower_byte, byte_to_int, int, add, subtract,
-  |   multiply, unchecked_divide, unchecked_modulo, compare, and, or, xor,
-  |   shift_left, shift_right, call_fun, call_indirect, crash, unreachable,
-  |   halt, loop, continue, null_ptr, padding, aggregate, part, switch_on_byte,
-  |   malloc, load_byte, load_word, store_byte, store_word, store_bytes, free
+  var egg = egg.lower(LoweringPass.lower_loads_and_stores)
+  var egg = egg.lower(LoweringPass.lower_compare)
+  var egg = egg.lower(LoweringPass.lower_crash)
 
-  | print_compile_step("Waffle")
-  | var timer = start_timer()
-  | var waffle = egg.to_waffle()
-  | print_time(timer.read_duration())
-  | if false then println(waffle)
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo",
+    "compare_zero", "and_", "or_", "xor", "shift_left", "shift_right",
+    "struct_", "fun_ptr", "call_fun", "call_indirect", "raw_crash",
+    "unreachable", "halt", "loop_", "continue_", "null_ptr", "padding",
+    "aggregate", "part", "switch_on_byte", "malloc", "load_word", "load_byte",
+    "store_word", "store_byte", "store_bytes", "free",
+  ))
 
-  | print_compile_step("  optimize")
-  | var timer = start_timer()
-  | var waffle = waffle.optimize()
-  | print_time(timer.read_duration())
-  | if false then println(waffle)
-  | | if false then {
-  | |   println("Running Waffle")
-  | |   println(waffle.run(5.to_bytes()))
-  | | }
+  var egg = egg.optimize(optimizations)
 
-  | print_compile_step("Sushi")
-  | var timer = start_timer()
-  | var sushi = waffle.to_sushi()
-  | print_time(timer.read_duration())
-  | if false then println(sushi)
+  egg.assert_only(list(
+    "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
+    "subtract", "multiply", "unchecked_divide", "unchecked_modulo",
+    "compare_zero", "and_", "or_", "xor", "shift_left", "shift_right",
+    "struct_", "fun_ptr", "call_fun", "call_indirect", "raw_crash",
+    "unreachable", "halt", "loop_", "continue_", "null_ptr", "padding",
+    "aggregate", "part", "switch_on_byte", "malloc", "load_word", "load_byte",
+    "store_word", "store_byte", "store_bytes", "free",
+  ))
 
-  | | TODO: optimize Sushi:
-  | | - put cold blocks at the end
-  | | - put frequently-used-together blocks near each other
-  | | - merge blocks
-  | | - peephole optimizations
-  | | - tail call elimination
+  print_compile_step("Waffle")
+  var timer = start_timer()
+  var waffle = egg.to_waffle()
+  print_time(timer.read_duration())
+  print_stats(waffle)
+  println()
+  if false then println(waffle)
 
-  | print_compile_step("Ground")
-  | var timer = start_timer()
-  | var ground = sushi.to_ground()
-  | print_time(timer.read_duration())
-  | if false then println(ground)
-  | | if false then {
-  | |   println("Running Ground")
-  | |   println(ground.run(5.to_bytes()).debug())
-  | | }
+  print_compile_step("  optimize")
+  var timer = start_timer()
+  var waffle = waffle.optimize()
+  print_time(timer.read_duration())
+  print_stats(waffle)
+  println()
+  if false then println(waffle)
+  | if false then {
+  |   println("Running Waffle")
+  |   println(waffle.run(5.to_bytes()))
+  | }
+
+  print_compile_step("Sushi")
+  var timer = start_timer()
+  var sushi = waffle.to_sushi()
+  print_time(timer.read_duration())
+  print_stats(sushi)
+  println()
+
+  print_compile_step("  optimize")
+  timer = start_timer()
+  sushi = sushi.optimize().tree_shake()
+  print_time(timer.read_duration())
+  print_stats(sushi)
+  println()
+
+  print_compile_step("  deduplicate")
+  timer = start_timer()
+  sushi = sushi.deduplicate().tree_shake()
+  print_time(timer.read_duration())
+  print_stats(sushi)
+  println()
+
+  | TODO:
+  | - detect cold blocks
+  | - put cold blocks at the end
+  | - put frequently-used-together blocks near each other
+  | - merge blocks
+  | - peephole optimizations
+  | - tail call elimination
+
+  print_compile_step("Ground")
+  var timer = start_timer()
+  var ground = sushi.to_ground()
+  print_time(timer.read_duration())
+  print_stats(ground)
+  println()
+  if false then println(ground)
+  | if false then {
+  |   println("Running Ground")
+  |   println(ground.run(5.to_bytes()).debug())
+  | }
 
   print_compile_step("Total")
   print_time(total_timer.read_duration())
   println()
 
-  todo("fds")
-  | ok[Ground, Error](ground)
-}
-
-fun parse_toasts(
-  module: Module, out: &Map[Module, Toast]
-): Result[Nothing, Error] {
-  if out.contains(module) or module.is_builtin() then
-    return ok[Nothing, Error]({})
-
-  var content = none[String]()
-  for path in module.file_paths() do {
-    var bytes = read_file(path) or continue
-    content = some(bytes.to_string())
-    break
-  }
-  var content = content or
-    return error[Nothing, Error](error(
-      "Couldn't read file from {module.file_paths()}", invalid_src
-    ))
-
-  var bacon = content.to_bacon(module)
-  var toast = bacon.to_toast()?
-  out.put(module, toast)
-
-  for def in toast.defs do
-    if def is import_(import_) then {
-      for part in import_.parts do {
-        var imported = module.resolve_import(part.module) or(error)
-          return error[Nothing, Error](error(error, import_.keyword.src))
-        imported.parse_toasts(out)?
-      }
-    }
-  ok[Nothing, Error]({})
+  ok[Ground, Error](ground)
 }

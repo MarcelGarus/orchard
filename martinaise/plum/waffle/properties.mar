@@ -8,7 +8,7 @@ fun definitely_diverges(expr: WaffleExpr): Bool {
   case int false
   case local(id) id.resolve().definitely_diverges()
   case aggregate false
-  case member false
+  case part false
   case switch_(switch_) {
     var all_diverge = true
     for case_ in switch_.cases do
@@ -17,7 +17,7 @@ fun definitely_diverges(expr: WaffleExpr): Bool {
   }
   case call false
   case call_indirect false
-  case function_ptr false
+  case fun_ptr false
   case lower_byte false
   case byte_to_int false
   case add false
@@ -25,14 +25,18 @@ fun definitely_diverges(expr: WaffleExpr): Bool {
   case multiply false
   case divide false
   case modulo false
+  case shift_left false
+  case shift_right false
   case and_ false
   case or_ false
   case xor false
   case compare_zero false
   case malloc false
   case free false
-  case load false
-  case store false
+  case load_word false
+  case load_byte false
+  case store_word false
+  case store_byte false
   case store_bytes false
   case crash true
   case unreachable true
@@ -54,16 +58,16 @@ fun size(expr: WaffleExpr): Int {
     for part in parts do size = size + part.size()
     size
   }
-  case member(member) member.size
+  case part(member) member.layout.size
   case switch_(switch_) {
     for case_ in switch_.cases do
       if not(case_.returns.definitely_diverges()) then
         return case_.returns.size()
     unreachable()
   }
-  case call(call) call.size
-  case call_indirect(call) call.size
-  case function_ptr 8
+  case call(call) call.return_layout.size
+  case call_indirect(call) call.return_layout.size
+  case fun_ptr 8
   case lower_byte 1
   case byte_to_int 8
   case add 8
@@ -71,14 +75,18 @@ fun size(expr: WaffleExpr): Int {
   case multiply 8
   case divide 8
   case modulo 8
+  case shift_left 8
+  case shift_right 8
   case and_ 8
   case or_ 8
   case xor 8
   case compare_zero 1
   case malloc 8
   case free 0
-  case load(load) load.size
-  case store 0
+  case load_word 8
+  case load_byte 1
+  case store_word 0
+  case store_byte 0
   case store_bytes 0
   case crash unreachable()
   case unreachable unreachable()
@@ -99,16 +107,16 @@ fun alignment(expr: WaffleExpr): Int {
     for part in parts do alignment = max(alignment, part.alignment())
     alignment
   }
-  case member(member) member.alignment
+  case part(member) 1
   case switch_(switch_) {
     for case_ in switch_.cases do
       if not(case_.returns.definitely_diverges()) then
         return case_.returns.alignment()
     1
   }
-  case call(call) call.alignment
-  case call_indirect(call) call.alignment
-  case function_ptr 8
+  case call(call) call.return_layout.alignment
+  case call_indirect(call) call.return_layout.alignment
+  case fun_ptr 8
   case lower_byte 1
   case byte_to_int 8
   case add 8
@@ -116,18 +124,274 @@ fun alignment(expr: WaffleExpr): Int {
   case multiply 8
   case divide 8
   case modulo 8
+  case shift_left 8
+  case shift_right 8
   case and_ 8
   case or_ 8
   case xor 8
   case compare_zero 1
   case malloc 8
   case free 1
-  case load(load) load.alignment
-  case store 1
+  case load_word 8
+  case load_byte 1
+  case store_word 1
+  case store_byte 1
   case store_bytes 1
   case crash 8
   case unreachable 1
   case halt 1
   case loop_(loop_) loop_.body.returns.alignment()
-  case continue_(continue_) continue_.alignment
+  case continue_(continue_) continue_.return_layout.alignment
+}
+
+
+fun count_locals(waffle: Waffle): Int { 
+  var count = 0
+  for fun_ in waffle.funs do count = count + fun_.value.count_locals()
+  count
+}
+fun count_locals(fun_: WaffleFun): Int { 
+  fun_.body.count_locals()
+}
+fun count_locals(body: WaffleBody): Int { 
+  var count = body.locals.len  | Count the defined locals in this body
+  | Count locals in nested bodies within expressions
+  for local in body.locals do count = count + local.resolve().count_locals()
+  count = count + body.returns.count_locals()
+  count
+}
+fun count_locals(expr: WaffleExpr): Int {
+  switch expr
+  case param 0
+  case padding 0
+  case byte 0
+  case int 0
+  case local 0 | only a reference, not a definition
+  case aggregate(parts) parts.count_locals()
+  case part(part) part.of.count_locals()
+  case switch_(switch_)
+    switch_.condition.count_locals() + switch_.cases.count_locals()
+  case call(call) call.args.count_locals()
+  case call_indirect(call) call.args_and_fun.count_locals()
+  case fun_ptr 0
+  case lower_byte(arg) arg.count_locals()
+  case byte_to_int(arg) arg.count_locals()
+  case add(args) args.count_locals()
+  case subtract(args) args.count_locals()
+  case multiply(args) args.count_locals()
+  case divide(args) args.count_locals()
+  case modulo(args) args.count_locals()
+  case shift_left(args) args.count_locals()
+  case shift_right(args) args.count_locals()
+  case and_(args) args.count_locals()
+  case or_(args) args.count_locals()
+  case xor(args) args.count_locals()
+  case compare_zero(args) args.count_locals()
+  case malloc(args) args.count_locals()
+  case free(args) args.count_locals()
+  case load_word(args) args.count_locals()
+  case load_byte(args) args.count_locals()
+  case store_word(args) args.count_locals()
+  case store_byte(args) args.count_locals()
+  case store_bytes(store) store.ptr.count_locals()
+  case crash(args) args.count_locals()
+  case unreachable 0
+  case halt 0
+  case loop_(loop_) loop_.initial.count_locals() + loop_.body.count_locals()
+  case continue_(continue_) continue_.next.count_locals()
+}
+fun count_locals(bodies: Slice[WaffleBody]): Int {
+  var count = 0
+  for body in bodies do count = count + body.count_locals()
+  count
+}
+fun count_locals(exprs: Slice[WaffleExpr]): Int {
+  var count = 0
+  for expr in exprs do count = count + expr.count_locals()
+  count
+}
+
+fun count_exprs(waffle: Waffle): Int { 
+  var count = 0
+  for fun_ in waffle.funs do count = count + fun_.value.count_exprs()
+  count
+}
+fun count_exprs(fun_: WaffleFun): Int { 
+  fun_.body.count_exprs()
+}
+fun count_exprs(body: WaffleBody): Int { 
+  var count = body.returns.count_exprs()
+  for local in body.locals do count = count + local.resolve().count_exprs()
+  count
+}
+fun count_exprs(expr: WaffleExpr): Int {
+  switch expr
+  case param 1
+  case padding 1
+  case byte 1
+  case int 1
+  case local 1
+  case aggregate(parts) 1 + parts.count_exprs()
+  case part(part) 1 + part.of.count_exprs()
+  case switch_(switch_)
+    1 + switch_.condition.count_exprs() + switch_.cases.count_exprs()
+  case call(call) 1 + call.args.count_exprs()
+  case call_indirect(call) 1 + call.args_and_fun.count_exprs()
+  case fun_ptr 1
+  case lower_byte(arg) 1 + arg.count_exprs()
+  case byte_to_int(arg) 1 + arg.count_exprs()
+  case add(args) 1 + args.count_exprs()
+  case subtract(args) 1 + args.count_exprs()
+  case multiply(args) 1 + args.count_exprs()
+  case divide(args) 1 + args.count_exprs()
+  case modulo(args) 1 + args.count_exprs()
+  case shift_left(args) 1 + args.count_exprs()
+  case shift_right(args) 1 + args.count_exprs()
+  case and_(args) 1 + args.count_exprs()
+  case or_(args) 1 + args.count_exprs()
+  case xor(args) 1 + args.count_exprs()
+  case compare_zero(args) 1 + args.count_exprs()
+  case malloc(args) 1 + args.count_exprs()
+  case free(args) 1 + args.count_exprs()
+  case load_word(args) 1 + args.count_exprs()
+  case load_byte(args) 1 + args.count_exprs()
+  case store_word(args) 1 + args.count_exprs()
+  case store_byte(args) 1 + args.count_exprs()
+  case store_bytes(store) 1 + store.ptr.count_exprs()
+  case crash(args) 1 + args.count_exprs()
+  case unreachable 1
+  case halt 1
+  case loop_(loop_) 1 + loop_.initial.count_exprs() + loop_.body.count_exprs()
+  case continue_(continue_) 1 + continue_.next.count_exprs()
+}
+fun count_exprs(bodies: Slice[WaffleBody]): Int {
+  var count = 0
+  for body in bodies do count = count + body.count_exprs()
+  count
+}
+fun count_exprs(exprs: Slice[WaffleExpr]): Int {
+  var count = 0
+  for expr in exprs do count = count + expr.count_exprs()
+  count
+}
+
+fun count_references(body: WaffleBody): Map[WaffleId, Int] {
+  var counts = map[WaffleId, Int]()
+  body.count_references(counts.&)
+  counts
+}
+fun count_references(expr: WaffleExpr, out: &Map[WaffleId, Int]) {
+  switch expr
+  case param {}
+  case padding {}
+  case local(id) {
+    var count = out.get_ref_or_put_default(id, 0)
+    count.* = count.* + 1
+  }
+  case byte {}
+  case lower_byte(arg) arg.count_references(out)
+  case byte_to_int(arg) arg.count_references(out)
+  case int {}
+  case add(args) args.count_references(out)
+  case subtract(args) args.count_references(out)
+  case multiply(args) args.count_references(out)
+  case divide(args) args.count_references(out)
+  case modulo(args) args.count_references(out)
+  case and_(args) args.count_references(out)
+  case or_(args) args.count_references(out)
+  case xor(args) args.count_references(out)
+  case shift_left(args) args.count_references(out)
+  case shift_right(args) args.count_references(out)
+  case compare_zero(arg) arg.count_references(out)
+  case aggregate(aggregate) for part in aggregate do part.count_references(out)
+  case part(part) part.of.count_references(out)
+  case switch_(switch_) {
+    switch_.condition.count_references(out)
+    for case_ in switch_.cases do case_.count_references(out)
+  }
+  case call(call) call.args.count_references(out)
+  case call_indirect(call) {
+    call.args_and_fun.count_references(out)
+  }
+  case fun_ptr(signature) {}
+  case malloc(size) size.count_references(out)
+  case free(args) args.count_references(out)
+  case load_word(ptr) ptr.count_references(out)
+  case load_byte(ptr) ptr.count_references(out)
+  case store_word(store) {
+    store.count_references(out)
+  }
+  case store_byte(store) {
+    store.count_references(out)
+  }
+  case store_bytes(store) store.ptr.count_references(out)
+  case crash(args) args.count_references(out)
+  case unreachable {}
+  case halt {}
+  case loop_(loop_) {
+    loop_.initial.count_references(out)
+    loop_.body.count_references(out)
+  }
+  case continue_(continue_) continue_.next.count_references(out)
+}
+fun count_references(body: WaffleBody, out: &Map[WaffleId, Int]) {
+  for local in body.locals do local.resolve().count_references(out)
+  body.returns.count_references(out)
+}
+
+fun collect_referenced(expr: WaffleExpr, out: &Set[WaffleId]) {
+  switch expr
+  case param {}
+  case padding {}
+  case byte {}
+  case int {}
+  case local(id) out.put(id)
+  case aggregate(aggregate)
+    for part in aggregate do part.collect_referenced(out)
+  case part(part) part.of.collect_referenced(out)
+  case switch_(switch_) {
+    switch_.condition.collect_referenced(out)
+    for case_ in switch_.cases do case_.collect_referenced(out)
+  }
+  case call(call) call.args.collect_referenced(out)
+  case call_indirect(call) {
+    call.args_and_fun.collect_referenced(out)
+  }
+  case fun_ptr(signature) {}
+  case lower_byte(arg)  arg.collect_referenced(out)
+  case byte_to_int(arg) arg.collect_referenced(out)
+  case add(args) args.collect_referenced(out)
+  case subtract(args) args.collect_referenced(out)
+  case multiply(args) args.collect_referenced(out)
+  case divide(args) args.collect_referenced(out)
+  case modulo(args) args.collect_referenced(out)
+  case shift_left(args) args.collect_referenced(out)
+  case shift_right(args) args.collect_referenced(out)
+  case compare_zero(arg) arg.collect_referenced(out)
+  case and_(args) args.collect_referenced(out)
+  case or_(args)  args.collect_referenced(out)
+  case xor(args)  args.collect_referenced(out)
+  case malloc(size) size.collect_referenced(out)
+  case free(args) args.collect_referenced(out)
+  case load_word(ptr) ptr.collect_referenced(out)
+  case load_byte(ptr) ptr.collect_referenced(out)
+  case store_word(store) {
+    store.collect_referenced(out)
+  }
+  case store_byte(store) {
+    store.collect_referenced(out)
+  }
+  case store_bytes(store) store.ptr.collect_referenced(out)
+  case crash(message) message.collect_referenced(out)
+  case unreachable {}
+  case halt {}
+  case loop_(loop_) {
+    loop_.initial.collect_referenced(out)
+    loop_.body.collect_referenced(out)
+  }
+  case continue_(continue_) continue_.next.collect_referenced(out)
+}
+fun collect_referenced(body: WaffleBody, out: &Set[WaffleId]) {
+  for local in body.locals do local.resolve().collect_referenced(out)
+  body.returns.collect_referenced(out)
 }

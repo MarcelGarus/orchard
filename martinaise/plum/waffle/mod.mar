@@ -1,26 +1,29 @@
 | Well-Aligned Form of Fixed-Layout Expressions  
 |
-| This compiler stage is pretty low-level. It's no longer graph based, but
-| mainly tree based – as a preparation for lowering to stack-based byte code.
-| Types no longer exist. Instead, each expression corresponds to a slice of
-| bytes. For expressions to be compatible (such as branches of a switch), they
-| just have to have the same length.
-| Structs have been converted into runs of expressions (shown using curly
-| braces). Enums have been converted into tagged unions.
+| This compiler stage is a preparation before lowering to stack-based byte code.
+| Unlike the Egg, it supports actual nesting of expressions as trees rather than
+| a general ID-based traversal (it still supports IDs additionally to nesting).
 |
-| main Int: @0:8
-|   | Creating and accessing a struct.
-|   | foo = & x: @0 y: 42   | & y: Int x: Int
-|   | foo.y
-|   @1 = {@0 42:8}.8:8
-|   | Creating and switching on an enum.
-|   | foo: Bool = True
-|   | foo
-|   | % True: Some 5
-|   |   False: None
-|   @2 = {1:1}.0:1 %
-|     0 -> {padding:8 0:1}
-|     1 -> {5:8 1:1}
+| The tree structure is very amenable to generating stack-based byte code: By
+| post-order traversing the Waffle, we can create nice tight byte code.
+|
+| Example of what the Waffle looks like:
+|
+| some_fun a =
+|   malloc
+|     add
+|       aggregate
+|         16
+|         shift_right
+|           aggregate
+|             a
+|             2
+|
+| When converting to byte code, locals become stack-allocated, the tree-based
+| expressions are only temporarily on the stack, consumed by outer expressions.
+| Also note that the function parameter is in the body as a "param" expression.
+| This seems weird, but allows us to nest it into the first expression,
+| resulting in even tinier byte code.
 
 import ../plum.mar
 import builder.mar
@@ -31,8 +34,6 @@ import run.mar
 
 struct Waffle { entry_point: String, funs: Map[String, WaffleFun] }
 
-| The function parameter is also in the body as a "param" expression so that
-| it can be referenced by other expressions.
 struct WaffleFun { param: WaffleId, body: WaffleBody }
 struct WaffleBody { locals: Slice[WaffleId], returns: WaffleExpr }
 
@@ -42,7 +43,7 @@ fun ==(a: WaffleId, b: WaffleId): Bool { a.id == b.id }
 fun hash[H](hasher: &H, id: WaffleId) { hasher.hash(id.id) }
 
 enum WaffleExpr {
-  param: WaffleParam,
+  param: MemoryLayout,
   padding: Int, | amount
   local: WaffleId,
 
@@ -58,6 +59,8 @@ enum WaffleExpr {
   multiply: &WaffleExpr,
   divide: &WaffleExpr,
   modulo: &WaffleExpr,
+  shift_left: &WaffleExpr,
+  shift_right: &WaffleExpr,
   and_: &WaffleExpr,
   or_: &WaffleExpr,
   xor: &WaffleExpr,
@@ -65,7 +68,7 @@ enum WaffleExpr {
 
   | struct stuff
   aggregate: Slice[WaffleExpr],
-  member: WaffleMember,
+  part: WafflePart,
 
   | enum stuff
   switch_: WaffleSwitch,
@@ -73,13 +76,15 @@ enum WaffleExpr {
   | calls
   call: WaffleCall,
   call_indirect: WaffleCallIndirect,
-  function_ptr: String,
+  fun_ptr: String,
 
   | memory stuff
   malloc: &WaffleExpr,
   free: &WaffleExpr,
-  load: WaffleLoad,
-  store: WaffleStore,
+  load_word: &WaffleExpr,
+  load_byte: &WaffleExpr,
+  store_word: &WaffleExpr,
+  store_byte: &WaffleExpr,
   store_bytes: WaffleStoreBytes,
 
   | diverging stuff
@@ -91,17 +96,16 @@ enum WaffleExpr {
   loop_: WaffleLoop,
   continue_: WaffleContinue,
 }
-struct WaffleParam { size: Int, alignment: Int }
-struct WaffleMember { of: &WaffleExpr, offset: Int, size: Int, alignment: Int }
-struct WaffleSwitch { byte: &WaffleExpr, cases: Slice[WaffleBody] }
+struct WafflePart { of: &WaffleExpr, offset: Int, layout: MemoryLayout }
+struct WaffleSwitch { condition: &WaffleExpr, cases: Slice[WaffleBody] }
 struct WaffleCall {
-  function: String, args: &WaffleExpr, size: Int, alignment: Int
+  function: String, args: &WaffleExpr, return_layout: MemoryLayout
 }
 struct WaffleCallIndirect {
-  function_ptr: &WaffleExpr, args: &WaffleExpr, size: Int, alignment: Int
+  args_and_fun: &WaffleExpr,
+  padding_before_fun_ptr: Int,
+  return_layout: MemoryLayout,
 }
-struct WaffleLoad { ptr: &WaffleExpr, size: Int, alignment: Int }
-struct WaffleStore { ptr: &WaffleExpr, value: &WaffleExpr }
 struct WaffleStoreBytes { ptr: &WaffleExpr, bytes: Slice[Byte] }
 struct WaffleLoop { param: WaffleId, initial: &WaffleExpr, body: &WaffleBody }
-struct WaffleContinue { next: &WaffleExpr, size: Int, alignment: Int }
+struct WaffleContinue { next: &WaffleExpr, return_layout: MemoryLayout } | TODO: layout needed?

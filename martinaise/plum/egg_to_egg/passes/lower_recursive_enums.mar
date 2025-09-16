@@ -91,66 +91,6 @@ fun break_up_unboxed_recursions(type: EggType): EggType {
   add_boxes(type, type.find_out_where_to_put_boxes())
 }
 
-struct TypePath { segments: Slice[TypePathSegment] }
-enum TypePathSegment {
-  struct_field: String,
-  enum_variant: String,
-  box_inner,
-  array_item,
-  lambda_arg: Int,
-  lambda_return,
-}
-
-var root_path = TypePath { segments = empty_slice[TypePathSegment]() }
-fun +(path: TypePath, segment: TypePathSegment): TypePath {
-  var segments = uninitialized_slice[TypePathSegment](path.segments.len + 1)
-  path.segments.copy_to(segments.subslice(0..path.segments.len))
-  segments.&.set(path.segments.len, segment)
-  TypePath { segments }
-}
-fun struct_field(path: TypePath, name: String): TypePath {
-  path + TypePathSegment.struct_field(name)
-}
-fun enum_variant(path: TypePath, name: String): TypePath {
-  path + TypePathSegment.enum_variant(name)
-}
-fun box_inner(path: TypePath): TypePath { path + TypePathSegment.box_inner }
-fun array_item(path: TypePath): TypePath { path + TypePathSegment.array_item }
-fun lambda_arg(path: TypePath, index: Int): TypePath {
-  path + TypePathSegment.lambda_arg(index)
-}
-fun lambda_return(path: TypePath): TypePath {
-  path + TypePathSegment.lambda_return
-}
-fun trim_prefix(path: TypePath, i: Int): TypePath {
-  TypePath { segments = path.segments.without_first(i) }
-}
-fun trim_suffix(path: TypePath, i: Int): TypePath {
-  TypePath { segments = path.segments.without_last(i) }
-}
-
-fun ==(a: TypePath, b: TypePath): Bool { a.segments == b.segments }
-fun ==(a: TypePathSegment, b: TypePathSegment): Bool {
-  switch a
-  case struct_field(a) if b is struct_field(b)  then a == b else false
-  case enum_variant(a) if b is enum_variant(b)  then a == b else false
-  case box_inner       b is box_inner
-  case array_item      b is array_item
-  case lambda_arg(a)   if b is lambda_arg(b)    then a == b else false
-  case lambda_return   b is lambda_return
-}
-
-fun hash[H](hasher: H, path: TypePath) { hasher.hash(path.segments) }
-fun hash[H](hasher: H, segment: TypePathSegment) {
-  switch segment
-  case struct_field(a) { hasher.hash("struct_field")  hasher.hash(a) }
-  case enum_variant(a) { hasher.hash("enum_variant")  hasher.hash(a) }
-  case box_inner       { hasher.hash("box_inner") }
-  case array_item      { hasher.hash("array_item") }
-  case lambda_arg(a)   { hasher.hash("lambda_arg")  hasher.hash(a) }
-  case lambda_return   { hasher.hash("lambda_return") }
-}
-
 struct OngoingPath { path: TypePath, relative_target: Int }
 
 fun find_out_where_to_put_boxes(type: EggType): Set[TypePath] {

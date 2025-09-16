@@ -28,6 +28,15 @@ import mod.mar
 
 struct MemoryLayout { size: Int, alignment: Int }
 
+fun hash[H](hasher: &H, layout: MemoryLayout) {
+  hasher.hash(layout.size)
+  hasher.hash(layout.alignment)
+}
+
+fun ==(a: MemoryLayout, b: MemoryLayout): Bool {
+  a.size == b.size and a.alignment == b.alignment
+}
+
 fun stride_size(layout: MemoryLayout): Int {
   layout.size.round_up_to_multiple_of(layout.alignment)
 }
@@ -48,7 +57,7 @@ fun memory_layout(type: EggType): MemoryLayout {
   }
   case box MemoryLayout { size = 8, alignment = 8 }
   case ptr MemoryLayout { size = 8, alignment = 8 }
-  case bytes(size) MemoryLayout { size, alignment = 1 }
+  case bytes(layout) layout
   default panic("Disallowed in mem layout abstraction: {type}")
 }
 
@@ -87,17 +96,13 @@ fun memory_layout(pieces: Slice[MemoryLayout]): Aggregate {
 
   | Place the pieces.
   var bytes = list[Int]() | one item per byte, indices into layouts, padding = -1
-  for arg in layouts.iter().enumerate() do {
-    var index = arg.index
-    var arg = arg.item
-
-    | See if the arg fits in a padding.
+  for arg in layouts do {
     var offset = 0
     var was_placed_in_padding = loop {
       if offset + arg.size > bytes.len then break(false)
       if bytes.to_slice().subslice(offset ..+ arg.size).is_all_minus_one()
       then {
-        for i in offset ..+ arg.size do bytes.&.set(i, index)
+        for i in offset ..+ arg.size do bytes.&.set(i, arg.index)
         break(true)
       }
       offset = offset + arg.alignment
@@ -106,7 +111,7 @@ fun memory_layout(pieces: Slice[MemoryLayout]): Aggregate {
       | Add the arg to the end.
       var padding = bytes.len.round_up_to_multiple_of(arg.alignment) - bytes.len
       for i in 0..padding    do bytes.&.push(-1)
-      for i in 0..arg.size do bytes.&.push(index)
+      for i in 0..arg.size do bytes.&.push(arg.index)
     }
   }
 
@@ -173,11 +178,33 @@ fun is_all_minus_one(list: Slice[Int]): Bool {
 
 | Layouting args  
 
-| struct ArgsLayout {
-|   size: Int, alignment: Int, parts: Slice[ArgsPart], offsets: Slice[Int]
-| }
-| enum ArgsPart { arg: Int, padding: Int }
+struct ArgsLayout {
+  size: Int, alignment: Int, parts: Slice[ArgsPart], offsets: Slice[Int]
+}
+enum ArgsPart { arg: Int, padding: Int }
 
+fun memory_layout_args(args: Slice[EggType]): ArgsLayout {
+  | Layout the args individually.
+  var arg_layouts = list[MemoryLayout]()
+  for arg in args do arg_layouts.&.push(arg.memory_layout())
+  var layout = arg_layouts.to_slice().memory_layout()
+
+  | Map the result back to arg semantics.
+  var parts = list[ArgsPart]()
+  for part in layout.parts do
+    parts.&.push(
+      switch part
+      case piece(index) ArgsPart.arg(index)
+      case padding(padding) ArgsPart.padding(padding)
+    )
+
+  ArgsLayout {
+    size = layout.size,
+    alignment = layout.alignment,
+    parts = parts.to_slice(),
+    offsets = layout.offsets,
+  }
+}
 
 | Layouting structs  
 
