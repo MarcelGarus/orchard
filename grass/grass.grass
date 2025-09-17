@@ -5,15 +5,13 @@
 # input stack:   pointer length  (this should point to Grass source code)
 # output stack:  pointer length  (this points to compiled Ground code)
 #
-# The compiler allocates new memory for the output, but it does not free the
-# input.
+# The compiler allocates new memory for the output, but doesn't free the input.
 
 ## A Refresher on Grass
 #
 # Grass stands for Ground assembly (because I use it to write Ground byte code),
-# but really it's encoding agnostic. The compiler just goes through the file
-# and turns names into bytes. It's somewhat similar to Forth, but also not
-# really.
+# but really it's encoding agnostic. The compiler goes through the file, turning
+# names into bytes. It's somewhat similar to Forth, but also not really.
 #
 # - The 255 names "00" to "ff" are predefined, each stands for a single byte.
 # - You can define new names using:
@@ -22,10 +20,9 @@
 #   - The names that make up the definition (forward references allowed, but
 #     please avoid cycles).
 #   - A semicolon (;) to end the definition.
-# - You can use @label in the top-level scope (not inside a definition) to
-#   define a label. Every reference ^label (allowed in definitions) then gets
-#   replaced by the absolute offset of the corresponding label (64-bits, little
-#   endian encoded).
+# - You can use @label outside of definitions to define a label. Every reference
+#   ^label (allowed in definitions) then gets replaced by the absolute offset of
+#   the corresponding label (64-bits, little endian encoded).
 
 jump ^main
 
@@ -74,8 +71,8 @@ jump ^main
 
 ## Decimal Words
 #
-# Next, Ground requires little-endian word literals in some places. Writing
-# those by hand is tedious, so I did it only once here and re-use those below.
+# In some places, Ground expects little-endian numbers. Writing those by hand is
+# tedious, so I did it only once here and re-use those below.
 
 : $0   00 00 00 00 00 00 00 00 ;
 : $1   01 00 00 00 00 00 00 00 ;
@@ -90,10 +87,9 @@ jump ^main
 
 ## Character and String Constants
 #
-# Grass is _very_ minimal and doesn't even have string literals. Unlike all
-# those developers writing code with their high-level fancy-pants assemblers,
-# _real developers_ obviously first define their ASCII literals and string
-# constants by hand.
+# Grass doesn't have string literals. Unlike those high-level developers writing
+# code using their fancy-pants sophisticated assemblers, _real_ developers start
+# by defining their ASCII literals and string constants by hand.
 
 : 'newline   0a ;
 : 'space     20 ; : '_ space ;
@@ -141,31 +137,33 @@ jump ^main
 # push_word $3
 # add
 #
-# In order to keep my sanity, I try to get to the feeling of stack-based /
-# concatenative programming languages such as Forth. In Forth, you can write
-# code like this:
+# In order to keep my sanity, I try to keep my assembly concatenative, just like
+# Forth or other stack-based programming languages. In Forth, you can write code
+# like this:
 #
 # 2 3 +
 #
 # My plan to get a Forth-like feel in here and to keep my sanity:
 #
-# - I define number literals that push their value to the stack. To avoid
-#   confusion with the predefined byte literals, I use an underscore prefix.
+# - Number literals push their value to the stack. To disambiguate them from the
+#   predefined byte literals, they use an underscore prefix.
 # - I use short names and symbols for operations, like "+" instead of "add".
-# - I define lots of little helper functions such as "dup", "swap", etc. that
-#   make stack manipulation bearable.
-# - All items on the stack are one word (8 bytes) in size, including bools,
-#   chars, and strings. Operations are phrased in word-amounts: Instead of
-#   "push_word_from_stack $16", I write "over2".
-# - I avoid postfix arguments whenever possible. Instead of "pop 08", I define
-#   "pop1". This allows me to visually parse names as a unit. The only situation
-#   where this is not possible is for operations that expect labels, like
-#   "if".
-# - I use multiple operations on the same row, but I separate them with two
-#   spaces to make the distinction between arguments and operations clear.
+# - Many little helper functions such as "dup" or "swap" make managing the stack
+#   bearable.
+# - All values on the stack are one word (8 bytes) in size. This includes bools,
+#   chars, and strings. Numbers in operations are given in word-amounts: Instead
+#   of "push_word_from_stack $16", I write "over2".
+# - I avoid postfix arguments whenever possible, even if that implies creating a
+#   couple of hardcoded operations. For example, instead of using "pop 08" in my
+#   code in multiple places, I define "pop1" and use that consistently. A visual
+#   unit in the code (a name) usually corresponds to a semantic unit. Sometimes,
+#   this is not possible; for example, an "if" expects postfix labels.
+# - I put multiple operations on the same line to keep my code more consise, but
+#   I use two spaces between them. This way, I can distinguish postfix arguments
+#   from runs of operations.
 # - I define names for operations, even if those just do "call ^operation".
-# - I document the stack effect of defined operations in parentheses. For
-#   example, swap has the effect (a b -> b a).
+# - I document how operations affect the stack. For example, "0?" has the effect
+#   (int -> bool).
 # - Sometimes I document the current state of the stack in comments.
 
 : _0           push_word $0 ;                                           #( -> 0)
@@ -235,26 +233,27 @@ jump ^main
 
 ## Data Structures
 #
-# Because this Grass compiler is just used for bootstrapping, the bottleneck is
-# not execution speed, but the implementation complexity given the limited
-# expressiveness of the code. This results in some uncommon tradeoffs.
+# Because this Grass compiler is just used for bootstrapping, execution speed is
+# not the bottleneck. Instead, I  mostly struggle with implementation complexity
+# given the limited expressiveness of the code. This results in cool, if unusual
+# tradeoffs.
 #
 # First of all: Pointer indirections are great! All pointers have the same size,
 # so keeping everything as pointers (or other word-sized values) makes it easier
 # to reason about the code.
 #
-# Next: Reuse as much data structure behavior as possible! I essentially
-# implemented object inheritance:
+# While I'm not generally a fan of data structures inheriting behavior or state,
+# it makes things sooo much easier here:
 #
-# - A string is a pointer to a tuple ( ptr | len ). The ptr in turn points to
-#   the actual bytes, the len is the length in bytes.
-# - A (growable) buffer is a pointer to a tuple ( ptr | len | cap ). All string
-#   operations also work on buffers.
+# - A string is a pointer to a tuple ( ptr | len ). The ptr points to the bytes,
+#   the len is the length in bytes.
+# - A growable buffer is a pointer to a tuple ( ptr | len | cap ). Operations on
+#   strings also work on buffers, since they have a compatible memory layout!
 # - A list (of word-sized items) is a buffer where the len and cap are multiples
 #   of 8.
-# - A dictionary (from strings to word-sized items) is a list where the items
-#   are ordered like this: ( key | value | key | value | ... ). Dictionaries use
-#   linear search for lookup.
+# - A dictionary from strings to words is a list containing alternating items of
+#   keys and values: ( key | value | key | value | ... ). As runtime performance
+#   is not really a limitation, dictionaries use a linear search for lookup.
 
 # String stuff
 : make_str    call ^make_str ;                                 #(ptr len -> str)
@@ -350,10 +349,10 @@ jump ^main
 
 ## Tokenization
 #
-# The first step to compiling Grass is to convert the giant string into a list
-# of names. At this point, ":" and ";" as well as labels and references are also
-# considered names. At the end of the list, we add an empty name that marks the
-# end of the file.
+# The first step when compiling Grass is to convert the giant string into a list
+# of tokens: ":", ";", labels, references, or names referring to definitions. At
+# the end of the list, we add an empty token that marks the end of the file.
+TODO eoi token
 
 : tok call ^tok ;                                               #(str -> tokens)
   @tok                  clone_str  make_list
@@ -399,9 +398,8 @@ jump ^main
 #
 # In order to allow forward-definitions, we first collect all definitions into a
 # dictionary from name to where the token definition starts (index into tokens).
-# To do that, we walk all the tokens from the beginning and skip all top-level
-# stuff. Only when we find a definition (":"), we store the current location in
-# the map.
+# We do that by walking the tokens from the beginning, skipping top-level stuff.
+# When we find a definition (":"), we store the current index in the dictionary.
 
 : defs             call ^defs ;                                #(tokens -> defs)
   @defs            make_dict  _0
@@ -424,8 +422,7 @@ jump ^main
 ## Compiling Code
 #
 # Given that we know where each name is defined, we go through the tokens again.
-# This time, we only care about the top-level scope and skip the function
-# definitions. and compile
+# This time, we only care about the top-level scope and skip the definitions.
 
 # compiler = ( tokens | defs | out | labels | patches )
 : make_compiler TODO ;
