@@ -74,13 +74,20 @@ jump ^main
 # In some places, Ground expects little-endian numbers. Writing those by hand is
 # tedious, so I did it only once here and re-use those below.
 
+: $-1  ff ff ff ff ff ff ff ff ;
 : $0   00 00 00 00 00 00 00 00 ;
 : $1   01 00 00 00 00 00 00 00 ;
 : $3   03 00 00 00 00 00 00 00 ;
+: $7   07 00 00 00 00 00 00 00 ;
 : $8   08 00 00 00 00 00 00 00 ;
+: $15  0f 00 00 00 00 00 00 00 ;
 : $16  10 00 00 00 00 00 00 00 ;
+: $22  16 00 00 00 00 00 00 00 ;
 : $24  18 00 00 00 00 00 00 00 ;
+: $28  1c 00 00 00 00 00 00 00 ;
+: $29  1d 00 00 00 00 00 00 00 ;
 : $32  20 00 00 00 00 00 00 00 ;
+: $33  21 00 00 00 00 00 00 00 ;
 : $40  28 00 00 00 00 00 00 00 ;
 : $48  30 00 00 00 00 00 00 00 ;
 : $56  38 00 00 00 00 00 00 00 ;
@@ -97,6 +104,9 @@ jump ^main
 : 'colon     3a ;
 : 'semicolon 3b ;
 
+: '0 30 ; : '2 32 ; : '4 34 ; : '6 36 ; : '8 38 ;
+: '1 31 ; : '3 33 ; : '5 35 ; : '7 37 ; : '9 39 ;
+
 : 'a 61 ; : 'e 65 ; : 'i 69 ; : 'm 6d ; : 'q 71 ; : 'u 75 ; : 'y 79 ;
 : 'b 62 ; : 'f 66 ; : 'j 6a ; : 'n 6e ; : 'r 72 ; : 'v 76 ; : 'z 7a ;
 : 'c 63 ; : 'g 67 ; : 'k 6b ; : 'o 6f ; : 's 73 ; : 'w 77 ;
@@ -112,6 +122,7 @@ jump ^main
 : 'has         'h 'a 's ;
 : 'in          'i 'n ;
 : 'is          'i 's ;
+: 'multiple    'm 'u 'l 't 'i 'p 'l 'e ;
 : 'name        'n 'a 'm 'e ;
 : 'never       'n 'e 'v 'e 'r ;
 : 'no          'n 'o ;
@@ -119,6 +130,7 @@ jump ^main
 : 'of          'o 'f ;
 : 'oom         'o 'o 'm ;
 : 'outside     'o 'u 't 's 'i 'd 'e ;
+: 'times       't 'i 'm 'e 's ;
 
 # Now, finally, we get to phrases.
 : 'error:_":"_in_definition          'error:_ '":" '_ 'in '_ 'definition ;
@@ -127,7 +139,8 @@ jump ^main
 : 'error:_definition_has_no_name     'error:_ 'definition '_ 'has '_ 'no '_
                                      'name ;
 : 'error:_definition_never_ends      'error:_ 'definition '_ 'never '_ 'ends ;
-: '_is_not_defined                   'is '_ 'not '_ 'defined ;
+: '_is_defined_multiple_times        '_ 'is '_ 'defined '_ 'multiple '_ 'times ;
+: '_is_not_defined                   '_ 'is '_ 'not '_ 'defined ;
 
 ## Higher Level Instructions
 #
@@ -166,13 +179,20 @@ jump ^main
 #   (int -> bool).
 # - Sometimes I document the current state of the stack in comments.
 
+: _-1          push_word $-1 ;                                         #( -> -1)
 : _0           push_word $0 ;                                           #( -> 0)
 : _1           push_word $1 ;                                           #( -> 1)
 : _3           push_word $3 ;                                           #( -> 3)
+: _7           push_word $7 ;                                           #( -> 7)
 : _8           push_word $8 ;                                           #( -> 8)
+: _15          push_word $15 ;                                         #( -> 15)
 : _16          push_word $16 ;                                         #( -> 16)
+: _22          push_word $22 ;                                         #( -> 22)
 : _24          push_word $24 ;                                         #( -> 24)
+: _28          push_word $28 ;                                         #( -> 28)
+: _29          push_word $29 ;                                         #( -> 29)
 : _32          push_word $32 ;                                         #( -> 32)
+: _33          push_word $33 ;                                         #( -> 33)
 : _40          push_word $40 ;                                         #( -> 40)
 : _48          push_word $48 ;                                         #( -> 48)
 : _56          push_word $56 ;                                         #( -> 56)
@@ -195,6 +215,8 @@ jump ^main
 : +1           _1  + ;                                             #(int -> int)
 : +8           _8  + ;                                             #(int -> int)
 : +16          _16  + ;                                            #(int -> int)
+: +24          _24  + ;                                            #(int -> int)
+: +32          _32  + ;                                            #(int -> int)
 : *2           _1  << ;                                            #(int -> int)
 : <<           shift_left ;                                    #(int int -> int)
 : >>           shift_right ;                                   #(int int -> int)
@@ -301,16 +323,6 @@ jump ^main
                           free                   # (buf byte)
              @pushb.push  over  ptr  over2  len  +  swap  storeb  # (buf)
                           dup  len  +1  len=  return
-: push       call ^push ;                                        #(buf word -> )
-             @push  over  over  pushb
-                    over  over  _8  >>  pushb
-                    over  over  _16  >>  pushb
-                    over  over  _24  >>  pushb
-                    over  over  _32  >>  pushb
-                    over  over  _40  >>  pushb
-                    over  over  _48  >>  pushb
-                    over  over  _56  >>  pushb
-                    pop2  return
 : overwrite  call ^overwrite ;                             #(buf where word -> )
              @overwrite  # Temporarily give the buf a different length
                          over2  len  # (buf where word original_len)
@@ -327,7 +339,18 @@ jump ^main
                       over  keep2_pop3  make_str  return
 
 # List stuff
-: get  *8  swap  ptr  +  load ;                            #(list index -> item)
+: make_list  make_buf ;
+: push       call ^push ;                                       #(list word -> )
+             @push  over  over  pushb
+                    over  over  _8  >>  pushb
+                    over  over  _16  >>  pushb
+                    over  over  _24  >>  pushb
+                    over  over  _32  >>  pushb
+                    over  over  _40  >>  pushb
+                    over  over  _48  >>  pushb
+                    over  over  _56  >>  pushb
+                    pop2  return
+: get        *8  swap  ptr  +  load ;                      #(list index -> item)
 
 # Dict stuff
 : make_dict  _16  malloc  _1  _0  make_abc ;                         #( -> dict)
@@ -352,11 +375,10 @@ jump ^main
 # The first step when compiling Grass is to convert the giant string into a list
 # of tokens: ":", ";", labels, references, or names referring to definitions. At
 # the end of the list, we add an empty token that marks the end of the file.
-TODO eoi token
 
 : tok call ^tok ;                                               #(str -> tokens)
   @tok                  clone_str  make_list
-  @tok.loop             # (str defs)
+  @tok.loop             # (str tokens)
                         over  empty?  if ^tok.done ^tok.skip_whitespace
   @tok.skip_whitespace  over  first_char  byte_to_int
                         dup  octothorpe?  if ^tok.comment  ^tok.not_comment
@@ -365,19 +387,20 @@ TODO eoi token
   @tok.not_comment      dup  space?  swap  newline?  or
                         if ^tok.whitespace ^tok.not_whitespace
   @tok.whitespace       over  trim_first jump ^tok.loop
-  @tok.name             # (str defs)
+  @tok.name             # (str tokens)
                         over  ptr
-  @tok.name.loop        # (str defs start)
+  @tok.name.loop        # (str tokens start)
                         over2  empty?  if ^tok.name.done ^tok.name.check
   @tok.name.check       over2  first_char  byte_to_int
                         dup  space?  swap  dup  newline?  swap  octothorpe?
                         or  or  if ^tok.name.done ^tok.name.more
-  @tok.name.more        # (str defs start)
+  @tok.name.more        # (str tokens start)
                         over2  trim_first  jump ^tok.name.loop
-  @tok.name.done        # (str defs start)
-                        over2  ptr  over  subtract  make_str # (str defs name)
+  @tok.name.done        # (str tokens start)
+                        over2  ptr  over  subtract  make_str # (str tokens name)
                         over  over  push  pop1  jump ^tok.loop
-  @tok.done             # (str defs)
+  @tok.done             # (str tokens)
+                        dup  _0  _0  make_str  push  # add eoi token
                         over  free_str  keep1_pop1  return
 
 ## Inspecting Tokens
@@ -401,23 +424,45 @@ TODO eoi token
 # We do that by walking the tokens from the beginning, skipping top-level stuff.
 # When we find a definition (":"), we store the current index in the dictionary.
 
-: defs             call ^defs ;                                #(tokens -> defs)
-  @defs            make_dict  _0
-  @defs.loop       # (tokens dict cursor)
-                   over2  over  get  eoi?  if ^defs.done ^defs.0
-  @defs.0          over2  over  get  eod?  if ^error.top_level_eod ^defs.1
-  @defs.1          over2  over  get  def?  if ^defs.def ^defs.no_def
-  @defs.no_def     +1  jump ^defs.loop
-  @defs.def        +1
-                   over2  over  get  eod?  if ^error.def_imm_eod ^defs.2
-  @defs.2          over2  over  get  eoi?  if ^error.def_imm_eoi ^defs.3
-  @defs.3          over  over3  over2  get  over2  put
-  @defs.def.loop   # (tokens dict cursor)
-                   +1  over2  over  get  eoi?
-                   if ^error.def_does_not_end ^defs.4
-  @defs.4          over2  over  get  eod?  if ^defs.loop ^defs.done
-  @defs.def.done   +1  jump ^defs.loop
-  @defs.done       pop1  keep1_pop1  return
+: defs            call ^defs ;                                 #(tokens -> defs)
+  @defs           make_dict  dup  add_builtins  _0
+  @defs.loop      # (tokens dict cursor)
+                  over2  over  get  dup  eoi?  if ^defs.done ^defs.0
+  @defs.0         dup  eod?  if ^error.top_level_eod ^defs.1
+  @defs.1         dup  def?  if ^defs.def ^defs.no_def
+  @defs.no_def    pop1  +1  jump ^defs.loop
+  @defs.def       pop1  +1
+                  over2  over  get
+                  dup  eod?  if ^error.def_imm_eod ^defs.2
+  @defs.2         dup  eoi?  if ^error.def_imm_eoi ^defs.3
+  @defs.3         over2  over  lookup  if ^error.name_already_defined ^defs.4
+  @defs.4         over2  over  over3  put  pop1
+  @defs.def.loop  # (tokens dict cursor)
+                  +1  over2  over  get  eoi?
+                  if ^error.def_does_not_end ^defs.5
+  @defs.5         over2  over  get  eod?  if ^defs.def.loop ^defs.def.done
+  @defs.def.done  +1  jump ^defs.loop
+  @defs.done      pop2  keep1_pop1  return
+
+# The defs maps names to the token index, but how do we represent builtin bytes?
+# We map them to negative numbers! Every two-digit hex string of a number n maps
+# to -n-1: "00" maps to -1, "01" to -2, ..., "ff" to -256.
+: add_builtins        call ^add_builtins ;                           #(defs -> )
+  @add_builtins       _0
+  @add_builtins.loop  # (defs index)
+                      dup  _256  ==  if ^add_builtins.done ^add_builtins.0
+  @add_builtins.0     over  over  to_hex_str  _-1  over3  -  put
+                      +1  jump ^add_builtins.loop
+  @add_builtins.done  pop2  return
+: to_hex_str          call ^to_hex_str ;                           #(int -> str)
+  @to_hex_str         _2  malloc
+                      dup  over2  _4  >>  to_hex_char  storeb
+                      dup  +1  over2  _15  and  to_hex_char  storeb
+                      _2  make_str  return
+: to_hex_char         call ^to_hex_char ;                         #(int -> char)
+  @to_hex_char        dup  _10  <  if ^to_hex_char.<10 ^to_hex_char.>=10
+  @to_hex_char.<10    push_byte '0  byte_to_int  add  return
+  @to_hex_char.>=10   _10  -  push_byte 'a  byte_to_int  add  return
 
 ## Compiling Code
 #
@@ -425,16 +470,55 @@ TODO eoi token
 # This time, we only care about the top-level scope and skip the definitions.
 
 # compiler = ( tokens | defs | out | labels | patches )
-: make_compiler TODO ;
-: free_compiler TODO ;
-: tokens  TODO ;
-: defs    TODO ;
-: out     TODO ;
-: labels  TODO ;
-: patches TODO ;
 
-: compile          _0  compile_rec ;                             #(compiler -> )
-: compile_rec      call ^comp ;                           #(compiler cursor -> )
+@main                                                      #(ptr len -> ptr len)
+ make_str  tok  # (tokens)
+ _40  malloc    # (tokens compiler)
+ dup  over2  swap  store  keep1_pop1  # (compiler)
+ dup  +8  make_dict  store
+ dup  +16  make_buf  store
+ dup  +24  make_dict  store
+ dup  +32  make_list  store
+ dup  _0  compile  # (compiler)
+ dup  out  over  labels  over2  patches  patch  # (compiler)
+ @free_tokens        dup  tokens  _0
+ @free_tokens.loop   # (tokens cursor)
+                     over  num_items  over
+                     ==  if ^free_tokens.done free_tokens.0
+ @free_tokens.0      over  over  get  free_str
+                     +1  jump ^free_tokens.loop
+ @free_tokens.done   pop1  free_list
+ @free_defs          dup  defs  _0
+ @free_defs.loop     # (defs cursor)
+                     over  num_items  over
+                     ==  if ^free_defs.done free_defs.0
+ @free_defs.0        over  over  get  free_str
+                     +2  jump ^free_defs.loop
+ @free_defs.done     pop1  free_dict
+ @free_labels        dup  labels  _0
+ @free_labels.loop   # (labels cursor)
+                     over  num_items  over
+                     ==  if ^free_labels.done free_labels.0
+ @free_labels.0      over  over  get  free_str
+                     +2  jump ^free_labels.loop
+ @free_labels.done   pop1  free_dict
+ @free_patches       dup  patches  _0
+ @free_patches.loop  # (patches cursor)
+                     over  num_items  over
+                     ==  if ^free_patches.done free_patches.0
+ @free_patches.0     over  over  get  free_str
+                     +2  jump ^free_patches
+ @free_patches.done  pop1  free_list
+ dup  out  swap  _40  free  # (out)
+ shrink  return
+
+: tokens  load ;
+: defs    +8  load ;
+: out     +16  load ;
+: labels  +24  load ;
+: patches +32  load ;
+
+: compile          call ^comp ;                           #(compiler cursor -> )
   @comp            over  tokens  over  get
                    dup  eoi?  over  eod?  or  if ^comp.done ^comp.0
   @comp.done       pop3  return
@@ -450,7 +534,7 @@ TODO eoi token
                    # store (label, out.len) into the patches list
                    over2  patches  over  push
                    over2  patches  over3  out  len  push
-                   over2  out  emit_placeholder
+                   over2  out  _0  push
                    pop1  +1  jump ^comp
   @comp.2          # (compiler cursor token)
                    dup  def?  if ^comp.skip ^comp.3
@@ -459,7 +543,11 @@ TODO eoi token
   @comp.name       # (compiler cursor token)
                    over2  defs  swap  lookup
                    if ^comp.name.0 ^error.name_not_defined
-  @comp.name.0     # (compiler cursor def_cursor)
+  @comp.name.0     # (compiler cursor lookup_result)
+                   dup  <0?  if ^comp.builtin ^comp.defined
+  @comp.builtin    +1  _0  swap  -  # (compiler cursor byte_literal)
+                   over2  out  swap  pushb  jump ^comp
+  @comp.defined    # (compiler cursor def_cursor)
                    over2  swap  compile_rec  jump ^comp
 
 : patch        call ^patch ;                           #(buf labels patches -> )
@@ -474,17 +562,29 @@ TODO eoi token
                pop2  +2  jump ^patch.loop
   @patch.done  pop3  return
 
-TODO: builtin 00 to ff
-
-@main                                                      #(ptr len -> ptr len)
- make_str  dup  tok  dup  defs  # (str tokens defs)
- make_buf  make_dict  make_list  make_compiler  dup  compile
- dup  out  over  labels  over2  patches  patch
- dup  out  shrink
-
-@error.top_level_eod TODO "error: ";" outside of definition"
-@error.def_imm_end TODO "error: definition has no name name"
-@error.def_does_not_end TODO "error: definition never ends"
-@error.def_in_def TODO "error: ":" in definition"
-@error.name_not_defined "error: x is not defined"
-@error.label_not_defined "error: x is not defined"
+@error.top_level_eod                                                #( -> never)
+ _32  malloc  dup  store_bytes 'error:_";"_outside_of_definition  _32  crash
+@error.def_imm_end                                                  #( -> never)
+ _29  malloc  dup  store_bytes 'error:_definition_has_no_name  _29  crash
+@error.def_does_not_end                                             #( -> never)
+ _28  malloc  dup  store_bytes 'error:_definition_never_ends  _28  crash
+@error.def_in_def                                                   #( -> never)
+ _24  malloc  dup  store_bytes 'error:_":"_in_definition  _24  crash
+@error.name_not_defined                              #(compiler cursor -> never)
+ over  tokens  swap  get  call ^error.is_not_defined
+@error.label_not_defined                            #(patches cursor _ -> never)
+ over2  over2  get  call ^error.is_not_defined
+@error.name_already_defined                                  #(token _ -> never)
+ swap  call ^error.is_defined_multiple_times
+@error.is_not_defined                                            #(str -> never)
+ dup  len  _22  +  malloc
+ dup  store_bytes 'error:_
+ over  ptr  over  _7  +  memcopy
+ dup  _7  +  over2  len  +  store_bytes '_is_not_defined
+ over len  _22  +  crash
+@error.is_defined_multiple_times                                 #(str -> never)
+ dup  len  _33  +  malloc
+ dup  store_bytes 'error:_
+ over  ptr  over  _7  +  memcopy
+ dup  _7  +  over2  len  +  store_bytes '_is_defined_multiple_times
+ over len  _33  +  crash
