@@ -35,7 +35,7 @@ The encoding uses little endian encoding for 64-bit integers; VMs are free to ch
 - `00`: **nop**: Does nothing.
 - `a0`: **add**:
   Pops two 64-bit integers, adds them, and pushes the result as a 64-bit integer.
-- `a1`: **sub**:
+- `a1`: **subtract**:
   Pops two 64-bit integers, subtracts the second (further up on the stack) from the first (further down on the stack) them, and pushes the result as a 64-bit integer.
 - `a2`: **multiply**:
   Pops two signed 64-bit integers, multiplies them, and pushes the result as a 64-bit signed integer.
@@ -60,13 +60,13 @@ The encoding uses little endian encoding for 64-bit integers; VMs are free to ch
   Pops two 64-bit integers, bitwise-ors them, and pushes the result as a 64-bit integer.
 - `b2`: **xor**:
   Pops two 64-bit integers, bitwise-xors them, and pushes the result as a 64-bit integer.
-- `b3`: **shift_left_8**:
+- `b3`: **shift_left**:
   Pops two 64-bit integers, shifts the first (further down on the stack) left by the second (further up on the stack), and pushes the result as a 64-bit integer.
-- `b4`: **shift_right_8**:
+- `b4`: **shift_right**:
   Pops two 64-bit integers, shifts the first (further down on the stack) right by the second (further up on the stack), and pushes the result as a 64-bit integer.
 - `b5`: **lower_byte**:
   Pops a 64-bit integer, pushes its lower byte.
-- `b6`: **byte_to_int**:
+- `b6`: **byte_to_word**:
   Pops a byte, pushes a 64-bit integer with the upper 7 bytes zero.
 - `c0 xx`: **push_padding**:
   Push x bytes of padding to the stack.

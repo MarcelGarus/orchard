@@ -43,8 +43,10 @@ jump ^main
 : and . . . . . . . . . b0 ;#                     |       a:8 b:8 -> (a&b):8
 : or  . . . . . . . . . b1 ;#                     |       a:8 b:8 -> (a|b):8
 : xor . . . . . . . . . b2 ;#                     |       a:8 b:8 -> (a^b):8
-: lower_byte  . . . . . b3 ;#                     |           a:8 -> a:1
-: byte_to_word  . . . . b4 ;#                     |           a:1 -> a:8
+: shift_left  . . . . . b3 ;#                     |       a:8 b:8 -> (a<<b):8
+: shift_right . . . . . b4 ;#                     |       a:8 b:8 -> (a>>b):8
+: lower_byte  . . . . . b5 ;#                     |           a:8 -> a:1
+: byte_to_word  . . . . b6 ;#                     |           a:1 -> a:8
 : push_padding  . . . . c0 ;#                     |           n:1 -> _:n
 : push_byte . . . . . . c1 ;# a:1                 |               -> a:1
 : push_word . . . . . . c2 ;# a:8                 |               -> a:8
@@ -98,11 +100,14 @@ jump ^main
 # code using their fancy-pants sophisticated assemblers, _real_ developers start
 # by defining their ASCII literals and string constants by hand.
 
-: 'newline   0a ;
-: 'space     20 ; : '_ space ;
-: 'quote     22 ;
-: 'colon     3a ;
-: 'semicolon 3b ;
+: 'newline     0a ;
+: 'space       20 ; : '_ space ;
+: 'quote       22 ;# "
+: 'octothorpe  23 ;# #
+: 'colon       3a ;# :
+: 'semicolon   3b ;# ;
+: 'at          40 ;# @
+: 'tick        60 ;# ^
 
 : '0 30 ; : '2 32 ; : '4 34 ; : '6 36 ; : '8 38 ;
 : '1 31 ; : '3 33 ; : '5 35 ; : '7 37 ; : '9 39 ;
@@ -204,6 +209,10 @@ jump ^main
 : over3        push_word_from_stack $24 ;                #(a b c d -> a b c d a)
 : over4        push_word_from_stack $32 ;            #(a b c d e -> a b c d e a)
 : over5        push_word_from_stack $40 ;        #(a b c d e f -> a b c d e f a)
+: pop1         pop 08 ;                                                 #(a -> )
+: pop2         pop 10 ;                                               #(a b -> )
+: pop3         pop 18 ;                                             #(a b c -> )
+: pop4         pop 20 ;                                           #(a b c d -> )
 : keep1_pop1   pop_below_top $8 08 ;                                 #(a b -> b)
 : keep2_pop1   pop_below_top $16 08 ;                            #(a b c -> b c)
 : keep2_pop3   pop_below_top $16 18 ;                          #(a b c d -> c d)
@@ -218,19 +227,24 @@ jump ^main
 : +24          _24  + ;                                            #(int -> int)
 : +32          _32  + ;                                            #(int -> int)
 : *2           _1  << ;                                            #(int -> int)
+: *8           _3  << ;                                            #(int -> int)
+: /8           _3  >> ;                                            #(int -> int)
 : <<           shift_left ;                                    #(int int -> int)
 : >>           shift_right ;                                   #(int int -> int)
-: compare      sub  compare_zero  byte_to_int ;                    #(a b -> ord)
+: compare      -  compare_zero  byte_to_word ;                     #(a b -> ord)
 : not          call ^not ;  @not  _1  swap  -  return            #(bool -> bool)
 : !=           call ^neq ;                                        #(a b -> bool)
-               @neq  compare  _3  over  shift_right  _1  and  lower_byte  return
+               @neq  compare  _3  over  >>  _1  and  lower_byte  return
 : ==           call ^eq ;  @eq  !=  not  return                   #(a b -> bool)
 : 0?           _0 == ;                                            #(int -> bool)
-: space?       push_byte 'space      byte_to_int  == ;           #(word -> bool)
-: newline?     push_byte 'newline    byte_to_int  == ;           #(word -> bool)
-: colon?       push_byte 'colon      byte_to_int  == ;           #(word -> bool)
-: semicolon?   push_byte 'semicolon  byte_to_int  == ;           #(word -> bool)
-: octothorpe?  push_byte 'octothorpe  byte_to_int  == ;          #(word -> bool)
+: <0?          compare_zero  byte_to_word  _1  >> ;               #(int -> bool)
+: at?          push_byte 'at          byte_to_word  == ;         #(char -> bool)
+: colon?       push_byte 'colon       byte_to_word  == ;         #(char -> bool)
+: newline?     push_byte 'newline     byte_to_word  == ;         #(char -> bool)
+: semicolon?   push_byte 'semicolon   byte_to_word  == ;         #(char -> bool)
+: space?       push_byte 'space       byte_to_word  == ;         #(char -> bool)
+: tick?        push_byte 'tick        byte_to_word  == ;         #(char -> bool)
+: octothorpe?  push_byte 'octothorpe  byte_to_word  == ;         #(char -> bool)
 : if           not  if_not ;                    # Usage: bool if ^then ^else
 : if_not       jump_table 02 ;                  # Usage: bool if_not ^then ^else
 : malloc       call ^malloc ;                                     #(size -> ptr)
@@ -244,7 +258,7 @@ jump ^main
 : free         free_word_aligned ;                                    #(ptr -> )
 : load         load_word ;                                        #(ptr -> word)
 : store        store_word ;                                      #(ptr word -> )
-: loadb        load_byte  byte_to_int ;                           #(ptr -> byte)
+: loadb        load_byte  byte_to_word ;                          #(ptr -> byte)
 : storeb       lower_byte  store_byte ;                          #(ptr byte -> )
 : memcopy      call ^memcopy ;                             #(from to amount -> )
                @memcopy       _0
@@ -281,6 +295,8 @@ jump ^main
 : make_str    call ^make_str ;                                 #(ptr len -> str)
               @make_str  _16  malloc  dup  over3  ptr=
                          keep2_pop1  swap  len=  return
+: clone_str   call @clone_str ;                                    #(str -> str)
+              @clone_str  dup  ptr  swap  len  make_str  return
 : free_str    _16  free ;                                              #(str ->)
               # Note that this does not free the bytes,
               # only the str object.
@@ -323,6 +339,16 @@ jump ^main
                           free                   # (buf byte)
              @pushb.push  over  ptr  over2  len  +  swap  storeb  # (buf)
                           dup  len  +1  len=  return
+: push       call ^push ;                                        #(buf word -> )
+             @push  over  over  pushb
+                    over  over  _8  >>  pushb
+                    over  over  _16  >>  pushb
+                    over  over  _24  >>  pushb
+                    over  over  _32  >>  pushb
+                    over  over  _40  >>  pushb
+                    over  over  _48  >>  pushb
+                    over  over  _56  >>  pushb
+                    pop2  return
 : overwrite  call ^overwrite ;                             #(buf where word -> )
              @overwrite  # Temporarily give the buf a different length
                          over2  len  # (buf where word original_len)
@@ -340,21 +366,20 @@ jump ^main
 
 # List stuff
 : make_list  make_buf ;
-: push       call ^push ;                                       #(list word -> )
-             @push  over  over  pushb
-                    over  over  _8  >>  pushb
-                    over  over  _16  >>  pushb
-                    over  over  _24  >>  pushb
-                    over  over  _32  >>  pushb
-                    over  over  _40  >>  pushb
-                    over  over  _48  >>  pushb
-                    over  over  _56  >>  pushb
-                    pop2  return
+: num_items  len  /8 ;                                            #(list -> int)
 : get        *8  swap  ptr  +  load ;                      #(list index -> item)
 
 # Dict stuff
-: make_dict  _16  malloc  _1  _0  make_abc ;                         #( -> dict)
-: free_dict  dup  ptr  over  cap  _16  *  free  free_abc ;           #(dict -> )
+: make_dict  make_list ;                                             #( -> dict)
+: free_dict  free_list ;                                             #(dict -> )
+: free_keys  call ^free_keys ;                                       #(dict -> )
+             @free_keys       _0
+             @free_keys.loop  # (dict cursor)
+                              over  num_items  over
+                              ==  if ^free_keys.done ^free_keys.0
+             @free_keys.0     over  over  get  free_str
+                              +2  jump ^free_keys.loop
+             @free_keys.done  pop2
 : put        call ^put ;                                    #(dict str word -> )
              @put  over2  over2  push  keep1_pop1  push  return
 : lookup     call ^lookup ;                      #      (dict str -> ...)
@@ -362,7 +387,7 @@ jump ^main
                                                  # if not:   (... -> false)
              @lookup       _0
              @lookup.loop  # (dict str cursor)
-                           dup  *2  over3  len  ==
+                           dup  *2  over3  num_items  ==
                            if ^lookup.nope ^lookup.check
              @lookup.check over2  over  *2  get  over2  str==
                            if ^lookup.found ^lookup.next
@@ -380,18 +405,18 @@ jump ^main
   @tok                  clone_str  make_list
   @tok.loop             # (str tokens)
                         over  empty?  if ^tok.done ^tok.skip_whitespace
-  @tok.skip_whitespace  over  first_char  byte_to_int
+  @tok.skip_whitespace  over  first_char
                         dup  octothorpe?  if ^tok.comment  ^tok.not_comment
-  @tok.comment          over  trim_first  over  first_char  byte_to_int
+  @tok.comment          over  trim_first  over  first_char
                         newline?  if ^tok.loop ^tok.comment
   @tok.not_comment      dup  space?  swap  newline?  or
-                        if ^tok.whitespace ^tok.not_whitespace
-  @tok.whitespace       over  trim_first jump ^tok.loop
+                        if ^tok.whitespace ^tok.name
+  @tok.whitespace       over  trim_first  jump ^tok.loop
   @tok.name             # (str tokens)
                         over  ptr
   @tok.name.loop        # (str tokens start)
                         over2  empty?  if ^tok.name.done ^tok.name.check
-  @tok.name.check       over2  first_char  byte_to_int
+  @tok.name.check       over2  first_char
                         dup  space?  swap  dup  newline?  swap  octothorpe?
                         or  or  if ^tok.name.done ^tok.name.more
   @tok.name.more        # (str tokens start)
@@ -400,12 +425,12 @@ jump ^main
                         over2  ptr  over  subtract  make_str # (str tokens name)
                         over  over  push  pop1  jump ^tok.loop
   @tok.done             # (str tokens)
-                        dup  _0  _0  make_str  push  # add eoi token
-                        over  free_str  keep1_pop1  return
+                        swap  over  swap  push  # add eoi token (tokens)
+                        return
 
 ## Inspecting Tokens
 
-: eoi?    len  0? ;                      # checks for end of input (str -> bool)
+: eoi?    empty? ;                       # checks for end of input (str -> bool)
 : def?    call ^def? ;                                            #(str -> bool)
           @def?        dup  len  _1  ==  if ^def?.len_1 ^def?.nope
           @def?.len_1  ptr  loadb  semicolon?  return
@@ -433,8 +458,8 @@ jump ^main
   @defs.no_def    pop1  +1  jump ^defs.loop
   @defs.def       pop1  +1
                   over2  over  get
-                  dup  eod?  if ^error.def_imm_eod ^defs.2
-  @defs.2         dup  eoi?  if ^error.def_imm_eoi ^defs.3
+                  dup  eod?  if ^error.def_imm_end ^defs.2
+  @defs.2         dup  eoi?  if ^error.def_imm_end ^defs.3
   @defs.3         over2  over  lookup  if ^error.name_already_defined ^defs.4
   @defs.4         over2  over  over3  put  pop1
   @defs.def.loop  # (tokens dict cursor)
@@ -461,8 +486,8 @@ jump ^main
                       _2  make_str  return
 : to_hex_char         call ^to_hex_char ;                         #(int -> char)
   @to_hex_char        dup  _10  <  if ^to_hex_char.<10 ^to_hex_char.>=10
-  @to_hex_char.<10    push_byte '0  byte_to_int  add  return
-  @to_hex_char.>=10   _10  -  push_byte 'a  byte_to_int  add  return
+  @to_hex_char.<10    push_byte '0  byte_to_word  add  return
+  @to_hex_char.>=10   _10  -  push_byte 'a  byte_to_word  add  return
 
 ## Compiling Code
 #
@@ -484,30 +509,18 @@ jump ^main
  @free_tokens        dup  tokens  _0
  @free_tokens.loop   # (tokens cursor)
                      over  num_items  over
-                     ==  if ^free_tokens.done free_tokens.0
+                     ==  if ^free_tokens.done ^free_tokens.0
  @free_tokens.0      over  over  get  free_str
                      +1  jump ^free_tokens.loop
  @free_tokens.done   pop1  free_list
- @free_defs          dup  defs  _0
- @free_defs.loop     # (defs cursor)
-                     over  num_items  over
-                     ==  if ^free_defs.done free_defs.0
- @free_defs.0        over  over  get  free_str
-                     +2  jump ^free_defs.loop
- @free_defs.done     pop1  free_dict
- @free_labels        dup  labels  _0
- @free_labels.loop   # (labels cursor)
-                     over  num_items  over
-                     ==  if ^free_labels.done free_labels.0
- @free_labels.0      over  over  get  free_str
-                     +2  jump ^free_labels.loop
- @free_labels.done   pop1  free_dict
+ dup  defs    dup  free_keys  free_dict
+ dup  labels  dup  free_keys  free_dict
  @free_patches       dup  patches  _0
  @free_patches.loop  # (patches cursor)
                      over  num_items  over
-                     ==  if ^free_patches.done free_patches.0
+                     ==  if ^free_patches.done ^free_patches.0
  @free_patches.0     over  over  get  free_str
-                     +2  jump ^free_patches
+                     +2  jump ^free_patches.loop
  @free_patches.done  pop1  free_list
  dup  out  swap  _40  free  # (out)
  shrink  return
@@ -537,7 +550,7 @@ jump ^main
                    over2  out  _0  push
                    pop1  +1  jump ^comp
   @comp.2          # (compiler cursor token)
-                   dup  def?  if ^comp.skip ^comp.3
+                   dup  def?  if ^comp.skip ^comp.name
   @comp.skip       pop1
   @comp.skip.loop  +1  over  tokens  over  get  eod?  if ^comp ^comp.skip.loop
   @comp.name       # (compiler cursor token)
@@ -548,19 +561,19 @@ jump ^main
   @comp.builtin    +1  _0  swap  -  # (compiler cursor byte_literal)
                    over2  out  swap  pushb  jump ^comp
   @comp.defined    # (compiler cursor def_cursor)
-                   over2  swap  compile_rec  jump ^comp
+                   over2  swap  compile  jump ^comp
 
 : patch        call ^patch ;                           #(buf labels patches -> )
   @patch       _0
   @patch.loop  # (buf labels patches cursor)
-               over  len  over  ==  if ^patch.done ^patch.0
+               over  num_items  over  ==  if ^patch.done ^patch.0
   @patch.0     over  over  get  over2  over2  +1  get
                # (buf labels patches cursor label where)
                swap  over4  swap  lookup  if ^patch.1 ^error.label_not_defined
   @patch.1     # (buf labels patches cursor where target)
                over5  over2  over2  overwrite
                pop2  +2  jump ^patch.loop
-  @patch.done  pop3  return
+  @patch.done  pop4  return
 
 @error.top_level_eod                                                #( -> never)
  _32  malloc  dup  store_bytes 'error:_";"_outside_of_definition  _32  crash
