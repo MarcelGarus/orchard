@@ -23,10 +23,11 @@ fun hoist_known_switch_results(id: EggId, builder: &EggBodyBuilder): EggId {
     var common = reachable_cases.get(0).value.without_params()
     | eprintln("common: {common.debug()}")
     var inline = true
-    for case_ in reachable_cases do {
-      if not(inline) then break
-      if case_.value.without_params() != common then inline = false
-    }
+    for case_ in reachable_cases do
+      if case_.value.without_params() != common then {
+        inline = false
+        break
+      }
     | eprintln("filling common? {inline}")
     if inline then return common.fill(empty_slice[EggId](), builder)
   }
@@ -76,9 +77,14 @@ fun hoist_known_switch_results(id: EggId, builder: &EggBodyBuilder): EggId {
             then {
               var builder = egg_body_builder().&
               for param in case_.value.params do builder.params.&.push(param)
-              builder.finish(builder.nothing())
+              builder.finish_with_nothing()
+            } else {
+              var builder = egg_body_builder().&
+              for param in case_.value.params do builder.params.&.push(param)
+              for child in case_.value.children do
+                builder.children.&.push(child)
+              builder.finish_with_nothing()
             }
-            else case_.value
           )
         new_cases
       })
