@@ -75,13 +75,13 @@ fun run(
   | eprintln("Running: {expr.debug()}")
   if stack.len >= 100 then panic("Stack overflow")
   var stack_len = stack.len
-  stack.push(expr.debug().format().split("(").get(0))
-  eprintln("{indentation(stack.len)}{stack.last()}")
+  | stack.push(expr.debug().format().split("(").get(0))
+  | eprintln("{indentation(stack.len)}{stack.last()}")
 
   var result =
     switch expr
-    case param unreachable()
-    case case_param unreachable()
+    case param panic("reached param")
+    case case_param panic("reached case_param")
     case byte(byte) EggPestoValue.byte(byte)
     case lower_byte(id) EggPestoValue.byte(env.get(id).int.unwrap().lower_byte())
     case byte_to_int(id)  EggPestoValue.int(env.get(id).byte.unwrap().to_int())
@@ -103,14 +103,14 @@ fun run(
         case null_ptr 0
         case object 1
         case buffer 1
-        default unreachable()
+        default panic("left side of compare is {env.get(args.a)}")
       var b =
         switch env.get(args.b)
         case int(b) b
         case null_ptr 0
         case object 1
         case buffer 1
-        default unreachable()
+        default panic("right side of compare is {env.get(args.a)}")
       var ordering = a <=> b
       var variant = switch ordering
         case less "less"
@@ -159,7 +159,7 @@ fun run(
       fun_.run(args.to_slice(), egg, stack)?
     }
     case crash(crash) panic("Pesto code crashed")
-    case unreachable unreachable()
+    case unreachable panic("unreachable reached")
     case halt panic("Pesto code halted")
     case loop_(loop_) {
       var args = list[EggPestoValue]()
@@ -225,12 +225,18 @@ fun run(
       buffer.items.&.set(index, item)
       EggPestoValue.struct_(map[String, EggPestoValue]())
     }
+    case store_buffer_bytes(store) {
+      var buffer = env.get(store.buffer).buffer.unwrap()
+      for byte in store.bytes.iter().&.enumerate() do
+        buffer.items.&.set(byte.index, EggPestoValue.byte(byte.item))
+      EggPestoValue.struct_(map[String, EggPestoValue]())
+    }
     case free_buffer(ptr_id) {
       EggPestoValue.struct_(map[String, EggPestoValue]())
     }
-    default todo()
+    default todo("Run {expr.debug()}")
 
-  eprintln("{indentation(stack.len)}-> {result}")
+  | eprintln("{indentation(stack.len)}-> {result}")
   stack.len = stack_len
   ok[EggPestoValue, NonLocalPestoFlow](result)
 }
