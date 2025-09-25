@@ -52,6 +52,7 @@ fun map(
   id: EggId, mapper: LowerMemoryLayouts1,
   builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
+  | stderr."mapping {id.debug()}}\n"
   switch id.resolve()
   case dup(dup) {
     builder.desugared_dup(dup.id.map(mapping.*), dup.type)
@@ -84,13 +85,6 @@ fun map(
     }
   }
   case array(array) {
-    if array.items.len == 0 then
-      return builder.struct_(map(
-        "buffer" -> builder.null_ptr(),
-        "start" -> builder.int(0),
-        "end" -> builder.int(0),
-      ))
-
     | Special case byte arrays.
     | TODO: do this later in the compilation
     var all_bytes = true
@@ -286,6 +280,33 @@ fun map(
   default builder.push(id.map_children(mapper, mapping))
 }
 
+fun construct_inhabitant(builder: &EggBodyBuilder, type: EggType): EggId {
+  if type.num_inhabitants() != NumInhabitants.one then panic()
+  switch type.plum()
+  case variable unreachable()
+  case never unreachable()
+  case byte unreachable()
+  case int unreachable()
+  case type unreachable() | TODO: correct?
+  case struct_(struct_) {
+    var fields = map[String, EggId]()
+    for field in struct_ do
+      fields.&.put(field.key, builder.construct_inhabitant(field.value))
+    builder.struct_(fields)
+  }
+  case enum_(variants) {
+    var variant = variants.iter().&.next().unwrap()
+    builder.enum_(
+      type.desugar_boxes_arrays_lambdas(),
+      variant.key,
+      builder.construct_inhabitant(variant.value),
+    )
+  }
+  case lambda unreachable()
+  case box(inner) builder.null_ptr() | inner also has exactly one inhabitant
+  case array(item_type) builder.array(empty_slice[EggId](), item_type)
+}
+
 fun map(type: EggType, mapper: LowerMemoryLayouts1): EggType {
   type.desugar_boxes_arrays_lambdas()
 }
@@ -340,11 +361,7 @@ fun desugared_dup(builder: &EggBodyBuilder, value: EggId, type: EggType) {
       builder.increment_refcount(value).ignore()
   case array {
     var buffer = builder.member(value, "buffer")
-    builder.if_not_null_ptr(buffer, {
-      var builder = egg_body_builder().&
-      builder.increment_refcount(buffer)
-      builder.finish_with_nothing()
-    })
+    builder.increment_refcount(buffer).ignore()
   }
   case never builder.unreachable(type_nothing).ignore()
   case struct_
@@ -391,20 +408,14 @@ fun desugared_drop(
       })
   case array(item_type) {
     var buffer = builder.member(value, "buffer")
-    builder.if_not_null_ptr(buffer, {
+    var new_refcount = builder.decrement_refcount(buffer)
+    builder.if_refcount_zero(new_refcount, {
       var builder = egg_body_builder().&
-      var new_refcount = builder.decrement_refcount(buffer)
-      builder.if_refcount_zero(new_refcount, {
-        var builder = egg_body_builder().&
-        builder.call(
-          free_buffer_fun(item_type, funs),
-          list(buffer).to_slice(),
-          type_nothing,
-        )
-        builder.finish_with_nothing()
-      })
+      builder.call(
+        free_buffer_fun(item_type, funs), list(buffer).to_slice(), type_nothing
+      )
       builder.finish_with_nothing()
-    })
+    }).ignore()
   }
   case never {}
   case struct_
@@ -470,7 +481,7 @@ fun free_box_fun(inner_type: EggType, funs: &Map[String, EggFun]): String {
   signature
 }
 
-| Expects an array with refcount 0. Drops the inner values and frees the
+| Expects a buffer with refcount 0. Drops the inner values and frees the
 | allocation.
 fun free_buffer_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
   var signature = "drop (Buffer {item_type})"
