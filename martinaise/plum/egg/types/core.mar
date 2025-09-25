@@ -188,6 +188,12 @@ fun is_equivalent(a: EggType, b: EggType): Bool {
     if visited.to_slice().rev_iter().&.contains(cursors) then continue
     visited.&.push(cursors)
 
+    | stderr."comparing\n  {a.string}\n  "
+    | for i in 0..cursors.a do stderr." "
+    | stderr."^\n  {b.string}\n  "
+    | for i in 0..cursors.b do stderr." "
+    | stderr."^\n"
+
     var a_type = a.string.without_first(cursors.a)
     var b_type = b.string.without_first(cursors.b)
 
@@ -218,6 +224,16 @@ fun is_equivalent(a: EggType, b: EggType): Bool {
         if nesting == {0 - level} then break else cursor = cursor - 1
       }
       queue.&.push_back(tuple(cursors.a, cursor))
+      continue
+    }
+
+    | Boxes
+    if a_type.starts_with("(Box ") then {
+      b_type.starts_with("(Box ") or return false
+      queue.&.push_back(tuple(
+        cursors.a + "(Box ".len,
+        cursors.b + "(Box ".len,
+      ))
       continue
     }
 
@@ -312,7 +328,7 @@ fun bubble_up_recursion(type: EggType, index: Int): EggType {
 
   | Find the opening and closing parentheses of the recursive type.
   var opening = tick - 1
-  var closing = tick
+  var closing = tick + 1
   loop if chars.get(closing) == #) then break else closing = closing + 1
 
   | Find the opening paren of the surrounding type.
@@ -344,7 +360,7 @@ fun bubble_up_recursion(type: EggType, index: Int): EggType {
     }
   }
 
-  | Now, tick points to the ^ char of the recursive type. Opening and closing
+  | Now, tick points to the ^ char of the recursive type. opening and closing
   | point to the parentheses of the recursive type. parent_opening and
   | parent_closing point to the parentheses of the surrounding type.
   EggType {
@@ -367,22 +383,16 @@ fun canonicalize(type: EggType): EggType {
 }
 var canonicalized = map[EggType, EggType]()
 fun canonicalize_uncached(type: EggType): EggType {
-  var counter = 0
-  var i = 0
-  loop {
-    if i >= type.count_recursions() then break
-    var bubbled_up = type.bubble_up_recursion(i)
-    counter = counter + 1
-    if bubbled_up.is_self_contained() and is_equivalent(type, bubbled_up) then {
-      var recursion_diff =
-        type.count_recursions() - bubbled_up.count_recursions()
-      i = max(0, i - recursion_diff)
-      type = bubbled_up
-    } else {
-      i = i + 1
-    }
-  }
+  loop type = find_simplification(type) or break
   type
+}
+fun find_simplification(type: EggType): Maybe[EggType] {
+  for rec in 0..type.count_recursions() do {
+    var bubbled_up = type.bubble_up_recursion(rec)
+    if bubbled_up.is_self_contained() and is_equivalent(type, bubbled_up) then
+      return some(bubbled_up)
+  }
+  none[EggType]()
 }
 
 | Extends recursive types that reference the root node with the extension,
