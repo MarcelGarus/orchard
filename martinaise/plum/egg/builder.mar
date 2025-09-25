@@ -109,6 +109,9 @@ fun struct_(builder: &EggBodyBuilder, fields: Map[String, EggId]): EggId {
 }
 
 fun member(builder: &EggBodyBuilder, of: EggId, name: String): EggId {
+  if of.type().internal_kind() is struct_(fields) then
+    if not(fields.contains(name)) then
+      panic("member {name} of {fields.debug()}")
   builder.push(EggExpr.member(EggMember { of, name }))
 }
 
@@ -124,6 +127,20 @@ fun switch_(
   cases: Map[String, EggBody],
 ): EggId {
   if cases.is_empty() then panic("switch with no cases")
+  { | Make sure the cases have the same type.
+    var common = cases.iter().&.next().unwrap().value.returns.type()
+    for case_ in cases.iter().&.skip(1) do
+      if case_.value.returns.type() != common then
+        panic({
+          var b = string_builder().&
+          b."switch with incompatible types:"
+          for case_ in cases do {
+            var type = case_.value.returns.type()
+            b."\n{type.indented_limited(indentation(1), 80)}"
+          }
+          b.to_string()
+        })
+  }
   for case_ in cases do
     if case_.value.params.len != 1 then
       panic("case with {case_.value.params.len} params")
