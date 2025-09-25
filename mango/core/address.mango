@@ -1,0 +1,105 @@
+## Address
+#
+# An untyped pointer to somewhere in memory.
+#
+# ┌─────┐       ┌─────────┐
+# │ Int │ <───> │ Address │ <───> ...
+# └─────┘       └─────────┘
+#
+# If you want to calculate with addresses, you can convert them to ints. If you
+# want to be able to get one or multiple value from an address, you can turn
+# them into boxes or arrays.
+
+opaque Address = 8 bytes big, 8 bytes aligned
+
+fun to_int(address: Address): Int ground { f5 }
+fun to_address(number: Int): Address ground { f5 }
+
+fun load[T](address: Address): T { ... }
+fun store[T](address: Address, value: T) { ... }
+
+var null = 0.to_address() # Million dollar mistake?
+
+fun ==(a: Address, b: Address): Bool { a.to_int() == b.to_int() }
+fun +(a: Address, offset: Int): Address { {a.to_int() + offset}.to_address() }
+
+fun or(address: Address): ControlFlow[Address, Nothing] {
+  if address == null
+  then ControlFlow[Address, Nothing].evaluate_alternative
+  else ControlFlow[Address, Nothing].short_circuit(address)
+}
+
+fun memcopy(from: Address, to: Address, amount: Int) ground {
+  # The from and to address ranges may partially overlap. Depending on the way
+  # they overlap, we need to copy the content from left-to-right or
+  # right-to-left.
+  .. 10 00 00 00 00 00 00 00  # push_word_from_stack 16 (from)
+  .. 10 00 00 00 00 00 00 00 # push_word_from_stack 16 (to)
+  a1 # subtract
+  .. # compare_zero
+  .. 03 ^same ^ltr ^rtl # jump_table ^same ^ltr ^rtl
+  @same
+  f5  # return
+  @ltr
+  @ltr_loop
+
+  @rtl
+  @rtl_loop
+
+  .left_to_right: ..loop:
+  move st c isequal cjump .done
+  loadb d a storeb b d
+  add a e add b e sub c e
+  jump ..loop
+  .right_to_left:
+  add a c add b c sub a e sub b e # make a and b point to the last byte
+  ..loop:
+  move st c isequal cjump .done
+  loadb d a storeb b d
+  sub a e sub b e sub c e
+  jump ..loop
+  .done: ret
+}
+fun memcompare(left: Address, right: Address, amount: Int): Ordering ground {
+  moveib a 8  add a sp load a a # left
+  moveib b 16 add b sp load b b # right
+  moveib c 24 add c sp load c c # amount
+  moveib d 1
+  .loop:
+  move st c isequal cjump .equal
+  loadb e a loadb f b
+  cmp e f isless cjump .less
+  cmp e f isgreater cjump .greater
+  add a d add b d sub c d
+  jump .loop
+  .equal:   load a sp moveib b 1 storeb a b ret
+  .less:    load a sp moveib b 0 storeb a b ret
+  .greater: load a sp moveib b 2 storeb a b ret
+}
+fun memhash(address: Address, amount: Int): Int ground {
+  moveib a 8  add a sp load a a # address
+  moveib b 16 add b sp load b b # amount
+  movei c 5381                  # hasher state
+  moveib e 33 moveib f 1        # constants
+  .loop:
+  move st b isequal cjump .done # if amount == 0, we're done
+  loadb d a mul c e add c d     # state = 33 * state + address[i]
+  sub b f add a f jump .loop
+  .done:
+  mul c e
+  load a sp store a c ret
+}
+
+fun write(writer: Writer, address: Address): Writer {
+  address = address.to_int()
+  # max Int is 18_446_744_073_709_551_615, so start with 16 ^ something
+  loop tuple init tuple(writer.write("0x"), 1_152_921_504_606_846_976) do {
+    writer = tuple.a
+    divisor = tuple.b
+    writer = writer.write({address / divisor % 16}.lower_byte().digit_to_char())
+    if divisor == 1 then
+      break writer
+    else
+      continue tuple(writer, divisor / 16)
+  }
+}

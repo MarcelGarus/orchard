@@ -1,0 +1,67 @@
+import stdlib.mar
+
+## Type Information  
+#
+# Using some builtin functions that only take type arguments (no value
+# arguments), you can use information about types at runtime.
+
+fun size_of[T](): Int { ... }
+fun alignment_of[T](): Int { ... } # lawful evil?
+
+# Makes the name of the type available at runtime.
+fun type[T](): Type { ... }
+
+struct Type { name: String, args: List[Type] }
+
+fun type(name: String): Type { type(name, list[Type]()) }
+fun type(name: String, args: List[Type]): Type { Type { name, args } }
+fun is_never(type: Type): Bool { type == type("Never") }
+
+fun write[W](writer: W, type: Type) {
+  if type.name == "&"
+  then writer."&{type.args.get(0)}"
+  else writer."{type.name}{type_args(type.args)}"
+}
+fun type_args[T](args: List[T]): TypeArgsFormat[T] { TypeArgsFormat { args } }
+struct TypeArgsFormat[T] { args: List[T] }
+fun write[W, T](writer: W, type_args: TypeArgsFormat[T]) {
+  if type_args.args.is_not_empty()
+  then writer."[{comma_separated(type_args.args)}]"
+}
+
+fun specialize(type: Type, type_env: Map[String, Type]): Result[Type, String] {
+  if type_env.get_maybe(type.name) is some(concrete) then {
+    type.args.is_empty()
+      or return error[Type, String](
+        "Type {type.name} is generic, but contains arguments.")
+    ok[Type, String](concrete)
+  } else {
+    var args = list[Type]()
+    for arg in type.args do args.&.push(arg.specialize(type_env)?)
+    ok[Type, String](Type { name = type.name, args })
+  }
+}
+
+fun ==(a: Type, b: Type): Bool {
+  a.name == b.name or return false
+  a.args.len == b.args.len or return false
+  for zip in zip(a.args.iter(), b.args.iter()) do
+    zip.a == zip.b or return false
+  true
+}
+fun hash(hasher: &Hasher, type: Type) {
+  hasher.hash(type.name)
+  hasher.hash_all(type.args)
+}
+
+# Casts an A to a B by reinterpreting the memory of A. This is unsafe, so only
+# use it if you know what you're doing.
+fun cast[A, B](a: A): B {
+  # at least a small sanity check
+  size_of[A]() == size_of[B]()
+    or panic("Tried to cast {type[A]()} to {type[B]()}, although both types 
+      'have different sizes ({size_of[A]()} bytes and {size_of[B]()} bytes).")
+  a.unchecked_cast[A, B]()
+}
+fun unchecked_cast[A, B](a: A): B ground { f5 }
+

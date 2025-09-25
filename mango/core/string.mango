@@ -1,0 +1,232 @@
+## String
+#
+# A String is just a wrapper around an Array[Byte]. Try printing it! It gets
+# formatted nicely.
+
+import core.mar
+
+struct String { utf8_bytes: Array[Byte] }
+
+fun to_string(chars: Slice[Char]): String {
+  chars.unchecked_cast[Slice[Char], String]()
+}
+fun to_string(bytes: Slice[Byte]): String {
+  bytes.unchecked_cast[Slice[Byte], String]()
+}
+fun to_string(chars: List[Char]): String { chars.to_slice().to_string() }
+fun chars(string: String): Slice[Char] {
+  string.unchecked_cast[String, Slice[Char]]()
+}
+fun bytes(string: String): Slice[Byte] {
+  string.unchecked_cast[String, Slice[Byte]]()
+}
+
+fun is_empty(string: String): Bool { string.len == 0 }
+fun get_maybe_ref(string: String, index: Int): Maybe[&Char] {
+  string.chars().get_maybe_ref(index)
+}
+fun get_ref(string: String, index: Int): &Char {
+  string.get_maybe_ref(index) or panic("index out of bounds")
+}
+fun get_maybe(string: String, index: Int): Maybe[Char] {
+  switch string.get_maybe_ref(index)
+  case some(c) some(c.*)
+  case none none[Char]()
+}
+fun get(string: String, index: Int): Char { string.get_ref(index).* }
+fun get_unchecked(string: String, index: Int): Char asm {
+  moveib a 8  add a sp load a a # string.data
+  moveib b 24 add b sp load b b # index
+  add a b load a a # char
+  load c sp store c a ret
+}
+
+fun +(a: String, b: String): String { "{a}{b}" }
+
+fun <=>(a: String, b: String): Ordering {
+  switch memcompare(a.data, b.data, min(a.len, b.len))
+  case less Ordering.less
+  case greater Ordering.greater
+  case equal if a.len < b.len then Ordering.less else Ordering.greater
+}
+fun ==(a: String, b: String): Bool {
+  a.len == b.len or return false
+  memcompare(a.data, b.data, a.len) is equal
+}
+fun hash(hasher: &Hasher, string: String) {
+  hasher.hash(memhash(string.data, string.len))
+}
+fun write[W](writer: W, string: String) { writer.write_bytes(string.bytes()) }
+fun write_debug[W](writer: W, string: String) {
+  writer."\""
+  for char in string do
+    if char == #" then writer."\\\""
+    else if char == #\ then writer."\\\\"
+    else if char == newline then writer."\\n"
+    else writer."{char}"
+  writer."\""
+}
+fun copy(string: String): String {
+  string.bytes().copy().to_string()
+}
+
+fun generate(s: Static[Char], random: &Random, complexity: Int): Char {
+  var visible_ascii = 32..127
+  random.next_int(visible_ascii).lower_byte().to_char()
+}
+fun mutate(char: Char, random: &Random, temperature: Int): Char {
+  static[Char]().generate(random, 0)
+}
+fun fuzzing_complexity(string: String): Float {
+  var chars_complexity = 0.0
+  for char in string.chars() do
+    chars_complexity = chars_complexity + char.fuzzing_complexity()
+  string.len.to_float() + chars_complexity
+}
+fun generate(s: Static[String], random: &Random, complexity: Int): String {
+  var len = random.next_int(0..=complexity)
+  var slice = uninitialized_slice[Char](len)
+  for i in 0..len do slice.get_ref(i).* = static[Char]().generate(random, 1)
+  String { data = slice.data, len }
+}
+fun mutate(string: String, random: &Random, temperature: Int): String {
+  if temperature == 0 then return string
+  string.chars().mutate(random, temperature).to_string()
+}
+
+fun iter(string: String): Iter[Char, _] {
+  Iter[Char, StrIter] { state = StrIter { string, index = 0 } }
+}
+struct StrIter { string: String, index: Int }
+fun next(iter: &Iter[Char, StrIter]): Maybe[Char] {
+  var state = iter.state.&
+  if state.index >= state.string.len then none[Char]() else {
+    var char = state.string.chars().get(state.index)
+    state.index = state.index.inc()
+    some(char)
+  }
+}
+
+fun substr(string: String, range: Range[Int]): String {
+  range.end <= string.len or panic("substr needs to be inside original string")
+  string.chars().subslice(range).to_string()
+}
+fun first(string: String): Char {
+  string.is_not_empty() or panic("first only works on non-empty strs")
+  string.get(0)
+}
+fun first(string: String, amount: Int): String {
+  amount <= string.len or panic("first amount too big")
+  string.substr(0..amount)
+}
+fun last(string: String): Char {
+  string.is_not_empty() or panic("last only works on non-empty strs")
+  string.get(string.len.dec())
+}
+fun last(string: String, amount: Int): String {
+  amount <= string.len or panic("last amount too big")
+  string.substr({string.len - amount}..string.len)
+}
+fun without_first(string: String, amount: Int): String {
+  amount <= string.len or panic("without_first amount too big")
+  string.substr(amount..string.len)
+}
+fun without_last(string: String, amount: Int): String {
+  amount <= string.len or panic("without_last amount too big")
+  string.substr(0..{string.len - amount})
+}
+fun starts_with(string: String, prefix: String): Bool {
+  string.len >= prefix.len or return false
+  memcompare(string.data, prefix.data, prefix.len) is equal
+}
+fun ends_with(string: String, suffix: String): Bool {
+  string.len >= suffix.len or return false
+  memcompare(string.data + {string.len - suffix.len}, suffix.data, suffix.len)
+    is equal
+}
+fun without_prefix(string: String, prefix: String): String {
+  string.starts_with(prefix)
+    or panic("without_prefix doesn't match prefix {prefix.debug()}")
+  string.without_first(prefix.len)
+}
+fun without_suffix(string: String, suffix: String): String {
+  string.ends_with(suffix)
+    or panic("without_suffix doesn't match suffix {suffix.debug()}")
+  string.without_last(suffix.len)
+}
+fun trim_prefix(string: &String, prefix: String) {
+  string.* = string.without_prefix(prefix)
+}
+fun trim_suffix(string: &String, suffix: String) {
+  string.* = string.without_suffix(suffix)
+}
+fun trim(string: String): String {
+  var start = 0
+  var end = string.len
+  loop if start < string.len and string.get(start).is_whitespace()
+    then start = start + 1
+    else break
+  loop if end > 0 and string.get(end - 1).is_whitespace() and not(start == end)
+    then end = end - 1
+    else break
+  string.substr(start..end)
+}
+fun contains(string: String, needle: Char): Bool {
+  string.chars().iter().&.contains(needle)
+}
+fun contains(string: String, needle: String): Bool {
+  if needle.len > string.len then return false
+  for i in 0..={string.len - needle.len} do
+    if string.substr(i..+needle.len) == needle then return true
+  false
+}
+fun replace(string: String, from: String, to: String): String {
+  var b = string_builder().&
+  var cursor = 0
+  loop if cursor == string.len then break else {
+    if string.without_first(cursor).starts_with(from) then {
+      b."{to}"
+      cursor = cursor + from.len
+    } else {
+      b."{string.chars().get(cursor)}"
+      cursor = cursor + 1
+    }
+  }
+  b.to_string()
+}
+fun split(string: String, separator: String): Slice[String] {
+  var parts = list[String]()
+  for part in string.iter().split(separator.chars()) do
+    parts.&.push(part.to_string())
+  parts.to_slice()
+}
+fun lines(string: String): Slice[String] { string.split("{newline}") }
+fun pad_right(string: String, len: Int, char: Char): String {
+  var b = string_builder().&
+  b.write(string)
+  loop if b.len() < len then b.write(char) else break
+  b.to_string()
+}
+fun pad_right(string: String, len: Int): String { string.pad_right(len, space) }
+fun pad_left(string: String, len: Int, char: Char): String {
+  var b = string_builder().&
+  loop if b.len() + string.len < len then b.write(char) else break
+  b.write(string)
+  b.to_string()
+}
+fun pad_left(string: String, len: Int): String { string.pad_left(len, space) }
+
+fun join(items: Slice[String], separator: String): String {
+  var b = string_builder().&
+  var is_first = true
+  for item in items do {
+    if is_first then is_first = false else b."{separator}"
+    b."{item}"
+  }
+  b.to_string()
+}
+fun reverse(a: String): String {
+  var b = string_builder().&
+  for char in a.chars().rev_iter() do b."{char}"
+  b.to_string()
+}

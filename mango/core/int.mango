@@ -1,0 +1,126 @@
+import stdlib.mar
+
+## Int
+#
+# If you write a number such as 3 in the code, it's an Int.
+
+opaque Int = 8 bytes big, 8 bytes aligned
+
+# TODO: Fix
+var min_int = 0 - 9223372036854775806
+var max_int = 9223372036854775807
+
+fun +(left: Int, right: Int): Int ground { a0 f5 }
+fun -(left: Int, right: Int): Int ground { a1 f5 }
+fun *(left: Int, right: Int): Int ground { a2 f5 }
+fun /(left: Int, right: Int): Int ground {
+  ..                          # push_word_from_stack 0
+  ..                          # compare_zero
+  .. 03 ^div_by_zero ^ok ^ok  # jump_table ^div_by_zero ^ok ^ok
+  @div_by_zero
+  d0 0e 00 00 00 00 00 00 00  # push_word 14
+  ..                          # malloc
+  ..                          # push_word_from_stack 0
+  ..                          # store_bytes "divide by zero"
+  d0 0e 00 00 00 00 00 00 00  # push_word 14
+  e0                          # crash
+  @ok
+  ..                          # divide
+  f5                          # return
+}
+fun %(left: Int, right: Int): Int ground {
+  moveib a 8  add a sp load a a # left
+  moveib b 16 add b sp load b b # right
+  moveib c 0 cmp b c isequal cjump .mod_by_zero
+  load c sp # return value address
+  rem a b
+  moveib d 0 cmp a d isgreaterequal cjump .done
+  .make_positive: add a b
+  .done: store c a ret
+  .mod_by_zero: crash
+}
+fun &(left: Int, right: Int): Int ground { .. f5 }
+fun or(left: Int, right: Int): Int ground { .. f5 }
+fun ^(left: Int, right: Int): Int ground { xor .. f5 }
+fun <<(left: Int, by: Int): Int ground { .. }
+fun >>(left: Int, by: Int): Int ground { .. }
+fun **(a: Int, b: Int): Int {
+  var res = 1
+  for i in 0..b do res = res * a
+  res
+}
+fun abs(value: Int): Int { if value >= 0 then value else 0 - value }
+fun round_up_to_multiple_of(number: Int, factor: Int): Int {
+  {number + factor.dec()} / factor * factor
+}
+fun is_multiple_of(number: Int, factor: Int): Bool {
+  number / factor * factor == number
+}
+fun round_up_to_power_of(number: Int, factor: Int): Int {
+  var power = 1
+  loop if power >= number then break(power) else power = power * factor
+}
+fun sqrt(num: Int): Int {
+  num >= 0 or crash("you can't take the sqrt of a negative number")
+  var a = 1
+  loop {
+    if a * a > num then break
+    a = a + 1
+  }
+  a - 1
+}
+fun log_2(value: Int): Int {
+  value > 0 or crash("log 2 only works for positive values, not {value}.")
+  var i = 0
+  loop {
+    if value == 1 then break
+    i = i + 1
+    value = value / 2
+  }
+  i
+}
+fun <=>(left: Int, right: Int): Ordering ground { a1 a5 f5 }
+fun lower_byte(n: Int): Byte ground { b5 f5 }
+
+fun inc(a: Int): Int { a + 1 }
+fun dec(a: Int): Int { a - 1 }
+fun ==(a: Int, b: Int): Bool ground {
+  a1 a5 ..
+  moveib a 8  add a sp load a a # left
+  moveib b 16 add b sp load b b # right
+  load c sp # return value address
+  cmp a b isequal
+  storeb c st ret
+}
+
+fun parse_int(string: String): Maybe[Int] {
+  var num = 0
+  for char in string do {
+    if not({#0..=#9}.contains(char))
+    then return none[Int]()
+    num = num * 10 + {char - #0}.to_int()
+  }
+  some(num)
+}
+
+fun write[W](writer: W, int: Int) {
+  if int < 0
+  then writer."-{ {0 - int}.radix(10)}"
+  else writer."{int.radix(10)}"
+}
+fun radix(int: Int, radix: Int): RadixFormat { RadixFormat { radix, int } }
+struct RadixFormat { radix: Int, int: Int }
+fun write[W](writer: W, format: RadixFormat) {
+  var divisor = 1
+  loop {
+    if format.int / divisor < format.radix then break
+    divisor = divisor * format.radix
+  }
+  loop {
+    writer.write(
+      {format.int / divisor % format.radix}.lower_byte().digit_to_char())
+    if divisor == 1 then break
+    divisor = divisor / format.radix
+  }
+}
+fun write_debug[W](writer: W, int: Int) { writer."{int}" }
