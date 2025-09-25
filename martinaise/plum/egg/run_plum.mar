@@ -61,16 +61,16 @@ fun run(
 ): Result[EggPlumValue, NonLocalPlumFlow] {
   if stack.len > 100 then panic("stack overflow")
 
-  eprint("{indentation(stack.len)}{pretty_signature(function)}")
-  for arg in args do eprint(" {arg}")
-  eprintln()
+  | eprint("{indentation(stack.len)}{pretty_signature(function)}")
+  | for arg in args do eprint(" {arg}")
+  | eprintln()
 
   stack.push(function)
   var value = egg.funs.get(function).body
     .run(args, map[EggId, EggPlumValue]().&, egg, stack)?
   stack.pop()
 
-  eprintln("{indentation(stack.len)}-> {value}")
+  | eprintln("{indentation(stack.len)}-> {value}")
 
   ok[EggPlumValue, NonLocalPlumFlow](value)
 }
@@ -104,6 +104,8 @@ fun run(
     case multiply(args) EggPlumValue.int(env.get(args.a).int.unwrap() * env.get(args.b).int.unwrap())
     case divide(args) EggPlumValue.int(env.get(args.a).int.unwrap() / env.get(args.b).int.unwrap())
     case modulo(args) EggPlumValue.int(env.get(args.a).int.unwrap() % env.get(args.b).int.unwrap())
+    case shift_left(args) EggPlumValue.int(env.get(args.a).int.unwrap() << env.get(args.b).int.unwrap())
+    case shift_right(args) EggPlumValue.int(env.get(args.a).int.unwrap() >> env.get(args.b).int.unwrap())
     case compare(args) EggPlumValue.enum_(EggPlumEnumValue {
       name =
         switch env.get(args.a).int.unwrap() <=> env.get(args.b).int.unwrap()
@@ -112,6 +114,9 @@ fun run(
         case greater "greater",
       value = EggPlumValue.struct_(map[String, EggPlumValue]()).put_on_heap(),
     })
+    case and_(args) EggPlumValue.int(env.get(args.a).int.unwrap() & env.get(args.b).int.unwrap())
+    case or_(args) EggPlumValue.int(or(env.get(args.a).int.unwrap(), env.get(args.b).int.unwrap()))
+    case xor(args) EggPlumValue.int(env.get(args.a).int.unwrap() ^ env.get(args.b).int.unwrap())
     case array(array) {
       var items = list[EggPlumValue]()
       for item in array.items do items.&.push(env.get(item))
@@ -231,6 +236,6 @@ fun run(
       for value in continue_expr.next do values.&.push(env.get(value))
       return error[EggPlumValue, NonLocalPlumFlow](NonLocalPlumFlow.continue_(values.to_slice()))
     }
-    default todo()
+    default todo("handle {expr.debug()}")
   )
 }
