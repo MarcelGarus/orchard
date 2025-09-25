@@ -25,7 +25,12 @@ fun evaluate_comptime(
 
   switch
     fun_.eval(args.to_slice(), funs, ComptimeResources { num_exprs = 10000 }.&)
-  case ok(value) value.to_code(builder)
+  case ok(value) {
+    if value.size() < 100 then
+      value.to_code(builder)
+    else
+      id
+  }
   case error(error) {
     switch error
     case unsupported_operation id
@@ -51,6 +56,26 @@ enum ComptimeValue {
 struct ComptimeEnum { type: EggType, variant: String, payload: &ComptimeValue }
 struct ComptimeArray { item_type: EggType, items: Slice[ComptimeValue] }
 struct ComptimeLambda { fun_: String, closure: &ComptimeValue, type: EggType }
+
+fun size(value: ComptimeValue): Int {
+  switch value
+  case type 1
+  case int 1
+  case byte 1
+  case struct_(fields) {
+    var size = 1
+    for field in fields do size = size + field.value.size()
+    size
+  }
+  case enum_(enum_) 1 + enum_.payload.size()
+  case box(inner) 1 + inner.size()
+  case array(array) {
+    var size = 1
+    for item in array.items do size = size + item.size()
+    size
+  }
+  case lambda(lambda) 1 + lambda.closure.size()
+}
 
 fun to_comptime_value(id: EggId): Maybe[ComptimeValue] {
   switch id.resolve()
