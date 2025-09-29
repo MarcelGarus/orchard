@@ -1,0 +1,522 @@
+import ../../martinaise/stdlib.mar
+
+| Code represents human-readable code.
+
+enum Code {
+  name: String,
+  int: Int,
+  struct_: Map[String, Code],
+  enum_: EnumCode,
+  lambda: LambdaCode,
+  call: CallCode,
+}
+struct EnumCode { variant: String, payload: &Code }
+struct LambdaCode { params: Slice[String], body: &Code }
+struct CallCode { callee: &Code, args: Slice[Code] }
+
+fun captured_names(lambda: LambdaCode): Set[String] {
+  var captured = set[String]()
+  lambda.collect_captured(captured.&, set[String]())
+  captured
+}
+fun collect_captured(code: Code, out: &Set[String], ignore: Set[String]) {
+  switch code
+  case name(name) if not(ignore.contains(name)) then out.put(name)
+  case int {}
+  case struct_(fields)
+    for field in fields do field.value.collect_captured(out, ignore)
+  case enum_(enum_) enum_.payload.collect_captured(out, ignore)
+  case lambda(lambda) lambda.collect_captured(out, ignore)
+  case call(call) {
+    call.callee.collect_captured(out, ignore)
+    for arg in call.args do arg.collect_captured(out, ignore)
+  }
+}
+fun collect_captured(
+  lambda: LambdaCode, out: &Set[String], ignore: Set[String]
+) {
+  var inner_ignore = set[String]()
+  for i in ignore do inner_ignore.&.put(i)
+  for param in lambda.params do inner_ignore.&.put(param)
+  lambda.body.collect_captured(out, inner_ignore)
+}
+
+fun write[W](writer: W, code: Code) {
+  switch code
+  case name(name) writer."{name}"
+  case object(object) writer."{object.*}"
+  case int(int) writer."{int}"
+  case struct_(struct_) {
+    writer."(&"
+    for field in struct_ do writer." {field.key}: {field.value}"
+    writer.")"
+  }
+  case enum_(enum_) {
+    writer."(| {enum_.variant}: {enum_.payload})"
+  }
+  case lambda(lambda) {
+    writer."(\\"
+    for param in lambda.params do writer." {param}"
+    writer." -> {lambda.body.*})"
+  }
+  case call(call) {
+    writer."({call.callee}"
+    for arg in call.args do writer." {arg}"
+    writer.")"
+  }
+}
+
+| All Thyme objects are stored in a heap. Semantically, each object is just a
+| slice of bytes. The first byte tells us the type of the object and what the
+| other bytes mean.
+
+struct Heap { objects: List[Slice[Int]] }
+
+| Types of object       memory layout
+var tag_int      = 0  | 0 int
+var tag_bytes    = 1  | 1 length byte byte ...
+var tag_struct   = 2  | 2 num_fields key value key value ...
+var tag_enum     = 3  | 3 variant payload
+var tag_function = 4  | 4 ptr_to_ir
+var tag_closure  = 5  | 5 num_captured captured captured ...
+var tag_lambda   = 6  | 6 function closure
+
+fun heap(): Heap { Heap { objects = list[Slice[Int]]() } }
+fun new(heap: &Heap, words: Slice[Int]): Int {
+  var object_id = heap.objects.len
+  heap.objects.&.push(words)
+  object_id
+}
+fun get(heap: Heap, object_id: Int, offset: Int): Int {
+  heap.objects.get(object_id).get(offset)
+}
+
+fun write[W](writer: W, heap: Heap) { writer.write(heap, 0) }
+fun write[W](writer: W, heap: Heap, skip: Int) {
+  var first = true
+  for object in heap.objects.iter().enumerate().skip(skip) do {
+    if first then first = false else writer."\n"
+    writer."{object.index.format().pad_left(4)}: "
+    var object = object.item
+
+    var tag = object.get(0)
+
+    if tag == tag_int then writer."int {object.get(1)}"
+    else if tag == tag_bytes then {
+      writer."bytes "
+      var len = object.get(1)
+      for i in 0..len do writer."{object.get(2 + i).lower_byte().to_char()}"
+    }
+    else if tag == tag_struct then {
+      writer."struct"
+      var num_fields = object.get(1)
+      for i in 0..{num_fields} do
+        writer." {object.get(2 + {2 * i})}: {object.get(2 + {2 * i + 1})}"
+    }
+    else if tag == tag_enum then writer."enum {object.get(1)} {object.get(2)}"
+    else if tag == tag_function then {
+      writer."fun\n      "
+      writer.write(object.get(1).to_address().to_reference[Ir]().*, 3)
+    }
+    else if tag == tag_closure then {
+      writer."closure"
+      var len = object.get(1)
+      for i in 0..len do writer." {object.get(2 + i)}"
+    }
+    else if tag == tag_lambda then
+      writer."lambda {object.get(1)} {object.get(2)}"
+    else writer."object with unknown tag {tag}"
+  }
+}
+
+| Code is compiled into the Ir.
+
+struct Ir { nodes: Slice[IrNode], params: Slice[IrId], body: IrBody }
+struct IrId { index: Int }
+struct IrBody { ids: Slice[IrId], returns: IrId }
+enum IrNode {
+  param,
+  word: Int,
+  new: Slice[IrId],                     | words
+  load: Tuple2[IrId, IrId],             | base pointer, offset
+  add: Tuple2[IrId, IrId],              | left, right
+  compare: Tuple2[IrId, IrId],          | left, right
+  call: Tuple2[IrId, Slice[IrId]],      | callee, args
+  switch_: Tuple2[IrId, Slice[IrBody]], | condition, cases
+  crash: IrId,                          | message
+}
+
+fun get(ir: Ir, id: IrId): IrNode { ir.nodes.get(id.index) }
+
+fun ==(a: IrId, b: IrId): Bool { a.index == b.index }
+fun hash(hasher: &Hasher, id: IrId) { hasher.hash(id.index) }
+
+fun write[W](writer: W, id: IrId) { writer."%{id.index}" }
+fun write[W](writer: W, ir: Ir) { writer.write(ir, 0) }
+fun write[W](writer: W, ir: Ir, indentation: Int) {
+  writer."code"
+  for param in ir.params do writer." {param}"
+  writer.write(ir.body, ir, indentation + 1)
+}
+fun write[W](writer: W, body: IrBody, ir: Ir, indentation: Int) {
+  for id in body.ids do {
+    writer."\n"
+    for i in 0..indentation do writer."  "
+    writer."{id} = "
+    writer.write(ir.get(id), ir, indentation)
+  }
+  writer."\n"
+  for i in 0..indentation do writer."  "
+  writer."{body.returns}"
+}
+fun write[W](writer: W, node: IrNode, ir: Ir, indentation: Int) {
+  switch node
+  case param writer."param"
+  case word(word) writer."word {word}"
+  case new(words) {
+    writer."new"
+    for word in words do writer." {word}"
+  }
+  case load(args) writer."load {args.a} {args.b}"
+  case add(args) writer."add {args.a} {args.b}"
+  case compare(args) writer."compare {args.a} {args.b}"
+  case call(call) {
+    writer."call {call.a} with"
+    for arg in call.b do writer." {arg}"
+  }
+  case switch_(switch_) {
+    writer."switch {switch_.a}"
+    for case_ in switch_.b.iter().enumerate() do {
+      writer."\n"
+      for i in 0..indentation do writer."  "
+      writer."  case {case_.index}"
+      writer.write(case_.item, ir, indentation + 2)
+    }
+  }
+  case crash(message) writer."crash {message}"
+}
+
+| Compiling code into the IR.
+
+struct IrBuilder { nodes: List[IrNode], params: List[IrId] }
+struct IrBodyBuilder {
+  parent: &IrBuilder, ids: List[IrId], bindings: List[Tuple2[String, IrId]]
+}
+
+fun ir_builder(): IrBuilder {
+  IrBuilder { nodes = list[IrNode](), params = list[IrId]() }
+}
+fun body(builder: &IrBuilder): IrBodyBuilder {
+  IrBodyBuilder {
+    parent = builder,
+    ids = list[IrId](),
+    bindings = list[Tuple2[String, IrId]](),
+  }
+}
+fun create(builder: &IrBuilder, node: IrNode): IrId {
+  var id = IrId { index = builder.nodes.len }
+  builder.nodes.&.push(node)
+  id
+}
+fun create_and_push(body: &IrBodyBuilder, node: IrNode): IrId {
+  var id = body.parent.create(node)
+  body.ids.&.push(id)
+  id
+}
+fun child_body(body: IrBodyBuilder): IrBodyBuilder {
+  IrBodyBuilder { parent = body.parent, ids = list[IrId](), bindings = body.bindings }
+}
+fun bind(body: &IrBodyBuilder, name: String, id: IrId) {
+  body.bindings.&.push(tuple(name, id))
+}
+fun get(body: &IrBodyBuilder, name: String): IrId {
+  for binding in body.bindings do
+    if binding.a == name then return binding.b
+  panic("{name} not in scope")
+}
+fun finish(body: IrBodyBuilder, returns: IrId): IrBody {
+  IrBody { ids = body.ids.to_slice(), returns }
+}
+fun finish(builder: IrBuilder, body: IrBody): Ir {
+  Ir {
+    nodes = builder.nodes.to_slice(), params = builder.params.to_slice(), body
+  }
+}
+
+fun param(builder: &IrBuilder): IrId {
+  var id = builder.create(IrNode.param)
+  builder.params.&.push(id)
+  id
+}
+fun word(body: &IrBodyBuilder, word: Int): IrId {
+  body.create_and_push(IrNode.word(word))
+}
+fun new(body: &IrBodyBuilder, words: Slice[IrId]): IrId {
+  body.create_and_push(IrNode.new(words))
+}
+fun load(body: &IrBodyBuilder, base: IrId, offset: IrId): IrId {
+  body.create_and_push(IrNode.load(tuple(base, offset)))
+}
+fun add(body: &IrBodyBuilder, left: IrId, right: IrId): IrId {
+  body.create_and_push(IrNode.add(tuple(left, right)))
+}
+fun compare(body: &IrBodyBuilder, left: IrId, right: IrId): IrId {
+  body.create_and_push(IrNode.compare(tuple(left, right)))
+}
+fun call(body: &IrBodyBuilder, callee: IrId, args: Slice[IrId]): IrId {
+  body.create_and_push(IrNode.call(tuple(callee, args)))
+}
+fun switch_(body: &IrBodyBuilder, condition: IrId, cases: Slice[IrBody]): IrId {
+  body.create_and_push(IrNode.switch_(tuple(condition, cases)))
+}
+fun crash(body: &IrBodyBuilder, message: IrId): IrId {
+  body.create_and_push(IrNode.crash(message))
+}
+
+fun new_bytes(body: &IrBodyBuilder, bytes: Slice[Byte]): IrId {
+  var words = list(body.word(1))
+  words.&.push(body.word(bytes.len))
+  for byte in bytes do words.&.push(body.word(byte.to_int()))
+  body.new(words.to_slice())
+}
+
+fun assert_equals(body: &IrBodyBuilder, a: IrId, b: IrId) {
+  body.switch_(
+    body.compare(a, b),
+    list(
+      {
+        var body = body.child_body().&
+        body.finish(body.word(0))
+      },
+      {
+        var body = body.child_body().&
+        body.finish(body.crash(body.word(0)))
+      },
+      {
+        var body = body.child_body().&
+        body.finish(body.crash(body.word(0)))
+      },
+    ).to_slice(),
+  ).ignore()
+}
+
+fun new_int(body: &IrBodyBuilder, value: IrId): IrId {
+  body.new(list(body.word(tag_int), value).to_slice())
+}
+fun assert_is_int(body: &IrBodyBuilder, obj: IrId) {
+  body.assert_equals(body.load(obj, body.word(0)), body.word(tag_int))
+}
+fun get_int_value(body: &IrBodyBuilder, int: IrId): IrId {
+  body.load(int, body.word(1))
+}
+
+fun new_struct(body: &IrBodyBuilder, fields: Map[String, IrId]): IrId {
+  var words = list(body.word(tag_struct), body.word(fields.size))
+  for field in fields do {
+    words.&.push(body.new_bytes(field.key.bytes()))
+    words.&.push(field.value)
+  }
+  body.new(words.to_slice())
+}
+
+fun new_enum(body: &IrBodyBuilder, variant: String, payload: IrId): IrId {
+  body.new(list(
+    body.word(tag_enum), body.new_bytes(variant.bytes()), payload
+  ).to_slice())
+}
+
+fun new_fun(body: &IrBodyBuilder, ir: Ir): IrId {
+  body.new(list(
+    body.word(tag_function), body.word(ir.put_on_heap().to_address().to_int())
+  ).to_slice())
+}
+
+fun new_closure(body: &IrBodyBuilder, captured: Slice[IrId]): IrId {
+  var words = list(body.word(tag_closure), body.word(captured.len))
+  for capture in captured do words.&.push(capture)
+  body.new(words.to_slice())
+}
+fun get_closure_var(body: &IrBodyBuilder, closure: IrId, index: Int): IrId {
+  body.load(closure, body.word(2 + index))
+}
+
+fun new_lambda(body: &IrBodyBuilder, fun_: IrId, closure: IrId): IrId {
+  body.new(list(body.word(tag_lambda), fun_, closure).to_slice())
+}
+fun assert_is_lambda(body: &IrBodyBuilder, obj: IrId) {
+  body.assert_equals(body.load(obj, body.word(0)), body.word(tag_lambda))
+}
+fun get_lambda_fun(body: &IrBodyBuilder, lambda: IrId): IrId {
+  body.load(lambda, body.word(1))
+}
+fun get_lambda_closure(body: &IrBodyBuilder, lambda: IrId): IrId {
+  body.load(lambda, body.word(2))
+}
+
+fun compile(body: &IrBodyBuilder, code: Code): IrId {
+  switch code
+  case name(name) body.get(name)
+  case int(int) body.new_int(body.word(int))
+  case struct_(struct_) {
+    var fields = map[String, IrId]()
+    for field in struct_ do fields.&.put(field.key, body.compile(field.value))
+    body.new_struct(fields)
+  }
+  case enum_(enum_) body.new_enum(enum_.variant, body.compile(enum_.payload.*))
+  case lambda(lambda) {
+    var captured = lambda.captured_names()
+    body.new_lambda(
+      {
+        var inner = ir_builder().&
+        var params = list[IrId]()
+        for param in lambda.params do params.&.push(inner.param())
+        var closure = inner.param()
+
+        var inner_body = inner.body().&
+        for param in zip(lambda.params.iter(), params.iter()) do
+          inner_body.bind(param.a, param.b)
+        for capture in captured.iter().enumerate() do
+          inner_body.bind(
+            capture.item, inner_body.get_closure_var(closure, capture.index)
+          )
+        var ir = inner.finish(
+          inner_body.finish(inner_body.compile(lambda.body.*))
+        )
+        body.new_fun(ir)
+      },
+      {
+        var captured_ids = list[IrId]()
+        for capture in captured do captured_ids.&.push(body.get(capture))
+        body.new_closure(captured_ids.to_slice())
+      },
+    )
+  }
+  case call(call) {
+    var lambda = body.compile(call.callee.*)
+    body.assert_is_lambda(lambda)
+    var args = list[IrId]()
+    for arg in call.args do args.&.push(body.compile(arg))
+    args.&.push(body.get_lambda_closure(lambda))
+    body.call(body.get_lambda_fun(lambda), args.to_slice())
+  }
+}
+
+| Running Code
+
+struct Vm { heap: Heap, bindings: Map[String, Int], heap_printed: Int }
+fun vm(): Vm {
+  var vm = Vm { heap = heap(), bindings = map[String, Int](), heap_printed = 0 }
+
+  var empty_struct = vm.heap.&.new(list(2, 0).to_slice())
+
+  var add_lambda = vm.heap.&.new(list(
+    tag_lambda,
+    vm.heap.&.new(list(tag_function, {
+      var builder = ir_builder().&
+      var a = builder.param()
+      var b = builder.param()
+      var closure = builder.param()
+      var body = builder.body().&
+      body.assert_is_int(a)
+      body.assert_is_int(b)
+      var a = body.get_int_value(a)
+      var b = body.get_int_value(b)
+      var sum = body.add(a, b)
+      var heaped_sum = body.new_int(sum)
+      builder.finish(body.finish(heaped_sum))
+    }.put_on_heap().to_address().to_int()).to_slice()),
+    empty_struct,
+  ).to_slice())
+
+  vm.bindings.&.put("+", add_lambda)
+  vm
+}
+fun print_heap_updates(vm: &Vm) {
+  eprintln("heap")
+  stderr.write(vm.heap, vm.heap_printed)
+  vm.heap_printed = vm.heap.objects.len
+  eprintln()
+}
+fun eval(vm: &Vm, name: String, code: Code) {
+  var builder = ir_builder().&
+  var body = builder.body().&
+  for binding in vm.bindings do
+    body.bindings.&.push(tuple(
+      binding.key, body.create_and_push(IrNode.word(binding.value))
+    ))
+  var ir = builder.finish(body.finish(body.compile(code)))
+  eprintln("run {name} {ir}")
+  vm.bindings.&.put(name, ir.run(vm.heap.&, empty_slice[Int]()))
+  vm.print_heap_updates()
+}
+fun run(ir: Ir, heap: &Heap, args: Slice[Int]): Int {
+  var env = map[IrId, Int]()
+  for both in zip(ir.params.iter(), args.iter()) do
+    env.&.put(both.a, both.b)
+  ir.body.run(ir, heap, env.&)
+}
+fun run(body: IrBody, ir: Ir, heap: &Heap, env: &Map[IrId, Int]): Int {
+  for id in body.ids do env.put(id, id.run(ir, heap, env))
+  env.get(body.returns)
+}
+fun run(id: IrId, ir: Ir, heap: &Heap, env: &Map[IrId, Int]): Int {
+  switch ir.get(id)
+  case param unreachable()
+  case word(word) word
+  case new(new) {
+    var words = list[Int]()
+    for word in new do words.&.push(env.get(word))
+    heap.new(words.to_slice())
+  }
+  case load(load) heap.get(env.get(load.a), env.get(load.b))
+  case add(args) env.get(args.a) + env.get(args.b)
+  case compare(args) {
+    switch env.get(args.a) <=> env.get(args.b)
+    case equal 0
+    case greater 1
+    case less 2
+  }
+  case call(call) {
+    var callee = env.get(call.a)
+    var args = list[Int]()
+    for arg in call.b do args.&.push(env.get(arg))
+    var ir = heap.get(callee, 1).to_address().to_reference[Ir]().*
+    ir.run(heap, args.to_slice())
+  }
+  case switch_(switch_) {
+    var condition = env.get(switch_.a)
+    switch_.b.get(condition).run(ir, heap, env)
+  }
+  case crash(crash) todo("crash")
+}
+
+fun main() {
+  eprintln("Welcome to the Thyme compiler!")
+
+  var vm = vm()
+  vm.&.print_heap_updates()
+  vm.&.eval("two", Code.int(2))
+  vm.&.eval("point", Code.struct_(map(
+    "x" -> Code.name("two"), "y" -> Code.int(4)
+  )))
+  vm.&.eval("true", Code.enum_(EnumCode {
+    variant = "true", payload = Code.struct_(map[String, Code]()).put_on_heap()
+  }))
+  vm.&.eval("identity", Code.lambda(LambdaCode {
+    params = list("x").to_slice(), body = Code.name("x").put_on_heap()
+  }))
+  vm.&.eval("inc", Code.lambda(LambdaCode {
+    params = list("a").to_slice(),
+    body = Code.call(CallCode {
+      callee = Code.name("+").put_on_heap(),
+      args = list(Code.name("a"), Code.int(1)).to_slice(),
+    }).put_on_heap(),
+  }))
+  vm.&.eval("three", Code.call(CallCode {
+    callee = Code.name("inc").put_on_heap(),
+    args = list(Code.name("two")).to_slice(),
+  }))
+
+  for binding in vm.bindings do
+    eprintln("{binding.key} = {binding.value.debug()}")
+}
