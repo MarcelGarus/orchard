@@ -36,7 +36,7 @@ pub fn init(ally: Allocator) Heap {
 // The user-visible payload of an allocation. Note that the allocation has a
 // separate list of pointers and literals. In particular, you have no low-level
 // control of the memory layout and can't intertwine pointers and literals.
-const Allocation = struct {
+pub const Allocation = struct {
     tag: u8, // space you can use to tag types of objects
     pointers: []const Address, // point to other heap allocations
     literals: []const Word, // word literals
