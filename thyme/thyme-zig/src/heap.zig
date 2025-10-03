@@ -1,4 +1,14 @@
 // The Heap
+//
+// This is a heap for immutable objects. When you allocate an object, you have
+// to provide data to initialize the memory with. Afterwards, this memory can no
+// longer be changed.
+//
+// While the heap has no understanding of what kinds objects it stores (structs,
+// enums, lambdas, etc.), it does know how objects are connected. It knows what
+// parts of the memory are pointers to other objects and what parts are literal
+// values. Using this information, the heap can deduplicate objects and do
+// garbage collection.
 
 const std = @import("std");
 const ArrayList = std.ArrayList;
@@ -7,8 +17,11 @@ const Writer = std.io.Writer;
 const writeSliceEndian = Writer.writeSliceEndian;
 
 pub const Word = u64;
-pub const Object = Word;
+pub const Address = packed struct { address: Word };
 const Heap = @This();
+
+// The heap is word-based: Rather than addressing bytes, you always address
+// entire words.
 
 ally: Allocator,
 memory: ArrayList(Word),
@@ -20,302 +33,192 @@ pub fn init(ally: Allocator) Heap {
     };
 }
 
-pub fn get(heap: Heap, address: Word) Word {
-    return heap.memory.items[@intCast(address)];
+// The user-visible payload of an allocation. Note that the allocation has a
+// separate list of pointers and literals. In particular, you have no low-level
+// control of the memory layout and can't intertwine pointers and literals.
+const Allocation = struct {
+    tag: u8, // space you can use to tag types of objects
+    pointers: []const Address, // point to other heap allocations
+    literals: []const Word, // word literals
+};
+
+// In the memory, every allocation has the following layout:
+//
+// [header][pointers][literals]
+
+const Header = packed struct {
+    num_words: u24, // total number of words after the header
+    num_pointers: u24, // how many of those words are pointers
+    meta: packed struct {
+        // meta stuff used by the heap itself
+        marked: u1 = 0, // marking for mark-sweep garbage collection
+        padding: u7 = 0,
+    },
+    tag: u8,
+};
+comptime {
+    if (@sizeOf(Header) != @sizeOf(Word))
+        @compileError("bad header layout");
 }
 
-pub fn dump(heap: Heap) void {
+pub fn new(heap: *Heap, allocation: Allocation) !Address {
+    const id: Address = .{ .address = @intCast(heap.memory.items.len) };
+    const header = Header{
+        .num_words = @intCast(allocation.pointers.len + allocation.literals.len),
+        .num_pointers = @intCast(allocation.pointers.len),
+        .tag = allocation.tag,
+        .meta = .{},
+    };
+    try heap.memory.append(heap.ally, @bitCast(header));
+    for (allocation.pointers) |pointer|
+        try heap.memory.append(heap.ally, pointer.address);
+    for (allocation.literals) |literal|
+        try heap.memory.append(heap.ally, literal);
+    return id;
+}
+
+pub fn new_fancy(heap: *Heap, tag: u8, words: anytype) !Address {
+    const field_infos = @typeInfo(@TypeOf(words)).@"struct".fields;
+    comptime var had_literal = false;
+    comptime var num_pointers = field_infos.len;
+    inline for (0.., field_infos) |i, field| {
+        const value = @field(words, field.name);
+        if (@TypeOf(value) == Address) {
+            if (had_literal) {
+                @compileLog(field_infos, @TypeOf(value));
+                @compileError("you can only store pointers followed by words, not mix them");
+            }
+        } else if (@TypeOf(value) == Word or @TypeOf(value) == comptime_int) {
+            if (!had_literal) {
+                had_literal = true;
+                num_pointers = i;
+            }
+        } else {
+            @compileLog(@TypeOf(value));
+            @compileError("can only contain pointers and words");
+        }
+    }
+    const id: Address = .{ .address = @intCast(heap.memory.items.len) };
+    const header = Header{
+        .num_words = @intCast(field_infos.len),
+        .num_pointers = @intCast(num_pointers),
+        .meta = .{},
+        .tag = tag,
+    };
+    try heap.memory.append(heap.ally, @bitCast(header));
+    inline for (field_infos) |field| {
+        const value = @field(words, field.name);
+        if (@TypeOf(value) == Address)
+            try heap.memory.append(heap.ally, value.address)
+        else if (@TypeOf(value) == Word or @TypeOf(value) == comptime_int)
+            try heap.memory.append(heap.ally, value)
+        else
+            unreachable;
+    }
+    return id;
+}
+
+pub fn get(heap: Heap, id: Address) Allocation {
+    const header: Header = @bitCast(heap.memory.items[id.address]);
+    const pointers: []const Address = @ptrCast(
+        heap.memory.items[id.address + 1 ..][0..@intCast(header.num_pointers)],
+    );
+    const literals: []const Word = @ptrCast(
+        heap.memory.items[id.address + 1 ..][0..@intCast(header.num_words)][@intCast(header.num_pointers)..],
+    );
+    return .{
+        .tag = header.tag,
+        .pointers = pointers,
+        .literals = literals,
+    };
+}
+
+const Checkpoint = struct { address: Word };
+
+pub fn checkpoint(heap: Heap) Checkpoint {
+    return .{ .address = heap.memory.items.len };
+}
+
+pub const Mapping = struct { from: Address, to: Address };
+
+pub fn deduplicate(heap: *Heap, from: Checkpoint, ally: Allocator) !ArrayList(Mapping) {
+    var read = from.address;
+    var write = from.address;
+    var map = ArrayList(Mapping).empty;
+    while (read < heap.memory.items.len) {
+        // Adjust the pointers using the mapping so far.
+        const header: Header = @bitCast(heap.memory.items[read]);
+        for (0..header.num_pointers) |j| {
+            const pointer = heap.memory.items[read + 1 + j];
+            for (map.items) |mapping| {
+                if (mapping.from.address == pointer) {
+                    heap.memory.items[read + 1 + j] = mapping.to.address;
+                    break;
+                }
+            }
+        }
+        // Compare to existing objects.
+        for (map.items) |mapping| {
+            const candidate = mapping.to.address;
+            const candidate_header: Header = @bitCast(heap.memory.items[candidate]);
+            if (header.num_words != candidate_header.num_words) continue;
+            const total_words = 1 + header.num_words;
+            if (std.mem.eql(
+                Word,
+                heap.memory.items[read..][0..total_words],
+                heap.memory.items[candidate..][0..total_words],
+            )) {
+                try map.append(ally, .{
+                    .from = .{ .address = read },
+                    .to = .{ .address = candidate },
+                });
+                break;
+            }
+        } else {
+            // Not equal to an existing one. Copy it to the beginning of the
+            // compressed heap.
+            if (read > write) {
+                for (0..(1 + header.num_words)) |i|
+                    heap.memory.items[write + i] = heap.memory.items[read + i];
+            }
+            try map.append(ally, .{
+                .from = .{ .address = read },
+                .to = .{ .address = write },
+            });
+            write += 1 + header.num_words;
+        }
+
+        read += 1 + header.num_words;
+
+        // std.debug.print(" *{}", .{heap.memory.items[i + 1 + j]});
+        // for (header.num_pointers..header.num_words) |j|
+        // std.debug.print(" {}", .{heap.memory.items[i + 1 + j]});
+        // std.debug.print("\n", .{});
+        // i += 1 + header.num_words;
+    }
+    heap.memory.items.len = write;
+    return map;
+}
+
+pub fn dump_raw(heap: Heap) void {
     for (0.., heap.memory.items) |i, w| {
         std.debug.print("{:3} |", .{i});
         const bytes: []const u8 = @ptrCast(&w);
         for (bytes) |byte| std.debug.print(" {x:02}", .{byte});
         std.debug.print(" | {}\n", .{w});
     }
+}
+pub fn dump(heap: Heap) void {
     var i: usize = 0;
     while (i < heap.memory.items.len) {
         std.debug.print("{:3} | ", .{i});
-        const tag = heap.get_tag(@intCast(i));
-        if (tag == TAG_WORD) {
-            std.debug.print("word {}", .{heap.get(@intCast(i + 1))});
-            i += 2;
-        } else if (tag == TAG_WORDS) {
-            std.debug.print("words ", .{});
-            heap.dump_string(i);
-            const len: usize = @intCast(heap.get_not_tag(@intCast(i)));
-            i += 1 + len;
-        } else if (tag == TAG_ARRAY) {
-            const len: usize = @intCast(heap.get_not_tag(@intCast(i)));
-            std.debug.print("array", .{});
-            for (0..len) |j|
-                std.debug.print(" *{}", .{heap.get(@intCast(i + 1 + j))});
-            i += 1 + len;
-        } else if (tag == TAG_STRUCT) {
-            const num_fields: usize = @intCast(heap.get_not_tag(@intCast(i)));
-            std.debug.print("struct", .{});
-            for (0..num_fields) |j|
-                std.debug.print(" *{}: *{}", .{
-                    heap.get(@intCast(i + 1 + 2 * j)),
-                    heap.get(@intCast(i + 1 + 2 * j + 1)),
-                });
-            i += 1 + 2 * num_fields;
-        } else if (tag == TAG_ENUM) {
-            std.debug.print("enum *{}: *{}", .{
-                heap.get(@intCast(i + 1)),
-                heap.get(@intCast(i + 2)),
-            });
-            i += 3;
-        } else {
-            @panic("unknown tag");
-        }
+        const header: Header = @bitCast(heap.memory.items[i]);
+        std.debug.print("[{}]", .{header.tag});
+        for (0..header.num_pointers) |j|
+            std.debug.print(" *{}", .{heap.memory.items[i + 1 + j]});
+        for (header.num_pointers..header.num_words) |j|
+            std.debug.print(" {}", .{heap.memory.items[i + 1 + j]});
         std.debug.print("\n", .{});
-    }
-}
-pub fn dump_string(heap: Heap, str: Object) void {
-    const len: usize = @intCast(heap.get_not_tag(str));
-    for (0..len) |j| {
-        const w = heap.get(@intCast(str + 1 + j));
-        for (0..8) |k| {
-            const c: u8 = @intCast((w >> @intCast(8 * k)) & 0xff);
-            if (c == 0) break;
-            if (true or c >= 32 and c <= 150)
-                std.debug.print("{c}", .{c})
-            else
-                std.debug.print("?", .{});
-        }
-    }
-}
-pub fn dump_object(heap: Heap, object: Object, indentation: usize) void {
-    const tag = heap.get_tag(object);
-    for (0..indentation) |_| std.debug.print("  ", .{});
-    if (tag == TAG_WORD) {
-        std.debug.print("word {}\n", .{heap.get(object + 1)});
-    } else if (tag == TAG_WORDS) {
-        std.debug.print("words ", .{});
-        heap.dump_string(object);
-        std.debug.print("\n", .{});
-    } else if (tag == TAG_ARRAY) {
-        const len: usize = @intCast(heap.get_not_tag(@intCast(object)));
-        std.debug.print("array\n", .{});
-        for (0..len) |j|
-            heap.dump_object(heap.get(@intCast(object + 1 + j)), indentation + 1);
-    } else if (tag == TAG_STRUCT) {
-        const num_fields: usize = @intCast(heap.get_not_tag(@intCast(object)));
-        std.debug.print("struct\n", .{});
-        for (0..num_fields) |j| {
-            const key = heap.get(@intCast(object + 1 + 2 * j));
-            const value = heap.get(@intCast(object + 1 + 2 * j + 1));
-            for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
-            heap.dump_string(key);
-            std.debug.print(":\n", .{});
-            heap.dump_object(value, indentation + 2);
-        }
-    } else if (tag == TAG_ENUM) {
-        std.debug.print("enum ", .{});
-        heap.dump_string(heap.variant(object));
-        std.debug.print(":\n", .{});
-        heap.dump_object(heap.payload(object), indentation + 1);
-    } else {
-        @panic("unknown tag");
-    }
-}
-
-// Memory layouts of heap objects:
-// word:   0 word
-// words:  1&length word word ...
-// array:  2&length item item ...
-// struct: 3&num_fields key value key value ...
-// enum:   4 variant(words) payload
-// lambda: 5 ir(ir) closure(array)
-
-const TAG_MASK = 0xff_00000000000000;
-const NOT_TAG_MASK = 0x00_ffffffffffffff;
-
-const TAG_WORD = 0x00_00000000000000;
-const TAG_WORDS = 0x01_00000000000000;
-const TAG_ARRAY = 0x02_00000000000000;
-const TAG_STRUCT = 0x03_00000000000000;
-const TAG_ENUM = 0x04_00000000000000;
-const TAG_LAMBDA = 0x05_00000000000000;
-
-pub fn get_tag(heap: Heap, address: Word) Word {
-    return heap.get(address) & TAG_MASK;
-}
-pub fn get_not_tag(heap: Heap, address: Word) Word {
-    return heap.get(address) & NOT_TAG_MASK;
-}
-
-pub fn word(heap: *Heap, w: Word) !Object {
-    const object: Object = @intCast(heap.memory.items.len);
-    try heap.memory.append(heap.ally, TAG_WORD);
-    try heap.memory.append(heap.ally, w);
-    return object;
-}
-pub fn word_value(heap: *Heap, w: Object) Word {
-    return heap.get(w + 1);
-}
-
-pub fn words(heap: *Heap, w: []const Word) !Object {
-    const object: Object = @intCast(heap.memory.items.len);
-    try heap.memory.append(heap.ally, TAG_WORDS | @as(Word, @intCast(w.len)));
-    for (w) |ww| try heap.memory.append(heap.ally, ww);
-    return object;
-}
-
-pub fn string(heap: *Heap, str: []const u8) !Object {
-    const num_words = (str.len + 7) / 8;
-    const object: Object = @intCast(heap.memory.items.len);
-    try heap.memory.append(heap.ally, TAG_WORDS | @as(Word, @intCast(num_words)));
-    for (0..num_words) |i| {
-        var w: Word = 0;
-        for (0..@min(str.len - i * 8, 8)) |j|
-            w |= @as(Word, str[i * 8 + j]) << @intCast(j * 8);
-        try heap.memory.append(heap.ally, @intCast(w));
-    }
-    return object;
-}
-pub fn string_get(heap: *Heap, str: Object, index: Word) u8 {
-    const w = heap.get(str + 1 + @divFloor(index, 8));
-    const char = w >> @intCast(@mod(index, 8) * 8) & 0xff;
-    return @intCast(char);
-}
-pub fn string_equals(heap: *Heap, str: Object, matches: []const u8) bool {
-    const num_words_heap = heap.get_not_tag(str);
-    const num_words_match = @divFloor(matches.len + 7, 8);
-    if (num_words_heap != num_words_match)
-        return false;
-    for (0..matches.len) |i| {
-        if (heap.string_get(str, i) != matches[i])
-            return false;
-    }
-    return true;
-}
-
-pub fn array(heap: *Heap, items: []const Object) !Object {
-    const object: Object = @intCast(heap.memory.items.len);
-    try heap.memory.append(heap.ally, TAG_ARRAY | @as(Word, @intCast(items.len)));
-    for (items) |item| try heap.memory.append(heap.ally, item);
-    return object;
-}
-
-pub fn struct_(heap: *Heap, fields: anytype) !Object {
-    const field_types = @typeInfo(@TypeOf(fields)).@"struct".fields;
-    var field_names: [field_types.len]Object = .{@as(Object, undefined)} ** field_types.len;
-    inline for (0.., field_types) |i, type_| {
-        field_names[i] = try heap.string(type_.name);
-    }
-
-    const object: Object = @intCast(heap.memory.items.len);
-    try heap.memory.append(heap.ally, TAG_STRUCT | @as(Word, @intCast(field_types.len)));
-    inline for (0.., field_types) |i, field_type| {
-        try heap.memory.append(heap.ally, field_names[i]);
-        try heap.memory.append(heap.ally, @field(fields, field_type.name));
-    }
-    return object;
-}
-pub fn field(heap: *Heap, s: Object, name: []const u8) Object {
-    const len: usize = @intCast(heap.get_not_tag(s));
-    for (0..len) |i| {
-        const name_ = heap.get(s + 1 + 2 * @as(Word, @intCast(i)));
-        if (heap.string_equals(name_, name))
-            return heap.get(s + 1 + 2 * @as(Word, @intCast(i)) + 1);
-    }
-    @panic("field not in struct");
-}
-
-pub fn enum_(heap: *Heap, var_: []const u8, pay: Object) !Object {
-    const variant_str = try heap.string(var_);
-    const object: Object = @intCast(heap.memory.items.len);
-    try heap.memory.append(heap.ally, TAG_ENUM);
-    try heap.memory.append(heap.ally, variant_str);
-    try heap.memory.append(heap.ally, pay);
-    return object;
-}
-pub fn variant(heap: Heap, en: Object) Word {
-    return heap.get(en + 1);
-}
-pub fn payload(heap: Heap, en: Object) Word {
-    return heap.get(en + 2);
-}
-
-pub fn lambda(heap: *Heap, ir: Object, closure: Object) !Object {
-    const object: Object = @intCast(heap.memory.items.len);
-    try heap.memory.append(heap.ally, TAG_LAMBDA);
-    try heap.memory.append(heap.ally, ir);
-    try heap.memory.append(heap.ally, closure);
-    return object;
-}
-
-fn list_leaf_node(heap: *Heap, value: Object) !Object {
-    return try heap.enum_("leaf", value);
-}
-fn list_empty_node(heap: *Heap) !Object {
-    const empty_struct = try heap.struct_(.{});
-    return try heap.enum_("empty", empty_struct);
-}
-fn list_inner_node(heap: *Heap, left: Object, right: Object) !Object {
-    return try heap.enum_(
-        "inner",
-        try heap.struct_(.{
-            .left = left,
-            .right = right,
-            .length = try heap.word(heap.list_len(left) + heap.list_len(right)),
-        }),
-    );
-}
-pub fn empty_list(heap: *Heap) !Object {
-    return heap.list_empty_node();
-}
-pub fn list_len(heap: *Heap, list: Object) Word {
-    const var_ = heap.variant(list);
-    if (heap.string_equals(var_, "empty")) {
-        return 0;
-    } else if (heap.string_equals(var_, "leaf")) {
-        return 1;
-    } else if (heap.string_equals(var_, "inner")) {
-        const data = heap.payload(list);
-        return heap.word_value(heap.field(data, "length"));
-    } else {
-        @panic("unknown list variant");
-    }
-}
-pub fn list_push(heap: *Heap, list: Object, item: Object) !Object {
-    const var_ = heap.variant(list);
-    if (heap.string_equals(var_, "empty")) {
-        return try heap.list_leaf_node(item);
-    } else if (heap.string_equals(var_, "leaf")) {
-        return try heap.list_inner_node(list, try heap.list_leaf_node(item));
-    } else if (heap.string_equals(var_, "inner")) {
-        const data = heap.payload(list);
-        const left = heap.field(data, "left");
-        const right = heap.field(data, "right");
-        if (heap.list_len(left) != heap.list_len(right)) {
-            return try heap.list_inner_node(
-                left,
-                try heap.list_push(right, item),
-            );
-        } else {
-            return try heap.list_inner_node(list, try heap.list_leaf_node(item));
-        }
-    } else {
-        @panic("unknown list variant");
-    }
-}
-pub fn list_get(heap: *Heap, list: Object, index: Word) Word {
-    const var_ = heap.variant(list);
-    if (heap.string_equals(var_, "empty")) {
-        @panic("tried to get item of empty list");
-    } else if (heap.string_equals(var_, "leaf")) {
-        return heap.payload(list);
-    } else if (heap.string_equals(var_, "inner")) {
-        const data = heap.payload(list);
-        const left = heap.field(data, "left");
-        const right = heap.field(data, "right");
-        const left_len = heap.list_len(data, "left");
-        return if (index < left_len)
-            heap.list_get(left, index)
-        else
-            return heap.list_get(right, index - left_len);
-    } else {
-        @panic("unknown list variant");
+        i += 1 + header.num_words;
     }
 }
