@@ -2,9 +2,11 @@ const std = @import("std");
 
 const thyme_zig = @import("thyme_zig");
 
+const ast = @import("ast.zig");
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Object = @import("object.zig");
+const parse = @import("parse.zig").parse;
 const Vm = @import("vm.zig");
 
 pub fn main() !void {
@@ -20,12 +22,15 @@ pub fn main() !void {
     _ = try Object.new_symbol(&heap, "foobar");
     _ = try Object.new_struct(&heap, .{ .x = num, .y = num });
 
-    \\foo = \ a -> \ b -> * a b
-    \\foo 2
-    ;
+    const the_ast = try parse(ally,
+        \\foo = 3
+        \\bar = |a| multiply(a, a)
+        \\4
+    );
+    ast.dump(the_ast, 0);
 
     var vm = Vm.init(&heap);
-    const code = try vm.new_instructions(&[_]Vm.Instruction{
+    const instructions = try vm.new_instructions(&[_]Vm.Instruction{
         .{ .push_word = 42 },
         .{ .push_word = 2 },
         .add,
@@ -45,8 +50,8 @@ pub fn main() !void {
             .num_literals = 0,
         } },
     });
-    code.dump(0);
-    try vm.eval(code);
+    instructions.dump(0);
+    try vm.eval(instructions);
     vm.dump();
 
     _ = try heap.deduplicate(start_of_heap, ally);
