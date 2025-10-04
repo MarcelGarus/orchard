@@ -85,7 +85,7 @@ pub fn new_symbol(heap: *Heap, comptime val: []const u8) !Object {
     return .{ .heap = heap, .address = address };
 }
 
-pub fn is_symbol(symbol: Object, check: []const u8) bool {
+pub fn is_symbol(symbol: Object, comptime check: []const u8) bool {
     if (symbol.kind() != .symbol) @panic("not a symbol");
     const num_words = (check.len + 7) / 8;
     const words = symbol.heap.ally.alloc(Word, num_words) catch
@@ -139,7 +139,7 @@ pub fn field_by_name(struct_: Object, comptime name: []const u8) Object {
     if (struct_.kind() != .struct_) @panic("not a struct");
     for (0..struct_.num_fields()) |i| {
         const field = struct_.field_by_index(i);
-        if (field.key.is(name))
+        if (field.key.is_symbol(name))
             return field.value;
     }
     @panic("field not in struct");
