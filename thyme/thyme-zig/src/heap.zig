@@ -202,7 +202,7 @@ pub fn deduplicate(heap: *Heap, from: Checkpoint, ally: Allocator) !ArrayList(Ma
 
 pub fn dump_raw(heap: Heap) void {
     for (0.., heap.memory.items) |i, w| {
-        std.debug.print("{:3} |", .{i});
+        std.debug.print("{x:3} |", .{i});
         const bytes: []const u8 = @ptrCast(&w);
         for (bytes) |byte| std.debug.print(" {x:02}", .{byte});
         std.debug.print(" | {}\n", .{w});
@@ -211,13 +211,13 @@ pub fn dump_raw(heap: Heap) void {
 pub fn dump(heap: Heap) void {
     var i: usize = 0;
     while (i < heap.memory.items.len) {
-        std.debug.print("{:3} | ", .{i});
+        std.debug.print("{x:3} | ", .{i});
         const header: Header = @bitCast(heap.memory.items[i]);
-        std.debug.print("[{}]", .{header.tag});
+        std.debug.print("[{x}]", .{header.tag});
         for (0..header.num_pointers) |j|
-            std.debug.print(" *{}", .{heap.memory.items[i + 1 + j]});
+            std.debug.print(" *{x}", .{heap.memory.items[i + 1 + j]});
         for (header.num_pointers..header.num_words) |j|
-            std.debug.print(" {}", .{heap.memory.items[i + 1 + j]});
+            std.debug.print(" {x}", .{heap.memory.items[i + 1 + j]});
         std.debug.print("\n", .{});
         i += 1 + header.num_words;
     }

@@ -26,7 +26,7 @@ pub fn get_allocation(object: Object) Allocation {
     return object.heap.get(object.address);
 }
 
-const Kind = enum { nil, int, symbol, struct_, enum_ };
+const Kind = enum { nil, int, symbol, struct_, enum_, lambda };
 
 pub fn kind(object: Object) Kind {
     const allocation = object.get_allocation();
@@ -36,6 +36,7 @@ pub fn kind(object: Object) Kind {
         TAG_SYMBOL => .symbol,
         TAG_STRUCT => .struct_,
         TAG_ENUM => .enum_,
+        TAG_LAMBDA => .lambda,
         else => @panic("unknown tag"),
     };
 }
@@ -67,7 +68,7 @@ pub fn int_value(int: Object) i64 {
 
 // Symbol
 
-pub fn new_symbol(heap: *Heap, comptime val: []const u8) !Object {
+pub fn new_symbol(heap: *Heap, val: []const u8) !Object {
     const num_words = (val.len + 7) / 8;
     const words = try heap.ally.alloc(Word, num_words);
     for (0..num_words) |i| {
@@ -85,14 +86,14 @@ pub fn new_symbol(heap: *Heap, comptime val: []const u8) !Object {
     return .{ .heap = heap, .address = address };
 }
 
-pub fn is_symbol(symbol: Object, comptime check: []const u8) bool {
+pub fn is_symbol(symbol: Object, check: []const u8) bool {
     if (symbol.kind() != .symbol) @panic("not a symbol");
     const num_words = (check.len + 7) / 8;
     const words = symbol.heap.ally.alloc(Word, num_words) catch
         @panic("oom");
-    inline for (0..num_words) |i| {
+    for (0..num_words) |i| {
         var w: Word = 0;
-        inline for (0..@min(check.len - i * 8, 8)) |j|
+        for (0..@min(check.len - i * 8, 8)) |j|
             w |= @as(Word, check[i * 8 + j]) << @intCast(j * 8);
         words[i] = w;
     }
@@ -171,6 +172,25 @@ pub fn payload(enum_: Object) Object {
     };
 }
 
+// Lambda
+
+pub fn new_lambda(heap: *Heap, num_params: usize, instrs: Object, closure: Object) !Object {
+    const address = try heap.new_fancy(TAG_LAMBDA, .{
+        instrs.address,
+        closure.address,
+        @as(Word, @intCast(num_params)),
+    });
+    return .{ .heap = heap, .address = address };
+}
+
+pub fn instructions(lambda: Object) Object {
+    if (lambda.kind() != .lambda) @panic("not an lambda");
+    return .{
+        .heap = lambda.heap,
+        .address = lambda.get_allocation().pointers[0],
+    };
+}
+
 // Dumping
 
 pub fn dump(object: Object, indentation: usize) void {
@@ -199,6 +219,7 @@ pub fn dump(object: Object, indentation: usize) void {
             std.debug.print(":\n", .{});
             object.payload().dump(indentation + 2);
         },
+        .lambda => std.debug.print("lambda\n", .{}),
     }
 }
 
