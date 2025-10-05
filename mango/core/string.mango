@@ -5,7 +5,7 @@
 
 import core.mar
 
-struct String { utf8_bytes: Array[Byte] }
+struct String { address: Address, length: Int }
 
 fun to_string(chars: Slice[Char]): String {
   chars.unchecked_cast[Slice[Char], String]()
@@ -21,7 +21,7 @@ fun bytes(string: String): Slice[Byte] {
   string.unchecked_cast[String, Slice[Byte]]()
 }
 
-fun is_empty(string: String): Bool { string.len == 0 }
+fun is_empty(string: String): Bool { string.length == 0 }
 fun get_maybe_ref(string: String, index: Int): Maybe[&Char] {
   string.chars().get_maybe_ref(index)
 }
@@ -70,30 +70,6 @@ fun copy(string: String): String {
   string.bytes().copy().to_string()
 }
 
-fun generate(s: Static[Char], random: &Random, complexity: Int): Char {
-  var visible_ascii = 32..127
-  random.next_int(visible_ascii).lower_byte().to_char()
-}
-fun mutate(char: Char, random: &Random, temperature: Int): Char {
-  static[Char]().generate(random, 0)
-}
-fun fuzzing_complexity(string: String): Float {
-  var chars_complexity = 0.0
-  for char in string.chars() do
-    chars_complexity = chars_complexity + char.fuzzing_complexity()
-  string.len.to_float() + chars_complexity
-}
-fun generate(s: Static[String], random: &Random, complexity: Int): String {
-  var len = random.next_int(0..=complexity)
-  var slice = uninitialized_slice[Char](len)
-  for i in 0..len do slice.get_ref(i).* = static[Char]().generate(random, 1)
-  String { data = slice.data, len }
-}
-fun mutate(string: String, random: &Random, temperature: Int): String {
-  if temperature == 0 then return string
-  string.chars().mutate(random, temperature).to_string()
-}
-
 fun iter(string: String): Iter[Char, _] {
   Iter[Char, StrIter] { state = StrIter { string, index = 0 } }
 }
@@ -107,8 +83,8 @@ fun next(iter: &Iter[Char, StrIter]): Maybe[Char] {
   }
 }
 
-fun substr(string: String, range: Range[Int]): String {
-  range.end <= string.len or panic("substr needs to be inside original string")
+fun slice(string: String, range: Range[Int]): String {
+  range.end <= string.len or panic("slice needs to be inside original string")
   string.chars().subslice(range).to_string()
 }
 fun first(string: String): Char {
@@ -117,7 +93,7 @@ fun first(string: String): Char {
 }
 fun first(string: String, amount: Int): String {
   amount <= string.len or panic("first amount too big")
-  string.substr(0..amount)
+  string.slice(0..amount)
 }
 fun last(string: String): Char {
   string.is_not_empty() or panic("last only works on non-empty strs")
@@ -125,15 +101,15 @@ fun last(string: String): Char {
 }
 fun last(string: String, amount: Int): String {
   amount <= string.len or panic("last amount too big")
-  string.substr({string.len - amount}..string.len)
+  string.slice({string.len - amount}..string.len)
 }
 fun without_first(string: String, amount: Int): String {
   amount <= string.len or panic("without_first amount too big")
-  string.substr(amount..string.len)
+  string.slice(amount..string.len)
 }
 fun without_last(string: String, amount: Int): String {
   amount <= string.len or panic("without_last amount too big")
-  string.substr(0..{string.len - amount})
+  string.slice(0..{string.len - amount})
 }
 fun starts_with(string: String, prefix: String): Bool {
   string.len >= prefix.len or return false
@@ -169,7 +145,7 @@ fun trim(string: String): String {
   loop if end > 0 and string.get(end - 1).is_whitespace() and not(start == end)
     then end = end - 1
     else break
-  string.substr(start..end)
+  string.slice(start..end)
 }
 fun contains(string: String, needle: Char): Bool {
   string.chars().iter().&.contains(needle)
@@ -177,7 +153,7 @@ fun contains(string: String, needle: Char): Bool {
 fun contains(string: String, needle: String): Bool {
   if needle.len > string.len then return false
   for i in 0..={string.len - needle.len} do
-    if string.substr(i..+needle.len) == needle then return true
+    if string.slice(i..+needle.len) == needle then return true
   false
 }
 fun replace(string: String, from: String, to: String): String {

@@ -33,15 +33,19 @@ fun memcopy(from: Address, to: Address, amount: Int) ground {
   # The from and to address ranges may partially overlap. Depending on the way
   # they overlap, we need to copy the content from left-to-right or
   # right-to-left.
-  .. 10 00 00 00 00 00 00 00  # push_word_from_stack 16 (from)
-  .. 10 00 00 00 00 00 00 00 # push_word_from_stack 16 (to)
-  a1 # subtract
-  .. # compare_zero
-  .. 03 ^same ^ltr ^rtl # jump_table ^same ^ltr ^rtl
+  c4 10 00 00 00 00 00 00 00  # push_word_from_stack 16       (from to amount from)
+  c4 10 00 00 00 00 00 00 00  # push_word_from_stack 16       (from to amount from to)
+  a1                          # subtract      (from to amount diff)
+  a5                          # compare_zero  (from to amount ord)
+  f1 03 ^same ^ltr ^rtl       # jump_table
+
   @same
-  f5  # return
+  c5 18  # pop 24  ()
+  f5     # return
+
   @ltr
   @ltr_loop
+  
 
   @rtl
   @rtl_loop
@@ -60,23 +64,43 @@ fun memcopy(from: Address, to: Address, amount: Int) ground {
   jump ..loop
   .done: ret
 }
+
 fun memcompare(left: Address, right: Address, amount: Int): Ordering ground {
-  moveib a 8  add a sp load a a # left
-  moveib b 16 add b sp load b b # right
-  moveib c 24 add c sp load c c # amount
-  moveib d 1
-  .loop:
-  move st c isequal cjump .equal
-  loadb e a loadb f b
-  cmp e f isless cjump .less
-  cmp e f isgreater cjump .greater
-  add a d add b d sub c d
-  jump .loop
-  .equal:   load a sp moveib b 1 storeb a b ret
-  .less:    load a sp moveib b 0 storeb a b ret
-  .greater: load a sp moveib b 2 storeb a b ret
+  @loop                       #                         (l r a)
+  c4 00 00 00 00 00 00 00 00  # push_word_from_stack 0  (l r a a)
+  a5                          # compare_zero            (l r a done)
+  f1 03 ^equal ^more ^more    # jump_table
+
+  @more                          #                         (l r a)
+  c4 10 00 00 00 00 00 00 00     # push_word_from_stack 8  (l r a l)
+  d4                             # load_byte               (l r a l)
+  b6                             # byte_to_word            (l r a l)
+  c4 10 00 00 00 00 00 00 00     # push_word_from_stack 8  (l r a l r)
+  d4                             # load_byte               (l r a l r)
+  b6                             # byte_to_word            (l r a l r)
+  a1                             # subtract                (l r a diff)
+  f1 03 ^advance ^greater ^less  # jump_table
+
+  @advance                       #                          (l r a)
+  c4 10 00 00 00 00 00 00 00     # push_word_from_stack 16  (l r a l)
+  c2 01 00 00 00 00 00 00 00     # push_word 1              (l r a l 1)
+  a0                             # add                      (l r a l')
+  c4 10 00 00 00 00 00 00 00     # push_word_from_stack 16  (l r a l' r)
+  c2 01 00 00 00 00 00 00 00     # push_word 1              (l r a l' r 1)
+  a0                             # add                      (l r a l' r')
+  c4 10 00 00 00 00 00 00 00     # push_word_from_stack 16  (l r a l' r' a)
+  c2 01 00 00 00 00 00 00 00     # push_word 1              (l r a l' r' a 1)
+  a1                             # subtract                 (l r a l' r' a')
+  c6 18 00 00 00 00 00 00 00 18  # pop_below_top 24 24      (l' r' a')
+  f0 ^loop
+
+  @equal    c5 18  c1 00  f5  # pop 24  push_byte 0  return  (0)
+  @greater  c5 18  c1 01  f5  # pop 24  push_byte 1  return  (1)
+  @less     c5 18  c1 02  f5  # pop 24  push_byte 2  return  (2)
 }
+
 fun memhash(address: Address, amount: Int): Int ground {
+  TODO
   moveib a 8  add a sp load a a # address
   moveib b 16 add b sp load b b # amount
   movei c 5381                  # hasher state

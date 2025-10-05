@@ -1,254 +1,229 @@
-
 ## Array
 #
 # An array is a typed pointer to multiple values on the heap. The array knows
 # the number of items it points to.
 
-struct Array[T] { ally: Allocator, address: Address, len: Int }
+import ..address
+import ..ally
 
-fun empty_array[T](ally: Allocator): Array[T] {
-  Array[T]{ ally, address = null, len = 0 }
-}
-fun uninitialized_array[T](ally: Allocator, len: Int): Array[T] {
-  if len == 0 then return empty_slice[T]()
-  Array[T]{ address = malloc(len * stride_size_of[T](), alignment_of[T]()), len }
-}
-fun filled_slice[T](len: Int, fill: T): Array[T] {
-  var slice = uninitialized_slice[T](len)
-  slice.&.fill(fill)
-  slice
-}
-fun fill[T](slice: &Array[T], item: T) {
-  for i in 0..slice.len do slice.get_ref(i).* = item
-}
+struct Array[T] { ally: Ally, buffer: Address, start: Int, end: Int }
 
-
-# Assuming multiple instances of T are saved in memory next to each other,
-# return a reference to the item at the index.
-fun add_stride_offset[T](ref: &T, index: Int): &T {
-  {ref.to_address() + {stride_size_of[T]() * index}}.to_reference[T]()
+fun empty_array[T](ally: Ally): Array[T] {
+  Array[T]{ ally, address = null, length = 0 }
+}
+fun uninitialized_array[T](length: Int, ally: Ally): Array[T] {
+  Array[T]{
+    ally,
+    address = ally.malloc(16 + length * stride_size_of[T](), alignment_of[T]()),
+    length,
+  }
+}
+fun filled_array[T](length: Int, fill: T, ally: Ally): Array[T] {
+  var array = uninitialized_array[T](length)
+  array.fill(fill)
+  array
 }
 
-fun is_empty[T](slice: Array[T]): Bool { slice.len == 0 }
-fun get_ref_unchecked[T](slice: Array[T], index: Int): &T {
-  {slice.address + {index * stride_size_of[T]()}}.to_reference[T]()
+fun length[T](array: Array[T]): Int { array.end - array.start }
+fun is_empty[T](array: Array[T]): Bool { array.length == 0 }
+
+fun get_unchecked(array: Array[T], index: Int): T {
+  load[T](array.buffer + 16 + {index * stride_size_of[T]()})
 }
-fun get_unchecked[T](slice: Array[T], index: Int): T {
-  slice.get_ref_unchecked(index).*
+fun get_maybe[T](array: Array[T], index: Int): Maybe[T] {
+  if {0..array.length()}.contains(index)
+  then array.get_unchecked(index)
+  else none[T]()
 }
-fun get_maybe_ref[T](slice: Array[T], index: Int): Maybe[&T] {
-  if {0..slice.len}.contains(index)
-  then some(slice.get_ref_unchecked(index))
-  else none[&T]()
+fun get[T](array: Array[T], index: Int): T {
+  array.get_maybe(index)
+    or panic("index out of bounds: {index} is not in {0..array.length()}")
 }
-fun get_maybe[T](slice: Array[T], index: Int): Maybe[T] {
-  switch slice.get_maybe_ref(index)
-  case some(item) some(item.*)
-  case none none[T]()
-}
-fun get_ref[T](slice: Array[T], index: Int): &T {
-  slice.get_maybe_ref(index)
-    or panic("index out of bounds: {index} is not in {0..slice.len}")
-}
-fun get[T](slice: Array[T], index: Int): T { slice.get_ref(index).* }
-fun set[T](slice: &Array[T], index: Int, value: T) {
-  slice.get_ref(index).* = value
-}
-fun swap[T](slice: &Array[T], a: Int, b: Int) {
-  swap(slice.get_ref(a), slice.get_ref(b))
+
+fun set[T](array: &Array[T], index: Int, value: T) {
+  array.get_ref(index).* = value
 }
 
 fun <=>[T](a: Array[T], b: Array[T]): Ordering {
   var i = 0
   loop {
-    if i == a.len and i == b.len then return Ordering.equal
-    if i == a.len then return Ordering.less
-    if i == b.len then return Ordering.greater
+    if i == a.length and i == b.length then return Ordering.equal
+    if i == a.length then return Ordering.less
+    if i == b.length then return Ordering.greater
     var ord = a.get(i) <=> b.get(i)
     ord is equal or return ord
     i = i + 1
   }
 }
 fun ==[T](a: Array[T], b: Array[T]): Bool {
-  a.len == b.len or return false
-  for i in 0..a.len do
+  a.length == b.length or return false
+  for i in 0..a.length do
     a.get_unchecked(i) == b.get_unchecked(i) or return false
   true
 }
-fun hash[T](hasher: &Hasher, slice: Array[T]) { hasher.hash_all(slice) }
-fun write[W, T](writer: W, slice: Array[T]) {
-  writer.write("[{comma_separated(slice)}]")
+fun hash[T](array: Array[T]): Hash {
+  var hash = hash()
+  for item in array do hash =
+  hasher.hash_all(array)
 }
-fun write_debug[W, T](writer: W, slice: Array[T]) {
-  writer."["
-  var first = true
-  for item in slice do {
-    if first then first = false else writer.", "
-    writer.write_debug(item)
-  }
-  writer."]"
-}
-fun copy[T](slice: Array[T]): Array[T] {
-  var copy = uninitialized_slice[T](slice.len)
-  for item in slice.iter().enumerate() do
-    copy.get_ref(item.index).* = item.item.copy()
-  copy
+fun write[W, T](writer: W, array: Array[T]) {
+  writer.write("[{comma_separated(array)}]")
 }
 
-fun to_list[T](slice: Array[T]): List[T] {
-  var list = uninitialized_list[T](slice.len)
-  slice.copy_to(list.to_slice())
+fun to_list[T](array: Array[T]): List[T] {
+  var list = uninitialized_list[T](array.length)
+  array.copy_to(list.to_array())
   list
 }
 
-fun iter[T](slice: Array[T]): Iter[T, _] {
-  Iter[T, ArrayIter[T]] { state = ArrayIter { slice, index = 0 } }
+fun iter[T](array: Array[T]): Iter[T, _] {
+  Iter[T, ArrayIter[T]] { state = ArrayIter { array, index = 0 } }
 }
-struct ArrayIter[T] { slice: Array[T], index: Int }
+struct ArrayIter[T] { array: Array[T], index: Int }
 fun next[T](iter: &Iter[T, ArrayIter[T]]): Maybe[T] {
   var state = iter.state.&
-  if state.index < state.slice.len
+  if state.index < state.array.length
   then {
-    var item = state.slice.get(state.index)
+    var item = state.array.get(state.index)
     state.index = state.index + 1
     some(item)
   }
   else none[T]()
 }
 
-fun ref_iter[T](slice: Array[T]): Iter[&T, _] {
-  Iter[&T, ArrayRefIter[T]] { state = ArrayRefIter { slice, index = 0 } }
+fun ref_iter[T](array: Array[T]): Iter[&T, _] {
+  Iter[&T, ArrayRefIter[T]] { state = ArrayRefIter { array, index = 0 } }
 }
-struct ArrayRefIter[T] { slice: Array[T], index: Int }
+struct ArrayRefIter[T] { array: Array[T], index: Int }
 fun next[T](iter: &Iter[&T, ArrayRefIter[T]]): Maybe[&T] {
   var state = iter.state.&
-  if state.index < state.slice.len
+  if state.index < state.array.length
   then {
-    var item_ref = state.slice.get_ref(state.index)
+    var item_ref = state.array.get_ref(state.index)
     state.index = state.index + 1
     some(item_ref)
   }
   else none[&T]()
 }
 
-fun rev_iter[T](slice: Array[T]): Iter[T, _] {
-  Iter[T, ArrayRevIter[T]] { state = ArrayRevIter { slice, index = slice.len } }
+fun rev_iter[T](array: Array[T]): Iter[T, _] {
+  Iter[T, ArrayRevIter[T]] { state = ArrayRevIter { array, index = array.length } }
 }
 struct ArrayRevIter[T] {
-  slice: Array[T],
+  array: Array[T],
   index: Int, # last yielded item
 }
 fun next[T](iter: &Iter[T, ArrayRevIter[T]]): Maybe[T] {
   var state = iter.state.&
   if state.index > 0 then {
     state.index = state.index - 1
-    some[T](state.slice.get(state.index))
+    some[T](state.array.get(state.index))
   } else none[T]()
 }
 
 fun copy_to[T](from: Array[T], to: Array[T]) {
-  from.len == to.len or
-    panic("copy_to slice lens don't match ({from.len} and {to.len})")
-  memcopy(from.address, to.address, from.len * stride_size_of[T]())
+  from.length == to.length or
+    panic("copy_to array lengths don't match ({from.length} and {to.length})")
+  memcopy(from.address, to.address, from.length * stride_size_of[T]())
 }
-fun subslice[T](slice: Array[T], range: Range[Int]): Array[T] {
-  range.end <= slice.len or
-    panic("tried to take subslice {range} from slice of length {slice.len}")
+fun subarray[T](array: Array[T], range: Range[Int]): Array[T] {
+  range.end <= array.length or
+    panic("tried to take subarray {range} from array of lengthgth {array.length}")
   Array[T] {
-    address = slice.address + {stride_size_of[T]() * range.start}, len = range.len()
+    address = array.address + {stride_size_of[T]() * range.start}, length = range.length()
   }
 }
-fun remove[T](slice: &Array[T], range: Range[Int]) {
-  slice.subslice(range.end..slice.len)
-    .copy_to(slice.subslice(range.start..{slice.len - range.len()}))
-  slice.len = slice.len - range.len()
+fun remove[T](array: &Array[T], range: Range[Int]) {
+  array.subarray(range.end..array.length)
+    .copy_to(array.subarray(range.start..{array.length - range.length()}))
+  array.length = array.length - range.length()
 }
-fun first[T](slice: Array[T]): T {
-  slice.is_not_empty() or panic("first only works on non-empty slices")
-  slice.get(0)
+fun first[T](array: Array[T]): T {
+  array.is_not_empty() or panic("first only works on non-empty arrays")
+  array.get(0)
 }
-fun first[T](slice: Array[T], amount: Int): Array[T] {
-  amount <= slice.len or panic("first amount too big")
-  slice.subslice(0..amount)
+fun first[T](array: Array[T], amount: Int): Array[T] {
+  amount <= array.length or panic("first amount too big")
+  array.subarray(0..amount)
 }
-fun last_maybe_ref[T](slice: &Array[T]): Maybe[&T] {
-  slice.get_maybe_ref(slice.len - 1)
+fun last_maybe_ref[T](array: &Array[T]): Maybe[&T] {
+  array.get_maybe_ref(array.length - 1)
 }
-fun last_maybe[T](slice: Array[T]): Maybe[T] {
-  slice.get_maybe(slice.len - 1)
+fun last_maybe[T](array: Array[T]): Maybe[T] {
+  array.get_maybe(array.length - 1)
 }
-fun last_ref[T](slice: &Array[T]): &T { slice.get_ref(slice.len - 1) }
-fun last[T](slice: Array[T]): T {
-  slice.is_not_empty() or panic("last only works on non-empty slices")
-  slice.get_unchecked(slice.len - 1)
+fun last_ref[T](array: &Array[T]): &T { array.get_ref(array.length - 1) }
+fun last[T](array: Array[T]): T {
+  array.is_not_empty() or panic("last only works on non-empty arrays")
+  array.get_unchecked(array.length - 1)
 }
-fun last[T](slice: Array[T], amount: Int): Array[T] {
-  amount <= slice.len or panic("last amount too big")
-  slice.subslice({slice.len - amount}..slice.len)
+fun last[T](array: Array[T], amount: Int): Array[T] {
+  amount <= array.length or panic("last amount too big")
+  array.subarray({array.length - amount}..array.length)
 }
-fun without_first[T](slice: Array[T]): Array[T] { slice.without_first(1) }
-fun without_first[T](slice: Array[T], amount: Int): Array[T] {
-  amount <= slice.len or panic("without_first amount too big")
-  slice.subslice(amount..slice.len)
+fun without_first[T](array: Array[T]): Array[T] { array.without_first(1) }
+fun without_first[T](array: Array[T], amount: Int): Array[T] {
+  amount <= array.length or panic("without_first amount too big")
+  array.subarray(amount..array.length)
 }
-fun without_last[T](slice: Array[T]): Array[T] { slice.without_last(1) }
-fun without_last[T](slice: Array[T], amount: Int): Array[T] {
-  amount <= slice.len or panic("without_last amount too big")
-  slice.subslice(0..{slice.len - amount})
+fun without_last[T](array: Array[T]): Array[T] { array.without_last(1) }
+fun without_last[T](array: Array[T], amount: Int): Array[T] {
+  amount <= array.length or panic("without_last amount too big")
+  array.subarray(0..{array.length - amount})
 }
-fun starts_with[T](slice: Array[T], prefix: Array[T]): Bool {
-  prefix.len <= slice.len or return false
-  slice.first(prefix.len) == prefix
+fun starts_with[T](array: Array[T], prefix: Array[T]): Bool {
+  prefix.length <= array.length or return false
+  array.first(prefix.length) == prefix
 }
-fun ends_with[T](slice: Array[T], suffix: Array[T]): Bool {
-  suffix.len <= slice.len or return false
-  slice.last(suffix.len) == suffix
+fun ends_with[T](array: Array[T], suffix: Array[T]): Bool {
+  suffix.length <= array.length or return false
+  array.last(suffix.length) == suffix
 }
-fun trim_prefix[T](slice: &Array[T], prefix: Array[T]): Bool {
-  var matches = slice.starts_with(prefix)
-  if matches then slice.* = slice.without_first(prefix.len)
+fun trim_prefix[T](array: &Array[T], prefix: Array[T]): Bool {
+  var matches = array.starts_with(prefix)
+  if matches then array.* = array.without_first(prefix.length)
   matches
 }
-fun trim_suffix[T](slice: &Array[T], suffix: Array[T]): Bool {
-  var matches = slice.ends_with(suffix)
-  if matches then slice.* = slice.without_last(suffix.len)
+fun trim_suffix[T](array: &Array[T], suffix: Array[T]): Bool {
+  var matches = array.ends_with(suffix)
+  if matches then array.* = array.without_last(suffix.length)
   matches
 }
-fun reversed[T](slice: Array[T]): Array[T] {
-  var new = uninitialized_slice[T](slice.len)
-  for i in 0..slice.len do new.set(slice.len - i - 1, slice.get(i))
+fun reversed[T](array: Array[T]): Array[T] {
+  var new = uninitialized_array[T](array.length)
+  for i in 0..array.length do new.set(array.length - i - 1, array.get(i))
   new
 }
 
-fun sum(slice: Array[Int]): Int {
+fun sum(array: Array[Int]): Int {
   var sum = 0
-  for item in slice do sum = sum + item
+  for item in array do sum = sum + item
   sum
 }
 
-fun sort[T](slice: &Array[T]) {
+fun sort[T](array: &Array[T]) {
   # quick sort
-  if slice.len <= 1 then return {}
-  var pivot = slice.get(slice.len.dec())
+  if array.length <= 1 then return {}
+  var pivot = array.get(array.length.dec())
   var i = 0
-  for j in 0..slice.len do
-    if slice.get(j) < pivot then {
+  for j in 0..array.length do
+    if array.get(j) < pivot then {
       i = i.inc()
-      swap(slice.get_ref(i.dec()), slice.get_ref(j))
+      swap(array.get_ref(i.dec()), array.get_ref(j))
     }
-  swap(slice.get_ref(i), slice.get_ref(slice.len.dec()))
-  sort(slice.subslice(0..i).&)
-  sort(slice.subslice(min(i.inc(), slice.len.dec())..slice.len).&)
+  swap(array.get_ref(i), array.get_ref(array.length.dec()))
+  sort(array.subarray(0..i).&)
+  sort(array.subarray(min(i.inc(), array.length.dec())..array.length).&)
 }
 
-# Returns the position of the leftmost item of the ordered slice that is equal
+# Returns the position of the leftmost item of the ordered array that is equal
 # or greater to the given item.
-fun binary_search_leftmost_greater_equal(slice: Array[Int], item: Int): Int {
+fun binary_search_leftmost_greater_equal(array: Array[Int], item: Int): Int {
   var left  = 0         # inclusive
-  var right = slice.len # exclusive
+  var right = array.length # exclusive
   loop if left >= right then break else {
     var mid = {left + right} / 2
-    if slice.get(mid) < item then left = mid + 1 else right = mid
+    if array.get(mid) < item then left = mid + 1 else right = mid
   }
   left
 }
