@@ -29,14 +29,14 @@ pub const Node = union(enum) {
     modulo: Args,
     compare: Args,
     call: Call,
-    switch_: Switch,
+    if_not_zero: If,
     crash: Id,
 };
 pub const New = struct { tag: u8, pointers: []const Id, literals: []const Id };
 pub const Load = struct { base: Id, offset: Id };
 pub const Args = struct { left: Id, right: Id };
-pub const Call = struct { lambda: Id, args: []const Id };
-pub const Switch = struct { condition: Id, cases: []const Body };
+pub const Call = struct { fun: Id, args: []const Id };
+pub const If = struct { condition: Id, then: Body, else_: Body };
 
 pub fn get(ir: Ir, id: Id) Node {
     return ir.nodes[id.index];
@@ -144,11 +144,11 @@ pub const BodyBuilder = struct {
     pub fn compare(body: *BodyBuilder, left: Id, right: Id) !Id {
         return body.create_and_push(.{ .compare = .{ .left = left, .right = right } });
     }
-    pub fn call(body: *BodyBuilder, lambda: Id, args: []Id) !Id {
-        return body.create_and_push(.{ .call = .{ .lambda = lambda, .args = args } });
+    pub fn call(body: *BodyBuilder, fun: Id, args: []const Id) !Id {
+        return body.create_and_push(.{ .call = .{ .fun = fun, .args = args } });
     }
-    pub fn switch_(body: *BodyBuilder, condition: Id, cases: []Body) !Id {
-        return body.create_and_push(.{ .switch_ = .{ .condition = condition, .cases = cases } });
+    pub fn if_not_zero(body: *BodyBuilder, condition: Id, then: Body, else_: Body) !Id {
+        return body.create_and_push(.{ .if_not_zero = .{ .condition = condition, .then = then, .else_ = else_ } });
     }
     pub fn crash(body: *BodyBuilder, message: Id) !Id {
         return body.create_and_push(.{ .crash = message });
@@ -157,21 +157,27 @@ pub const BodyBuilder = struct {
     // Higher-level convenience functions
 
     fn assert_has_tag(body: *BodyBuilder, obj: Id, tag_: u8) !void {
-        body.switch_(
-            body.compare(body.tag(obj), body.word(tag_)),
-            &[_]Id{
-                body.child_body().finish_with_zero(),
-                body.child_body().finish_with_crash("assert failed"),
-                body.child_body().finish_with_crash("assert failed"),
+        _ = try body.if_not_zero(
+            try body.subtract(try body.tag(obj), try body.word(tag_)),
+            then: {
+                var child = body.child_body();
+                break :then try child.finish_with_crash(try body.word(0));
             },
-        ).ignore();
+            else_: {
+                var child = body.child_body();
+                break :else_ try child.finish_with_zero();
+            },
+        );
     }
 
     pub fn new_int(body: *BodyBuilder, value: Id) !Id {
         return try body.new(Object.TAG_INT, &[_]Id{}, &[_]Id{value});
     }
+    pub fn assert_is_int(body: *BodyBuilder, obj: Id) !void {
+        try body.assert_has_tag(obj, Object.TAG_INT);
+    }
     pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
-        body.load(int, body.word(1));
+        return try body.load(int, try body.word(1));
     }
 
     pub fn new_struct(body: *BodyBuilder, keys_and_values: []Id) !Id {
@@ -185,12 +191,21 @@ pub const BodyBuilder = struct {
             &[_]Id{},
         );
     }
+    pub fn assert_is_enum(body: *BodyBuilder, obj: Id) !void {
+        try body.assert_has_tag(obj, Object.TAG_ENUM);
+    }
+    pub fn get_enum_variant(body: *BodyBuilder, enum_: Id) !Id {
+        return try body.load(enum_, try body.word(0));
+    }
+    pub fn get_enum_payload(body: *BodyBuilder, enum_: Id) !Id {
+        return try body.load(enum_, try body.word(1));
+    }
 
     pub fn new_closure(body: *BodyBuilder, captured: []Id) !Id {
-        body.new(Object.TAG_CLOSURE, captured, &[_]Id{});
+        return try body.new(Object.TAG_CLOSURE, captured, &[_]Id{});
     }
     pub fn get_closure_var(body: *BodyBuilder, closure: Id, index: i64) !Id {
-        body.load(closure, body.word(index));
+        return try body.load(closure, body.word(index));
     }
 
     pub fn new_lambda(body: *BodyBuilder, num_params: usize, instructions: Id, closure: Id) !Id {
@@ -200,71 +215,125 @@ pub const BodyBuilder = struct {
             &[_]Id{body.word(num_params)},
         );
     }
-    pub fn assert_is_lambda(body: *BodyBuilder, obj: Id) void {
-        body.assert_equals(body.load(obj, body.word(0)), body.word(Object.TAG_LAMBDA));
+    pub fn assert_is_lambda(body: *BodyBuilder, obj: Id) !void {
+        try body.assert_has_tag(obj, Object.TAG_LAMBDA);
     }
     fn get_lambda_instructions(body: *BodyBuilder, lambda: Id) !Id {
-        body.load(lambda, body.word(1));
+        return try body.load(lambda, body.word(1));
     }
     fn get_lambda_closure(body: *BodyBuilder, lambda: Id) !Id {
-        body.load(lambda, body.word(1));
+        return try body.load(lambda, body.word(1));
     }
 
-    pub fn finish_with_zero(body: BodyBuilder) Body {
-        body.finish(body.word(0));
+    pub fn finish_with_zero(body: *BodyBuilder) !Body {
+        return body.finish(try body.word(0));
     }
-    pub fn finish_with_crash(body: BodyBuilder, message: Str) Body {
-        body.finish(body.crash(body.new_string(message)));
+    pub fn finish_with_crash(body: *BodyBuilder, message: Id) !Body {
+        return body.finish(try body.crash(message));
     }
 };
 
 pub fn dump(ir: Ir, indentation: usize) void {
     std.debug.print("code", .{});
     for (ir.params) |param| std.debug.print(" %{}", .{param.index});
+    std.debug.print("\n", .{});
     dump_body(ir.body, ir, indentation + 1);
 }
 fn dump_body(body: Body, ir: Ir, indentation: usize) void {
     for (body.ids) |id| {
-        std.debug.print("\n", .{});
         for (0..indentation) |_| std.debug.print("  ", .{});
         std.debug.print("%{} = ", .{id.index});
         dump_node(ir.get(id), ir, indentation);
     }
-    std.debug.print("\n", .{});
     for (0..indentation) |_| std.debug.print("  ", .{});
     std.debug.print("%{}\n", .{body.returns.index});
 }
 fn dump_node(node: Node, ir: Ir, indentation: usize) void {
     switch (node) {
-        .param => std.debug.print("param", .{}),
-        .word => |word| std.debug.print("word {}", .{word}),
-        .object => |object| std.debug.print("object *{x}", .{object.address.address}),
+        .param => std.debug.print("param\n", .{}),
+        .word => |word| std.debug.print("word {}\n", .{word}),
+        .object => |object| std.debug.print("object *{x}\n", .{object.address.address}),
         .new => |new| {
             std.debug.print("new [{x}]", .{new.tag});
             for (new.pointers) |pointer| std.debug.print(" %{}", .{pointer.index});
             for (new.literals) |literal| std.debug.print(" %{}", .{literal.index});
+            std.debug.print("\n", .{});
         },
-        .tag => |address| std.debug.print("tag %{}", .{address.index}),
-        .load => |load| std.debug.print("load %{} %{}", .{ load.base.index, load.offset.index }),
-        .add => |args| std.debug.print("add %{} %{}", .{ args.left.index, args.right.index }),
-        .subtract => |args| std.debug.print("subtract %{} %{}", .{ args.left.index, args.right.index }),
-        .multiply => |args| std.debug.print("multiply %{} %{}", .{ args.left.index, args.right.index }),
-        .divide => |args| std.debug.print("divide %{} %{}", .{ args.left.index, args.right.index }),
-        .modulo => |args| std.debug.print("modulo %{} %{}", .{ args.left.index, args.right.index }),
-        .compare => |args| std.debug.print("compare %{} %{}", .{ args.left.index, args.right.index }),
+        .tag => |address| std.debug.print("tag %{}\n", .{address.index}),
+        .load => |load| std.debug.print("load %{} %{}\n", .{ load.base.index, load.offset.index }),
+        .add => |args| std.debug.print("add %{} %{}\n", .{ args.left.index, args.right.index }),
+        .subtract => |args| std.debug.print("subtract %{} %{}\n", .{ args.left.index, args.right.index }),
+        .multiply => |args| std.debug.print("multiply %{} %{}\n", .{ args.left.index, args.right.index }),
+        .divide => |args| std.debug.print("divide %{} %{}\n", .{ args.left.index, args.right.index }),
+        .modulo => |args| std.debug.print("modulo %{} %{}\n", .{ args.left.index, args.right.index }),
+        .compare => |args| std.debug.print("compare %{} %{}\n", .{ args.left.index, args.right.index }),
         .call => |call| {
-            std.debug.print("call %{} with", .{call.lambda.index});
+            std.debug.print("call %{} with", .{call.fun.index});
             for (call.args) |arg| std.debug.print(" %{}", .{arg.index});
+            std.debug.print("\n", .{});
         },
-        .switch_ => |switch_| {
-            std.debug.print("switch %{}", .{switch_.condition.index});
-            for (0.., switch_.cases) |i, case| {
-                std.debug.print("\n", .{});
-                for (0..indentation) |_| std.debug.print("  ", .{});
-                std.debug.print("  case {}", .{i});
-                dump_body(case, ir, indentation + 2);
-            }
+        .if_not_zero => |if_| {
+            std.debug.print("if %{} != 0 then\n", .{if_.condition.index});
+            dump_body(if_.then, ir, indentation + 1);
+            for (0..indentation) |_| std.debug.print("  ", .{});
+            std.debug.print("else\n", .{});
+            dump_body(if_.else_, ir, indentation + 1);
         },
-        .crash => |message| std.debug.print("crash %{}", .{message}),
+        .crash => |message| std.debug.print("crash %{}\n", .{message}),
     }
 }
+
+pub fn new_ir(heap: *Heap, ir: Ir) !Object {
+    _ = heap;
+    _ = ir;
+    // return switch (ir) {
+    //     .push_word => |word| try Object.new_enum(
+    //         heap,
+    //         "push_word",
+    //         try Object.new_int(heap, @bitCast(word)),
+    //     ),
+    //     .push_address => |object| try Object.new_enum(heap, "push_address", object),
+    //     .push_from_stack => |offset| try Object.new_enum(
+    //         heap,
+    //         "push_from_stack",
+    //         try Object.new_int(heap, @intCast(offset)),
+    //     ),
+    //     .pop => |amount| try Object.new_enum(heap, "pop", try Object.new_int(heap, @intCast(amount))),
+    //     .add => try Object.new_enum(heap, "add", try Object.new_nil(heap)),
+    //     .subtract => try Object.new_enum(heap, "subtract", try Object.new_nil(heap)),
+    //     .multiply => try Object.new_enum(heap, "multiply", try Object.new_nil(heap)),
+    //     .divide => try Object.new_enum(heap, "divide", try Object.new_nil(heap)),
+    //     .modulo => try Object.new_enum(heap, "modulo", try Object.new_nil(heap)),
+    //     .shift_left => try Object.new_enum(heap, "shift_left", try Object.new_nil(heap)),
+    //     .shift_right => try Object.new_enum(heap, "shift_right", try Object.new_nil(heap)),
+    //     .if_not_zero => |if_| try Object.new_enum(
+    //         heap,
+    //         "if_not_zero",
+    //         try Object.new_struct(heap, .{ .then = if_.then, .@"else" = if_.else_ }),
+    //     ),
+    //     .new => |new| try Object.new_enum(
+    //         heap,
+    //         "new",
+    //         try Object.new_struct(heap, .{
+    //             .tag = try Object.new_int(heap, @intCast(new.tag)),
+    //             .num_pointers = try Object.new_int(heap, @intCast(new.num_pointers)),
+    //             .num_literals = try Object.new_int(heap, @intCast(new.num_literals)),
+    //         }),
+    //     ),
+    //     .tag => try Object.new_enum(heap, "tag", try Object.new_nil(heap)),
+    //     .num_pointers => try Object.new_enum(heap, "num_pointers", try Object.new_nil(heap)),
+    //     .num_literals => try Object.new_enum(heap, "num_literals", try Object.new_nil(heap)),
+    //     .load => try Object.new_enum(heap, "load", try Object.new_nil(heap)),
+    //     .eval => try Object.new_enum(heap, "eval", try Object.new_nil(heap)),
+    // };
+}
+// pub fn new_instructions(heap: *Heap, instructions: []const Instruction) !Object {
+//     if (instructions.len == 0) {
+//         return try Object.new_nil(heap);
+//     } else {
+//         return try Object.new_struct(heap, .{
+//             .head = try new_instruction(heap, instructions[0]),
+//             .tail = try new_instructions(heap, instructions[1..]),
+//         });
+//     }
+// }
