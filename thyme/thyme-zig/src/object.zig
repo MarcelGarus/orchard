@@ -15,7 +15,8 @@ pub const TAG_INT = 1;
 pub const TAG_SYMBOL = 2;
 pub const TAG_STRUCT = 3;
 pub const TAG_ENUM = 4;
-pub const TAG_LAMBDA = 5;
+pub const TAG_FUN = 5;
+pub const TAG_LAMBDA = 6;
 
 heap: *Heap,
 address: Address,
@@ -172,23 +173,41 @@ pub fn payload(enum_: Object) Object {
     };
 }
 
-// Lambda
+// Fun
 
-pub fn new_lambda(heap: *Heap, num_params: usize, instrs: Object, closure: Object) !Object {
-    const address = try heap.new_fancy(TAG_LAMBDA, .{
-        instrs.address,
-        closure.address,
-        @as(Word, @intCast(num_params)),
+pub fn new_fun(heap: *Heap, num_params_: usize, ir: Object, instructions_: Object) !Object {
+    const address = try heap.new_fancy(TAG_FUN, .{
+        ir.address,
+        instructions_.address,
+        @as(Word, @intCast(num_params_)),
     });
     return .{ .heap = heap, .address = address };
 }
 
-pub fn instructions(lambda: Object) Object {
-    if (lambda.kind() != .lambda) @panic("not an lambda");
+pub fn num_params(fun: Object) Object {
+    if (fun.kind() != .fun) @panic("not an fun");
     return .{
-        .heap = lambda.heap,
-        .address = lambda.get_allocation().pointers[0],
+        .heap = fun.heap,
+        .address = fun.get_allocation().pointers[2],
     };
+}
+
+pub fn instructions(fun: Object) Object {
+    if (fun.kind() != .fun) @panic("not an fun");
+    return .{
+        .heap = fun.heap,
+        .address = fun.get_allocation().pointers[1],
+    };
+}
+
+// Lambda
+
+pub fn new_lambda(heap: *Heap, fun: Object, closure: Object) !Object {
+    const address = try heap.new_fancy(TAG_LAMBDA, .{
+        fun.address,
+        closure.address,
+    });
+    return .{ .heap = heap, .address = address };
 }
 
 // Dumping

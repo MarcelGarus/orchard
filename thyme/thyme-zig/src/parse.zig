@@ -188,17 +188,6 @@ const Parser = struct {
         return .{ .lambda = .{ .params = params.items, .body = boxed_body } };
     }
 
-    fn parse_expr_atom(parser: *Parser) !?Expr {
-        if (parser.parse_name()) |name| return .{ .name = name };
-        if (parser.parse_int()) |int| return .{ .int = int };
-        if (try parser.parse_string()) |string| return .{ .string = string };
-        if (try parser.parse_struct()) |struct_| return struct_;
-        if (try parser.parse_enum()) |enum_| return enum_;
-        if (try parser.parse_lambda()) |lambda| return lambda;
-        if (try parser.parse_block()) |expr| return expr;
-        if (try parser.parse_switch()) |expr| return expr;
-        return null;
-    }
     fn parse_expr(parser: *Parser) error{
         OutOfMemory,
         StringDoesNotEnd,
@@ -219,7 +208,23 @@ const Parser = struct {
         ExpectedVarValue,
         VarNeedsName,
     }!?Expr {
-        var expr = try parser.parse_expr_atom() orelse return null;
+        var expr: Expr =
+            if (parser.parse_int()) |int|
+                .{ .int = int }
+            else if (try parser.parse_string()) |string|
+                .{ .string = string }
+            else if (try parser.parse_struct()) |struct_|
+                struct_
+            else if (try parser.parse_enum()) |enum_|
+                enum_
+            else if (try parser.parse_lambda()) |lambda|
+                lambda
+            else if (try parser.parse_block()) |expr|
+                expr
+            else if (parser.parse_name()) |name|
+                .{ .name = name }
+            else
+                return null;
 
         while (true) {
             if (parser.consume(".")) {
@@ -246,6 +251,29 @@ const Parser = struct {
                 const boxed_right = try parser.ally.create(Expr);
                 boxed_right.* = right;
                 expr = .{ .var_ = .{ .name = name, .value = boxed_right } };
+            } else if (parser.consume("%")) {
+                var cases = ArrayList(Case).empty;
+                while (parser.consume("case")) {
+                    const variant = parser.parse_name() orelse return error.ExpectedCaseVariant;
+                    const payload = payload: {
+                        if (parser.consume("(")) {
+                            const name = parser.parse_name() orelse return error.ExpectedCasePayload;
+                            if (!parser.consume(")")) return error.ExpectedClosingParen;
+                            break :payload name;
+                        }
+                        break :payload null;
+                    };
+                    const body = try parser.parse_expr() orelse return error.ExpectedCaseBody;
+                    try cases.append(parser.ally, .{
+                        .variant = variant,
+                        .payload = payload,
+                        .body = body,
+                    });
+                }
+
+                const boxed_condition = try parser.ally.create(Expr);
+                boxed_condition.* = expr;
+                return .{ .switch_ = .{ .condition = boxed_condition, .cases = cases.items } };
             } else break;
         }
 
@@ -263,33 +291,5 @@ const Parser = struct {
         var exprs = ArrayList(Expr).empty;
         while (true) try exprs.append(parser.ally, try parser.parse_expr() orelse break);
         return exprs.items;
-    }
-
-    fn parse_switch(parser: *Parser) !?Expr {
-        if (!parser.consume("switch")) return null;
-        const condition = try parser.parse_expr() orelse return error.ExpectedCondition;
-
-        var cases = ArrayList(Case).empty;
-        while (parser.consume("case")) {
-            const variant = parser.parse_name() orelse return error.ExpectedCaseVariant;
-            const payload = payload: {
-                if (parser.consume("(")) {
-                    const name = parser.parse_name() orelse return error.ExpectedCasePayload;
-                    if (!parser.consume(")")) return error.ExpectedClosingParen;
-                    break :payload name;
-                }
-                break :payload null;
-            };
-            const body = try parser.parse_block() orelse return error.ExpectedCaseBody;
-            try cases.append(parser.ally, .{
-                .variant = variant,
-                .payload = payload,
-                .body = body,
-            });
-        }
-
-        const boxed_condition = try parser.ally.create(Expr);
-        boxed_condition.* = condition;
-        return .{ .switch_ = .{ .condition = boxed_condition, .cases = cases.items } };
     }
 };
