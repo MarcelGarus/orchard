@@ -30,46 +30,59 @@ import
 
 Hash = | hash: Int
 
+# base_hash: Hash = | hash: Int
+
+combine a: Hash b: Hash -> Hash = | hash: a.to_int .* 33 .+ (b.to_int)
+combine_commutative a: Hash b: Hash -> Hash = | hash: a.to_int .xor (b.to_int)
+
 to_int hash: Hash -> Int =
   hash
   % hash: value -> value
-
-combine a: Hash b: Hash -> Hash = | hash: a.to_int .* 33 .+ (b.to_int)
 
 # Hashers for standard library types
 
 default_hash value: t -> Hash = value.to_dynamic.hash
 
+hash int: Int -> Hash = | hash: int
+
 hash bool: Bool -> Hash =
   bool
-  % true  -> | hash: 1
-    false -> | hash: 0
+  % false -> 0.hash
+    true  -> 1.hash
 
-hash byte: Byte -> Hash = | hash: byte.to_int
-
-hash int: Int -> Hash = | hash: int
+hash byte: Byte -> Hash = byte.to_int.hash
 
 hash iterator: (Iterator t) hash_item: (\ t -> Hash) -> Hash =
   iterator
   . fold (| hash: 5381) (\ hash: Hash item: t -> combine hash (item.hash_item))
 
+hash_commutative iterator: (Iterator t) hash_item: (\ t -> Hash) -> Hash =
+  iterator
+  . fold
+      | hash: 5381
+      \ hash: Hash item: t -> combine_commutative hash (item.hash_item)
+
 hash array: (Array t) hash_item: (\ t -> Hash) -> Hash =
   combine (array.length.hash) (array.iterate .hash hash_item)
 
-hash string: String -> Hash = string.utf8_bytes.hash (\ byte: Byte -> byte.hash)
+hash string: String -> Hash =
+  string.utf8_bytes .hash (\ byte: Byte -> byte.hash)
 
 hash dynamic: Dynamic -> Hash =
   dynamic
-  % byte: byte -> byte.hash
-    int: int -> int.hash
-    type -> | hash: 123
-    box: inner -> inner.hash
-    array: items -> items.hash (\ item: Dynamic -> item.hash)
+  % byte: byte -> "byte".hash .combine (byte.hash)
+    int: int -> "int".hash .combine (int.hash)
+    type -> "type".hash
+    box: inner -> "box".hash .combine (inner.hash)
+    array: items ->
+      "array".hash .combine (items.hash (\ item: Dynamic -> item.hash))
     struct: fields ->
-      fields
-      . iterate
-      . hash
-          \ field: (& name: String value: Dynamic) ->
-            combine (field.name.hash) (field.value.hash)
-    enum: (& name value) -> combine (name.hash) (value.hash)
-    lambda -> (| hash: 456)
+      "struct".hash
+      . combine
+          fields.iterate
+          . hash_commutative
+              \ field: (& name: String value: Dynamic) ->
+                combine (field.name.hash) (field.value.hash)
+    enum: (& name value) ->
+      "enum".hash .combine (name.hash) .combine (value.hash)
+    lambda -> "lambda".hash
