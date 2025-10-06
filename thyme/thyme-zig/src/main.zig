@@ -3,12 +3,12 @@ const std = @import("std");
 const thyme_zig = @import("thyme_zig");
 
 const ast = @import("ast.zig");
-const compile = @import("compile.zig").compile;
+const compile = @import("ast_to_ir.zig").compile;
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Ir = @import("ir.zig");
 const Object = @import("object.zig");
-const parse = @import("parse.zig").parse;
+const parse = @import("str_to_ast.zig").parse;
 const Vm = @import("vm.zig");
 
 pub fn main() !void {

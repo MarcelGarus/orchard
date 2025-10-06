@@ -161,7 +161,8 @@ pub const BodyBuilder = struct {
             try body.subtract(try body.tag(obj), try body.word(tag_)),
             then: {
                 var child = body.child_body();
-                break :then try child.finish_with_crash(try body.word(0));
+                const zero = try child.word(0);
+                break :then try child.finish_with_crash(zero);
             },
             else_: {
                 var child = body.child_body();
@@ -226,10 +227,12 @@ pub const BodyBuilder = struct {
     }
 
     pub fn finish_with_zero(body: *BodyBuilder) !Body {
-        return body.finish(try body.word(0));
+        const zero = try body.word(0);
+        return body.finish(zero);
     }
     pub fn finish_with_crash(body: *BodyBuilder, message: Id) !Body {
-        return body.finish(try body.crash(message));
+        const never = try body.crash(message);
+        return body.finish(never);
     }
 };
 

@@ -61,18 +61,18 @@ pub fn dump(expr: Expr, indentation: usize) void {
         },
         .member => |member| {
             dump(member.of.*, indentation);
-            for (0..indentation + 1) |_| std.debug.print("  ", .{});
+            for (0..indentation) |_| std.debug.print("  ", .{});
             std.debug.print(".{s}\n", .{member.name});
         },
         .enum_ => |enum_| {
             for (0..indentation) |_| std.debug.print("  ", .{});
-            std.debug.print("| {s}:\n", .{enum_.variant});
+            std.debug.print(":{s}:\n", .{enum_.variant});
             dump(enum_.payload.*, indentation + 2);
         },
         .switch_ => |switch_| {
+            dump(switch_.condition.*, indentation);
             for (0..indentation) |_| std.debug.print("  ", .{});
-            std.debug.print("switch\n", .{});
-            dump(switch_.condition.*, indentation + 1);
+            std.debug.print("%\n", .{});
             for (switch_.cases) |case| {
                 for (0..indentation + 1) |_| std.debug.print("  ", .{});
                 std.debug.print("case {s}", .{case.variant});
