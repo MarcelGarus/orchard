@@ -200,6 +200,40 @@ pub fn deduplicate(heap: *Heap, from: Checkpoint, ally: Allocator) !ArrayList(Ma
     return map;
 }
 
+pub fn garbage_collect(heap: *Heap, from: Checkpoint, keep: Address) void {
+    heap.mark(from.address, keep.address);
+    heap.sweep(from);
+}
+fn mark(heap: *Heap, boundary: usize, address: usize) void {
+    std.debug.print("marking {x}\n", .{address});
+    if (address < boundary) return;
+    const header: *Header = @ptrCast(&heap.memory.items[address]);
+    if (header.meta.marked == 1) return;
+    header.meta.marked = 1;
+    for (0..header.num_pointers) |i|
+        heap.mark(boundary, @intCast(heap.memory.items[address + 1 + i]));
+}
+fn sweep(heap: *Heap, boundary: Checkpoint) void {
+    var read: usize = @intCast(boundary.address);
+    var write: usize = @intCast(boundary.address);
+    while (read < heap.memory.items.len) {
+        const header: *Header = @ptrCast(&heap.memory.items[read]);
+        const size = 1 + header.num_words;
+        if (header.meta.marked == 1) {
+            header.meta.marked = 0;
+            if (read != write) {
+                for (0..size) |j|
+                    heap.memory.items[write + j] = heap.memory.items[read + j];
+            }
+            read += size;
+            write += size;
+        } else {
+            read += size;
+        }
+    }
+    heap.memory.items.len = write;
+}
+
 pub fn dump_raw(heap: Heap) void {
     for (0.., heap.memory.items) |i, w| {
         std.debug.print("{x:3} |", .{i});
