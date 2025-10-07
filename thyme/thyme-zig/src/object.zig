@@ -270,7 +270,7 @@ fn dump_instructions(instrs: Object, indentation: usize) void {
     dump_instruction(parsed.instruction, indentation);
     dump_instructions(parsed.rest, indentation);
 }
-fn dump_instruction(instr: Instruction, indentation: usize) void {
+pub fn dump_instruction(instr: Instruction, indentation: usize) void {
     for (0..indentation) |_| std.debug.print("  ", .{});
     switch (instr) {
         .push_word => |word| std.debug.print("push_word {x}\n", .{word}),

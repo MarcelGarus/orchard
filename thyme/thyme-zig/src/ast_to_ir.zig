@@ -118,18 +118,18 @@ fn compile_expr(
                     },
                 });
                 const compare = try new_instructions(heap, &[_]Instruction{
-                    // (a b closure)
-                    .{ .push_address = rec }, // (a b closure rec)
-                    .{ .push_from_stack = 3 }, // (a b closure rec a)
-                    .{ .push_from_stack = 3 }, // (a b closure rec a b)
-                    .{ .push_word = 0 }, // (a b closure rec a b cursor)
-                    .{ .push_address = rec }, // (a b closure rec a b cursor rec)
-                    .eval, // (a b closure 0) or (a b closure 1)
-                    .{ .pop_below_top = 3 },
+                    // (a b)
+                    .{ .push_address = rec }, // (a b rec)
+                    .{ .push_from_stack = 2 }, // (a b rec a)
+                    .{ .push_from_stack = 2 }, // (a b rec a b)
+                    .{ .push_word = 0 }, // (a b rec a b cursor)
+                    .{ .push_address = rec }, // (a b rec a b cursor rec)
+                    .eval, // (a b 0) or (a b 1)
+                    .{ .pop_below_top = 2 },
                 });
                 break :compare try Object.new_fun(
                     heap,
-                    3,
+                    2,
                     try Object.new_nil(heap),
                     compare,
                 );
