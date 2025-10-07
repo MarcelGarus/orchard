@@ -4,6 +4,7 @@
 // abstractions on top of that.
 
 const std = @import("std");
+const Writer = std.io.Writer;
 
 const Ast = @import("ast.zig");
 const ast_to_ir = @import("ast_to_ir.zig");
@@ -230,100 +231,65 @@ pub fn new_lambda(heap: *Heap, fun: Object, closure: Object) !Object {
     return .{ .heap = heap, .address = address };
 }
 
-// Dumping
-
-pub fn dump(object: Object, indentation: usize) void {
-    for (0..indentation) |_| std.debug.print("  ", .{});
+pub fn format(object: Object, writer: *Writer) !void {
+    try object.format_indented(writer, 0);
+}
+pub fn format_indented(object: Object, writer: *Writer, indentation: usize) error{WriteFailed}!void {
+    for (0..indentation) |_| try writer.print("  ", .{});
     switch (object.kind()) {
-        .nil => std.debug.print("nil\n", .{}),
-        .int => std.debug.print("{}\n", .{object.int_value()}),
+        .nil => try writer.print("nil\n", .{}),
+        .int => try writer.print("{}\n", .{object.int_value()}),
         .symbol => {
-            std.debug.print("symbol ", .{});
-            object.dump_symbol();
-            std.debug.print("\n", .{});
+            try writer.print("symbol ", .{});
+            try object.format_symbol(writer);
+            try writer.print("\n", .{});
         },
         .struct_ => {
-            std.debug.print("&\n", .{});
+            try writer.print("&\n", .{});
             for (0..object.num_fields()) |i| {
                 const field = object.field_by_index(i);
-                for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
-                field.key.dump_symbol();
-                std.debug.print(":\n", .{});
-                field.value.dump(indentation + 2);
+                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+                try field.key.format_symbol(writer);
+                try writer.print(":\n", .{});
+                try field.value.format_indented(writer, indentation + 2);
             }
         },
         .enum_ => {
-            std.debug.print("| ", .{});
-            object.variant().dump_symbol();
-            std.debug.print(":\n", .{});
-            object.payload().dump(indentation + 2);
+            try writer.print("| ", .{});
+            try object.variant().format_symbol(writer);
+            try writer.print(":\n", .{});
+            try object.payload().format_indented(writer, indentation + 2);
         },
         .fun => {
-            std.debug.print("fun\n", .{});
-            for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
-            std.debug.print("{}\n", .{object.num_params()});
-            for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
-            std.debug.print("instructions:\n", .{});
-            dump_instructions(object.instructions(), indentation + 2);
+            try writer.print("fun\n", .{});
+            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            try writer.print("{}\n", .{object.num_params()});
+            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            try writer.print("instructions:\n", .{});
+            try object.instructions().format_instructions(writer, indentation + 2);
         },
-        .lambda => std.debug.print("lambda\n", .{}),
+        .lambda => try writer.print("lambda\n", .{}),
     }
 }
 
-pub fn dump_symbol(symbol: Object) void {
+pub fn format_symbol(symbol: Object, writer: *Writer) !void {
     for (symbol.get_allocation().literals) |word| {
         for (0..8) |i| {
             const c: u8 = @intCast((word >> @intCast(8 * i)) & 0xff);
             if (c == 0) break;
             if (c >= 32 and c <= 150)
-                std.debug.print("{c}", .{c})
+                try writer.print("{c}", .{c})
             else
-                std.debug.print("?", .{});
+                try writer.print("?", .{});
         }
     }
 }
 
-fn dump_instructions(instrs: Object, indentation: usize) void {
+pub fn format_instructions(instrs: Object, writer: *Writer, indentation: usize) error{WriteFailed}!void {
     const parsed = Instruction.parse_first(instrs) catch {
-        instrs.dump(0);
+        try instrs.format_indented(writer, indentation);
         return;
     } orelse return;
-    dump_instruction(parsed.instruction, indentation);
-    dump_instructions(parsed.rest, indentation);
-}
-pub fn dump_instruction(instr: Instruction, indentation: usize) void {
-    for (0..indentation) |_| std.debug.print("  ", .{});
-    switch (instr) {
-        .push_word => |word| std.debug.print("push_word {x}\n", .{word}),
-        .push_address => |object| std.debug.print("push_address {x}\n", .{object.address.address}),
-        .push_from_stack => |offset| std.debug.print("push_from_stack {}\n", .{offset}),
-        .pop => |amount| std.debug.print("pop {}\n", .{amount}),
-        .pop_below_top => |amount| std.debug.print("pop_below_top {}\n", .{amount}),
-        .add => std.debug.print("add\n", .{}),
-        .subtract => std.debug.print("subtract\n", .{}),
-        .multiply => std.debug.print("multiply\n", .{}),
-        .divide => std.debug.print("divide\n", .{}),
-        .modulo => std.debug.print("modulo\n", .{}),
-        .shift_left => std.debug.print("shift_left\n", .{}),
-        .shift_right => std.debug.print("shift_right\n", .{}),
-        .if_not_zero => |if_| {
-            std.debug.print("if_not_zero\n", .{});
-            for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
-            std.debug.print("then\n", .{});
-            dump_instructions(if_.then, indentation + 2);
-            for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
-            std.debug.print("else\n", .{});
-            dump_instructions(if_.else_, indentation + 2);
-        },
-        .new => |new| std.debug.print(
-            "new [{}] {} pointers, {} literals\n",
-            .{ new.tag, new.num_pointers, new.num_literals },
-        ),
-        .tag => std.debug.print("tag\n", .{}),
-        .num_pointers => std.debug.print("num_pointers\n", .{}),
-        .num_literals => std.debug.print("num_literals\n", .{}),
-        .load => std.debug.print("load\n", .{}),
-        .eval => std.debug.print("eval\n", .{}),
-        .crash => std.debug.print("crash\n", .{}),
-    }
+    try parsed.instruction.format_indented(writer, indentation);
+    try parsed.rest.format_instructions(writer, indentation);
 }

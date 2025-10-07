@@ -1,6 +1,7 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 const Ally = std.mem.Allocator;
+const Writer = std.io.Writer;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
@@ -15,7 +16,13 @@ body: Body,
 
 pub const Ir = @This();
 
-pub const Id = struct { index: usize };
+pub const Id = struct {
+    index: usize,
+
+    pub fn format(id: Id, writer: *Writer) !void {
+        writer.print("%{}", .{id.index});
+    }
+};
 pub const Body = struct { ids: []const Id, returns: Id };
 pub const Node = union(enum) {
     param,
@@ -241,52 +248,55 @@ pub const BodyBuilder = struct {
     }
 };
 
-pub fn dump(ir: Ir, indentation: usize) void {
-    std.debug.print("code", .{});
-    for (ir.params) |param| std.debug.print(" %{}", .{param.index});
-    std.debug.print("\n", .{});
-    dump_body(ir.body, ir, indentation + 1);
+pub fn format(ir: Ir, writer: *Writer) !void {
+    try ir.format_indented(writer, 0);
 }
-fn dump_body(body: Body, ir: Ir, indentation: usize) void {
+fn format_indented(ir: Ir, writer: *Writer, indentation: usize) !void {
+    try writer.print("code", .{});
+    for (ir.params) |param| try writer.print(" {}", .{param});
+    try writer.print("\n", .{});
+    format_body(ir.body, ir, indentation + 1);
+}
+fn format_body(body: Body, ir: Ir, writer: *Writer, indentation: usize) !void {
     for (body.ids) |id| {
-        for (0..indentation) |_| std.debug.print("  ", .{});
-        std.debug.print("%{} = ", .{id.index});
-        dump_node(ir.get(id), ir, indentation);
+        for (0..indentation) |_| try writer.print("  ", .{});
+        try writer.print("{} = ", .{id});
+        format_node(ir.get(id), ir, indentation);
     }
-    for (0..indentation) |_| std.debug.print("  ", .{});
-    std.debug.print("%{}\n", .{body.returns.index});
+    for (0..indentation) |_| try writer.print("  ", .{});
+    try writer.print("{}\n", .{body.returns});
 }
-fn dump_node(node: Node, ir: Ir, indentation: usize) void {
+fn format_node(node: Node, ir: Ir, writer: *Writer, indentation: usize) !void {
     switch (node) {
-        .param => std.debug.print("param\n", .{}),
-        .word => |word| std.debug.print("word {}\n", .{word}),
-        .object => |object| std.debug.print("object *{x}\n", .{object.address.address}),
+        .param => try writer.print("param\n", .{}),
+        .word => |word| try writer.print("word {}\n", .{word}),
+        .object => |object| try writer.print("object *{x}\n", .{object.address.address}),
         .new => |new| {
-            std.debug.print("new [{x}]", .{new.tag});
-            for (new.pointers) |pointer| std.debug.print(" %{}", .{pointer.index});
-            for (new.literals) |literal| std.debug.print(" %{}", .{literal.index});
-            std.debug.print("\n", .{});
+            try writer.print("new [{x}]", .{new.tag});
+            for (new.pointers) |pointer| try writer.print(" {}", .{pointer});
+            for (new.literals) |literal| try writer.print(" {}", .{literal});
+            try writer.print("\n", .{});
         },
-        .tag => |address| std.debug.print("tag %{}\n", .{address.index}),
-        .load => |load| std.debug.print("load %{} %{}\n", .{ load.base.index, load.offset.index }),
-        .add => |args| std.debug.print("add %{} %{}\n", .{ args.left.index, args.right.index }),
-        .subtract => |args| std.debug.print("subtract %{} %{}\n", .{ args.left.index, args.right.index }),
-        .multiply => |args| std.debug.print("multiply %{} %{}\n", .{ args.left.index, args.right.index }),
-        .divide => |args| std.debug.print("divide %{} %{}\n", .{ args.left.index, args.right.index }),
-        .modulo => |args| std.debug.print("modulo %{} %{}\n", .{ args.left.index, args.right.index }),
-        .compare => |args| std.debug.print("compare %{} %{}\n", .{ args.left.index, args.right.index }),
+        .tag => |address| try writer.print("tag {}\n", .{address}),
+        .load => |load| try writer.print("load {} {}\n", .{ load.base, load.offset }),
+        .add => |args| try writer.print("add {} {}\n", .{ args.left, args.right }),
+        .subtract => |args| try writer.print("subtract {} {}\n", .{ args.left, args.right }),
+        .multiply => |args| try writer.print("multiply {} {}\n", .{ args.left, args.right }),
+        .divide => |args| try writer.print("divide {} {}\n", .{ args.left, args.right }),
+        .modulo => |args| try writer.print("modulo {} {}\n", .{ args.left, args.right }),
+        .compare => |args| try writer.print("compare {} {}\n", .{ args.left, args.right }),
         .call => |call| {
-            std.debug.print("call %{} with", .{call.fun.index});
-            for (call.args) |arg| std.debug.print(" %{}", .{arg.index});
-            std.debug.print("\n", .{});
+            try writer.print("call {} with", .{call.fun});
+            for (call.args) |arg| try writer.print(" {}", .{arg});
+            try writer.print("\n", .{});
         },
         .if_not_zero => |if_| {
-            std.debug.print("if %{} != 0 then\n", .{if_.condition.index});
-            dump_body(if_.then, ir, indentation + 1);
-            for (0..indentation) |_| std.debug.print("  ", .{});
-            std.debug.print("else\n", .{});
-            dump_body(if_.else_, ir, indentation + 1);
+            try writer.print("if {} != 0 then\n", .{if_.condition});
+            format_body(if_.then, ir, indentation + 1);
+            for (0..indentation) |_| try writer.print("  ", .{});
+            try writer.print("else\n", .{});
+            format_body(if_.else_, ir, indentation + 1);
         },
-        .crash => |message| std.debug.print("crash %{}\n", .{message.index}),
+        .crash => |message| try writer.print("crash {}\n", .{message}),
     }
 }

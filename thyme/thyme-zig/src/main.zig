@@ -26,16 +26,16 @@ pub fn main() !void {
         \\foo = 1
         \\bar = {& x: foo y: 3}
         \\baz = :true
-        \\baz
-        \\% case true 2
+        \\baz % case true 2
     );
 
-    std.debug.print("running\n", .{});
-    fun.dump(0);
-    _ = try eval(&heap, fun, .{});
+    std.debug.print("running\n{f}", .{fun});
+    const result = try eval(&heap, fun, .{});
+    std.debug.print("{f}", .{result});
 
     _ = try heap.deduplicate(start_of_heap, ally);
     heap.dump();
+
     // heap.garbage_collect(start_of_heap, insturctions.address);
     // heap.dump_raw();
     // heap.dump();

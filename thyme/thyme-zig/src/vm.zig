@@ -36,8 +36,7 @@ pub fn eval(heap: *Heap, fun: Object, args: anytype) !Object {
 
     while (true) {
         const parsed = Instruction.parse_first(ip) catch |e| {
-            std.debug.print("Couldn't parse instruction:\n", .{});
-            ip.dump(0);
+            std.debug.print("Couldn't parse instruction:\n{f}", .{ip});
             return e;
         } orelse {
             ip = call_stack.pop() orelse {
@@ -53,8 +52,7 @@ pub fn eval(heap: *Heap, fun: Object, args: anytype) !Object {
         ip = parsed.rest;
 
         std.debug.print("{any}\n", .{data_stack.items});
-        std.debug.print("Running ", .{});
-        Object.dump_instruction(instruction, 0);
+        std.debug.print("Running {f}", .{instruction});
 
         switch (instruction) {
             .push_word => |word| try data_stack.append(ally, word),

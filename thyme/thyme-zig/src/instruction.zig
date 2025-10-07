@@ -1,6 +1,7 @@
 const std = @import("std");
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const Writer = std.io.Writer;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
@@ -174,6 +175,46 @@ pub const Instruction = union(enum) {
                 return .{ .instruction = inst, .rest = rest };
             },
             else => return error.bad_eval,
+        }
+    }
+
+    pub fn format(instr: Instruction, writer: *Writer) !void {
+        try instr.format_indented(writer, 0);
+    }
+    pub fn format_indented(instr: Instruction, writer: *Writer, indentation: usize) !void {
+        for (0..indentation) |_| try writer.print("  ", .{});
+        switch (instr) {
+            .push_word => |word| try writer.print("push_word {x}\n", .{word}),
+            .push_address => |object| try writer.print("push_address {x}\n", .{object.address.address}),
+            .push_from_stack => |offset| try writer.print("push_from_stack {}\n", .{offset}),
+            .pop => |amount| try writer.print("pop {}\n", .{amount}),
+            .pop_below_top => |amount| try writer.print("pop_below_top {}\n", .{amount}),
+            .add => try writer.print("add\n", .{}),
+            .subtract => try writer.print("subtract\n", .{}),
+            .multiply => try writer.print("multiply\n", .{}),
+            .divide => try writer.print("divide\n", .{}),
+            .modulo => try writer.print("modulo\n", .{}),
+            .shift_left => try writer.print("shift_left\n", .{}),
+            .shift_right => try writer.print("shift_right\n", .{}),
+            .if_not_zero => |if_| {
+                try writer.print("if_not_zero\n", .{});
+                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+                try writer.print("then\n", .{});
+                try if_.then.format_instructions(writer, indentation + 2);
+                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+                try writer.print("else\n", .{});
+                try if_.else_.format_instructions(writer, indentation + 2);
+            },
+            .new => |new| try writer.print(
+                "new [{}] {} pointers, {} literals\n",
+                .{ new.tag, new.num_pointers, new.num_literals },
+            ),
+            .tag => try writer.print("tag\n", .{}),
+            .num_pointers => try writer.print("num_pointers\n", .{}),
+            .num_literals => try writer.print("num_literals\n", .{}),
+            .load => try writer.print("load\n", .{}),
+            .eval => try writer.print("eval\n", .{}),
+            .crash => try writer.print("crash\n", .{}),
         }
     }
 };
