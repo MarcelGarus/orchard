@@ -132,6 +132,9 @@ pub fn get(heap: Heap, id: Address) Allocation {
         .literals = literals,
     };
 }
+pub fn load(heap: Heap, base: Address, word_index: usize) Word {
+    return heap.memory.items[base.address + 1 + word_index];
+}
 
 const Checkpoint = struct { address: Word };
 

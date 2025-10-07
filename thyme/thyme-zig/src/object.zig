@@ -9,6 +9,7 @@ const Heap = @import("heap.zig");
 const Address = Heap.Address;
 const Word = Heap.Word;
 const Allocation = Heap.Allocation;
+const Instruction = @import("instruction.zig").Instruction;
 
 pub const TAG_NIL = 0;
 pub const TAG_INT = 1;
@@ -27,7 +28,7 @@ pub fn get_allocation(object: Object) Allocation {
     return object.heap.get(object.address);
 }
 
-const Kind = enum { nil, int, symbol, struct_, enum_, lambda };
+const Kind = enum { nil, int, symbol, struct_, enum_, fun, lambda };
 
 pub fn kind(object: Object) Kind {
     const allocation = object.get_allocation();
@@ -37,6 +38,7 @@ pub fn kind(object: Object) Kind {
         TAG_SYMBOL => .symbol,
         TAG_STRUCT => .struct_,
         TAG_ENUM => .enum_,
+        TAG_FUN => .fun,
         TAG_LAMBDA => .lambda,
         else => @panic("unknown tag"),
     };
@@ -184,12 +186,9 @@ pub fn new_fun(heap: *Heap, num_params_: usize, ir: Object, instructions_: Objec
     return .{ .heap = heap, .address = address };
 }
 
-pub fn num_params(fun: Object) Object {
+pub fn num_params(fun: Object) usize {
     if (fun.kind() != .fun) @panic("not an fun");
-    return .{
-        .heap = fun.heap,
-        .address = fun.get_allocation().pointers[2],
-    };
+    return @intCast(fun.get_allocation().literals[0]);
 }
 
 pub fn instructions(fun: Object) Object {
@@ -238,6 +237,14 @@ pub fn dump(object: Object, indentation: usize) void {
             std.debug.print(":\n", .{});
             object.payload().dump(indentation + 2);
         },
+        .fun => {
+            std.debug.print("fun\n", .{});
+            for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
+            std.debug.print("{}\n", .{object.num_params()});
+            for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
+            std.debug.print("instructions:\n", .{});
+            dump_instructions(object.instructions(), indentation + 2);
+        },
         .lambda => std.debug.print("lambda\n", .{}),
     }
 }
@@ -252,5 +259,50 @@ pub fn dump_symbol(symbol: Object) void {
             else
                 std.debug.print("?", .{});
         }
+    }
+}
+
+fn dump_instructions(instrs: Object, indentation: usize) void {
+    const parsed = Instruction.parse_first(instrs) catch {
+        instrs.dump(0);
+        return;
+    } orelse return;
+    dump_instruction(parsed.instruction, indentation);
+    dump_instructions(parsed.rest, indentation);
+}
+fn dump_instruction(instr: Instruction, indentation: usize) void {
+    for (0..indentation) |_| std.debug.print("  ", .{});
+    switch (instr) {
+        .push_word => |word| std.debug.print("push_word {x}\n", .{word}),
+        .push_address => |object| std.debug.print("push_address {x}\n", .{object.address.address}),
+        .push_from_stack => |offset| std.debug.print("push_from_stack {}\n", .{offset}),
+        .pop => |amount| std.debug.print("pop {}\n", .{amount}),
+        .pop_below_top => |amount| std.debug.print("pop_below_top {}\n", .{amount}),
+        .add => std.debug.print("add\n", .{}),
+        .subtract => std.debug.print("subtract\n", .{}),
+        .multiply => std.debug.print("multiply\n", .{}),
+        .divide => std.debug.print("divide\n", .{}),
+        .modulo => std.debug.print("modulo\n", .{}),
+        .shift_left => std.debug.print("shift_left\n", .{}),
+        .shift_right => std.debug.print("shift_right\n", .{}),
+        .if_not_zero => |if_| {
+            std.debug.print("if_not_zero\n", .{});
+            for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
+            std.debug.print("then\n", .{});
+            dump_instructions(if_.then, indentation + 2);
+            for (0..(indentation + 1)) |_| std.debug.print("  ", .{});
+            std.debug.print("else\n", .{});
+            dump_instructions(if_.else_, indentation + 2);
+        },
+        .new => |new| std.debug.print(
+            "new [{}] {} pointers, {} literals\n",
+            .{ new.tag, new.num_pointers, new.num_literals },
+        ),
+        .tag => std.debug.print("tag\n", .{}),
+        .num_pointers => std.debug.print("num_pointers\n", .{}),
+        .num_literals => std.debug.print("num_literals\n", .{}),
+        .load => std.debug.print("load\n", .{}),
+        .eval => std.debug.print("eval\n", .{}),
+        .crash => std.debug.print("crash\n", .{}),
     }
 }

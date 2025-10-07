@@ -64,10 +64,9 @@ fn compile_expr(
         },
         .member => @panic("member"),
         .enum_ => |enum_| {
-            return body.new_enum(
-                try Object.new_symbol(heap, enum_.variant),
-                try compile_expr(ally, enum_.payload.*, body, bindings, heap),
-            );
+            const variant = try Object.new_symbol(heap, enum_.variant);
+            const payload = try compile_expr(ally, enum_.payload.*, body, bindings, heap);
+            return body.new_enum(variant, payload);
         },
         .switch_ => |switch_| {
             const condition = try compile_expr(ally, switch_.condition.*, body, bindings, heap);
@@ -79,8 +78,7 @@ fn compile_expr(
                 const rec = try new_instructions(heap, &[_]Instruction{
                     // (rec a b cursor)
                     .{ .push_from_stack = 2 }, // (rec a b cursor a)
-                    .{ .push_word = 0 }, // (rec a b cursor 0)
-                    .load, // (rec a b cursor len)
+                    .num_literals, // (rec a b cursor len)
                     .{ .push_from_stack = 1 }, // (rec a b cursor len cursor)
                     .subtract, // (rec a b cursor more?)
                     .{
@@ -147,10 +145,10 @@ fn compile_expr(
                 var inner = body.child_body();
                 const candidate_ref = try inner.object(candidate);
                 const symbol_compare_ref = try inner.object(symbol_compare);
-                const matches = try inner.call(
-                    symbol_compare_ref,
-                    &[_]Id{ variant, candidate_ref },
-                );
+                const args = try ally.alloc(Id, 2);
+                args[0] = variant;
+                args[1] = candidate_ref;
+                const matches = try inner.call(symbol_compare_ref, args);
                 const matches_int = try inner.get_int_value(matches);
                 const check = try inner.if_not_zero(
                     matches_int,

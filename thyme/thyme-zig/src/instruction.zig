@@ -1,3 +1,7 @@
+const std = @import("std");
+const Ally = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Address = Heap.Address;
@@ -51,6 +55,8 @@ pub const Instruction = union(enum) {
 
     eval,
 
+    crash,
+
     pub fn new_instruction(heap: *Heap, instruction: Instruction) !Object {
         return switch (instruction) {
             .push_word => |word| try Object.new_enum(
@@ -92,6 +98,7 @@ pub const Instruction = union(enum) {
             .num_literals => try Object.new_enum(heap, "num_literals", try Object.new_nil(heap)),
             .load => try Object.new_enum(heap, "load", try Object.new_nil(heap)),
             .eval => try Object.new_enum(heap, "eval", try Object.new_nil(heap)),
+            .crash => try Object.new_enum(heap, "crash", try Object.new_nil(heap)),
         };
     }
     pub fn new_instructions(heap: *Heap, instructions: []const Instruction) !Object {
@@ -106,7 +113,7 @@ pub const Instruction = union(enum) {
     }
 
     const ParseResult = struct { instruction: Instruction, rest: Object };
-    fn parse_first(instructions: Object) !?ParseResult {
+    pub fn parse_first(instructions: Object) !?ParseResult {
         switch (instructions.kind()) {
             .nil => return null,
             .struct_ => {
@@ -160,6 +167,8 @@ pub const Instruction = union(enum) {
                         .{ .load = {} }
                     else if (variant.is_symbol("eval"))
                         .{ .eval = {} }
+                    else if (variant.is_symbol("crash"))
+                        .{ .crash = {} }
                     else
                         return error.unknown_instruction;
                 return .{ .instruction = inst, .rest = rest };

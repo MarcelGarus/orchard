@@ -3,6 +3,8 @@ const ArrayList = std.ArrayList;
 const Ally = std.mem.Allocator;
 
 const Heap = @import("heap.zig");
+const Word = Heap.Word;
+const ir_to_instructions = @import("ir_to_instructions.zig");
 const Object = @import("object.zig");
 
 const Str = []const u8;
@@ -17,7 +19,7 @@ pub const Id = struct { index: usize };
 pub const Body = struct { ids: []const Id, returns: Id };
 pub const Node = union(enum) {
     param,
-    word: i64,
+    word: Word,
     object: Object,
     new: New,
     tag: Id,
@@ -107,7 +109,7 @@ pub const BodyBuilder = struct {
         return .{ .ids = body.ids.items, .returns = returns };
     }
 
-    pub fn word(body: *BodyBuilder, word_: i64) !Id {
+    pub fn word(body: *BodyBuilder, word_: Word) !Id {
         return body.create_and_push(.{ .word = word_ });
     }
     pub fn object(body: *BodyBuilder, obj: Object) !Id {
@@ -172,7 +174,9 @@ pub const BodyBuilder = struct {
     }
 
     pub fn new_int(body: *BodyBuilder, value: Id) !Id {
-        return try body.new(Object.TAG_INT, &[_]Id{}, &[_]Id{value});
+        const words = try body.parent.ally.alloc(Id, 1);
+        words[0] = value;
+        return try body.new(Object.TAG_INT, &[_]Id{}, words);
     }
     pub fn assert_is_int(body: *BodyBuilder, obj: Id) !void {
         try body.assert_has_tag(obj, Object.TAG_INT);
@@ -186,11 +190,11 @@ pub const BodyBuilder = struct {
     }
 
     pub fn new_enum(body: *BodyBuilder, variant: Object, payload: Id) !Id {
-        return try body.new(
-            Object.TAG_ENUM,
-            &[_]Id{ try body.object(variant), payload },
-            &[_]Id{},
-        );
+        const variant_ref = try body.object(variant);
+        const pointers = try body.parent.ally.alloc(Id, 2);
+        pointers[0] = variant_ref;
+        pointers[1] = payload;
+        return try body.new(Object.TAG_ENUM, pointers, &[_]Id{});
     }
     pub fn assert_is_enum(body: *BodyBuilder, obj: Id) !void {
         try body.assert_has_tag(obj, Object.TAG_ENUM);
@@ -210,11 +214,12 @@ pub const BodyBuilder = struct {
     }
 
     pub fn new_lambda(body: *BodyBuilder, num_params: usize, instructions: Id, closure: Id) !Id {
-        return try body.new(
-            Object.TAG_LAMBDA,
-            &[_]Id{ body.word(instructions), closure },
-            &[_]Id{body.word(num_params)},
-        );
+        const pointers = try body.parent.ally.alloc(Id, 2);
+        pointers[0] = body.word(instructions);
+        pointers[1] = closure;
+        const literals = try body.parent.ally.alloc(Id, 1);
+        literals[0] = body.word(num_params);
+        return try body.new(Object.TAG_LAMBDA, pointers, literals);
     }
     pub fn assert_is_lambda(body: *BodyBuilder, obj: Id) !void {
         try body.assert_has_tag(obj, Object.TAG_LAMBDA);
@@ -282,8 +287,17 @@ fn dump_node(node: Node, ir: Ir, indentation: usize) void {
             std.debug.print("else\n", .{});
             dump_body(if_.else_, ir, indentation + 1);
         },
-        .crash => |message| std.debug.print("crash %{}\n", .{message}),
+        .crash => |message| std.debug.print("crash %{}\n", .{message.index}),
     }
+}
+
+pub fn new_fun(heap: *Heap, ir: Ir) !Object {
+    return try Object.new_fun(
+        heap,
+        ir.params.len,
+        try Object.new_nil(heap),
+        try ir_to_instructions.compile(heap, ir),
+    );
 }
 
 pub fn new_ir(heap: *Heap, ir: Ir) !Object {
