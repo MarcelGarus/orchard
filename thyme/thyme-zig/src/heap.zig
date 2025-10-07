@@ -200,9 +200,9 @@ pub fn deduplicate(heap: *Heap, from: Checkpoint, ally: Allocator) !ArrayList(Ma
     return map;
 }
 
-pub fn garbage_collect(heap: *Heap, from: Checkpoint, keep: Address) void {
+pub fn garbage_collect(heap: *Heap, from: Checkpoint, keep: Address) !ArrayList(Mapping) {
     heap.mark(from.address, keep.address);
-    heap.sweep(from);
+    return try heap.sweep(from.address);
 }
 fn mark(heap: *Heap, boundary: usize, address: usize) void {
     std.debug.print("marking {x}\n", .{address});
@@ -213,17 +213,31 @@ fn mark(heap: *Heap, boundary: usize, address: usize) void {
     for (0..header.num_pointers) |i|
         heap.mark(boundary, @intCast(heap.memory.items[address + 1 + i]));
 }
-fn sweep(heap: *Heap, boundary: Checkpoint) void {
-    var read: usize = @intCast(boundary.address);
-    var write: usize = @intCast(boundary.address);
+fn sweep(heap: *Heap, boundary: usize) !ArrayList(Mapping) {
+    var read: usize = @intCast(boundary);
+    var write: usize = @intCast(boundary);
+    var map = ArrayList(Mapping).empty;
     while (read < heap.memory.items.len) {
         const header: *Header = @ptrCast(&heap.memory.items[read]);
         const size = 1 + header.num_words;
         if (header.meta.marked == 1) {
             header.meta.marked = 0;
             if (read != write) {
+                for (0..header.num_pointers) |j| {
+                    const pointer = heap.memory.items[read + 1 + j];
+                    for (map.items) |mapping| {
+                        if (mapping.from.address == pointer) {
+                            heap.memory.items[read + 1 + j] = mapping.to.address;
+                            break;
+                        }
+                    }
+                }
                 for (0..size) |j|
                     heap.memory.items[write + j] = heap.memory.items[read + j];
+                try map.append(heap.ally, .{
+                    .from = .{ .address = read },
+                    .to = .{ .address = write },
+                });
             }
             read += size;
             write += size;
@@ -232,6 +246,7 @@ fn sweep(heap: *Heap, boundary: Checkpoint) void {
         }
     }
     heap.memory.items.len = write;
+    return map;
 }
 
 pub fn dump_raw(heap: Heap) void {
