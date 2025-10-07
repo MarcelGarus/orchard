@@ -21,7 +21,7 @@ pub fn main() !void {
     var heap = Heap.init(ally);
     const start_of_heap = heap.checkpoint();
 
-    const the_ast = try parse(ally,
+    const fun = try Object.new_fun_from_code(&heap,
         \\# flub
         \\foo = 1
         \\bar = {& x: foo y: 3}
@@ -29,12 +29,6 @@ pub fn main() !void {
         \\baz
         \\% case true 2
     );
-    ast.dump(the_ast, 0);
-
-    const the_ir = try compile(ally, the_ast, &heap);
-    the_ir.dump(0);
-    std.debug.print("{any}\n", .{the_ir});
-    const fun = try Ir.new_fun(&heap, the_ir);
 
     std.debug.print("running\n", .{});
     fun.dump(0);

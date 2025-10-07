@@ -1,11 +1,6 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 
-// a = |a| {
-//   b = 4
-//   5
-// }
-
 pub const Str = []const u8;
 pub const Expr = union(enum) {
     name: Str,

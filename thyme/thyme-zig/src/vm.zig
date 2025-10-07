@@ -27,6 +27,8 @@ pub fn eval(heap: *Heap, fun: Object, args: anytype) !Object {
     var call_stack = ArrayList(Object).empty;
     var ip = fun.instructions();
 
+    if (fun.num_params() != args.len)
+        @panic("called function with wrong number of params");
     inline for (args) |arg| {
         if (@TypeOf(arg) == Object) @compileError("args should be objects");
         try data_stack.append(ally, @intCast(arg.address.address));

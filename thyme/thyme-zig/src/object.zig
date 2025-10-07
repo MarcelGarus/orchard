@@ -5,11 +5,16 @@
 
 const std = @import("std");
 
+const Ast = @import("ast.zig");
+const ast_to_ir = @import("ast_to_ir.zig");
 const Heap = @import("heap.zig");
 const Address = Heap.Address;
 const Word = Heap.Word;
 const Allocation = Heap.Allocation;
 const Instruction = @import("instruction.zig").Instruction;
+const Ir = @import("ir.zig");
+const ir_to_instructions = @import("ir_to_instructions.zig");
+const str_to_ast = @import("str_to_ast.zig");
 
 pub const TAG_NIL = 0;
 pub const TAG_INT = 1;
@@ -184,6 +189,22 @@ pub fn new_fun(heap: *Heap, num_params_: usize, ir: Object, instructions_: Objec
         @as(Word, @intCast(num_params_)),
     });
     return .{ .heap = heap, .address = address };
+}
+pub fn new_fun_from_ir(heap: *Heap, ir: Ir) !Object {
+    return try Object.new_fun(
+        heap,
+        ir.params.len,
+        try Object.new_nil(heap),
+        try ir_to_instructions.compile(heap, ir),
+    );
+}
+pub fn new_fun_from_ast(heap: *Heap, ast: Ast.Expr) !Object {
+    const ir = try ast_to_ir.compile(heap.ally, ast, heap);
+    return try new_fun_from_ir(heap, ir);
+}
+pub fn new_fun_from_code(heap: *Heap, code: []const u8) !Object {
+    const ast = try str_to_ast.parse(heap.ally, code);
+    return try new_fun_from_ast(heap, ast);
 }
 
 pub fn num_params(fun: Object) usize {
