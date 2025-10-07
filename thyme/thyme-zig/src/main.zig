@@ -21,6 +21,29 @@ pub fn main() !void {
     var heap = Heap.init(ally);
     const start_of_heap = heap.checkpoint();
 
+    const add = try Object.new_lambda_from_ir(&heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const a = try builder.param();
+        const b = try builder.param();
+        _ = try builder.param();
+        var body = builder.body();
+        try body.assert_is_int(a);
+        try body.assert_is_int(b);
+        const a_val = try body.get_int_value(a);
+        const b_val = try body.get_int_value(b);
+        const res_val = try body.add(a_val, b_val);
+        const res = try body.new_int(res_val);
+        const body_ = body.finish(res);
+        break :ir builder.finish(body_);
+    });
+    _ = add;
+
+    const foo = try Object.new_lambda_from_code(&heap,
+        \\# flub
+        \\foo = add(1, 2)
+    );
+    _ = foo;
+
     const fun = try Object.new_fun_from_code(&heap,
         \\# flub
         \\foo = 1

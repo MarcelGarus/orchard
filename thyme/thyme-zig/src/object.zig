@@ -192,6 +192,7 @@ pub fn new_fun(heap: *Heap, num_params_: usize, ir: Object, instructions_: Objec
     return .{ .heap = heap, .address = address };
 }
 pub fn new_fun_from_ir(heap: *Heap, ir: Ir) !Object {
+    std.debug.print("IR:\n{f}", .{ir});
     return try Object.new_fun(
         heap,
         ir.params.len,
@@ -229,6 +230,16 @@ pub fn new_lambda(heap: *Heap, fun: Object, closure: Object) !Object {
         closure.address,
     });
     return .{ .heap = heap, .address = address };
+}
+pub fn new_lambda_from_ir(heap: *Heap, ir: Ir) !Object {
+    const fun = try new_fun_from_ir(heap, ir);
+    const closure = try Object.new_nil(heap);
+    return try Object.new_lambda(heap, fun, closure);
+}
+pub fn new_lambda_from_code(heap: *Heap, code: []const u8) !Object {
+    const fun = try new_fun_from_code(heap, code);
+    const closure = try Object.new_nil(heap);
+    return try Object.new_lambda(heap, fun, closure);
 }
 
 pub fn format(object: Object, writer: *Writer) !void {

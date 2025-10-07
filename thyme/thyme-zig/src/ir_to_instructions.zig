@@ -11,6 +11,7 @@ const Object = @import("object.zig");
 
 pub fn compile(heap: *Heap, ir: Ir) !Object {
     var stack = ArrayList(Id).empty;
+    for (ir.params) |param| try stack.append(heap.ally, param);
     return try compile_body(heap, ir.body, ir, &stack);
 }
 

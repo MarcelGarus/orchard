@@ -20,7 +20,7 @@ pub const Id = struct {
     index: usize,
 
     pub fn format(id: Id, writer: *Writer) !void {
-        writer.print("%{}", .{id.index});
+        try writer.print("%{}", .{id.index});
     }
 };
 pub const Body = struct { ids: []const Id, returns: Id };
@@ -79,7 +79,7 @@ pub const Builder = struct {
 
     pub fn param(builder: *Builder) !Id {
         const id = try builder.create(.param);
-        builder.params.push(id);
+        try builder.params.append(builder.ally, id);
         return id;
     }
 
@@ -189,7 +189,8 @@ pub const BodyBuilder = struct {
         try body.assert_has_tag(obj, Object.TAG_INT);
     }
     pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
-        return try body.load(int, try body.word(1));
+        const zero = try body.word(0);
+        return try body.load(int, zero);
     }
 
     pub fn new_struct(body: *BodyBuilder, keys_and_values: []Id) !Id {
@@ -207,10 +208,12 @@ pub const BodyBuilder = struct {
         try body.assert_has_tag(obj, Object.TAG_ENUM);
     }
     pub fn get_enum_variant(body: *BodyBuilder, enum_: Id) !Id {
-        return try body.load(enum_, try body.word(0));
+        const zero = try body.word(0);
+        return try body.load(enum_, zero);
     }
     pub fn get_enum_payload(body: *BodyBuilder, enum_: Id) !Id {
-        return try body.load(enum_, try body.word(1));
+        const one = try body.word(1);
+        return try body.load(enum_, one);
     }
 
     pub fn new_closure(body: *BodyBuilder, captured: []Id) !Id {
@@ -253,50 +256,50 @@ pub fn format(ir: Ir, writer: *Writer) !void {
 }
 fn format_indented(ir: Ir, writer: *Writer, indentation: usize) !void {
     try writer.print("code", .{});
-    for (ir.params) |param| try writer.print(" {}", .{param});
+    for (ir.params) |param| try writer.print(" {f}", .{param});
     try writer.print("\n", .{});
-    format_body(ir.body, ir, indentation + 1);
+    try format_body(ir.body, ir, writer, indentation + 1);
 }
 fn format_body(body: Body, ir: Ir, writer: *Writer, indentation: usize) !void {
     for (body.ids) |id| {
         for (0..indentation) |_| try writer.print("  ", .{});
-        try writer.print("{} = ", .{id});
-        format_node(ir.get(id), ir, indentation);
+        try writer.print("{f} = ", .{id});
+        try format_node(ir.get(id), ir, writer, indentation);
     }
     for (0..indentation) |_| try writer.print("  ", .{});
-    try writer.print("{}\n", .{body.returns});
+    try writer.print("{f}\n", .{body.returns});
 }
-fn format_node(node: Node, ir: Ir, writer: *Writer, indentation: usize) !void {
+fn format_node(node: Node, ir: Ir, writer: *Writer, indentation: usize) error{WriteFailed}!void {
     switch (node) {
         .param => try writer.print("param\n", .{}),
         .word => |word| try writer.print("word {}\n", .{word}),
         .object => |object| try writer.print("object *{x}\n", .{object.address.address}),
         .new => |new| {
             try writer.print("new [{x}]", .{new.tag});
-            for (new.pointers) |pointer| try writer.print(" {}", .{pointer});
-            for (new.literals) |literal| try writer.print(" {}", .{literal});
+            for (new.pointers) |pointer| try writer.print(" {f}", .{pointer});
+            for (new.literals) |literal| try writer.print(" {f}", .{literal});
             try writer.print("\n", .{});
         },
-        .tag => |address| try writer.print("tag {}\n", .{address}),
-        .load => |load| try writer.print("load {} {}\n", .{ load.base, load.offset }),
-        .add => |args| try writer.print("add {} {}\n", .{ args.left, args.right }),
-        .subtract => |args| try writer.print("subtract {} {}\n", .{ args.left, args.right }),
-        .multiply => |args| try writer.print("multiply {} {}\n", .{ args.left, args.right }),
-        .divide => |args| try writer.print("divide {} {}\n", .{ args.left, args.right }),
-        .modulo => |args| try writer.print("modulo {} {}\n", .{ args.left, args.right }),
-        .compare => |args| try writer.print("compare {} {}\n", .{ args.left, args.right }),
+        .tag => |address| try writer.print("tag {f}\n", .{address}),
+        .load => |load| try writer.print("load {f} {f}\n", .{ load.base, load.offset }),
+        .add => |args| try writer.print("add {f} {f}\n", .{ args.left, args.right }),
+        .subtract => |args| try writer.print("subtract {f} {f}\n", .{ args.left, args.right }),
+        .multiply => |args| try writer.print("multiply {f} {f}\n", .{ args.left, args.right }),
+        .divide => |args| try writer.print("divide {f} {f}\n", .{ args.left, args.right }),
+        .modulo => |args| try writer.print("modulo {f} {f}\n", .{ args.left, args.right }),
+        .compare => |args| try writer.print("compare {f} {f}\n", .{ args.left, args.right }),
         .call => |call| {
-            try writer.print("call {} with", .{call.fun});
-            for (call.args) |arg| try writer.print(" {}", .{arg});
+            try writer.print("call {f} with", .{call.fun});
+            for (call.args) |arg| try writer.print(" {f}", .{arg});
             try writer.print("\n", .{});
         },
         .if_not_zero => |if_| {
-            try writer.print("if {} != 0 then\n", .{if_.condition});
-            format_body(if_.then, ir, indentation + 1);
+            try writer.print("if {f} != 0 then\n", .{if_.condition});
+            try format_body(if_.then, ir, writer, indentation + 1);
             for (0..indentation) |_| try writer.print("  ", .{});
             try writer.print("else\n", .{});
-            format_body(if_.else_, ir, indentation + 1);
+            try format_body(if_.else_, ir, writer, indentation + 1);
         },
-        .crash => |message| try writer.print("crash {}\n", .{message}),
+        .crash => |message| try writer.print("crash {f}\n", .{message}),
     }
 }
