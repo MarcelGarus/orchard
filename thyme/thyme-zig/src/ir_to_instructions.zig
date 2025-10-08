@@ -40,6 +40,14 @@ fn compile_node(heap: *Heap, id: Id, ir: Ir, builder: *Builder) error{OutOfMemor
             try builder.push_from_stack(obj);
             try builder.tag(id);
         },
+        .num_pointers => |obj| {
+            try builder.push_from_stack(obj);
+            try builder.num_pointers(id);
+        },
+        .num_literals => |obj| {
+            try builder.push_from_stack(obj);
+            try builder.num_literals(id);
+        },
         .load => |load| {
             try builder.push_from_stack(load.base);
             try builder.push_from_stack(load.offset);

@@ -200,13 +200,13 @@ pub fn new_fun_from_ir(heap: *Heap, ir: Ir) !Object {
         try ir_to_instructions.compile(heap, ir),
     );
 }
-pub fn new_fun_from_ast(heap: *Heap, ast: Ast.Expr) !Object {
-    const ir = try ast_to_ir.compile(heap.ally, ast, heap);
+pub fn new_fun_from_ast(heap: *Heap, env: anytype, ast: Ast.Expr) !Object {
+    const ir = try ast_to_ir.compile(heap.ally, env, ast, heap);
     return try new_fun_from_ir(heap, ir);
 }
-pub fn new_fun_from_code(heap: *Heap, code: []const u8) !Object {
+pub fn new_fun_from_code(heap: *Heap, env: anytype, code: []const u8) !Object {
     const ast = try str_to_ast.parse(heap.ally, code);
-    return try new_fun_from_ast(heap, ast);
+    return try new_fun_from_ast(heap, env, ast);
 }
 
 pub fn num_params(fun: Object) usize {

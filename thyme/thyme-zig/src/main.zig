@@ -25,7 +25,8 @@ pub fn main() !void {
         var builder = Ir.Builder.init(ally);
         const a = try builder.param();
         const b = try builder.param();
-        _ = try builder.param();
+        const closure = try builder.param();
+        _ = closure;
         var body = builder.body();
         try body.assert_is_int(a);
         try body.assert_is_int(b);
@@ -36,25 +37,23 @@ pub fn main() !void {
         const body_ = body.finish(res);
         break :ir builder.finish(body_);
     });
-    _ = add;
 
-    const foo = try Object.new_lambda_from_code(&heap,
-        \\# flub
-        \\foo = add(1, 2)
-    );
-    _ = foo;
-
-    const fun = try Object.new_fun_from_code(&heap,
-        \\# flub
-        \\foo = 1
-        \\bar = {& x: foo y: 3}
-        \\baz = :true
-        \\baz % case true 2
+    // const foo = try eval(&heap, .{ .add = add },
+    //     \\3
+    // );
+    const foo = try eval(&heap, .{ .add = add },
+        \\|a b| {
+        \\  add(add(a, b), b)
+        \\}
     );
 
-    std.debug.print("running\n{f}", .{fun});
-    const result = try eval(&heap, fun, .{});
-    std.debug.print("{f}", .{result});
+    const bar = try eval(&heap, .{ .foo = foo },
+        \\& x: foo y: foo
+    );
+    // const bar = try eval(&heap, .{ .foo = foo },
+    //     \\foo(3, 2)
+    // );
+    std.debug.print("{f}", .{bar});
 
     _ = try heap.deduplicate(start_of_heap, ally);
     heap.dump();

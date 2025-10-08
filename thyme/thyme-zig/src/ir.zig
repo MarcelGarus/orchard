@@ -30,6 +30,8 @@ pub const Node = union(enum) {
     object: Object,
     new: New,
     tag: Id,
+    num_pointers: Id,
+    num_literals: Id,
     load: Load,
     add: Args,
     subtract: Args,
@@ -132,6 +134,12 @@ pub const BodyBuilder = struct {
     pub fn tag(body: *BodyBuilder, address: Id) !Id {
         return body.create_and_push(.{ .tag = address });
     }
+    pub fn num_pointers(body: *BodyBuilder, address: Id) !Id {
+        return body.create_and_push(.{ .num_pointers = address });
+    }
+    pub fn num_literals(body: *BodyBuilder, address: Id) !Id {
+        return body.create_and_push(.{ .num_literals = address });
+    }
     pub fn load(body: *BodyBuilder, address: Id, offset: Id) !Id {
         return body.create_and_push(.{ .load = .{ .base = address, .offset = offset } });
     }
@@ -191,6 +199,10 @@ pub const BodyBuilder = struct {
     pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
         const zero = try body.word(0);
         return try body.load(int, zero);
+    }
+
+    pub fn get_symbol_len_in_words(body: *BodyBuilder, symbol: Id) !Id {
+        return try body.num_literals(symbol);
     }
 
     pub fn new_struct(body: *BodyBuilder, keys_and_values: []Id) !Id {
@@ -281,6 +293,8 @@ fn format_node(node: Node, ir: Ir, writer: *Writer, indentation: usize) error{Wr
             try writer.print("\n", .{});
         },
         .tag => |address| try writer.print("tag {f}\n", .{address}),
+        .num_pointers => |address| try writer.print("num_pointers {f}\n", .{address}),
+        .num_literals => |address| try writer.print("num_literals {f}\n", .{address}),
         .load => |load| try writer.print("load {f} {f}\n", .{ load.base, load.offset }),
         .add => |args| try writer.print("add {f} {f}\n", .{ args.left, args.right }),
         .subtract => |args| try writer.print("subtract {f} {f}\n", .{ args.left, args.right }),

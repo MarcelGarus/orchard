@@ -21,7 +21,12 @@ pub fn init(heap: *Heap) Vm {
     };
 }
 
-pub fn eval(heap: *Heap, fun: Object, args: anytype) !Object {
+pub fn eval(heap: *Heap, env: anytype, code: []const u8) !Object {
+    const fun = try Object.new_fun_from_code(heap, env, code);
+    return try call(heap, fun, .{});
+}
+
+pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
     const ally = heap.ally;
     var data_stack = ArrayList(Word).empty;
     var call_stack = ArrayList(Object).empty;

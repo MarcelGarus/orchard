@@ -33,14 +33,90 @@ const Bindings = struct {
 };
 const Binding = struct { name: Str, id: Id };
 
-pub fn compile(ally: Ally, expr: ast.Expr, heap: *Heap) !Ir {
+pub fn compile(ally: Ally, env: anytype, expr: ast.Expr, heap: *Heap) !Ir {
+    const common = common: {
+        const nil = try Object.new_nil(heap);
+        const compare_symbols_rec_fun = try Object.new_fun_from_ir(heap, ir: {
+            var builder = Ir.Builder.init(ally);
+            const a = try builder.param(); // a symbol object
+            const b = try builder.param(); // a symbol object
+            const cursor = try builder.param(); // a literal word
+            const rec = try builder.param(); // a reference to this function
+            var body = builder.body();
+            const len = try body.get_symbol_len_in_words(a);
+            const diff = try body.subtract(len, cursor);
+            const res = try body.if_not_zero(
+                diff,
+                not_done: {
+                    var inner = body.child_body();
+                    const a_word = try inner.load(a, cursor);
+                    const b_word = try inner.load(b, cursor);
+                    const word_diff = try inner.subtract(a_word, b_word);
+                    const res = try inner.if_not_zero(
+                        word_diff,
+                        word_differs: {
+                            var innerer = body.child_body();
+                            const zero = try innerer.word(0);
+                            break :word_differs innerer.finish(zero);
+                        },
+                        word_same: {
+                            var innerer = body.child_body();
+                            const one = try innerer.word(1);
+                            const next_cursor = try innerer.add(cursor, one);
+                            var args = try ally.alloc(Id, 4);
+                            args[0] = a;
+                            args[1] = b;
+                            args[2] = next_cursor;
+                            args[3] = rec;
+                            const res = try innerer.call(rec, args);
+                            break :word_same innerer.finish(res);
+                        },
+                    );
+                    break :not_done inner.finish(res);
+                },
+                done_comparing: {
+                    var inner = body.child_body();
+                    const one = try inner.word(1);
+                    break :done_comparing inner.finish(one);
+                },
+            );
+            const body_ = body.finish(res);
+            break :ir builder.finish(body_);
+        });
+        const compare_symbols_fun = try Object.new_fun_from_ir(heap, ir: {
+            var builder = Ir.Builder.init(ally);
+            const a = try builder.param(); // a symbol object
+            const b = try builder.param(); // a symbol object
+            var body = builder.body();
+            const rec = try body.object(compare_symbols_rec_fun);
+            var args = try ally.alloc(Id, 4);
+            args[0] = a;
+            args[1] = b;
+            args[2] = try body.word(0);
+            args[3] = rec;
+            const res = try body.call(rec, args);
+            const body_ = body.finish(res);
+            break :ir builder.finish(body_);
+        });
+        break :common Common{
+            .nil = nil,
+            .compare_symbols_fun = compare_symbols_fun,
+        };
+    };
+
     var builder = Builder.init(ally);
     var body = builder.body();
     var bindings = Bindings.init();
-    const result = try compile_expr(ally, expr, &body, &bindings, heap);
+    inline for (@typeInfo(@TypeOf(env)).@"struct".fields) |field| {
+        const ref = try body.object(@field(env, field.name));
+        try bindings.bind(ally, field.name, ref);
+    }
+    const result = try compile_expr(ally, expr, &body, &bindings, heap, common);
     const body_result = body.finish(result);
     return builder.finish(body_result);
 }
+
+const Common = struct { nil: Object, compare_symbols_fun: Object };
 
 fn compile_expr(
     ally: Ally,
@@ -48,92 +124,33 @@ fn compile_expr(
     body: *Ir.BodyBuilder,
     bindings: *Bindings,
     heap: *Heap,
+    common: Common,
 ) error{OutOfMemory}!Id {
     switch (expr) {
         .name => |name| return bindings.get(name),
-        .body => |bod| return compile_body(ally, bod, body, bindings, heap),
+        .body => |bod| return compile_body(ally, bod, body, bindings, heap, common),
         .int => |int| return body.object(try Object.new_int(heap, int)),
         .string => @panic("string"),
         .struct_ => |struct_| {
             var fields = try ally.alloc(Id, struct_.len * 2);
             for (0.., struct_) |i, field| {
                 fields[2 * i] = try body.object(try Object.new_symbol(heap, field.name));
-                fields[2 * i + 1] = try compile_expr(ally, field.value, body, bindings, heap);
+                fields[2 * i + 1] = try compile_expr(ally, field.value, body, bindings, heap, common);
             }
             return try body.new_struct(fields);
         },
         .member => @panic("member"),
         .enum_ => |enum_| {
             const variant = try Object.new_symbol(heap, enum_.variant);
-            const payload = try compile_expr(ally, enum_.payload.*, body, bindings, heap);
+            const payload = try compile_expr(ally, enum_.payload.*, body, bindings, heap, common);
             return body.new_enum(variant, payload);
         },
         .switch_ => |switch_| {
-            const condition = try compile_expr(ally, switch_.condition.*, body, bindings, heap);
+            const condition = try compile_expr(ally, switch_.condition.*, body, bindings, heap, common);
             try body.assert_is_enum(condition);
             const variant = try body.get_enum_variant(condition);
             const payload = try body.get_enum_payload(condition);
 
-            const symbol_compare = compare: {
-                const rec = try new_instructions(heap, &[_]Instruction{
-                    // (rec a b cursor)
-                    .{ .push_from_stack = 2 }, // (rec a b cursor a)
-                    .num_literals, // (rec a b cursor len)
-                    .{ .push_from_stack = 1 }, // (rec a b cursor len cursor)
-                    .subtract, // (rec a b cursor more?)
-                    .{
-                        .if_not_zero = .{
-                            .then = try new_instructions(heap, &[_]Instruction{
-                                // Not done comparing yet. (rec a b cursor)
-                                .{ .push_from_stack = 2 }, // (rec a b cursor a)
-                                .{ .push_from_stack = 1 }, // (rec a b cursor a cursor)
-                                .load, // (rec a b cursor a_word)
-                                .{ .push_from_stack = 2 }, // (rec a b cursor a_word b)
-                                .{ .push_from_stack = 2 }, // (rec a b cursor a_word b cursor)
-                                .load, // (rec a b cursor a_word b_word)
-                                .subtract, // (rec a b cursor diff?)
-                                .{
-                                    .if_not_zero = .{
-                                        .then = try new_instructions(heap, &[_]Instruction{
-                                            // This word is different. (rec a b cursor)
-                                            .{ .pop = 4 }, // ()
-                                            .{ .push_word = 0 }, // (0)
-                                        }),
-                                        .else_ = try new_instructions(heap, &[_]Instruction{
-                                            // This word is the same. (rec a b cursor)
-                                            .{ .push_word = 1 }, // (rec a b cursor 1)
-                                            .add, // (rec a b cursor')
-                                            .{ .push_from_stack = 3 }, // (rec a b cursor')
-                                            .eval, // (0) or (1)
-                                        }),
-                                    },
-                                },
-                            }),
-                            .else_ = try new_instructions(heap, &[_]Instruction{
-                                // Done comparing. (rec a b cursor)
-                                .{ .pop = 4 }, // ()
-                                .{ .push_word = 1 }, // (1)
-                            }),
-                        },
-                    },
-                });
-                const compare = try new_instructions(heap, &[_]Instruction{
-                    // (a b)
-                    .{ .push_address = rec }, // (a b rec)
-                    .{ .push_from_stack = 2 }, // (a b rec a)
-                    .{ .push_from_stack = 2 }, // (a b rec a b)
-                    .{ .push_word = 0 }, // (a b rec a b cursor)
-                    .{ .push_address = rec }, // (a b rec a b cursor rec)
-                    .eval, // (a b 0) or (a b 1)
-                    .{ .pop_below_top = 2 },
-                });
-                break :compare try Object.new_fun(
-                    heap,
-                    2,
-                    try Object.new_nil(heap),
-                    compare,
-                );
-            };
             var res = child: {
                 var child = body.child_body();
                 const message = try Object.new_symbol(heap, "no switch case matched");
@@ -144,7 +161,7 @@ fn compile_expr(
                 const candidate = try Object.new_symbol(heap, case.variant);
                 var inner = body.child_body();
                 const candidate_ref = try inner.object(candidate);
-                const symbol_compare_ref = try inner.object(symbol_compare);
+                const symbol_compare_ref = try inner.object(common.compare_symbols_fun);
                 const args = try ally.alloc(Id, 2);
                 args[0] = variant;
                 args[1] = candidate_ref;
@@ -163,6 +180,7 @@ fn compile_expr(
                             &innerer,
                             bindings,
                             heap,
+                            common,
                         );
                         bindings.bindings.items.len = snapshot;
                         break :then innerer.finish(then);
@@ -177,16 +195,23 @@ fn compile_expr(
         .lambda => @panic("lambda"),
         .call => |_| @panic("call"),
         .var_ => |var_| {
-            const id = try compile_expr(ally, var_.value.*, body, bindings, heap);
+            const id = try compile_expr(ally, var_.value.*, body, bindings, heap, common);
             try bindings.bind(ally, var_.name, id);
-            return body.object(try Object.new_nil(heap));
+            return body.object(common.nil);
         },
     }
 }
 
-fn compile_body(ally: Ally, exprs: []ast.Expr, body: *BodyBuilder, bindings: *Bindings, heap: *Heap) !Id {
+fn compile_body(
+    ally: Ally,
+    exprs: []ast.Expr,
+    body: *BodyBuilder,
+    bindings: *Bindings,
+    heap: *Heap,
+    common: Common,
+) !Id {
     var last: ?Id = null;
     for (exprs) |expr|
-        last = try compile_expr(ally, expr, body, bindings, heap);
-    return last orelse body.object(try Object.new_nil(heap));
+        last = try compile_expr(ally, expr, body, bindings, heap, common);
+    return last orelse body.object(common.nil);
 }
