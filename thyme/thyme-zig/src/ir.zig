@@ -235,22 +235,22 @@ pub const BodyBuilder = struct {
         return try body.load(closure, body.word(index));
     }
 
-    pub fn new_lambda(body: *BodyBuilder, num_params: usize, instructions: Id, closure: Id) !Id {
+    pub fn new_lambda(body: *BodyBuilder, fun: Id, closure: Id) !Id {
         const pointers = try body.parent.ally.alloc(Id, 2);
-        pointers[0] = body.word(instructions);
+        pointers[0] = fun;
         pointers[1] = closure;
-        const literals = try body.parent.ally.alloc(Id, 1);
-        literals[0] = body.word(num_params);
-        return try body.new(Object.TAG_LAMBDA, pointers, literals);
+        return try body.new(Object.TAG_LAMBDA, pointers, &[_]Id{});
     }
     pub fn assert_is_lambda(body: *BodyBuilder, obj: Id) !void {
         try body.assert_has_tag(obj, Object.TAG_LAMBDA);
     }
-    fn get_lambda_instructions(body: *BodyBuilder, lambda: Id) !Id {
-        return try body.load(lambda, body.word(1));
+    pub fn get_lambda_fun(body: *BodyBuilder, lambda: Id) !Id {
+        const zero = try body.word(0);
+        return try body.load(lambda, zero);
     }
-    fn get_lambda_closure(body: *BodyBuilder, lambda: Id) !Id {
-        return try body.load(lambda, body.word(1));
+    pub fn get_lambda_closure(body: *BodyBuilder, lambda: Id) !Id {
+        const one = try body.word(1);
+        return try body.load(lambda, one);
     }
 
     pub fn finish_with_zero(body: *BodyBuilder) !Body {

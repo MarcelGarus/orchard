@@ -12,7 +12,12 @@ const Object = @import("object.zig");
 pub fn compile(heap: *Heap, ir: Ir) !Object {
     var stack = ArrayList(Id).empty;
     for (ir.params) |param| try stack.append(heap.ally, param);
-    return try compile_body(heap, ir.body, ir, &stack);
+    var builder = Builder.init(heap.ally, &stack);
+    for (ir.body.ids) |id|
+        try compile_node(heap, id, ir, &builder);
+    try builder.push_from_stack(ir.body.returns);
+    try builder.pop_below_top(ir.body.ids.len + ir.params.len);
+    return try Instruction.new_instructions(heap, builder.instructions.items);
 }
 
 fn compile_body(heap: *Heap, body: Ir.Body, ir: Ir, stack: *ArrayList(Id)) !Object {
@@ -22,7 +27,6 @@ fn compile_body(heap: *Heap, body: Ir.Body, ir: Ir, stack: *ArrayList(Id)) !Obje
     }
     try builder.push_from_stack(body.returns);
     try builder.pop_below_top(body.ids.len);
-
     return try Instruction.new_instructions(heap, builder.instructions.items);
 }
 

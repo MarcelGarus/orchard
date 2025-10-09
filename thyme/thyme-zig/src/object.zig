@@ -23,7 +23,8 @@ pub const TAG_SYMBOL = 2;
 pub const TAG_STRUCT = 3;
 pub const TAG_ENUM = 4;
 pub const TAG_FUN = 5;
-pub const TAG_LAMBDA = 6;
+pub const TAG_CLOSURE = 6;
+pub const TAG_LAMBDA = 7;
 
 heap: *Heap,
 address: Address,
@@ -192,7 +193,7 @@ pub fn new_fun(heap: *Heap, num_params_: usize, ir: Object, instructions_: Objec
     return .{ .heap = heap, .address = address };
 }
 pub fn new_fun_from_ir(heap: *Heap, ir: Ir) !Object {
-    std.debug.print("IR:\n{f}", .{ir});
+    // std.debug.print("IR:\n{f}", .{ir});
     return try Object.new_fun(
         heap,
         ir.params.len,

@@ -38,9 +38,6 @@ pub fn main() !void {
         break :ir builder.finish(body_);
     });
 
-    // const foo = try eval(&heap, .{ .add = add },
-    //     \\3
-    // );
     const foo = try eval(&heap, .{ .add = add },
         \\|a b| {
         \\  add(add(a, b), b)
@@ -48,15 +45,13 @@ pub fn main() !void {
     );
 
     const bar = try eval(&heap, .{ .foo = foo },
-        \\& x: foo y: foo
+        \\foo(3, 2)
     );
-    // const bar = try eval(&heap, .{ .foo = foo },
-    //     \\foo(3, 2)
-    // );
     std.debug.print("{f}", .{bar});
 
-    _ = try heap.deduplicate(start_of_heap, ally);
-    heap.dump();
+    _ = start_of_heap;
+    // _ = try heap.deduplicate(start_of_heap, ally);
+    // heap.dump();
 
     // heap.garbage_collect(start_of_heap, insturctions.address);
     // heap.dump_raw();

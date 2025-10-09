@@ -56,8 +56,10 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
         const instruction = parsed.instruction;
         ip = parsed.rest;
 
-        std.debug.print("{any}\n", .{data_stack.items});
-        std.debug.print("Running {f}", .{instruction});
+        // for (0..call_stack.items.len) |_| std.debug.print("  ", .{});
+        // std.debug.print("{any}\n", .{data_stack.items});
+        // for (0..call_stack.items.len) |_| std.debug.print("  ", .{});
+        // std.debug.print("Running {f}", .{instruction});
 
         switch (instruction) {
             .push_word => |word| try data_stack.append(ally, word),

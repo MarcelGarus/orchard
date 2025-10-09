@@ -28,6 +28,7 @@ const Bindings = struct {
     fn get(bindings: Bindings, name: Str) !Id {
         for (bindings.bindings.items) |binding|
             if (std.mem.eql(u8, binding.name, name)) return binding.id;
+        std.debug.print("name {s}\n", .{name});
         @panic("name not in scope");
     }
 };
@@ -192,8 +193,51 @@ fn compile_expr(
             for (res.ids) |id| try body.ids.append(ally, id);
             return res.returns;
         },
-        .lambda => @panic("lambda"),
-        .call => |_| @panic("call"),
+        .lambda => |lambda| {
+            const captured = try get_captured(ally, lambda);
+            const closure = closure: {
+                var captured_values = ArrayList(Id).empty;
+                for (captured.items) |name|
+                    try captured_values.append(ally, try bindings.get(name));
+                break :closure try body.new_closure(captured_values.items);
+            };
+            const lambda_ir = ir: {
+                var lambda_bindings = Bindings.init();
+                var lambda_builder = Builder.init(ally);
+                for (lambda.params) |param|
+                    try lambda_bindings.bind(ally, param, try lambda_builder.param());
+                const closure_param = try lambda_builder.param();
+                var lambda_body = lambda_builder.body();
+                for (0.., captured.items) |i, name| {
+                    const offset = try lambda_body.word(@intCast(i));
+                    const value = try lambda_body.load(closure_param, offset);
+                    try lambda_bindings.bind(ally, name, value);
+                }
+                const result = try compile_expr(
+                    ally,
+                    lambda.body.*,
+                    &lambda_body,
+                    &lambda_bindings,
+                    heap,
+                    common,
+                );
+                const body_result = lambda_body.finish(result);
+                break :ir lambda_builder.finish(body_result);
+            };
+            const lambda_fun = try body.object(try Object.new_fun_from_ir(heap, lambda_ir));
+            return body.new_lambda(lambda_fun, closure);
+        },
+        .call => |call| {
+            const callee = try compile_expr(ally, call.callee.*, body, bindings, heap, common);
+            var args = ArrayList(Id).empty;
+            for (call.args) |arg|
+                try args.append(ally, try compile_expr(ally, arg, body, bindings, heap, common));
+            try body.assert_is_lambda(callee);
+            const fun = try body.get_lambda_fun(callee);
+            const closure = try body.get_lambda_closure(callee);
+            try args.append(ally, closure);
+            return try body.call(fun, args.items);
+        },
         .var_ => |var_| {
             const id = try compile_expr(ally, var_.value.*, body, bindings, heap, common);
             try bindings.bind(ally, var_.name, id);
@@ -214,4 +258,81 @@ fn compile_body(
     for (exprs) |expr|
         last = try compile_expr(ally, expr, body, bindings, heap, common);
     return last orelse body.object(common.nil);
+}
+
+fn get_captured(ally: Ally, lambda: ast.Lambda) !ArrayList(Str) {
+    var ignore = ArrayList(Str).empty;
+    var captured = ArrayList(Str).empty;
+    for (lambda.params) |param| try ignore.append(ally, param);
+    try collect_captured(ally, lambda.body.*, &ignore, &captured);
+    return captured;
+}
+fn collect_captured_in_new_scope(
+    ally: Ally,
+    expr: ast.Expr,
+    ignore: *ArrayList(Str),
+    out: *ArrayList(Str),
+) error{OutOfMemory}!void {
+    const num_ignored = ignore.items.len;
+    try collect_captured(ally, expr, ignore, out);
+    ignore.items.len = num_ignored;
+}
+fn collect_captured(
+    ally: Ally,
+    expr: ast.Expr,
+    ignore: *ArrayList(Str),
+    out: *ArrayList(Str),
+) error{OutOfMemory}!void {
+    switch (expr) {
+        .name => |name| {
+            for (ignore.items) |ig|
+                if (std.mem.eql(u8, ig, name))
+                    return;
+            for (out.items) |o|
+                if (std.mem.eql(u8, o, name))
+                    return;
+            try out.append(ally, name);
+        },
+        .body => |bod| {
+            for (bod) |child|
+                try collect_captured(ally, child, ignore, out);
+        },
+        .int => {},
+        .string => {},
+        .struct_ => |struct_| {
+            for (struct_) |field| {
+                try collect_captured_in_new_scope(ally, field.value, ignore, out);
+            }
+        },
+        .member => |member| try collect_captured_in_new_scope(ally, member.of.*, ignore, out),
+        .enum_ => |enum_| try collect_captured_in_new_scope(ally, enum_.payload.*, ignore, out),
+        .switch_ => |switch_| {
+            try collect_captured_in_new_scope(ally, switch_.condition.*, ignore, out);
+            for (switch_.cases) |case| {
+                const num_ignored = ignore.items.len;
+                if (case.payload) |payload|
+                    try ignore.append(ally, payload);
+                try collect_captured(ally, case.body, ignore, out);
+                ignore.items.len = num_ignored;
+            }
+        },
+        .lambda => |lambda| {
+            const num_ignored = ignore.items.len;
+            for (lambda.params) |param| try ignore.append(ally, param);
+            try collect_captured(ally, lambda.body.*, ignore, out);
+            ignore.items.len = num_ignored;
+        },
+        .call => |call| {
+            try collect_captured_in_new_scope(ally, call.callee.*, ignore, out);
+            for (call.args) |arg| {
+                try collect_captured_in_new_scope(ally, arg, ignore, out);
+            }
+        },
+        .var_ => |var_| {
+            const num_ignored = ignore.items.len;
+            try collect_captured_in_new_scope(ally, var_.value.*, ignore, out);
+            ignore.items.len = num_ignored;
+            try ignore.append(ally, var_.name);
+        },
+    }
 }
