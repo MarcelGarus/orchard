@@ -6,13 +6,13 @@ expr: Expr,
 
 pub const Str = []const u8;
 pub const Expr = union(enum) {
+    nil,
     name: Str,
     body: []Expr,
     int: i64,
     string: Str,
     struct_: []Field,
     member: Member,
-    enum_: Enum,
     switch_: Switch,
     lambda: Lambda,
     call: Call,
@@ -27,11 +27,15 @@ pub const Lambda = struct { params: []Str, body: *Expr };
 pub const Call = struct { callee: *Expr, args: []Expr };
 pub const Var = struct { name: Str, value: *Expr };
 
-pub fn format(ast: @This(), writer: *Writer) !void {
-    format_expr(ast.expr, writer, 0);
+pub fn format(expr: Expr, writer: *Writer) !void {
+    try format_expr(expr, writer, 0);
 }
-pub fn format_expr(expr: Expr, writer: *Writer, indentation: usize) void {
+pub fn format_expr(expr: Expr, writer: *Writer, indentation: usize) !void {
     switch (expr) {
+        .nil => {
+            for (0..indentation) |_| try writer.print("  ", .{});
+            try writer.print("nil\n", .{});
+        },
         .name => |name| {
             for (0..indentation) |_| try writer.print("  ", .{});
             try writer.print("{s}\n", .{name});
@@ -39,7 +43,7 @@ pub fn format_expr(expr: Expr, writer: *Writer, indentation: usize) void {
         .body => |body| {
             for (0..indentation) |_| try writer.print("  ", .{});
             try writer.print("{{\n", .{});
-            for (body) |child| format_expr(child, writer, indentation + 1);
+            for (body) |child| try format_expr(child, writer, indentation + 1);
             for (0..indentation) |_| try writer.print("  ", .{});
             try writer.print("}}\n", .{});
         },
@@ -57,21 +61,16 @@ pub fn format_expr(expr: Expr, writer: *Writer, indentation: usize) void {
             for (struct_) |field| {
                 for (0..indentation + 1) |_| try writer.print("  ", .{});
                 try writer.print("{s}:\n", .{field.name});
-                format_expr(field.value, writer, indentation + 2);
+                try format_expr(field.value, writer, indentation + 2);
             }
         },
         .member => |member| {
-            format_expr(member.of.*, writer, indentation);
+            try format_expr(member.of.*, writer, indentation);
             for (0..indentation) |_| try writer.print("  ", .{});
             try writer.print(".{s}\n", .{member.name});
         },
-        .enum_ => |enum_| {
-            for (0..indentation) |_| try writer.print("  ", .{});
-            try writer.print(":{s}:\n", .{enum_.variant});
-            format_expr(enum_.payload.*, writer, indentation + 2);
-        },
         .switch_ => |switch_| {
-            format_expr(switch_.condition.*, writer, indentation);
+            try format_expr(switch_.condition.*, writer, indentation);
             for (0..indentation) |_| try writer.print("  ", .{});
             try writer.print("%\n", .{});
             for (switch_.cases) |case| {
@@ -79,7 +78,7 @@ pub fn format_expr(expr: Expr, writer: *Writer, indentation: usize) void {
                 try writer.print("case {s}", .{case.variant});
                 if (case.payload) |payload| try writer.print("({s})", .{payload});
                 try writer.print("\n", .{});
-                format_expr(case.body, writer, indentation + 2);
+                try format_expr(case.body, writer, indentation + 2);
             }
         },
         .lambda => |lambda| {
@@ -90,21 +89,21 @@ pub fn format_expr(expr: Expr, writer: *Writer, indentation: usize) void {
                 try writer.print("{s}", .{param});
             }
             try writer.print("|\n", .{});
-            format_expr(lambda.body.*, writer, indentation + 1);
+            try format_expr(lambda.body.*, writer, indentation + 1);
         },
         .call => |call| {
-            format_expr(call.callee.*, writer, indentation);
+            try format_expr(call.callee.*, writer, indentation);
             for (0..indentation + 1) |_| try writer.print("  ", .{});
             try writer.print("(\n", .{});
             for (call.args) |arg|
-                format_expr(arg, writer, indentation + 2);
+                try format_expr(arg, writer, indentation + 2);
             for (0..indentation + 1) |_| try writer.print("  ", .{});
             try writer.print(")\n", .{});
         },
         .var_ => |var_| {
             for (0..indentation) |_| try writer.print("  ", .{});
             try writer.print("{s} =\n", .{var_.name});
-            format_expr(var_.value.*, writer, indentation + 1);
+            try format_expr(var_.value.*, writer, indentation + 1);
         },
     }
 }

@@ -21,12 +21,14 @@ pub fn compile(heap: *Heap, ir: Ir) !Object {
 }
 
 fn compile_body(heap: *Heap, body: Ir.Body, ir: Ir, stack: *ArrayList(Id)) !Object {
+    const stack_size = stack.items.len;
     var builder = Builder.init(heap.ally, stack);
     for (body.ids) |id| {
         try compile_node(heap, id, ir, &builder);
     }
     try builder.push_from_stack(body.returns);
     try builder.pop_below_top(body.ids.len);
+    if (stack.items.len != stack_size + 1) @panic("bad compile");
     return try Instruction.new_instructions(heap, builder.instructions.items);
 }
 
@@ -85,8 +87,7 @@ fn compile_node(heap: *Heap, id: Id, ir: Ir, builder: *Builder) error{OutOfMemor
         .compare => |args| {
             try builder.push_from_stack(args.left);
             try builder.push_from_stack(args.right);
-            // try builder.compare(id);
-            @panic("do we really need compare?");
+            try builder.compare(id);
         },
         .call => |call| {
             for (call.args) |arg| try builder.push_from_stack(arg);
@@ -192,6 +193,12 @@ const Builder = struct {
     }
     pub fn shift_right(builder: *Builder, id: Id) !void {
         try builder.instructions.append(builder.ally, .shift_right);
+        _ = builder.stack.pop();
+        _ = builder.stack.pop();
+        try builder.stack.append(builder.ally, id);
+    }
+    pub fn compare(builder: *Builder, id: Id) !void {
+        try builder.instructions.append(builder.ally, .compare);
         _ = builder.stack.pop();
         _ = builder.stack.pop();
         try builder.stack.append(builder.ally, id);

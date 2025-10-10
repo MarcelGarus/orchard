@@ -102,6 +102,12 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
                 const a: i64 = @bitCast(data_stack.pop() orelse return error.bad_instruction);
                 try data_stack.append(ally, @bitCast(@mod(a, b)));
             },
+            .compare => {
+                const b: i64 = @bitCast(data_stack.pop() orelse return error.bad_instruction);
+                const a: i64 = @bitCast(data_stack.pop() orelse return error.bad_instruction);
+                const result: Word = if (a == b) 0 else if (a > b) 1 else 2;
+                try data_stack.append(ally, result);
+            },
             .if_not_zero => |if_| {
                 const condition = data_stack.pop() orelse return error.bad_if;
                 try call_stack.append(ally, ip);

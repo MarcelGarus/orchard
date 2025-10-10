@@ -40,7 +40,7 @@ const Parser = struct {
         parser.cursor += 1;
     }
     fn is_at_end(parser: Parser) bool {
-        return parser.cursor == parser.input.len;
+        return parser.cursor >= parser.input.len;
     }
     fn consume_whitespace(parser: *Parser) void {
         while (true) : (parser.advance()) {
@@ -148,39 +148,29 @@ const Parser = struct {
     }
 
     fn parse_struct(parser: *Parser) !?Expr {
-        if (!parser.consume("&")) return null;
+        if (!parser.consume("[")) return null;
         var fields = ArrayList(Field).empty;
         while (parser.parse_name()) |name| {
-            const value =
+            const value: Expr =
                 if (parser.consume(":"))
                     try parser.parse_expr() orelse return error.ExpectedValue
                 else
-                    Expr{ .name = name };
+                    .nil;
 
             try fields.append(parser.ally, .{ .name = name, .value = value });
         }
+        if (!parser.consume("]")) return error.ExpectedClosingBracket;
 
         return .{ .struct_ = fields.items };
-    }
-
-    fn parse_enum(parser: *Parser) !?Expr {
-        if (!parser.consume(":")) return null;
-        const variant = parser.parse_name() orelse return error.ExpectedVariant;
-        const payload =
-            if (parser.consume(":"))
-                try parser.parse_expr() orelse return error.ExpectedPayload
-            else
-                Expr{ .struct_ = &[_]Field{} };
-
-        const boxed_payload = try parser.ally.create(Expr);
-        boxed_payload.* = payload;
-        return .{ .enum_ = .{ .variant = variant, .payload = boxed_payload } };
     }
 
     fn parse_lambda(parser: *Parser) !?Expr {
         if (!parser.consume("|")) return null;
         var params = ArrayList(Str).empty;
-        while (true) try params.append(parser.ally, parser.parse_name() orelse break);
+        while (true) {
+            try params.append(parser.ally, parser.parse_name() orelse break);
+            if (!parser.consume(",")) break;
+        }
         if (!parser.consume("|")) return error.ExpectedClosingPipe;
         const body = try parser.parse_expr() orelse return error.ExpectedLambdaBody;
         const boxed_body = try parser.ally.create(Expr);
@@ -193,14 +183,17 @@ const Parser = struct {
         StringDoesNotEnd,
         NoEscapeSequence,
         UnknownEscapeSequence,
+        ExpectedArrow,
         ExpectedFieldName,
         ExpectedValue,
         ExpectedVariant,
         ExpectedPayload,
         ExpectedLambdaBody,
+        ExpectedOpeningBrace,
         ExpectedClosingPipe,
         ExpectedClosingBrace,
         ExpectedClosingParen,
+        ExpectedClosingBracket,
         ExpectedCondition,
         ExpectedCaseVariant,
         ExpectedCasePayload,
@@ -215,8 +208,6 @@ const Parser = struct {
                 .{ .string = string }
             else if (try parser.parse_struct()) |struct_|
                 struct_
-            else if (try parser.parse_enum()) |enum_|
-                enum_
             else if (try parser.parse_lambda()) |lambda|
                 lambda
             else if (try parser.parse_block()) |expr|
@@ -252,17 +243,17 @@ const Parser = struct {
                 boxed_right.* = right;
                 expr = .{ .var_ = .{ .name = name, .value = boxed_right } };
             } else if (parser.consume("%")) {
+                if (!parser.consume("{")) return error.ExpectedOpeningBrace;
                 var cases = ArrayList(Case).empty;
-                while (parser.consume("case")) {
-                    const variant = parser.parse_name() orelse return error.ExpectedCaseVariant;
+                while (parser.parse_name()) |variant| {
                     const payload = payload: {
-                        if (parser.consume("(")) {
+                        if (parser.consume(":")) {
                             const name = parser.parse_name() orelse return error.ExpectedCasePayload;
-                            if (!parser.consume(")")) return error.ExpectedClosingParen;
                             break :payload name;
                         }
                         break :payload null;
                     };
+                    if (!parser.consume("->")) return error.ExpectedArrow;
                     const body = try parser.parse_expr() orelse return error.ExpectedCaseBody;
                     try cases.append(parser.ally, .{
                         .variant = variant,
@@ -270,6 +261,7 @@ const Parser = struct {
                         .body = body,
                     });
                 }
+                if (!parser.consume("}")) return error.ExpectedClosingBrace;
 
                 const boxed_condition = try parser.ally.create(Expr);
                 boxed_condition.* = expr;
@@ -283,7 +275,7 @@ const Parser = struct {
     fn parse_block(parser: *Parser) !?Expr {
         if (!parser.consume("{")) return null;
         const exprs = try parser.parse_exprs();
-        if (!parser.consume("}")) return error.ExpectedClosingParen;
+        if (!parser.consume("}")) return error.ExpectedClosingBrace;
         return .{ .body = exprs };
     }
 

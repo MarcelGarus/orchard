@@ -39,6 +39,8 @@ pub const Instruction = union(enum) {
 
     shift_right,
 
+    compare,
+
     // Pops a word. If the word is not zero, evaluates the then instructions.
     // Otherwise, the else instructions.
     if_not_zero: struct { then: Object, else_: Object },
@@ -60,46 +62,43 @@ pub const Instruction = union(enum) {
 
     pub fn new_instruction(heap: *Heap, instruction: Instruction) !Object {
         return switch (instruction) {
-            .push_word => |word| try Object.new_enum(
-                heap,
-                "push_word",
-                try Object.new_int(heap, @bitCast(word)),
-            ),
-            .push_address => |object| try Object.new_enum(heap, "push_address", object),
-            .push_from_stack => |offset| try Object.new_enum(
-                heap,
-                "push_from_stack",
-                try Object.new_int(heap, @intCast(offset)),
-            ),
-            .pop => |amount| try Object.new_enum(heap, "pop", try Object.new_int(heap, @intCast(amount))),
-            .pop_below_top => |amount| try Object.new_enum(heap, "pop_below_top", try Object.new_int(heap, @intCast(amount))),
-            .add => try Object.new_enum(heap, "add", try Object.new_nil(heap)),
-            .subtract => try Object.new_enum(heap, "subtract", try Object.new_nil(heap)),
-            .multiply => try Object.new_enum(heap, "multiply", try Object.new_nil(heap)),
-            .divide => try Object.new_enum(heap, "divide", try Object.new_nil(heap)),
-            .modulo => try Object.new_enum(heap, "modulo", try Object.new_nil(heap)),
-            .shift_left => try Object.new_enum(heap, "shift_left", try Object.new_nil(heap)),
-            .shift_right => try Object.new_enum(heap, "shift_right", try Object.new_nil(heap)),
-            .if_not_zero => |if_| try Object.new_enum(
-                heap,
-                "if_not_zero",
-                try Object.new_struct(heap, .{ .then = if_.then, .@"else" = if_.else_ }),
-            ),
-            .new => |new| try Object.new_enum(
-                heap,
-                "new",
-                try Object.new_struct(heap, .{
+            .push_word => |word| try Object.new_struct(heap, .{
+                .push_word = try Object.new_int(heap, @bitCast(word)),
+            }),
+            .push_address => |object| try Object.new_struct(heap, .{ .push_address = object }),
+            .push_from_stack => |offset| try Object.new_struct(heap, .{
+                .push_from_stack = try Object.new_int(heap, @intCast(offset)),
+            }),
+            .pop => |amount| try Object.new_struct(heap, .{
+                .pop = try Object.new_int(heap, @intCast(amount)),
+            }),
+            .pop_below_top => |amount| try Object.new_struct(heap, .{
+                .pop_below_top = try Object.new_int(heap, @intCast(amount)),
+            }),
+            .add => try Object.new_struct(heap, .{ .add = try Object.new_nil(heap) }),
+            .subtract => try Object.new_struct(heap, .{ .subtract = try Object.new_nil(heap) }),
+            .multiply => try Object.new_struct(heap, .{ .multiply = try Object.new_nil(heap) }),
+            .divide => try Object.new_struct(heap, .{ .divide = try Object.new_nil(heap) }),
+            .modulo => try Object.new_struct(heap, .{ .modulo = try Object.new_nil(heap) }),
+            .shift_left => try Object.new_struct(heap, .{ .shift_left = try Object.new_nil(heap) }),
+            .shift_right => try Object.new_struct(heap, .{ .shift_right = try Object.new_nil(heap) }),
+            .compare => try Object.new_struct(heap, .{ .compare = try Object.new_nil(heap) }),
+            .if_not_zero => |if_| try Object.new_struct(heap, .{
+                .if_not_zero = try Object.new_struct(heap, .{ .then = if_.then, .@"else" = if_.else_ }),
+            }),
+            .new => |new| try Object.new_struct(heap, .{
+                .new = try Object.new_struct(heap, .{
                     .tag = try Object.new_int(heap, @intCast(new.tag)),
                     .num_pointers = try Object.new_int(heap, @intCast(new.num_pointers)),
                     .num_literals = try Object.new_int(heap, @intCast(new.num_literals)),
                 }),
-            ),
-            .tag => try Object.new_enum(heap, "tag", try Object.new_nil(heap)),
-            .num_pointers => try Object.new_enum(heap, "num_pointers", try Object.new_nil(heap)),
-            .num_literals => try Object.new_enum(heap, "num_literals", try Object.new_nil(heap)),
-            .load => try Object.new_enum(heap, "load", try Object.new_nil(heap)),
-            .eval => try Object.new_enum(heap, "eval", try Object.new_nil(heap)),
-            .crash => try Object.new_enum(heap, "crash", try Object.new_nil(heap)),
+            }),
+            .tag => try Object.new_struct(heap, .{ .tag = try Object.new_nil(heap) }),
+            .num_pointers => try Object.new_struct(heap, .{ .num_pointers = try Object.new_nil(heap) }),
+            .num_literals => try Object.new_struct(heap, .{ .num_literals = try Object.new_nil(heap) }),
+            .load => try Object.new_struct(heap, .{ .load = try Object.new_nil(heap) }),
+            .eval => try Object.new_struct(heap, .{ .eval = try Object.new_nil(heap) }),
+            .crash => try Object.new_struct(heap, .{ .crash = try Object.new_nil(heap) }),
         };
     }
     pub fn new_instructions(heap: *Heap, instructions: []const Instruction) !Object {
@@ -120,8 +119,9 @@ pub const Instruction = union(enum) {
             .struct_ => {
                 const instruction = instructions.field_by_name("head");
                 const rest = instructions.field_by_name("tail");
-                const variant = instruction.variant();
-                const payload = instruction.payload();
+                const first_field = instruction.field_by_index(0);
+                const variant = first_field.key;
+                const payload = first_field.value;
                 const inst: Instruction =
                     if (variant.is_symbol("push_word"))
                         .{ .push_word = @bitCast(payload.int_value()) }
@@ -147,6 +147,8 @@ pub const Instruction = union(enum) {
                         .{ .shift_left = {} }
                     else if (variant.is_symbol("shift_right"))
                         .{ .shift_right = {} }
+                    else if (variant.is_symbol("compare"))
+                        .{ .compare = {} }
                     else if (variant.is_symbol("if_not_zero"))
                         .{ .if_not_zero = .{
                             .then = payload.field_by_name("then"),
@@ -196,6 +198,7 @@ pub const Instruction = union(enum) {
             .modulo => try writer.print("modulo\n", .{}),
             .shift_left => try writer.print("shift_left\n", .{}),
             .shift_right => try writer.print("shift_right\n", .{}),
+            .compare => try writer.print("compare\n", .{}),
             .if_not_zero => |if_| {
                 try writer.print("if_not_zero\n", .{});
                 for (0..(indentation + 1)) |_| try writer.print("  ", .{});

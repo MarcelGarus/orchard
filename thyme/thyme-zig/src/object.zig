@@ -21,10 +21,9 @@ pub const TAG_NIL = 0;
 pub const TAG_INT = 1;
 pub const TAG_SYMBOL = 2;
 pub const TAG_STRUCT = 3;
-pub const TAG_ENUM = 4;
-pub const TAG_FUN = 5;
-pub const TAG_CLOSURE = 6;
-pub const TAG_LAMBDA = 7;
+pub const TAG_FUN = 4;
+pub const TAG_CLOSURE = 5;
+pub const TAG_LAMBDA = 6;
 
 heap: *Heap,
 address: Address,
@@ -35,7 +34,7 @@ pub fn get_allocation(object: Object) Allocation {
     return object.heap.get(object.address);
 }
 
-const Kind = enum { nil, int, symbol, struct_, enum_, fun, lambda };
+const Kind = enum { nil, int, symbol, struct_, fun, lambda };
 
 pub fn kind(object: Object) Kind {
     const allocation = object.get_allocation();
@@ -44,7 +43,6 @@ pub fn kind(object: Object) Kind {
         TAG_INT => .int,
         TAG_SYMBOL => .symbol,
         TAG_STRUCT => .struct_,
-        TAG_ENUM => .enum_,
         TAG_FUN => .fun,
         TAG_LAMBDA => .lambda,
         else => @panic("unknown tag"),
@@ -156,32 +154,6 @@ pub fn field_by_name(struct_: Object, comptime name: []const u8) Object {
     @panic("field not in struct");
 }
 
-// Enum
-
-pub fn new_enum(heap: *Heap, comptime variant_: []const u8, payload_: Object) !Object {
-    const address = try heap.new_fancy(TAG_ENUM, .{
-        (try Object.new_symbol(heap, variant_)).address,
-        payload_.address,
-    });
-    return .{ .heap = heap, .address = address };
-}
-
-pub fn variant(enum_: Object) Object {
-    if (enum_.kind() != .enum_) @panic("not an enum");
-    return .{
-        .heap = enum_.heap,
-        .address = enum_.get_allocation().pointers[0],
-    };
-}
-
-pub fn payload(enum_: Object) Object {
-    if (enum_.kind() != .enum_) @panic("not an enum");
-    return .{
-        .heap = enum_.heap,
-        .address = enum_.get_allocation().pointers[1],
-    };
-}
-
 // Fun
 
 pub fn new_fun(heap: *Heap, num_params_: usize, ir: Object, instructions_: Object) !Object {
@@ -265,12 +237,6 @@ pub fn format_indented(object: Object, writer: *Writer, indentation: usize) erro
                 try writer.print(":\n", .{});
                 try field.value.format_indented(writer, indentation + 2);
             }
-        },
-        .enum_ => {
-            try writer.print("| ", .{});
-            try object.variant().format_symbol(writer);
-            try writer.print(":\n", .{});
-            try object.payload().format_indented(writer, indentation + 2);
         },
         .fun => {
             try writer.print("fun\n", .{});

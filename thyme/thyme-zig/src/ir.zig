@@ -38,7 +38,7 @@ pub const Node = union(enum) {
     multiply: Args,
     divide: Args,
     modulo: Args,
-    compare: Args,
+    compare: Args, // equal: 0, greater: 1, less: 2
     call: Call,
     if_not_zero: If,
     crash: Id,
@@ -208,24 +208,8 @@ pub const BodyBuilder = struct {
     pub fn new_struct(body: *BodyBuilder, keys_and_values: []Id) !Id {
         return try body.new(Object.TAG_STRUCT, keys_and_values, &[_]Id{});
     }
-
-    pub fn new_enum(body: *BodyBuilder, variant: Object, payload: Id) !Id {
-        const variant_ref = try body.object(variant);
-        const pointers = try body.parent.ally.alloc(Id, 2);
-        pointers[0] = variant_ref;
-        pointers[1] = payload;
-        return try body.new(Object.TAG_ENUM, pointers, &[_]Id{});
-    }
-    pub fn assert_is_enum(body: *BodyBuilder, obj: Id) !void {
-        try body.assert_has_tag(obj, Object.TAG_ENUM);
-    }
-    pub fn get_enum_variant(body: *BodyBuilder, enum_: Id) !Id {
-        const zero = try body.word(0);
-        return try body.load(enum_, zero);
-    }
-    pub fn get_enum_payload(body: *BodyBuilder, enum_: Id) !Id {
-        const one = try body.word(1);
-        return try body.load(enum_, one);
+    pub fn assert_is_struct(body: *BodyBuilder, obj: Id) !void {
+        try body.assert_has_tag(obj, Object.TAG_STRUCT);
     }
 
     pub fn new_closure(body: *BodyBuilder, captured: []Id) !Id {

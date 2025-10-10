@@ -128,6 +128,7 @@ fn compile_expr(
     common: Common,
 ) error{OutOfMemory}!Id {
     switch (expr) {
+        .nil => return try body.object(common.nil),
         .name => |name| return bindings.get(name),
         .body => |bod| return compile_body(ally, bod, body, bindings, heap, common),
         .int => |int| return body.object(try Object.new_int(heap, int)),
@@ -141,24 +142,37 @@ fn compile_expr(
             return try body.new_struct(fields);
         },
         .member => @panic("member"),
-        .enum_ => |enum_| {
-            const variant = try Object.new_symbol(heap, enum_.variant);
-            const payload = try compile_expr(ally, enum_.payload.*, body, bindings, heap, common);
-            return body.new_enum(variant, payload);
-        },
         .switch_ => |switch_| {
             const condition = try compile_expr(ally, switch_.condition.*, body, bindings, heap, common);
-            try body.assert_is_enum(condition);
-            const variant = try body.get_enum_variant(condition);
-            const payload = try body.get_enum_payload(condition);
+            try body.assert_is_struct(condition);
+            const num_pointers = try body.num_pointers(condition);
+            _ = try body.if_not_zero(
+                num_pointers,
+                then: {
+                    var child = body.child_body();
+                    break :then try child.finish_with_zero();
+                },
+                else_: {
+                    var child = body.child_body();
+                    const message = try Object.new_symbol(heap, "no fields");
+                    const message_ref = try child.object(message);
+                    break :else_ try child.finish_with_crash(message_ref);
+                },
+            );
+
+            const zero = try body.word(0);
+            const one = try body.word(1);
+            const variant = try body.load(condition, zero);
+            const payload = try body.load(condition, one);
 
             var res = child: {
                 var child = body.child_body();
                 const message = try Object.new_symbol(heap, "no switch case matched");
-                const message_ref = try body.object(message);
+                const message_ref = try child.object(message);
                 break :child try child.finish_with_crash(message_ref);
             };
-            for (switch_.cases) |case| {
+            for (0..switch_.cases.len) |i| {
+                const case = switch_.cases[switch_.cases.len - 1 - i];
                 const candidate = try Object.new_symbol(heap, case.variant);
                 var inner = body.child_body();
                 const candidate_ref = try inner.object(candidate);
@@ -167,9 +181,8 @@ fn compile_expr(
                 args[0] = variant;
                 args[1] = candidate_ref;
                 const matches = try inner.call(symbol_compare_ref, args);
-                const matches_int = try inner.get_int_value(matches);
                 const check = try inner.if_not_zero(
-                    matches_int,
+                    matches,
                     then: {
                         const snapshot = bindings.bindings.items.len;
                         if (case.payload) |payload_name|
@@ -284,6 +297,7 @@ fn collect_captured(
     out: *ArrayList(Str),
 ) error{OutOfMemory}!void {
     switch (expr) {
+        .nil => {},
         .name => |name| {
             for (ignore.items) |ig|
                 if (std.mem.eql(u8, ig, name))
@@ -305,7 +319,6 @@ fn collect_captured(
             }
         },
         .member => |member| try collect_captured_in_new_scope(ally, member.of.*, ignore, out),
-        .enum_ => |enum_| try collect_captured_in_new_scope(ally, enum_.payload.*, ignore, out),
         .switch_ => |switch_| {
             try collect_captured_in_new_scope(ally, switch_.condition.*, ignore, out);
             for (switch_.cases) |case| {
