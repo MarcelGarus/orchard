@@ -6,16 +6,12 @@
 const std = @import("std");
 const Writer = std.io.Writer;
 
-const Ast = @import("ast.zig");
-const ast_to_ir = @import("ast_to_ir.zig");
+const compiler = @import("compiler.zig");
+const Ir = compiler.Ir;
 const Heap = @import("heap.zig");
 const Address = Heap.Address;
 const Word = Heap.Word;
 const Allocation = Heap.Allocation;
-const Instruction = @import("instruction.zig").Instruction;
-const Ir = @import("ir.zig");
-const ir_to_instructions = @import("ir_to_instructions.zig");
-const str_to_ast = @import("str_to_ast.zig");
 
 pub const TAG_NIL = 0;
 pub const TAG_INT = 1;
@@ -30,7 +26,7 @@ address: Address,
 
 const Object = @This();
 
-pub fn get_allocation(object: Object) Allocation {
+fn get_allocation(object: Object) Allocation {
     return object.heap.get(object.address);
 }
 
@@ -54,7 +50,11 @@ pub fn kind(object: Object) Kind {
 pub fn new_nil(heap: *Heap) !Object {
     return .{
         .heap = heap,
-        .address = try heap.new_fancy(TAG_NIL, .{}),
+        .address = try heap.new(.{
+            .tag = TAG_NIL,
+            .pointers = &[_]Word{},
+            .literals = &[_]Word{},
+        }),
     };
 }
 
@@ -63,8 +63,10 @@ pub fn new_nil(heap: *Heap) !Object {
 pub fn new_int(heap: *Heap, val: i64) !Object {
     return .{
         .heap = heap,
-        .address = try heap.new_fancy(TAG_INT, .{
-            @as(Word, @bitCast(val)),
+        .address = try heap.new(.{
+            .tag = TAG_INT,
+            .pointers = &[_]Word{},
+            .literals = &[_]Word{@as(Word, @bitCast(val))},
         }),
     };
 }
@@ -87,7 +89,7 @@ pub fn new_symbol(heap: *Heap, val: []const u8) !Object {
     }
     const address = try heap.new(.{
         .tag = TAG_SYMBOL,
-        .pointers = &[_]Address{},
+        .pointers = &[_]Word{},
         .literals = words,
     });
     heap.ally.free(words);
@@ -114,7 +116,7 @@ pub fn is_symbol(symbol: Object, check: []const u8) bool {
 
 pub fn new_struct(heap: *Heap, fields: anytype) !Object {
     const field_types = @typeInfo(@TypeOf(fields)).@"struct".fields;
-    const words = try heap.ally.alloc(Address, 2 * field_types.len);
+    const words = try heap.ally.alloc(Word, 2 * field_types.len);
     inline for (0.., field_types) |i, type_| {
         words[2 * i] = (try Object.new_symbol(heap, type_.name)).address;
         words[2 * i + 1] = @as(Object, @field(fields, type_.name)).address;
@@ -136,9 +138,9 @@ const Field = struct { key: Object, value: Object };
 
 pub fn field_by_index(struct_: Object, index: usize) Field {
     if (struct_.kind() != .struct_) @panic("not a struct");
-    const pointers = struct_.get_allocation().pointers;
-    const key_addr = pointers[2 * index];
-    const val_addr = pointers[2 * index + 1];
+    const words = struct_.get_allocation().pointers;
+    const key_addr = words[2 * index];
+    const val_addr = words[2 * index + 1];
     const key = Object{ .heap = struct_.heap, .address = key_addr };
     const value = Object{ .heap = struct_.heap, .address = val_addr };
     return .{ .key = key, .value = value };
@@ -157,29 +159,12 @@ pub fn field_by_name(struct_: Object, comptime name: []const u8) Object {
 // Fun
 
 pub fn new_fun(heap: *Heap, num_params_: usize, ir: Object, instructions_: Object) !Object {
-    const address = try heap.new_fancy(TAG_FUN, .{
-        ir.address,
-        instructions_.address,
-        @as(Word, @intCast(num_params_)),
+    const address = try heap.new(.{
+        .tag = TAG_FUN,
+        .pointers = &[_]Word{ ir.address, instructions_.address },
+        .literals = &[_]Word{num_params_},
     });
     return .{ .heap = heap, .address = address };
-}
-pub fn new_fun_from_ir(heap: *Heap, ir: Ir) !Object {
-    // std.debug.print("IR:\n{f}", .{ir});
-    return try Object.new_fun(
-        heap,
-        ir.params.len,
-        try Object.new_nil(heap),
-        try ir_to_instructions.compile(heap, ir),
-    );
-}
-pub fn new_fun_from_ast(heap: *Heap, env: anytype, ast: Ast.Expr) !Object {
-    const ir = try ast_to_ir.compile(heap.ally, env, ast, heap);
-    return try new_fun_from_ir(heap, ir);
-}
-pub fn new_fun_from_code(heap: *Heap, env: anytype, code: []const u8) !Object {
-    const ast = try str_to_ast.parse(heap.ally, code);
-    return try new_fun_from_ast(heap, env, ast);
 }
 
 pub fn num_params(fun: Object) usize {
@@ -198,21 +183,12 @@ pub fn instructions(fun: Object) Object {
 // Lambda
 
 pub fn new_lambda(heap: *Heap, fun: Object, closure: Object) !Object {
-    const address = try heap.new_fancy(TAG_LAMBDA, .{
-        fun.address,
-        closure.address,
+    const address = try heap.new(.{
+        .tag = TAG_LAMBDA,
+        .pointers = &[_]Word{ fun.address, closure.address },
+        .literals = &[_]Word{},
     });
     return .{ .heap = heap, .address = address };
-}
-pub fn new_lambda_from_ir(heap: *Heap, ir: Ir) !Object {
-    const fun = try new_fun_from_ir(heap, ir);
-    const closure = try Object.new_nil(heap);
-    return try Object.new_lambda(heap, fun, closure);
-}
-pub fn new_lambda_from_code(heap: *Heap, code: []const u8) !Object {
-    const fun = try new_fun_from_code(heap, code);
-    const closure = try Object.new_nil(heap);
-    return try Object.new_lambda(heap, fun, closure);
 }
 
 pub fn format(object: Object, writer: *Writer) !void {
@@ -244,7 +220,7 @@ pub fn format_indented(object: Object, writer: *Writer, indentation: usize) erro
             try writer.print("{}\n", .{object.num_params()});
             for (0..(indentation + 1)) |_| try writer.print("  ", .{});
             try writer.print("instructions:\n", .{});
-            try object.instructions().format_instructions(writer, indentation + 2);
+            try object.instructions().format(writer);
         },
         .lambda => try writer.print("lambda\n", .{}),
     }
@@ -261,13 +237,4 @@ pub fn format_symbol(symbol: Object, writer: *Writer) !void {
                 try writer.print("?", .{});
         }
     }
-}
-
-pub fn format_instructions(instrs: Object, writer: *Writer, indentation: usize) error{WriteFailed}!void {
-    const parsed = Instruction.parse_first(instrs) catch {
-        try instrs.format_indented(writer, indentation);
-        return;
-    } orelse return;
-    try parsed.instruction.format_indented(writer, indentation);
-    try parsed.rest.format_instructions(writer, indentation);
 }

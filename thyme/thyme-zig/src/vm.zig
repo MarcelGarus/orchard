@@ -1,9 +1,10 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 
+const compiler = @import("compiler.zig");
 const Heap = @import("heap.zig");
-const Word = Heap.Word;
 const Address = Heap.Address;
+const Word = Heap.Word;
 const Instruction = @import("instruction.zig").Instruction;
 const Object = @import("object.zig");
 
@@ -22,12 +23,13 @@ pub fn init(heap: *Heap) Vm {
 }
 
 pub fn eval(heap: *Heap, env: anytype, code: []const u8) !Object {
-    const fun = try Object.new_fun_from_code(heap, env, code);
+    const fun = try compiler.code_to_fun(heap, env, code);
     return try call(heap, fun, .{});
 }
 
 pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
     const ally = heap.ally;
+
     var data_stack = ArrayList(Word).empty;
     var call_stack = ArrayList(Object).empty;
     var ip = fun.instructions();
@@ -36,7 +38,7 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
         @panic("called function with wrong number of params");
     inline for (args) |arg| {
         if (@TypeOf(arg) == Object) @compileError("args should be objects");
-        try data_stack.append(ally, @intCast(arg.address.address));
+        try data_stack.append(ally, @intCast(arg.address));
     }
 
     while (true) {
@@ -44,13 +46,12 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
             std.debug.print("Couldn't parse instruction:\n{f}", .{ip});
             return e;
         } orelse {
-            ip = call_stack.pop() orelse {
+            ip = call_stack.pop() orelse
                 // The root function returned.
                 return .{
                     .heap = heap,
-                    .address = .{ .address = data_stack.pop() orelse unreachable },
+                    .address = data_stack.pop() orelse unreachable,
                 };
-            };
             continue;
         };
         const instruction = parsed.instruction;
@@ -63,10 +64,7 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
 
         switch (instruction) {
             .push_word => |word| try data_stack.append(ally, word),
-            .push_address => |object| try data_stack.append(
-                ally,
-                object.address.address,
-            ),
+            .push_address => |object| try data_stack.append(ally, object.address),
             .push_from_stack => |offset| try data_stack.append(
                 ally,
                 data_stack.items[data_stack.items.len - 1 - offset],
@@ -114,59 +112,47 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
                 ip = if (condition != 0) if_.then else if_.else_;
             },
             .new => |new| {
-                const pointers = try ally.alloc(Address, new.num_pointers);
+                const pointers = try ally.alloc(Word, new.num_pointers);
                 const literals = try ally.alloc(Word, new.num_literals);
                 for (0..new.num_literals) |i|
                     literals[new.num_literals - 1 - i] = data_stack.pop() orelse return error.bad_instruction;
                 for (0..new.num_pointers) |i|
-                    pointers[new.num_pointers - 1 - i] = .{
-                        .address = data_stack.pop() orelse return error.bad_instruction,
-                    };
+                    pointers[new.num_pointers - 1 - i] = data_stack.pop() orelse return error.bad_instruction;
                 const address = try heap.new(.{
                     .tag = new.tag,
                     .pointers = pointers,
                     .literals = literals,
                 });
-                try data_stack.append(ally, address.address);
+                try data_stack.append(ally, address);
             },
             .tag => {
-                const address = Address{
-                    .address = data_stack.pop() orelse return error.bad_instruction,
-                };
+                const address = data_stack.pop() orelse return error.bad_instruction;
                 const tag = heap.get(address).tag;
                 try data_stack.append(ally, @intCast(tag));
             },
             .num_pointers => {
-                const address = Address{
-                    .address = data_stack.pop() orelse return error.bad_instruction,
-                };
+                const address = data_stack.pop() orelse return error.bad_instruction;
                 const num_pointers = heap.get(address).pointers.len;
                 try data_stack.append(ally, @intCast(num_pointers));
             },
             .num_literals => {
-                const address = Address{
-                    .address = data_stack.pop() orelse return error.bad_instruction,
-                };
+                const address = data_stack.pop() orelse return error.bad_instruction;
                 const num_literals = heap.get(address).literals.len;
                 try data_stack.append(ally, @intCast(num_literals));
             },
             .load => {
                 const offset: usize = @intCast(data_stack.pop() orelse return error.bad_instruction);
-                const base = Address{
-                    .address = @intCast(data_stack.pop() orelse return error.bad_instruction),
-                };
+                const base = data_stack.pop() orelse return error.bad_instruction;
                 const word = heap.load(base, offset);
                 try data_stack.append(ally, word);
             },
             .eval => {
-                const evaled = Object{
+                const to_eval = Object{
                     .heap = heap,
-                    .address = .{
-                        .address = data_stack.pop() orelse return error.bad_instruction,
-                    },
+                    .address = data_stack.pop() orelse return error.bad_instruction,
                 };
                 try call_stack.append(ally, ip);
-                ip = evaled;
+                ip = to_eval;
             },
             .crash => {
                 @panic("crashed");

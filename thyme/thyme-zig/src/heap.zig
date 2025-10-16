@@ -17,7 +17,7 @@ const Writer = std.io.Writer;
 const writeSliceEndian = Writer.writeSliceEndian;
 
 pub const Word = u64;
-pub const Address = packed struct { address: Word };
+pub const Address = Word;
 const Heap = @This();
 
 // The heap is word-based: Rather than addressing bytes, you always address
@@ -33,11 +33,11 @@ pub fn init(ally: Allocator) Heap {
     };
 }
 
-// The user-visible payload of an allocation. Note that the allocation has a
-// separate list of pointers and literals. In particular, you have no low-level
-// control of the memory layout and can't intertwine pointers and literals.
+// The user-visible payload of an allocation. Note that because the allocation
+// has separate lists of pointers and literals, you have no low-level control of
+// the memory layout and can't mix pointers and literals.
 pub const Allocation = struct {
-    tag: u8, // space you can use to tag types of objects
+    tag: u8,
     pointers: []const Address, // point to other heap allocations
     literals: []const Word, // word literals
 };
@@ -47,14 +47,14 @@ pub const Allocation = struct {
 // [header][pointers][literals]
 
 const Header = packed struct {
-    num_words: u24, // total number of words after the header
-    num_pointers: u24, // how many of those words are pointers
+    num_pointers: u24,
+    num_literals: u24,
+    tag: u8,
     meta: packed struct {
         // meta stuff used by the heap itself
         marked: u1 = 0, // marking for mark-sweep garbage collection
         padding: u7 = 0,
     },
-    tag: u8,
 };
 comptime {
     if (@sizeOf(Header) != @sizeOf(Word))
@@ -62,69 +62,28 @@ comptime {
 }
 
 pub fn new(heap: *Heap, allocation: Allocation) !Address {
-    const id: Address = .{ .address = @intCast(heap.memory.items.len) };
+    const address: Address = @intCast(heap.memory.items.len);
     const header = Header{
-        .num_words = @intCast(allocation.pointers.len + allocation.literals.len),
         .num_pointers = @intCast(allocation.pointers.len),
+        .num_literals = @intCast(allocation.literals.len),
         .tag = allocation.tag,
         .meta = .{},
     };
     try heap.memory.append(heap.ally, @bitCast(header));
     for (allocation.pointers) |pointer|
-        try heap.memory.append(heap.ally, pointer.address);
+        try heap.memory.append(heap.ally, pointer);
     for (allocation.literals) |literal|
         try heap.memory.append(heap.ally, literal);
-    return id;
+    return address;
 }
 
-pub fn new_fancy(heap: *Heap, tag: u8, words: anytype) !Address {
-    const field_infos = @typeInfo(@TypeOf(words)).@"struct".fields;
-    comptime var had_literal = false;
-    comptime var num_pointers = field_infos.len;
-    inline for (0.., field_infos) |i, field| {
-        const value = @field(words, field.name);
-        if (@TypeOf(value) == Address) {
-            if (had_literal) {
-                @compileLog(field_infos, @TypeOf(value));
-                @compileError("you can only store pointers followed by words, not mix them");
-            }
-        } else if (@TypeOf(value) == Word or @TypeOf(value) == comptime_int) {
-            if (!had_literal) {
-                had_literal = true;
-                num_pointers = i;
-            }
-        } else {
-            @compileLog(@TypeOf(value));
-            @compileError("can only contain pointers and words");
-        }
-    }
-    const id: Address = .{ .address = @intCast(heap.memory.items.len) };
-    const header = Header{
-        .num_words = @intCast(field_infos.len),
-        .num_pointers = @intCast(num_pointers),
-        .meta = .{},
-        .tag = tag,
-    };
-    try heap.memory.append(heap.ally, @bitCast(header));
-    inline for (field_infos) |field| {
-        const value = @field(words, field.name);
-        if (@TypeOf(value) == Address)
-            try heap.memory.append(heap.ally, value.address)
-        else if (@TypeOf(value) == Word or @TypeOf(value) == comptime_int)
-            try heap.memory.append(heap.ally, value)
-        else
-            unreachable;
-    }
-    return id;
-}
-
-pub fn get(heap: Heap, id: Address) Allocation {
-    const header: Header = @bitCast(heap.memory.items[id.address]);
+pub fn get(heap: Heap, address: Address) Allocation {
+    const header: Header = @bitCast(heap.memory.items[address]);
     const pointers: []const Address = @ptrCast(
-        heap.memory.items[id.address + 1 ..][0..@intCast(header.num_pointers)],
+        heap.memory.items[address + 1 ..][0..@intCast(header.num_pointers)],
     );
     const literals: []const Word = @ptrCast(
-        heap.memory.items[id.address + 1 ..][0..@intCast(header.num_words)][@intCast(header.num_pointers)..],
+        heap.memory.items[address + 1 ..][@intCast(header.num_pointers)..][0..@intCast(header.num_literals)],
     );
     return .{
         .tag = header.tag,
@@ -133,7 +92,7 @@ pub fn get(heap: Heap, id: Address) Allocation {
     };
 }
 pub fn load(heap: Heap, base: Address, word_index: usize) Word {
-    return heap.memory.items[base.address + 1 + word_index];
+    return heap.memory.items[base + 1 + word_index];
 }
 
 const Checkpoint = struct { address: Word };
@@ -154,27 +113,25 @@ pub fn deduplicate(heap: *Heap, from: Checkpoint, ally: Allocator) !ArrayList(Ma
         for (0..header.num_pointers) |j| {
             const pointer = heap.memory.items[read + 1 + j];
             for (map.items) |mapping| {
-                if (mapping.from.address == pointer) {
-                    heap.memory.items[read + 1 + j] = mapping.to.address;
+                if (mapping.from == pointer) {
+                    heap.memory.items[read + 1 + j] = mapping.to;
                     break;
                 }
             }
         }
         // Compare to existing objects.
         for (map.items) |mapping| {
-            const candidate = mapping.to.address;
+            const candidate = mapping.to;
             const candidate_header: Header = @bitCast(heap.memory.items[candidate]);
-            if (header.num_words != candidate_header.num_words) continue;
-            const total_words = 1 + header.num_words;
+            if (header.num_pointers != candidate_header.num_pointers) continue;
+            if (header.num_literals != candidate_header.num_literals) continue;
+            const total_words = 1 + header.num_pointers + header.num_literals;
             if (std.mem.eql(
                 Word,
                 heap.memory.items[read..][0..total_words],
                 heap.memory.items[candidate..][0..total_words],
             )) {
-                try map.append(ally, .{
-                    .from = .{ .address = read },
-                    .to = .{ .address = candidate },
-                });
+                try map.append(ally, .{ .from = read, .to = candidate });
                 break;
             }
         } else {
@@ -184,10 +141,7 @@ pub fn deduplicate(heap: *Heap, from: Checkpoint, ally: Allocator) !ArrayList(Ma
                 for (0..(1 + header.num_words)) |i|
                     heap.memory.items[write + i] = heap.memory.items[read + i];
             }
-            try map.append(ally, .{
-                .from = .{ .address = read },
-                .to = .{ .address = write },
-            });
+            try map.append(ally, .{ .from = read, .to = write });
             write += 1 + header.num_words;
         }
 
@@ -204,7 +158,7 @@ pub fn deduplicate(heap: *Heap, from: Checkpoint, ally: Allocator) !ArrayList(Ma
 }
 
 pub fn garbage_collect(heap: *Heap, from: Checkpoint, keep: Address) !ArrayList(Mapping) {
-    heap.mark(from.address, keep.address);
+    heap.mark(from.address, keep);
     return try heap.sweep(from.address);
 }
 fn mark(heap: *Heap, boundary: usize, address: usize) void {
@@ -229,18 +183,15 @@ fn sweep(heap: *Heap, boundary: usize) !ArrayList(Mapping) {
                 for (0..header.num_pointers) |j| {
                     const pointer = heap.memory.items[read + 1 + j];
                     for (map.items) |mapping| {
-                        if (mapping.from.address == pointer) {
-                            heap.memory.items[read + 1 + j] = mapping.to.address;
+                        if (mapping.from == pointer) {
+                            heap.memory.items[read + 1 + j] = mapping.to;
                             break;
                         }
                     }
                 }
                 for (0..size) |j|
                     heap.memory.items[write + j] = heap.memory.items[read + j];
-                try map.append(heap.ally, .{
-                    .from = .{ .address = read },
-                    .to = .{ .address = write },
-                });
+                try map.append(heap.ally, .{ .from = read, .to = write });
             }
             read += size;
             write += size;
@@ -265,12 +216,11 @@ pub fn dump(heap: Heap) void {
     while (i < heap.memory.items.len) {
         std.debug.print("{x:3} | ", .{i});
         const header: Header = @bitCast(heap.memory.items[i]);
-        std.debug.print("[{x}]", .{header.tag});
         for (0..header.num_pointers) |j|
             std.debug.print(" *{x}", .{heap.memory.items[i + 1 + j]});
-        for (header.num_pointers..header.num_words) |j|
-            std.debug.print(" {x}", .{heap.memory.items[i + 1 + j]});
+        for (0..header.num_literals) |j|
+            std.debug.print(" {x}", .{heap.memory.items[i + 1 + header.num_pointers + j]});
         std.debug.print("\n", .{});
-        i += 1 + header.num_words;
+        i += 1 + header.num_pointers + header.num_literals;
     }
 }
