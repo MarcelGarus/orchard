@@ -119,13 +119,13 @@ pub fn deduplicate(heap: *Heap, from: Checkpoint, ally: Allocator) !ArrayList(Ma
                 }
             }
         }
+        const total_words = 1 + header.num_pointers + header.num_literals;
         // Compare to existing objects.
         for (map.items) |mapping| {
             const candidate = mapping.to;
             const candidate_header: Header = @bitCast(heap.memory.items[candidate]);
             if (header.num_pointers != candidate_header.num_pointers) continue;
             if (header.num_literals != candidate_header.num_literals) continue;
-            const total_words = 1 + header.num_pointers + header.num_literals;
             if (std.mem.eql(
                 Word,
                 heap.memory.items[read..][0..total_words],
@@ -138,20 +138,14 @@ pub fn deduplicate(heap: *Heap, from: Checkpoint, ally: Allocator) !ArrayList(Ma
             // Not equal to an existing one. Copy it to the beginning of the
             // compressed heap.
             if (read > write) {
-                for (0..(1 + header.num_words)) |i|
+                for (0..total_words) |i|
                     heap.memory.items[write + i] = heap.memory.items[read + i];
             }
             try map.append(ally, .{ .from = read, .to = write });
-            write += 1 + header.num_words;
+            write += 1 + header.num_pointers + header.num_literals;
         }
 
-        read += 1 + header.num_words;
-
-        // std.debug.print(" *{}", .{heap.memory.items[i + 1 + j]});
-        // for (header.num_pointers..header.num_words) |j|
-        // std.debug.print(" {}", .{heap.memory.items[i + 1 + j]});
-        // std.debug.print("\n", .{});
-        // i += 1 + header.num_words;
+        read += total_words;
     }
     heap.memory.items.len = write;
     return map;
@@ -162,7 +156,6 @@ pub fn garbage_collect(heap: *Heap, from: Checkpoint, keep: Address) !ArrayList(
     return try heap.sweep(from.address);
 }
 fn mark(heap: *Heap, boundary: usize, address: usize) void {
-    std.debug.print("marking {x}\n", .{address});
     if (address < boundary) return;
     const header: *Header = @ptrCast(&heap.memory.items[address]);
     if (header.meta.marked == 1) return;
@@ -176,7 +169,7 @@ fn sweep(heap: *Heap, boundary: usize) !ArrayList(Mapping) {
     var map = ArrayList(Mapping).empty;
     while (read < heap.memory.items.len) {
         const header: *Header = @ptrCast(&heap.memory.items[read]);
-        const size = 1 + header.num_words;
+        const size = 1 + header.num_pointers + header.num_literals;
         if (header.meta.marked == 1) {
             header.meta.marked = 0;
             if (read != write) {
@@ -223,4 +216,27 @@ pub fn dump(heap: Heap) void {
         std.debug.print("\n", .{});
         i += 1 + header.num_pointers + header.num_literals;
     }
+}
+pub fn dump_stats(heap: Heap) void {
+    const num_words = heap.memory.items.len;
+    std.debug.print("{} words", .{num_words});
+
+    std.debug.print(", ", .{});
+    const num_bytes = num_words * 8;
+    for ([_][]const u8{ "B", "KiB", "Mib", "GiB", "TiB" }, 0..) |unit, index| {
+        const amount = num_bytes / std.math.pow(usize, 1024, index);
+        if (amount < 1024) {
+            std.debug.print("{} {s}", .{ amount, unit });
+            break;
+        }
+    } else std.debug.print("a lot of memory", .{});
+
+    var num_objects: usize = 0;
+    var i: usize = 0;
+    while (i < num_words) {
+        num_objects += 1;
+        const header: Header = @bitCast(heap.memory.items[i]);
+        i += 1 + header.num_pointers + header.num_literals;
+    }
+    std.debug.print(", {} objects\n", .{num_objects});
 }

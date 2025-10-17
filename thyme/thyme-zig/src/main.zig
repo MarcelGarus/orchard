@@ -175,7 +175,10 @@ pub fn main() !void {
     // _ = try heap.deduplicate(start_of_heap, ally);
     // heap.dump();
 
-    // heap.garbage_collect(start_of_heap, insturctions.address);
+    heap.dump_stats();
+    _ = try heap.garbage_collect(start_of_heap, result.address);
+    _ = try heap.deduplicate(start_of_heap, ally);
+    heap.dump_stats();
     // heap.dump_raw();
     // heap.dump();
 }
