@@ -19,7 +19,6 @@ pub fn main() !void {
     var heap = Heap.init(ally);
     const start_of_heap = heap.checkpoint();
 
-    const nil = try Object.new_nil(&heap);
     const expected_int_symbol = try Object.new_symbol(&heap, "expected int");
 
     const crash = try ir_to_lambda(&heap, ir: {
@@ -146,8 +145,7 @@ pub fn main() !void {
     const file = try std.fs.cwd().openFile("code.thyme", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
 
-    const result = try eval(&heap, .{
-        .nil = nil,
+    const builtins = try Object.new_struct(&heap, .{
         .crash = crash,
         .add = int_add,
         .subtract = int_subtract,
@@ -155,7 +153,9 @@ pub fn main() !void {
         .divide = int_divide,
         .if_not_zero = if_not_zero,
         .int_compare_to_num = int_compare_to_num,
-    }, code);
+    });
+
+    const result = try eval(&heap, .{ .builtins = builtins }, code);
 
     std.debug.print("{f}\n", .{result});
 
