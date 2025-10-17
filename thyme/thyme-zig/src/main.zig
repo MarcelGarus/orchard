@@ -148,7 +148,6 @@ pub fn main() !void {
         .divide = int_divide,
         .if_not_zero = if_not_zero,
         .int_compare_to_num = int_compare_to_num,
-    }, @embedFile("code.thyme"));
     std.debug.print("{f}", .{result});
 
     // const list_get = try eval(&heap, .{
@@ -174,6 +173,8 @@ pub fn main() !void {
     _ = start_of_heap;
     // _ = try heap.deduplicate(start_of_heap, ally);
     // heap.dump();
+    }, code);
+
 
     heap.dump_stats();
     _ = try heap.garbage_collect(start_of_heap, result.address);
