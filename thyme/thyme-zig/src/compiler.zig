@@ -327,7 +327,7 @@ const Parser = struct {
                 return null;
 
         while (true) {
-            if (parser.consume(".")) {
+            if (parser.consume(":")) {
                 const name = parser.parse_name() orelse return error.ExpectedFieldName;
                 const boxed_of = try parser.ally.create(Ast.Expr);
                 boxed_of.* = expr;
