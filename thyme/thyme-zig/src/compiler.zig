@@ -612,13 +612,13 @@ pub const Ir = struct {
 
         // Higher-level convenience functions
 
-        fn assert_has_tag(body: *BodyBuilder, obj: Id, tag_: u8) !void {
+        fn assert_has_tag(body: *BodyBuilder, obj: Id, tag_: u8, message: Object) !void {
             _ = try body.if_not_zero(
                 try body.subtract(try body.tag(obj), try body.word(tag_)),
                 then: {
                     var child = body.child_body();
-                    const zero = try child.word(0);
-                    break :then try child.finish_with_crash(zero);
+                    const msg = try child.object(message);
+                    break :then try child.finish_with_crash(msg);
                 },
                 else_: {
                     var child = body.child_body();
@@ -632,8 +632,8 @@ pub const Ir = struct {
             words[0] = value;
             return try body.new(Object.TAG_INT, &[_]Id{}, words);
         }
-        pub fn assert_is_int(body: *BodyBuilder, obj: Id) !void {
-            try body.assert_has_tag(obj, Object.TAG_INT);
+        pub fn assert_is_int(body: *BodyBuilder, obj: Id, message: Object) !void {
+            try body.assert_has_tag(obj, Object.TAG_INT, message);
         }
         pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
             const zero = try body.word(0);
@@ -647,8 +647,8 @@ pub const Ir = struct {
         pub fn new_struct(body: *BodyBuilder, keys_and_values: []Id) !Id {
             return try body.new(Object.TAG_STRUCT, keys_and_values, &[_]Id{});
         }
-        pub fn assert_is_struct(body: *BodyBuilder, obj: Id) !void {
-            try body.assert_has_tag(obj, Object.TAG_STRUCT);
+        pub fn assert_is_struct(body: *BodyBuilder, obj: Id, message: Object) !void {
+            try body.assert_has_tag(obj, Object.TAG_STRUCT, message);
         }
 
         pub fn new_closure(body: *BodyBuilder, captured: []Id) !Id {
@@ -664,8 +664,8 @@ pub const Ir = struct {
             pointers[1] = closure;
             return try body.new(Object.TAG_LAMBDA, pointers, &[_]Id{});
         }
-        pub fn assert_is_lambda(body: *BodyBuilder, obj: Id) !void {
-            try body.assert_has_tag(obj, Object.TAG_LAMBDA);
+        pub fn assert_is_lambda(body: *BodyBuilder, obj: Id, message: Object) !void {
+            try body.assert_has_tag(obj, Object.TAG_LAMBDA, message);
         }
         pub fn get_lambda_fun(body: *BodyBuilder, lambda: Id) !Id {
             const zero = try body.word(0);
@@ -852,6 +852,9 @@ const ast_to_ir_mod = struct {
                 .nil = nil,
                 .compare_symbols_fun = compare_symbols_fun,
                 .member_fun = member_fun,
+                .member_of_non_struct_symbol = try Object.new_symbol(heap, "member of non-struct"),
+                .switch_on_non_struct_symbol = try Object.new_symbol(heap, "switch on non-struct"),
+                .call_non_lambda_symbol = try Object.new_symbol(heap, "call non-lambda"),
             };
         };
 
@@ -867,7 +870,14 @@ const ast_to_ir_mod = struct {
         return builder.finish(body_result);
     }
 
-    const Common = struct { nil: Object, compare_symbols_fun: Object, member_fun: Object };
+    const Common = struct {
+        nil: Object,
+        compare_symbols_fun: Object,
+        member_fun: Object,
+        member_of_non_struct_symbol: Object,
+        switch_on_non_struct_symbol: Object,
+        call_non_lambda_symbol: Object,
+    };
 
     fn compile_expr(
         ally: Ally,
@@ -893,7 +903,7 @@ const ast_to_ir_mod = struct {
             },
             .member => |member| {
                 const of = try compile_expr(ally, member.of.*, body, bindings, heap, common);
-                try body.assert_is_struct(of);
+                try body.assert_is_struct(of, common.member_of_non_struct_symbol);
                 const member_fun = try body.object(common.member_fun);
                 const name = try body.object(try Object.new_symbol(heap, member.name));
                 const args = try ally.alloc(Id, 2);
@@ -903,7 +913,7 @@ const ast_to_ir_mod = struct {
             },
             .switch_ => |switch_| {
                 const condition = try compile_expr(ally, switch_.condition.*, body, bindings, heap, common);
-                try body.assert_is_struct(condition);
+                try body.assert_is_struct(condition, common.switch_on_non_struct_symbol);
                 const num_pointers = try body.num_pointers(condition);
                 _ = try body.if_not_zero(
                     num_pointers,
@@ -1004,7 +1014,7 @@ const ast_to_ir_mod = struct {
                 var args = ArrayList(Id).empty;
                 for (call.args) |arg|
                     try args.append(ally, try compile_expr(ally, arg, body, bindings, heap, common));
-                try body.assert_is_lambda(callee);
+                try body.assert_is_lambda(callee, common.call_non_lambda_symbol);
                 const fun = try body.get_lambda_fun(callee);
                 const closure = try body.get_lambda_closure(callee);
                 try args.append(ally, closure);

@@ -33,6 +33,7 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
     var data_stack = ArrayList(Word).empty;
     var call_stack = ArrayList(Object).empty;
     var ip = fun.instructions();
+    var num_instructions: usize = 0;
 
     if (fun.num_params() != args.len)
         @panic("called function with wrong number of params");
@@ -42,16 +43,19 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
     }
 
     while (true) {
+        num_instructions += 1;
         const parsed = Instruction.parse_first(ip) catch |e| {
             std.debug.print("Couldn't parse instruction:\n{f}", .{ip});
             return e;
         } orelse {
-            ip = call_stack.pop() orelse
+            ip = call_stack.pop() orelse {
                 // The root function returned.
+                std.debug.print("{} instructions ran\n", .{num_instructions});
                 return .{
                     .heap = heap,
                     .address = data_stack.pop() orelse unreachable,
                 };
+            };
             continue;
         };
         const instruction = parsed.instruction;
@@ -155,6 +159,13 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
                 ip = to_eval;
             },
             .crash => {
+                const message = Object{
+                    .heap = heap,
+                    .address = data_stack.pop() orelse return error.bad_instruction,
+                };
+                std.debug.print("Crashed:\n{f}\nCall stack:\n", .{message});
+                for (call_stack.items) |entry|
+                    std.debug.print("- {x}\n", .{entry.address});
                 @panic("crashed");
             },
             else => @panic("todo"),

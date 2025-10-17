@@ -19,6 +19,9 @@ pub fn main() !void {
     var heap = Heap.init(ally);
     const start_of_heap = heap.checkpoint();
 
+    const nil = try Object.new_nil(&heap);
+    const expected_int_symbol = try Object.new_symbol(&heap, "expected int");
+
     const crash = try ir_to_lambda(&heap, ir: {
         var builder = Ir.Builder.init(ally);
         const message = try builder.param();
@@ -37,8 +40,8 @@ pub fn main() !void {
         const closure = try builder.param();
         _ = closure;
         var body = builder.body();
-        try body.assert_is_int(a);
-        try body.assert_is_int(b);
+        try body.assert_is_int(a, expected_int_symbol);
+        try body.assert_is_int(b, expected_int_symbol);
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const res_val = try body.add(a_val, b_val);
@@ -54,8 +57,8 @@ pub fn main() !void {
         const closure = try builder.param();
         _ = closure;
         var body = builder.body();
-        try body.assert_is_int(a);
-        try body.assert_is_int(b);
+        try body.assert_is_int(a, expected_int_symbol);
+        try body.assert_is_int(b, expected_int_symbol);
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const res_val = try body.subtract(a_val, b_val);
@@ -71,8 +74,8 @@ pub fn main() !void {
         const closure = try builder.param();
         _ = closure;
         var body = builder.body();
-        try body.assert_is_int(a);
-        try body.assert_is_int(b);
+        try body.assert_is_int(a, expected_int_symbol);
+        try body.assert_is_int(b, expected_int_symbol);
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const res_val = try body.multiply(a_val, b_val);
@@ -88,8 +91,8 @@ pub fn main() !void {
         const closure = try builder.param();
         _ = closure;
         var body = builder.body();
-        try body.assert_is_int(a);
-        try body.assert_is_int(b);
+        try body.assert_is_int(a, expected_int_symbol);
+        try body.assert_is_int(b, expected_int_symbol);
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const res_val = try body.divide(a_val, b_val);
@@ -106,7 +109,7 @@ pub fn main() !void {
         const closure = try builder.param();
         _ = closure;
         var body = builder.body();
-        try body.assert_is_int(condition);
+        try body.assert_is_int(condition, expected_int_symbol);
         const condition_val = try body.get_int_value(condition);
         const res = try body.if_not_zero(
             condition_val,
@@ -130,8 +133,8 @@ pub fn main() !void {
         const closure = try builder.param();
         _ = closure;
         var body = builder.body();
-        try body.assert_is_int(a);
-        try body.assert_is_int(b);
+        try body.assert_is_int(a, expected_int_symbol);
+        try body.assert_is_int(b, expected_int_symbol);
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const diff = try body.compare(a_val, b_val);
@@ -140,7 +143,11 @@ pub fn main() !void {
         break :ir builder.finish(body_);
     });
 
+    const file = try std.fs.cwd().openFile("code.thyme", .{});
+    const code = try file.readToEndAlloc(ally, 1000000);
+
     const result = try eval(&heap, .{
+        .nil = nil,
         .crash = crash,
         .add = int_add,
         .subtract = int_subtract,
@@ -148,33 +155,9 @@ pub fn main() !void {
         .divide = int_divide,
         .if_not_zero = if_not_zero,
         .int_compare_to_num = int_compare_to_num,
-    std.debug.print("{f}", .{result});
-
-    // const list_get = try eval(&heap, .{
-    //     .crash = crash,
-    //     .@"unreachable" = unreachable_,
-    //     .subtract = int_subtract,
-    //     .equals = int_equals,
-    //     .round_up_to_power_of = round_up_to_power_of,
-    // },
-    // );
-    // _ = list_get;
-    //   push_rec (\ push_rec items length item
-    //     ())
-    //   push (\ list item
-    //     (push_rec
-    //       push_rec (list :items) (round_up_to_power_of (list :length) 2)) item)
-    //   list_0 (& length 0 items :nil)
-    //   list_1 (\ a (push list_0 a) (& length 1 item a))
-    //   list_2 (\ a b (push (list_1 a) b))
-    //   list_3 (\ a b c (push (list_2 a b) c))
-    //   list_4 (\ a b c d (push (list_3 a b c) d))
-
-    _ = start_of_heap;
-    // _ = try heap.deduplicate(start_of_heap, ally);
-    // heap.dump();
     }, code);
 
+    std.debug.print("{f}\n", .{result});
 
     heap.dump_stats();
     _ = try heap.garbage_collect(start_of_heap, result.address);

@@ -195,24 +195,26 @@ pub fn format(object: Object, writer: *Writer) !void {
     try object.format_indented(writer, 0);
 }
 pub fn format_indented(object: Object, writer: *Writer, indentation: usize) error{WriteFailed}!void {
-    for (0..indentation) |_| try writer.print("  ", .{});
     switch (object.kind()) {
-        .nil => try writer.print("nil\n", .{}),
-        .int => try writer.print("{}\n", .{object.int_value()}),
+        .nil => try writer.print("nil", .{}),
+        .int => try writer.print("{}", .{object.int_value()}),
         .symbol => {
-            try writer.print("symbol ", .{});
+            try writer.print("<", .{});
             try object.format_symbol(writer);
-            try writer.print("\n", .{});
+            try writer.print(">", .{});
         },
         .struct_ => {
-            try writer.print("&\n", .{});
+            try writer.print("[\n", .{});
             for (0..object.num_fields()) |i| {
                 const field = object.field_by_index(i);
                 for (0..(indentation + 1)) |_| try writer.print("  ", .{});
                 try field.key.format_symbol(writer);
-                try writer.print(":\n", .{});
-                try field.value.format_indented(writer, indentation + 2);
+                try writer.print(": ", .{});
+                try field.value.format_indented(writer, indentation + 1);
+                try writer.print("\n", .{});
             }
+            for (0..indentation) |_| try writer.print("  ", .{});
+            try writer.print("]", .{});
         },
         .fun => {
             try writer.print("fun\n", .{});
@@ -222,7 +224,7 @@ pub fn format_indented(object: Object, writer: *Writer, indentation: usize) erro
             try writer.print("instructions:\n", .{});
             try object.instructions().format(writer);
         },
-        .lambda => try writer.print("lambda\n", .{}),
+        .lambda => try writer.print("lambda", .{}),
     }
 }
 
