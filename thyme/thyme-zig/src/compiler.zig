@@ -1018,7 +1018,26 @@ const ast_to_ir_mod = struct {
                 const fun = try body.get_lambda_fun(callee);
                 const closure = try body.get_lambda_closure(callee);
                 try args.append(ally, closure);
-                return try body.call(fun, args.items);
+
+                const num_args = try body.word(args.items.len);
+                const two = try body.word(2);
+                const num_params = try body.load(fun, two);
+                const diff = try body.subtract(num_args, num_params);
+
+                return try body.if_not_zero(
+                    diff,
+                    mismatched: {
+                        var inner = body.child_body();
+                        const message = try inner.object(try Object.new_symbol(heap, "wrong number of arguments"));
+                        const result = try inner.crash(message);
+                        break :mismatched inner.finish(result);
+                    },
+                    correct: {
+                        var inner = body.child_body();
+                        const result = try inner.call(fun, args.items);
+                        break :correct inner.finish(result);
+                    },
+                );
             },
             .var_ => |var_| {
                 const id = try compile_expr(ally, var_.value.*, body, bindings, heap, common);
