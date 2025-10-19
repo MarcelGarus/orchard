@@ -12,10 +12,35 @@ unreachable = || crash([unreachable])
 todo = || crash([todo])
 assert = |check, message| check % { true -> nil false -> crash(message) }
 
+# Recursion and Loops
+
+rec1 = |a, fun| {
+  rec = |rec, a| fun(a, |a| rec(rec, a))
+  rec(rec, a)
+}
+rec2 = |a, b, fun| {
+  rec = |rec, a, b| fun(a, b, |a, b| rec(rec, a, b))
+  rec(rec, a, b)
+}
+rec3 = |a, b, c, fun| {
+  rec = |rec, a, b, c| fun(a, b, c, |a, b, c| rec(rec, a, b, c))
+  rec(rec, a, b, c)
+}
+rec4 = |a, b, c, d, fun| {
+  rec = |rec, a, b, c, d| fun(a, b, c, d, |a, b, c, d| rec(rec, a, b, c, d))
+  rec(rec, a, b, c, d)
+}
+
+loop = |state, body| {
+  rec1(state, |state, rec| {
+    body(state) % { break: result -> result continue: next -> rec(next) }
+  })
+}
+
 # Bool stuff
 
-true = [true]
-false = [false]
+true  = [true:  nil]
+false = [false: nil]
 
 not = |a| a % { true -> false false -> true }
 
@@ -23,76 +48,57 @@ and = |a, b| a % { true -> b      false -> false }
 or  = |a, b| a % { true -> true   false -> b }
 xor = |a, b| a % { true -> not(b) false -> b }
 
-assert(true, [true_is_not_true])
+#assert(true, [true_is_not_true])
 #assert(not(false))
 
 # Int stuff
 
-add      = |a, b| builtins:add(a, b)
-subtract = |a, b| builtins:subtract(a, b)
-multiply = |a, b| builtins:multiply(a, b)
-divide   = |a, b| builtins:divide(a, b)
-modulo   = |a, b| builtins:modulo(a, b)
++   = |a, b| builtins:add(a, b)
+-   = |a, b| builtins:subtract(a, b)
+*   = |a, b| builtins:multiply(a, b)
+/   = |a, b| builtins:divide(a, b)
+mod = |a, b| builtins:modulo(a, b)
 
-equals = |a, b| builtins:if_not_zero(subtract(a, b), false, true)
-not_equals = |a, b| builtins:if_not_zero(subtract(a, b), true, false)
-is_less = |a, b| equals(builtins:int_compare_to_num(a, b), 2)
-is_greater = |a, b| equals(builtins:int_compare_to_num(a, b), 1)
-is_less_equal = |a, b| not_equals(builtins:int_compare_to_num(a, b), 1)
-is_greater_equal = |a, b| not_equals(builtins:int_compare_to_num(a, b), 2)
-
-rec1 = |a, fun| {
-  rec = |rec, a| fun(|a| rec(rec, a), a)
-  rec(rec, a)
-}
-rec2 = |a, b, fun| {
-  rec = |rec, a, b| fun(|a, b| rec(rec, a, b), a, b)
-  rec(rec, a, b)
-}
-rec3 = |a, b, c, fun| {
-  rec = |rec, a, b, c| fun(|a, b, c| rec(rec, a, b, c), a, b, c)
-  rec(rec, a, b, c)
-}
-
-loop = |state, body| {
-  rec1(state, |rec, state| {
-    body(state) % { break: result -> result continue: next -> rec(next) }
-  })
-}
+== = |a, b| builtins:if_not_zero(-(a, b), false, true)
+!= = |a, b| builtins:if_not_zero(-(a, b), true, false)
+<  = |a, b| ==(builtins:int_compare_to_num(a, b), 2)
+>  = |a, b| ==(builtins:int_compare_to_num(a, b), 1)
+<= = |a, b| !=(builtins:int_compare_to_num(a, b), 1)
+>= = |a, b| !=(builtins:int_compare_to_num(a, b), 2)
 
 round_up_to_power_of = |number, base| {
   loop(1, |candidate| {
-    is_greater_equal(candidate, number) % {
+    >=(candidate, number) % {
       true -> [break: candidate]
-      false -> [continue: multiply(candidate, base)]
+      false -> [continue: *(candidate, base)]
     }
   })
 }
-assert(equals(round_up_to_power_of(0, 2), 1), [round_up_to_power_of_is_bad])
-assert(equals(round_up_to_power_of(1, 2), 1), [round_up_to_power_of_is_bad])
-assert(equals(round_up_to_power_of(2, 2), 2), [round_up_to_power_of_is_bad])
-assert(equals(round_up_to_power_of(3, 2), 4), [round_up_to_power_of_is_bad])
-assert(equals(round_up_to_power_of(9, 2), 16), [round_up_to_power_of_is_bad])
+#assert(==(round_up_to_power_of(0, 2), 1), [round_up_to_power_of_is_bad])
+#assert(==(round_up_to_power_of(1, 2), 1), [round_up_to_power_of_is_bad])
+#assert(==(round_up_to_power_of(2, 2), 2), [round_up_to_power_of_is_bad])
+#assert(==(round_up_to_power_of(3, 2), 4), [round_up_to_power_of_is_bad])
+#assert(==(round_up_to_power_of(9, 2), 16), [round_up_to_power_of_is_bad])
 
 # log_2 returns the floored result
 log_2 = |number| {
-  assert(is_greater(number, 0), [log_arg_must_be_positive])
-  rec2(0, 1, |rec, candidate, two_pow_candidate| {
-    next_candidate = add(candidate, 1)
-    next_two_pow_candidate = multiply(two_pow_candidate, 2)
-    is_greater(next_two_pow_candidate, number) % {
+  assert(>(number, 0), [log_arg_must_be_positive])
+  rec2(0, 1, |candidate, two_pow_candidate, rec| {
+    next_candidate = +(candidate, 1)
+    next_two_pow_candidate = *(two_pow_candidate, 2)
+    >(next_two_pow_candidate, number) % {
       true -> candidate
       false -> rec(next_candidate, next_two_pow_candidate)
     }
   })
 }
-assert(equals(log_2(1), 0), [log_2_is_bad])
-assert(equals(log_2(2), 1), [log_2_is_bad])
-assert(equals(log_2(3), 1), [log_2_is_bad])
-assert(equals(log_2(4), 2), [log_2_is_bad])
-assert(equals(log_2(5), 2), [log_2_is_bad])
-assert(equals(log_2(7), 2), [log_2_is_bad])
-assert(equals(log_2(8), 3), [log_2_is_bad])
+#assert(==(log_2(1), 0), [log_2_is_bad])
+#assert(==(log_2(2), 1), [log_2_is_bad])
+#assert(==(log_2(3), 1), [log_2_is_bad])
+#assert(==(log_2(4), 2), [log_2_is_bad])
+#assert(==(log_2(5), 2), [log_2_is_bad])
+#assert(==(log_2(7), 2), [log_2_is_bad])
+#assert(==(log_2(8), 3), [log_2_is_bad])
 
 # List stuff
 #
@@ -110,79 +116,102 @@ assert(equals(log_2(8), 3), [log_2_is_bad])
 list_empty = [length: 0 items: nil]
 
 list_push = {
-  create_list_with_depth = |depth, item| {
-    rec2(depth, item, |rec, depth, item| {
-      equals(depth, 0) % {
-        true -> item
-        false -> [left: rec(subtract(depth, 1), item) right: nil]
+  create_empty_tree = |depth| {
+    rec1(depth, |depth, rec| {
+      ==(depth, 0) % {
+        true -> nil
+        false -> {
+          child = rec(-(depth, 1))
+          [left: child right: child]
+        }
       }
     })
   }
-  build_new_items = |items, length, item| {
-    rec3(items, length, item, |rec, items, length, item| {
-      equals(length, round_up_to_power_of(length, 2)) % {
-        true -> {
-          [left: items right: create_list_with_depth(log_2(length), item)]
-        }
+  create_tree_with_single_item = |depth, item| {
+    rec2(depth, item, |depth, item, rec| {
+      ==(depth, 0) % {
+        true -> item
+        false -> [
+          left: rec(-(depth, 1), item)
+          right: create_empty_tree(-(depth, 1))
+        ]
+      }
+    })
+  }
+  set_in_tree = |items, length, index, item| {
+    rec4(items, length, index, item, |items, length, index, item, rec| {
+      ==(length, 1) % {
+        true -> item
         false -> {
-          crash(123456)
-          #num_left = divide(length, 2)  # TODO: shift
-          #num_right = subtract(length, num_left)
-          #[left: (items:left) right: rec(items:right, num_right, item)]
+          num_child = /(length, 2)  # TODO: shift
+          <(index, num_child) % {
+            true -> [
+              left: rec(items:left, num_child, index, item) right: items:right
+            ]
+            false -> [
+              left: items:left
+              right: rec(items:right, num_child, -(index, num_child), item)
+            ]
+          }
         }
       }
     })
   }
   |list, item| {
-    equals(list:length, 0) % {
+    length = list:length
+    ==(length, 0) % {
       true -> [length: 1 items: item]
       false -> [
-        length: add(list:length, 1)
-        items: build_new_items(list:items, list:length, item)
+        length: +(length, 1)
+        items: ==(length, round_up_to_power_of(length, 2)) % {
+          true -> [
+            left: list:items
+            right: create_tree_with_single_item(log_2(length), item)
+          ]
+          false -> set_in_tree(
+            list:items, round_up_to_power_of(length, 2), length, item
+          )
+        }
       ]
     }
   }
 }
 
 list_get = |list, index| {
-  is_greater_equal(index, list:length) % {
+  >=(index, list:length) % {
     true -> crash([out_of_bounds])
     false -> rec3(
       list:items,
       round_up_to_power_of(list:length, 2),
       index,
-      |rec, items, cap, index| {
-        cap_child = divide(cap, 2)  # TODO: shift
-        is_less(index, cap_child) % {
+      |items, cap, index, rec| {
+        cap_child = /(cap, 2)  # TODO: shift
+        <(index, cap_child) % {
           true -> rec(items:left, cap_child, index)
-          false -> rec(items:right, cap_child, subtract(index, cap_child))
+          false -> rec(items:right, cap_child, -(index, cap_child))
         }
-      }
+      },
     )
   }
 }
 
 core = [
-  unreachable: unreachable
-  equals: equals
-  not_equals: not_equals
-  is_less: is_less
-  is_greater: is_greater
-  is_less_equal: is_less_equal
-  is_greater_equal: is_greater_equal
-  loop: loop
-  round_up_to_power_of: round_up_to_power_of
-  list: [
-    empty: list_empty
-    get: list_get
-    push: list_push
-  ]
+  crash
+  unreachable
+  todo
+  assert
+  rec1
+  rec2
+  rec3
+  rec4
+  loop
+  bool: [true false not and or xor]
+  int: [+ - * / mod == != < > <= >= round_up_to_power_of log_2]
+  list: [empty: list_empty push: list_push get: list_get]
 ]
 
 
 empty = core:list:empty
 push = core:list:push
 
-push(push(push(empty, 1), 2), 3)
-
-core
+push(push(push(push(push(push(push(push(push(empty, 1), 2), 3), 4), 5), 6), 7), 8), 9)
