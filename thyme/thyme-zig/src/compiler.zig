@@ -342,7 +342,7 @@ const Parser = struct {
                 const boxed_callee = try parser.ally.create(Ast.Expr);
                 boxed_callee.* = expr;
                 expr = .{ .call = .{ .callee = boxed_callee, .args = args.items } };
-            } else if (parser.consume("=")) {
+            } else if (parser.consume("= ") or parser.consume("=\n")) {
                 const name = switch (expr) {
                     .name => |n| n,
                     else => return error.VarNeedsName,
