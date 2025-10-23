@@ -5,10 +5,10 @@ const thyme_zig = @import("thyme_zig");
 const compiler = @import("compiler.zig");
 const Ir = compiler.Ir;
 const ir_to_lambda = compiler.ir_to_lambda;
-const eval = @import("vm.zig").eval;
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Object = @import("object.zig");
+const Vm = @import("vm.zig");
 
 pub fn main() !void {
     std.debug.print("Hi.\n", .{});
@@ -18,6 +18,7 @@ pub fn main() !void {
 
     var heap = Heap.init(ally);
     const start_of_heap = heap.checkpoint();
+    var vm = Vm.init(&heap);
 
     const expected_int_symbol = try Object.new_symbol(&heap, "expected int");
 
@@ -155,7 +156,7 @@ pub fn main() !void {
         .int_compare_to_num = int_compare_to_num,
     });
 
-    const result = try eval(&heap, .{ .builtins = builtins }, code);
+    const result = try vm.eval(.{ .builtins = builtins }, code);
 
     std.debug.print("{f}\n", .{result});
 

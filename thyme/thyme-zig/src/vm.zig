@@ -1,4 +1,5 @@
 const std = @import("std");
+const Map = std.AutoArrayHashMap;
 const ArrayList = std.ArrayList;
 
 const compiler = @import("compiler.zig");
@@ -9,31 +10,27 @@ const Instruction = @import("instruction.zig").Instruction;
 const Object = @import("object.zig");
 
 heap: *Heap,
-data_stack: ArrayList(Word),
-call_stack: ArrayList(Address),
+jitted: Map(Address, Jitted),
+
+const Jitted = struct { instructions: []const Instruction };
 
 const Vm = @This();
 
 pub fn init(heap: *Heap) Vm {
     return .{
         .heap = heap,
-        .data_stack = ArrayList(Word).empty,
-        .call_stack = ArrayList(Address).empty,
+        .jitted = Map(Address, Jitted).init(heap.ally),
     };
 }
 
-pub fn eval(heap: *Heap, env: anytype, code: []const u8) !Object {
-    const fun = try compiler.code_to_fun(heap, env, code);
-    return try call(heap, fun, .{});
+pub fn eval(vm: *Vm, env: anytype, code: []const u8) !Object {
+    const fun = try compiler.code_to_fun(vm.heap, env, code);
+    return try call(vm, fun, .{});
 }
 
-pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
-    const ally = heap.ally;
-
+pub fn call(vm: *Vm, fun: Object, args: anytype) !Object {
+    const ally = vm.heap.ally;
     var data_stack = ArrayList(Word).empty;
-    var call_stack = ArrayList(Object).empty;
-    var ip = fun.instructions();
-    var num_instructions: usize = 0;
 
     if (fun.num_params() != args.len)
         @panic("called function with wrong number of params");
@@ -41,29 +38,49 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
         if (@TypeOf(arg) == Object) @compileError("args should be objects");
         try data_stack.append(ally, @intCast(arg.address));
     }
+    var resources = Resources{ .num_instructions = 0 };
+    try vm.run(fun.instructions(), &data_stack, &resources);
 
-    while (true) {
-        num_instructions += 1;
-        const parsed = Instruction.parse_first(ip) catch |e| {
-            std.debug.print("Couldn't parse instruction:\n{f}", .{ip});
-            return e;
-        } orelse {
-            ip = call_stack.pop() orelse {
-                // The root function returned.
-                std.debug.print("{} instructions ran\n", .{num_instructions});
-                return .{
-                    .heap = heap,
-                    .address = data_stack.pop() orelse unreachable,
-                };
-            };
-            continue;
-        };
-        const instruction = parsed.instruction;
-        ip = parsed.rest;
+    std.debug.print("{} instructions ran\n", .{resources.num_instructions});
+    return .{
+        .heap = vm.heap,
+        .address = data_stack.pop() orelse unreachable,
+    };
+}
 
-        // for (0..call_stack.items.len) |_| std.debug.print("  ", .{});
+const Resources = struct { num_instructions: usize };
+
+pub fn run(
+    vm: *Vm,
+    instructions: Object,
+    data_stack: *ArrayList(Word),
+    resources: *Resources,
+) !void {
+    const jitted = jitted: {
+        if (vm.jitted.get(instructions.address)) |jitted|
+            break :jitted jitted;
+        const jitted = try jit_compile(instructions);
+        try vm.jitted.put(instructions.address, jitted);
+        break :jitted jitted;
+    };
+    try vm.run_jitted(jitted.instructions, data_stack, resources);
+}
+
+fn jit_compile(instructions: Object) !Jitted {
+    return .{ .instructions = try Instruction.parse_all(instructions) };
+}
+
+fn run_jitted(
+    vm: *Vm,
+    instructions: []const Instruction,
+    data_stack: *ArrayList(Word),
+    resources: *Resources,
+) !void {
+    const ally = vm.heap.ally;
+    for (instructions) |instruction| {
+        resources.num_instructions += 1;
+
         // std.debug.print("{any}\n", .{data_stack.items});
-        // for (0..call_stack.items.len) |_| std.debug.print("  ", .{});
         // std.debug.print("Running {f}", .{instruction});
 
         switch (instruction) {
@@ -112,8 +129,8 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
             },
             .if_not_zero => |if_| {
                 const condition = data_stack.pop() orelse return error.bad_if;
-                try call_stack.append(ally, ip);
-                ip = if (condition != 0) if_.then else if_.else_;
+                const body_to_run = if (condition != 0) if_.then else if_.else_;
+                try vm.run_jitted(body_to_run, data_stack, resources);
             },
             .new => |new| {
                 const pointers = try ally.alloc(Word, new.num_pointers);
@@ -122,7 +139,7 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
                     literals[new.num_literals - 1 - i] = data_stack.pop() orelse return error.bad_instruction;
                 for (0..new.num_pointers) |i|
                     pointers[new.num_pointers - 1 - i] = data_stack.pop() orelse return error.bad_instruction;
-                const address = try heap.new(.{
+                const address = try vm.heap.new(.{
                     .tag = new.tag,
                     .pointers = pointers,
                     .literals = literals,
@@ -131,41 +148,38 @@ pub fn call(heap: *Heap, fun: Object, args: anytype) !Object {
             },
             .tag => {
                 const address = data_stack.pop() orelse return error.bad_instruction;
-                const tag = heap.get(address).tag;
+                const tag = vm.heap.get(address).tag;
                 try data_stack.append(ally, @intCast(tag));
             },
             .num_pointers => {
                 const address = data_stack.pop() orelse return error.bad_instruction;
-                const num_pointers = heap.get(address).pointers.len;
+                const num_pointers = vm.heap.get(address).pointers.len;
                 try data_stack.append(ally, @intCast(num_pointers));
             },
             .num_literals => {
                 const address = data_stack.pop() orelse return error.bad_instruction;
-                const num_literals = heap.get(address).literals.len;
+                const num_literals = vm.heap.get(address).literals.len;
                 try data_stack.append(ally, @intCast(num_literals));
             },
             .load => {
                 const offset: usize = @intCast(data_stack.pop() orelse return error.bad_instruction);
                 const base = data_stack.pop() orelse return error.bad_instruction;
-                const word = heap.load(base, offset);
+                const word = vm.heap.load(base, offset);
                 try data_stack.append(ally, word);
             },
             .eval => {
                 const to_eval = Object{
-                    .heap = heap,
+                    .heap = vm.heap,
                     .address = data_stack.pop() orelse return error.bad_instruction,
                 };
-                try call_stack.append(ally, ip);
-                ip = to_eval;
+                try vm.run_jitted(try Instruction.parse_all(to_eval), data_stack, resources);
             },
             .crash => {
                 const message = Object{
-                    .heap = heap,
+                    .heap = vm.heap,
                     .address = data_stack.pop() orelse return error.bad_instruction,
                 };
-                std.debug.print("Crashed:\n{f}\nCall stack:\n", .{message});
-                for (call_stack.items) |entry|
-                    std.debug.print("- {x}\n", .{entry.address});
+                std.debug.print("Crashed:\n{f}\n", .{message});
                 @panic("crashed");
             },
             else => @panic("todo"),

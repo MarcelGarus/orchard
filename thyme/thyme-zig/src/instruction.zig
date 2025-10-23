@@ -43,7 +43,7 @@ pub const Instruction = union(enum) {
 
     // Pops a word. If the word is not zero, evaluates the then instructions.
     // Otherwise, the else instructions.
-    if_not_zero: struct { then: Object, else_: Object },
+    if_not_zero: struct { then: []const Instruction, else_: []const Instruction },
 
     // New.
     new: struct { tag: u8, num_pointers: usize, num_literals: usize },
@@ -60,7 +60,7 @@ pub const Instruction = union(enum) {
 
     crash,
 
-    pub fn new_instruction(heap: *Heap, instruction: Instruction) !Object {
+    pub fn new_instruction(heap: *Heap, instruction: Instruction) error{OutOfMemory}!Object {
         return switch (instruction) {
             .push_word => |word| try Object.new_struct(heap, .{
                 .push_word = try Object.new_int(heap, @bitCast(word)),
@@ -84,7 +84,10 @@ pub const Instruction = union(enum) {
             .shift_right => try Object.new_struct(heap, .{ .shift_right = try Object.new_nil(heap) }),
             .compare => try Object.new_struct(heap, .{ .compare = try Object.new_nil(heap) }),
             .if_not_zero => |if_| try Object.new_struct(heap, .{
-                .if_not_zero = try Object.new_struct(heap, .{ .then = if_.then, .@"else" = if_.else_ }),
+                .if_not_zero = try Object.new_struct(heap, .{
+                    .then = try new_instructions(heap, if_.then),
+                    .@"else" = try new_instructions(heap, if_.else_),
+                }),
             }),
             .new => |new| try Object.new_struct(heap, .{
                 .new = try Object.new_struct(heap, .{
@@ -113,7 +116,16 @@ pub const Instruction = union(enum) {
     }
 
     const ParseResult = struct { instruction: Instruction, rest: Object };
-    pub fn parse_first(instructions: Object) !?ParseResult {
+    pub fn parse_all(instructions: Object) ![]const Instruction {
+        var object = instructions;
+        var out = ArrayList(Instruction).empty;
+        while (try parse_first(object)) |result| {
+            try out.append(instructions.heap.ally, result.instruction);
+            object = result.rest;
+        }
+        return out.items;
+    }
+    pub fn parse_first(instructions: Object) error{ OutOfMemory, UnknownInstruction, BadEval }!?ParseResult {
         switch (instructions.kind()) {
             .nil => return null,
             .struct_ => {
@@ -151,8 +163,8 @@ pub const Instruction = union(enum) {
                         .{ .compare = {} }
                     else if (variant.is_symbol("if_not_zero"))
                         .{ .if_not_zero = .{
-                            .then = payload.field_by_name("then"),
-                            .else_ = payload.field_by_name("else"),
+                            .then = try Instruction.parse_all(payload.field_by_name("then")),
+                            .else_ = try Instruction.parse_all(payload.field_by_name("else")),
                         } }
                     else if (variant.is_symbol("new"))
                         .{ .new = .{
@@ -173,10 +185,10 @@ pub const Instruction = union(enum) {
                     else if (variant.is_symbol("crash"))
                         .{ .crash = {} }
                     else
-                        return error.unknown_instruction;
+                        return error.UnknownInstruction;
                 return .{ .instruction = inst, .rest = rest };
             },
-            else => return error.bad_eval,
+            else => return error.BadEval,
         }
     }
 

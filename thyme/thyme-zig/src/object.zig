@@ -191,6 +191,18 @@ pub fn new_lambda(heap: *Heap, fun: Object, closure: Object) !Object {
     return .{ .heap = heap, .address = address };
 }
 
+pub fn fun_of_lambda(lambda: Object) Object {
+    if (lambda.kind() != .lambda) @panic("not an lambda");
+    const address: Address = @intCast(lambda.get_allocation().pointers[0]);
+    return Object{ .heap = lambda.heap, .address = address };
+}
+
+pub fn closure_of_lambda(lambda: Object) Object {
+    if (lambda.kind() != .lambda) @panic("not an lambda");
+    const address: Address = @intCast(lambda.get_allocation().pointers[1]);
+    return Object{ .heap = lambda.heap, .address = address };
+}
+
 pub fn format(object: Object, writer: *Writer) !void {
     try object.format_indented(writer, 0);
 }
@@ -224,7 +236,13 @@ pub fn format_indented(object: Object, writer: *Writer, indentation: usize) erro
             try writer.print("instructions:\n", .{});
             try object.instructions().format(writer);
         },
-        .lambda => try writer.print("lambda", .{}),
+        .lambda => {
+            try writer.print("lambda\n", .{});
+            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            try object.fun_of_lambda().format_indented(writer, indentation + 1);
+            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            try object.closure_of_lambda().format_indented(writer, indentation + 1);
+        },
     }
 }
 

@@ -1140,7 +1140,7 @@ const ast_to_ir_mod = struct {
 };
 
 pub fn ir_to_instructions(heap: *Heap, ir: Ir) ![]const Instruction {
-    return try ir_to_instructions_mod.compile(heap, ir);
+    return try ir_to_instructions_mod.compile(heap.ally, ir);
 }
 
 const ir_to_instructions_mod = struct {
@@ -1236,7 +1236,7 @@ const ir_to_instructions_mod = struct {
             _ = builder.stack.pop();
             try builder.stack.append(builder.ally, id);
         }
-        pub fn if_not_zero(builder: *Builder, then: Object, else_: Object, id: Id) !void {
+        pub fn if_not_zero(builder: *Builder, then: []const Instruction, else_: []const Instruction, id: Id) !void {
             try builder.instructions.append(builder.ally, .{ .if_not_zero = .{
                 .then = then,
                 .else_ = else_,
@@ -1287,22 +1287,22 @@ const ir_to_instructions_mod = struct {
         }
     };
 
-    pub fn compile(heap: *Heap, ir: Ir) ![]const Instruction {
+    pub fn compile(ally: Ally, ir: Ir) ![]const Instruction {
         var stack = ArrayList(Id).empty;
-        for (ir.params) |param| try stack.append(heap.ally, param);
-        var builder = Builder.init(heap.ally, &stack);
+        for (ir.params) |param| try stack.append(ally, param);
+        var builder = Builder.init(ally, &stack);
         for (ir.body.ids) |id|
-            try compile_node(heap, id, ir, &builder);
+            try compile_node(ally, id, ir, &builder);
         try builder.push_from_stack(ir.body.returns);
         try builder.pop_below_top(ir.body.ids.len + ir.params.len);
         return builder.instructions.items;
     }
 
-    fn compile_body(heap: *Heap, body: Ir.Body, ir: Ir, stack: *ArrayList(Id)) ![]const Instruction {
+    fn compile_body(ally: Ally, body: Ir.Body, ir: Ir, stack: *ArrayList(Id)) ![]const Instruction {
         const stack_size = stack.items.len;
-        var builder = Builder.init(heap.ally, stack);
+        var builder = Builder.init(ally, stack);
         for (body.ids) |id| {
-            try compile_node(heap, id, ir, &builder);
+            try compile_node(ally, id, ir, &builder);
         }
         try builder.push_from_stack(body.returns);
         try builder.pop_below_top(body.ids.len);
@@ -1310,7 +1310,7 @@ const ir_to_instructions_mod = struct {
         return builder.instructions.items;
     }
 
-    fn compile_node(heap: *Heap, id: Id, ir: Ir, builder: *Builder) error{OutOfMemory}!void {
+    fn compile_node(ally: Ally, id: Id, ir: Ir, builder: *Builder) error{OutOfMemory}!void {
         switch (ir.get(id)) {
             .param => unreachable,
             .word => |word| try builder.push_word(word, id),
@@ -1377,14 +1377,12 @@ const ir_to_instructions_mod = struct {
             .if_not_zero => |if_| {
                 try builder.push_from_stack(if_.condition);
                 const condition = builder.stack.pop() orelse @panic("stack empty");
-                const then = try compile_body(heap, if_.then, ir, builder.stack);
+                const then = try compile_body(ally, if_.then, ir, builder.stack);
                 _ = builder.stack.pop();
-                const else_ = try compile_body(heap, if_.else_, ir, builder.stack);
+                const else_ = try compile_body(ally, if_.else_, ir, builder.stack);
                 _ = builder.stack.pop();
-                const then_obj = try Instruction.new_instructions(heap, then);
-                const else_obj = try Instruction.new_instructions(heap, else_);
                 try builder.stack.append(builder.ally, condition);
-                try builder.if_not_zero(then_obj, else_obj, id);
+                try builder.if_not_zero(then, else_, id);
             },
             .crash => |message| {
                 try builder.push_from_stack(message);
