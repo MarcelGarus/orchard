@@ -116,16 +116,16 @@ pub const Instruction = union(enum) {
     }
 
     const ParseResult = struct { instruction: Instruction, rest: Object };
-    pub fn parse_all(instructions: Object) ![]const Instruction {
+    pub fn parse_all(ally: Ally, instructions: Object) ![]const Instruction {
         var object = instructions;
         var out = ArrayList(Instruction).empty;
-        while (try parse_first(object)) |result| {
-            try out.append(instructions.heap.ally, result.instruction);
+        while (try parse_first(ally, object)) |result| {
+            try out.append(ally, result.instruction);
             object = result.rest;
         }
         return out.items;
     }
-    pub fn parse_first(instructions: Object) error{ OutOfMemory, UnknownInstruction, BadEval }!?ParseResult {
+    pub fn parse_first(ally: Ally, instructions: Object) error{ OutOfMemory, UnknownInstruction, BadEval }!?ParseResult {
         switch (instructions.kind()) {
             .nil => return null,
             .struct_ => {
@@ -163,8 +163,8 @@ pub const Instruction = union(enum) {
                         .{ .compare = {} }
                     else if (variant.is_symbol("if_not_zero"))
                         .{ .if_not_zero = .{
-                            .then = try Instruction.parse_all(payload.field_by_name("then")),
-                            .else_ = try Instruction.parse_all(payload.field_by_name("else")),
+                            .then = try Instruction.parse_all(ally, payload.field_by_name("then")),
+                            .else_ = try Instruction.parse_all(ally, payload.field_by_name("else")),
                         } }
                     else if (variant.is_symbol("new"))
                         .{ .new = .{
@@ -188,7 +188,10 @@ pub const Instruction = union(enum) {
                         return error.UnknownInstruction;
                 return .{ .instruction = inst, .rest = rest };
             },
-            else => return error.BadEval,
+            else => {
+                std.debug.print("not an instruction: {any}\n", .{instructions.kind()});
+                return error.BadEval;
+            },
         }
     }
 
@@ -199,7 +202,7 @@ pub const Instruction = union(enum) {
         for (0..indentation) |_| try writer.print("  ", .{});
         switch (instr) {
             .push_word => |word| try writer.print("push_word {x}\n", .{word}),
-            .push_address => |object| try writer.print("push_address {x}\n", .{object.address.address}),
+            .push_address => |object| try writer.print("push_address {x}\n", .{object.address}),
             .push_from_stack => |offset| try writer.print("push_from_stack {}\n", .{offset}),
             .pop => |amount| try writer.print("pop {}\n", .{amount}),
             .pop_below_top => |amount| try writer.print("pop_below_top {}\n", .{amount}),
@@ -215,10 +218,12 @@ pub const Instruction = union(enum) {
                 try writer.print("if_not_zero\n", .{});
                 for (0..(indentation + 1)) |_| try writer.print("  ", .{});
                 try writer.print("then\n", .{});
-                try if_.then.format_instructions(writer, indentation + 2);
+                for (if_.then) |instruction|
+                    try instruction.format_indented(writer, indentation + 2);
                 for (0..(indentation + 1)) |_| try writer.print("  ", .{});
                 try writer.print("else\n", .{});
-                try if_.else_.format_instructions(writer, indentation + 2);
+                for (if_.else_) |instruction|
+                    try instruction.format_indented(writer, indentation + 2);
             },
             .new => |new| try writer.print(
                 "new [{}] {} pointers, {} literals\n",

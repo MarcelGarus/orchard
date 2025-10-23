@@ -16,13 +16,13 @@ pub fn main() !void {
     var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
     const ally = debug_ally.allocator();
 
-    var heap = Heap.init(ally);
+    var heap = try Heap.init(ally, 200000);
     const start_of_heap = heap.checkpoint();
-    var vm = Vm.init(&heap);
+    var vm = Vm.init(&heap, ally);
 
     const expected_int_symbol = try Object.new_symbol(&heap, "expected int");
 
-    const crash = try ir_to_lambda(&heap, ir: {
+    const crash = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
         const message = try builder.param();
         const closure = try builder.param();
@@ -33,7 +33,7 @@ pub fn main() !void {
         break :ir builder.finish(body_);
     });
 
-    const int_add = try ir_to_lambda(&heap, ir: {
+    const int_add = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
         const a = try builder.param();
         const b = try builder.param();
@@ -50,7 +50,7 @@ pub fn main() !void {
         break :ir builder.finish(body_);
     });
 
-    const int_subtract = try ir_to_lambda(&heap, ir: {
+    const int_subtract = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
         const a = try builder.param();
         const b = try builder.param();
@@ -67,7 +67,7 @@ pub fn main() !void {
         break :ir builder.finish(body_);
     });
 
-    const int_multiply = try ir_to_lambda(&heap, ir: {
+    const int_multiply = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
         const a = try builder.param();
         const b = try builder.param();
@@ -84,7 +84,7 @@ pub fn main() !void {
         break :ir builder.finish(body_);
     });
 
-    const int_divide = try ir_to_lambda(&heap, ir: {
+    const int_divide = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
         const a = try builder.param();
         const b = try builder.param();
@@ -101,7 +101,7 @@ pub fn main() !void {
         break :ir builder.finish(body_);
     });
 
-    const if_not_zero = try ir_to_lambda(&heap, ir: {
+    const if_not_zero = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
         const condition = try builder.param();
         const then_ = try builder.param();
@@ -126,7 +126,7 @@ pub fn main() !void {
         break :ir builder.finish(body_);
     });
 
-    const int_compare_to_num = try ir_to_lambda(&heap, ir: {
+    const int_compare_to_num = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
         const a = try builder.param();
         const b = try builder.param();
@@ -156,13 +156,13 @@ pub fn main() !void {
         .int_compare_to_num = int_compare_to_num,
     });
 
-    const result = try vm.eval(.{ .builtins = builtins }, code);
+    const result = try vm.eval(ally, .{ .builtins = builtins }, code);
 
     std.debug.print("{f}\n", .{result});
 
     heap.dump_stats();
-    _ = try heap.garbage_collect(start_of_heap, result.address);
-    _ = try heap.deduplicate(start_of_heap, ally);
+    _ = try heap.garbage_collect(ally, start_of_heap, result.address);
+    _ = try heap.deduplicate(ally, start_of_heap);
     heap.dump_stats();
     // heap.dump_raw();
     // heap.dump();

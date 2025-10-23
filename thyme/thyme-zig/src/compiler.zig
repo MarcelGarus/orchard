@@ -687,8 +687,8 @@ pub const Ir = struct {
     };
 };
 
-pub fn ast_to_ir(heap: *Heap, env: anytype, ast: Ast.Expr) !Ir {
-    return try ast_to_ir_mod.compile(heap.ally, env, ast, heap);
+pub fn ast_to_ir(ally: Ally, heap: *Heap, env: anytype, ast: Ast.Expr) !Ir {
+    return try ast_to_ir_mod.compile(ally, env, ast, heap);
 }
 
 const ast_to_ir_mod = struct {
@@ -719,7 +719,7 @@ const ast_to_ir_mod = struct {
     pub fn compile(ally: Ally, env: anytype, expr: Ast.Expr, heap: *Heap) !Ir {
         const common = common: {
             const nil = try Object.new_nil(heap);
-            const compare_symbols_rec_fun = try ir_to_fun(heap, ir: {
+            const compare_symbols_rec_fun = try ir_to_fun(ally, heap, ir: {
                 var builder = Ir.Builder.init(ally);
                 const a = try builder.param(); // a symbol object
                 const b = try builder.param(); // a symbol object
@@ -766,7 +766,7 @@ const ast_to_ir_mod = struct {
                 const body_ = body.finish(res);
                 break :ir builder.finish(body_);
             });
-            const compare_symbols_fun = try ir_to_fun(heap, ir: {
+            const compare_symbols_fun = try ir_to_fun(ally, heap, ir: {
                 var builder = Ir.Builder.init(ally);
                 const a = try builder.param(); // a symbol object
                 const b = try builder.param(); // a symbol object
@@ -781,7 +781,7 @@ const ast_to_ir_mod = struct {
                 const body_ = body.finish(res);
                 break :ir builder.finish(body_);
             });
-            const member_rec_fun = try ir_to_fun(heap, ir: {
+            const member_rec_fun = try ir_to_fun(ally, heap, ir: {
                 var builder = Ir.Builder.init(ally);
                 const struct_ = try builder.param(); // a struct object
                 const name = try builder.param(); // a symbol object
@@ -833,7 +833,7 @@ const ast_to_ir_mod = struct {
                 const body_ = body.finish(res);
                 break :ir builder.finish(body_);
             });
-            const member_fun = try ir_to_fun(heap, ir: {
+            const member_fun = try ir_to_fun(ally, heap, ir: {
                 var builder = Ir.Builder.init(ally);
                 const struct_ = try builder.param(); // a struct object
                 const name = try builder.param(); // a symbol object
@@ -1006,7 +1006,7 @@ const ast_to_ir_mod = struct {
                     const body_result = lambda_body.finish(result);
                     break :ir lambda_builder.finish(body_result);
                 };
-                const lambda_fun = try body.object(try ir_to_fun(heap, lambda_ir));
+                const lambda_fun = try body.object(try ir_to_fun(ally, heap, lambda_ir));
                 return body.new_lambda(lambda_fun, closure);
             },
             .call => |call| {
@@ -1139,8 +1139,8 @@ const ast_to_ir_mod = struct {
     }
 };
 
-pub fn ir_to_instructions(heap: *Heap, ir: Ir) ![]const Instruction {
-    return try ir_to_instructions_mod.compile(heap.ally, ir);
+pub fn ir_to_instructions(ally: Ally, ir: Ir) ![]const Instruction {
+    return try ir_to_instructions_mod.compile(ally, ir);
 }
 
 const ir_to_instructions_mod = struct {
@@ -1392,21 +1392,21 @@ const ir_to_instructions_mod = struct {
     }
 };
 
-pub fn ir_to_fun(heap: *Heap, ir: Ir) !Object {
-    const instructions = try ir_to_instructions(heap, ir);
+pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) !Object {
+    const instructions = try ir_to_instructions(ally, ir);
     const instructions_obj = try Instruction.new_instructions(heap, instructions);
     const nil = try Object.new_nil(heap);
     return try Object.new_fun(heap, ir.params.len, nil, instructions_obj);
 }
 
-pub fn ir_to_lambda(heap: *Heap, ir: Ir) !Object {
-    const fun = try ir_to_fun(heap, ir);
+pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) !Object {
+    const fun = try ir_to_fun(ally, heap, ir);
     const nil = try Object.new_nil(heap);
     return try Object.new_lambda(heap, fun, nil);
 }
 
-pub fn code_to_fun(heap: *Heap, env: anytype, code: Str) !Object {
-    const ast = try str_to_ast(heap.ally, code);
-    const ir = try ast_to_ir(heap, env, ast);
-    return try ir_to_fun(heap, ir);
+pub fn code_to_fun(ally: Ally, heap: *Heap, env: anytype, code: Str) !Object {
+    const ast = try str_to_ast(ally, code);
+    const ir = try ast_to_ir(ally, heap, env, ast);
+    return try ir_to_fun(ally, heap, ir);
 }

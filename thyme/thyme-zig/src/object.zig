@@ -79,54 +79,43 @@ pub fn int_value(int: Object) i64 {
 // Symbol
 
 pub fn new_symbol(heap: *Heap, val: []const u8) !Object {
+    var builder = try heap.object_builder(TAG_SYMBOL);
     const num_words = (val.len + 7) / 8;
-    const words = try heap.ally.alloc(Word, num_words);
     for (0..num_words) |i| {
         var w: Word = 0;
         for (0..@min(val.len - i * 8, 8)) |j|
             w |= @as(Word, val[i * 8 + j]) << @intCast(j * 8);
-        words[i] = w;
+        try builder.emit_literal(w);
     }
-    const address = try heap.new(.{
-        .tag = TAG_SYMBOL,
-        .pointers = &[_]Word{},
-        .literals = words,
-    });
-    heap.ally.free(words);
-    return .{ .heap = heap, .address = address };
+    return .{ .heap = heap, .address = try builder.finish() };
 }
 
 pub fn is_symbol(symbol: Object, check: []const u8) bool {
     if (symbol.kind() != .symbol) @panic("not a symbol");
     const num_words = (check.len + 7) / 8;
-    const words = symbol.heap.ally.alloc(Word, num_words) catch
-        @panic("oom");
-    for (0..num_words) |i| {
-        var w: Word = 0;
-        for (0..@min(check.len - i * 8, 8)) |j|
-            w |= @as(Word, check[i * 8 + j]) << @intCast(j * 8);
-        words[i] = w;
-    }
-    const matches = std.mem.eql(Word, symbol.get_allocation().literals, words);
-    symbol.heap.ally.free(words);
-    return matches;
+    const allocation = symbol.get_allocation();
+    if (allocation.literals.len != num_words) return false;
+    return std.mem.eql(
+        u8,
+        @as([*]const u8, @ptrCast(allocation.literals.ptr))[0..check.len],
+        check,
+    );
 }
 
 // Struct
 
 pub fn new_struct(heap: *Heap, fields: anytype) !Object {
     const field_types = @typeInfo(@TypeOf(fields)).@"struct".fields;
-    const words = try heap.ally.alloc(Word, 2 * field_types.len);
+    var field_names: [field_types.len]Object = undefined;
     inline for (0.., field_types) |i, type_| {
-        words[2 * i] = (try Object.new_symbol(heap, type_.name)).address;
-        words[2 * i + 1] = @as(Object, @field(fields, type_.name)).address;
+        field_names[i] = try Object.new_symbol(heap, type_.name);
     }
-    const address = try heap.new(.{
-        .tag = TAG_STRUCT,
-        .pointers = words,
-        .literals = &[_]Word{},
-    });
-    return .{ .heap = heap, .address = address };
+    var builder = try heap.object_builder(TAG_STRUCT);
+    inline for (field_names, field_types) |name, type_| {
+        try builder.emit_pointer(name.address);
+        try builder.emit_pointer(@as(Object, @field(fields, type_.name)).address);
+    }
+    return .{ .heap = heap, .address = try builder.finish() };
 }
 
 pub fn num_fields(struct_: Object) usize {
@@ -203,6 +192,8 @@ pub fn closure_of_lambda(lambda: Object) Object {
     return Object{ .heap = lambda.heap, .address = address };
 }
 
+// Formatting
+
 pub fn format(object: Object, writer: *Writer) !void {
     try object.format_indented(writer, 0);
 }
@@ -234,7 +225,13 @@ pub fn format_indented(object: Object, writer: *Writer, indentation: usize) erro
             try writer.print("{}\n", .{object.num_params()});
             for (0..(indentation + 1)) |_| try writer.print("  ", .{});
             try writer.print("instructions:\n", .{});
-            try object.instructions().format(writer);
+            var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
+            const ally = debug_ally.allocator();
+            const instrs = @import("instruction.zig").Instruction.parse_all(ally, object.instructions()) catch
+                return error.WriteFailed;
+            for (instrs) |instruction| {
+                try instruction.format_indented(writer, indentation + 2);
+            }
         },
         .lambda => {
             try writer.print("lambda\n", .{});
