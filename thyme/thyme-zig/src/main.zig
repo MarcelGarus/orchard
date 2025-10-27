@@ -5,6 +5,7 @@ const thyme_zig = @import("thyme_zig");
 const compiler = @import("compiler.zig");
 const Ir = compiler.Ir;
 const ir_to_lambda = compiler.ir_to_lambda;
+const ir_to_fun = compiler.ir_to_fun;
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Object = @import("object.zig");
@@ -18,9 +19,26 @@ pub fn main() !void {
 
     var heap = try Heap.init(ally, 200000);
     const start_of_heap = heap.checkpoint();
-    var vm = Vm.init(&heap, ally);
+    var vm = try Vm.init(&heap, ally);
 
     const expected_int_symbol = try Object.new_symbol(&heap, "expected int");
+
+    const foo = try ir_to_fun(ally, &heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const a = try builder.param();
+        var body = builder.body();
+        const b = try body.word(1);
+        const sum = try body.add(a, b);
+        const body_ = body.finish(sum);
+        break :ir builder.finish(body_);
+    });
+
+    const object = try vm.call(ally, foo, &[_]Object{.{ .address = 4, .heap = &heap }});
+    std.debug.print("Returned: {}\n", .{object.address});
+
+    if (true) {
+        return;
+    }
 
     const crash = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
