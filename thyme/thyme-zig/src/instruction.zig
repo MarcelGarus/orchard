@@ -56,6 +56,14 @@ pub const Instruction = union(enum) {
 
     load,
 
+    heap_checkpoint,
+
+    // Pops a word, the object to keep. Pops another word, a heap checkpoint.
+    // Collects garbage in the heap starting at the checkpoint, only keeping
+    // objects that are needed.
+    // (checkpoint object -> object)
+    collect_garbage,
+
     eval,
 
     crash,
@@ -100,6 +108,8 @@ pub const Instruction = union(enum) {
             .num_pointers => try Object.new_struct(heap, .{ .num_pointers = try Object.new_nil(heap) }),
             .num_literals => try Object.new_struct(heap, .{ .num_literals = try Object.new_nil(heap) }),
             .load => try Object.new_struct(heap, .{ .load = try Object.new_nil(heap) }),
+            .heap_checkpoint => try Object.new_struct(heap, .{ .heap_checkpoint = try Object.new_nil(heap) }),
+            .collect_garbage => try Object.new_struct(heap, .{ .collect_garbage = try Object.new_nil(heap) }),
             .eval => try Object.new_struct(heap, .{ .eval = try Object.new_nil(heap) }),
             .crash => try Object.new_struct(heap, .{ .crash = try Object.new_nil(heap) }),
         };
@@ -180,6 +190,10 @@ pub const Instruction = union(enum) {
                         .{ .num_literals = {} }
                     else if (variant.is_symbol("load"))
                         .{ .load = {} }
+                    else if (variant.is_symbol("heap_checkpoint"))
+                        .{ .heap_checkpoint = {} }
+                    else if (variant.is_symbol("collect_garbage"))
+                        .{ .collect_garbage = {} }
                     else if (variant.is_symbol("eval"))
                         .{ .eval = {} }
                     else if (variant.is_symbol("crash"))
@@ -201,38 +215,38 @@ pub const Instruction = union(enum) {
     pub fn format_indented(instr: Instruction, writer: *Writer, indentation: usize) !void {
         for (0..indentation) |_| try writer.print("  ", .{});
         switch (instr) {
-            .push_word => |word| try writer.print("push_word {x}\n", .{word}),
-            .push_address => |object| try writer.print("push_address {x}\n", .{object.address}),
-            .push_from_stack => |offset| try writer.print("push_from_stack {}\n", .{offset}),
+            .push_word => |word| try writer.print("push word {x}\n", .{word}),
+            .push_address => |object| try writer.print("push address {x}\n", .{object.address}),
+            .push_from_stack => |offset| try writer.print("push from stack {}\n", .{offset}),
             .pop => |amount| try writer.print("pop {}\n", .{amount}),
-            .pop_below_top => |amount| try writer.print("pop_below_top {}\n", .{amount}),
+            .pop_below_top => |amount| try writer.print("pop below top {}\n", .{amount}),
             .add => try writer.print("add\n", .{}),
             .subtract => try writer.print("subtract\n", .{}),
             .multiply => try writer.print("multiply\n", .{}),
             .divide => try writer.print("divide\n", .{}),
             .modulo => try writer.print("modulo\n", .{}),
-            .shift_left => try writer.print("shift_left\n", .{}),
-            .shift_right => try writer.print("shift_right\n", .{}),
+            .shift_left => try writer.print("shift left\n", .{}),
+            .shift_right => try writer.print("shift right\n", .{}),
             .compare => try writer.print("compare\n", .{}),
             .if_not_zero => |if_| {
-                try writer.print("if_not_zero\n", .{});
-                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
-                try writer.print("then\n", .{});
+                try writer.print("if not zero then\n", .{});
                 for (if_.then) |instruction|
-                    try instruction.format_indented(writer, indentation + 2);
-                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+                    try instruction.format_indented(writer, indentation + 1);
+                for (0..indentation) |_| try writer.print("  ", .{});
                 try writer.print("else\n", .{});
                 for (if_.else_) |instruction|
-                    try instruction.format_indented(writer, indentation + 2);
+                    try instruction.format_indented(writer, indentation + 1);
             },
             .new => |new| try writer.print(
                 "new [{}] {} pointers, {} literals\n",
                 .{ new.tag, new.num_pointers, new.num_literals },
             ),
             .tag => try writer.print("tag\n", .{}),
-            .num_pointers => try writer.print("num_pointers\n", .{}),
-            .num_literals => try writer.print("num_literals\n", .{}),
+            .num_pointers => try writer.print("num pointers\n", .{}),
+            .num_literals => try writer.print("num literals\n", .{}),
             .load => try writer.print("load\n", .{}),
+            .heap_checkpoint => try writer.print("heap checkpoint\n", .{}),
+            .collect_garbage => try writer.print("collect garbage\n", .{}),
             .eval => try writer.print("eval\n", .{}),
             .crash => try writer.print("crash\n", .{}),
         }

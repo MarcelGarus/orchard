@@ -6,8 +6,10 @@ const compiler = @import("compiler.zig");
 const Ir = compiler.Ir;
 const ir_to_lambda = compiler.ir_to_lambda;
 const ir_to_fun = compiler.ir_to_fun;
+const instructions_to_fun = compiler.instructions_to_fun;
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
+const Instruction = @import("instruction.zig").Instruction;
 const Object = @import("object.zig");
 const Vm = @import("vm.zig");
 
@@ -23,22 +25,86 @@ pub fn main() !void {
 
     const expected_int_symbol = try Object.new_symbol(&heap, "expected int");
 
-    const foo = try ir_to_fun(ally, &heap, ir: {
+    // const foo = try ir_to_fun(ally, &heap, ir: {
+    //     var builder = Ir.Builder.init(ally);
+    //     const a = try builder.param();
+    //     var body = builder.body();
+    //     const b = try body.word(1);
+    //     const sum = try body.add(a, b);
+    //     const body_ = body.finish(sum);
+    //     break :ir builder.finish(body_);
+    // });
+
+    // const object = try vm.call(ally, foo, &[_]Object{.{ .address = 4, .heap = &heap }});
+    // std.debug.print("Returned: {}\n", .{object.address});
+
+    // if (true) {
+    //     return;
+    // }
+
+    // "collect_garbage" accepts a lambda that takes zero arguments. Makes a
+    // heap checkpoint, calls the lambda, and does a garbage collection, freeing
+    // everything that the lambda allocated except the return value.
+    const unchecked_collect_garbage = try instructions_to_fun(&heap, 2, &[_]Instruction{
+        // stack: (lambda)
+        .heap_checkpoint, // (lambda checkpoint)
+        .{ .push_from_stack = 1 }, // (lambda checkpoint lambda)
+        .{ .push_word = 1 }, // (lambda checkpoint lambda 1)
+        .load, // (lambda checkpoint closure)
+        .{ .push_from_stack = 2 }, // (lambda checkpoint closure lambda)
+        .{ .push_word = 0 }, // (lambda checkpoint closure lambda 0)
+        .load, // (lambda checkpoint closure fun)
+        .{ .push_word = 1 }, // (lambda checkpoint closure fun 1)
+        .load, // (lambda checkpoint closure instructions)
+        .eval, // (lambda checkpoint result)
+        .collect_garbage, // (lambda result)
+        .{ .pop_below_top = 1 }, // (result)
+    });
+    const collect_garbage = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
+        const lambda = try builder.param();
+        _ = try builder.param(); // closure
         var body = builder.body();
-        const b = try body.word(1);
-        const sum = try body.add(a, b);
-        const body_ = body.finish(sum);
+        const zero = try body.word(0);
+        const one = try body.word(1);
+        const two = try body.word(2);
+        const tag = try body.tag(lambda);
+        const lambda_tag = try body.word(Object.TAG_LAMBDA);
+        const compared = try body.compare(tag, lambda_tag);
+        _ = try body.if_not_zero(
+            compared,
+            then: {
+                var inner = body.child_body();
+                const message = try inner.object(try Object.new_symbol(&heap, "expected lambda"));
+                break :then inner.finish(message);
+            },
+            else_: {
+                var inner = body.child_body();
+                break :else_ inner.finish(zero);
+            },
+        );
+        const fun = try body.load(lambda, zero);
+        const num_args = try body.load(fun, two);
+        const only_takes_closure = try body.compare(num_args, one);
+        _ = try body.if_not_zero(
+            only_takes_closure,
+            then: {
+                var inner = body.child_body();
+                const message = try inner.object(try Object.new_symbol(&heap, "expected lambda with zero arguments"));
+                break :then inner.finish(message);
+            },
+            else_: {
+                var inner = body.child_body();
+                break :else_ inner.finish(zero);
+            },
+        );
+        const unchecked = try body.object(unchecked_collect_garbage);
+        const args = try ally.alloc(compiler.Ir.Id, 1);
+        args[0] = lambda;
+        const result = try body.call(unchecked, args);
+        const body_ = body.finish(result);
         break :ir builder.finish(body_);
     });
-
-    const object = try vm.call(ally, foo, &[_]Object{.{ .address = 4, .heap = &heap }});
-    std.debug.print("Returned: {}\n", .{object.address});
-
-    if (true) {
-        return;
-    }
 
     const crash = try ir_to_lambda(ally, &heap, ir: {
         var builder = Ir.Builder.init(ally);
@@ -165,6 +231,7 @@ pub fn main() !void {
     const code = try file.readToEndAlloc(ally, 1000000);
 
     const builtins = try Object.new_struct(&heap, .{
+        .collect_garbage = collect_garbage,
         .crash = crash,
         .add = int_add,
         .subtract = int_subtract,

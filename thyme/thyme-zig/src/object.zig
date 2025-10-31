@@ -30,7 +30,7 @@ fn get_allocation(object: Object) Allocation {
     return object.heap.get(object.address);
 }
 
-const Kind = enum { nil, int, symbol, struct_, fun, lambda };
+const Kind = enum { nil, int, symbol, struct_, fun, closure, lambda };
 
 pub fn kind(object: Object) Kind {
     const allocation = object.get_allocation();
@@ -40,8 +40,12 @@ pub fn kind(object: Object) Kind {
         TAG_SYMBOL => .symbol,
         TAG_STRUCT => .struct_,
         TAG_FUN => .fun,
+        TAG_CLOSURE => .closure,
         TAG_LAMBDA => .lambda,
-        else => @panic("unknown tag"),
+        else => {
+            std.debug.print("tag: {}\n", .{allocation.tag});
+            @panic("unknown tag");
+        },
     };
 }
 
@@ -147,26 +151,38 @@ pub fn field_by_name(struct_: Object, comptime name: []const u8) Object {
 
 // Fun
 
-pub fn new_fun(heap: *Heap, num_params_: usize, ir: Object, instructions_: Object) !Object {
+pub fn new_fun(heap: *Heap, num_params_: usize, ir_: Object, instructions_: Object) !Object {
     const address = try heap.new(.{
         .tag = TAG_FUN,
-        .pointers = &[_]Word{ ir.address, instructions_.address },
+        .pointers = &[_]Word{ ir_.address, instructions_.address },
         .literals = &[_]Word{num_params_},
     });
     return .{ .heap = heap, .address = address };
 }
 
 pub fn num_params(fun: Object) usize {
-    if (fun.kind() != .fun) @panic("not an fun");
+    if (fun.kind() != .fun) @panic("not a fun");
     return @intCast(fun.get_allocation().literals[0]);
 }
 
+pub fn ir(fun: Object) Object {
+    if (fun.kind() != .fun) @panic("not a fun");
+    return .{ .heap = fun.heap, .address = fun.get_allocation().pointers[0] };
+}
+
 pub fn instructions(fun: Object) Object {
-    if (fun.kind() != .fun) @panic("not an fun");
-    return .{
-        .heap = fun.heap,
-        .address = fun.get_allocation().pointers[1],
-    };
+    if (fun.kind() != .fun) @panic("not a fun");
+    return .{ .heap = fun.heap, .address = fun.get_allocation().pointers[1] };
+}
+
+// Closure
+
+fn num_captured(closure: Object) usize {
+    return closure.get_allocation().pointers.len;
+}
+
+fn captured(closure: Object, index: usize) Object {
+    return .{ .heap = closure.heap, .address = closure.get_allocation().pointers[index] };
 }
 
 // Lambda
@@ -224,6 +240,10 @@ pub fn format_indented(object: Object, writer: *Writer, indentation: usize) erro
             for (0..(indentation + 1)) |_| try writer.print("  ", .{});
             try writer.print("{}\n", .{object.num_params()});
             for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            try writer.print("ir: ", .{});
+            const ir_ = @as(*Ir, @ptrFromInt(@as(usize, @bitCast(object.ir().int_value())))).*;
+            try ir_.format_indented(writer, indentation + 1);
+            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
             try writer.print("instructions:\n", .{});
             var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
             const ally = debug_ally.allocator();
@@ -231,6 +251,14 @@ pub fn format_indented(object: Object, writer: *Writer, indentation: usize) erro
                 return error.WriteFailed;
             for (instrs) |instruction| {
                 try instruction.format_indented(writer, indentation + 2);
+            }
+        },
+        .closure => {
+            try writer.print("closure", .{});
+            for (0..object.num_captured()) |i| {
+                try writer.print("\n", .{});
+                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+                try object.captured(i).format_indented(writer, indentation + 1);
             }
         },
         .lambda => {

@@ -4,6 +4,7 @@ const std = @import("std");
 const Writer = std.io.Writer;
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const Map = std.AutoArrayHashMap;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
@@ -440,7 +441,7 @@ pub const Ir = struct {
     pub fn format(ir: Ir, writer: *Writer) !void {
         try ir.format_indented(writer, 0);
     }
-    fn format_indented(ir: Ir, writer: *Writer, indentation: usize) !void {
+    pub fn format_indented(ir: Ir, writer: *Writer, indentation: usize) !void {
         try writer.print("code", .{});
         for (ir.params) |param| try writer.print(" {f}", .{param});
         try writer.print("\n", .{});
@@ -459,7 +460,7 @@ pub const Ir = struct {
         switch (node) {
             .param => try writer.print("param\n", .{}),
             .word => |word| try writer.print("word {}\n", .{word}),
-            .object => |object| try writer.print("object *{x}\n", .{object.address.address}),
+            .object => |object| try writer.print("object *{x}\n", .{object.address}),
             .new => |new| {
                 try writer.print("new [{x}]", .{new.tag});
                 for (new.pointers) |pointer| try writer.print(" {f}", .{pointer});
@@ -1139,6 +1140,81 @@ const ast_to_ir_mod = struct {
     }
 };
 
+pub fn optimize_ir(ally: Ally, heap: *Heap, ir: Ir) !Ir {
+    var builder = Ir.Builder.init(ally);
+    const mapping = Map(Ir.Id, Ir.Id).init();
+    const body = try optimize_ir_mod.compile_body(
+        ally,
+        ir,
+        ir.body,
+        builder,
+        heap,
+        mapping,
+    );
+    return builder.finish(body);
+}
+
+const optimize_ir_mod = struct {
+    const Id = Ir.Id;
+
+    pub fn compile_expr(
+        ally: Ally,
+        old: Ir,
+        old_id: Id,
+        body: Ir.BodyBuilder,
+        heap: *Heap,
+        mapping: *Map(Id, Id),
+    ) !Id {
+        switch (old.get(old_id)) {
+            .param => unreachable,
+            .word => |word| return body.word(word),
+            .object => |object| return body.object(object),
+            .new => |new| {
+                const pointers = try ally.alloc(Id, new.pointers.len);
+                const literals = try ally.alloc(Id, new.literals.len);
+                for (0.., new.pointers) |i, pointer| pointers[i] = mapping.get(pointer);
+                for (0.., new.literals) |i, literal| literals[i] = mapping.get(literal);
+                return body.new(new.tag, &pointers, &literals);
+            },
+            .tag => |address| return body.tag(mapping.get(address)),
+            .num_pointers => |address| return body.num_pointers(mapping.get(address)),
+            .num_literals => |address| return body.num_literals(mapping.get(address)),
+            .load => |load| return body.load(mapping.get(load.address), mapping.get(load.offset)),
+            .add => |args| return body.add(mapping.get(args.left), mapping.get(args.right)),
+            .subtract => |args| return body.subtract(mapping.get(args.left), mapping.get(args.right)),
+            .multiply => |args| return body.multiply(mapping.get(args.left), mapping.get(args.right)),
+            .divide => |args| return body.divide(mapping.get(args.left), mapping.get(args.right)),
+            .modulo => |args| return body.modulo(mapping.get(args.left), mapping.get(args.right)),
+            .compare => |args| return body.compare(mapping.get(args.left), mapping.get(args.right)),
+            .call => |call| {
+                const args = try ally.alloc(Id, call.args.len);
+                for (0.., call.args) |i, arg| args[i] = mapping.get(arg);
+                return body.call(mapping.get(call.fun), args);
+            },
+            .if_not_zero => |if_| return body.if_not_zero(
+                mapping.get(if_.condition),
+                try compile_body(ally, old, if_.then, body.parent, heap, mapping),
+                try compile_body(ally, old, if_.else_, body.parent, heap, mapping),
+            ),
+            .crash => |message| return body.crash(mapping.get(message)),
+        }
+    }
+
+    fn compile_body(
+        ally: Ally,
+        old: Ir,
+        old_body: Ir.Body,
+        builder: *Ir.Builder,
+        heap: *Heap,
+        mapping: *Map(Id, Id),
+    ) !Ir.Body {
+        var body = builder.body();
+        for (old_body.ids) |id|
+            try mapping.put(id, try compile_expr(ally, old, id, heap));
+        return body.finish(mapping.get(old_body.returns));
+    }
+};
+
 pub fn ir_to_instructions(ally: Ally, ir: Ir) ![]const Instruction {
     return try ir_to_instructions_mod.compile(ally, ir);
 }
@@ -1392,11 +1468,23 @@ const ir_to_instructions_mod = struct {
     }
 };
 
+pub fn instructions_to_fun(heap: *Heap, num_params_: usize, instructions: []const Instruction) !Object {
+    const instructions_obj = try Instruction.new_instructions(heap, instructions);
+    return try Object.new_fun(heap, num_params_, try Object.new_nil(heap), instructions_obj);
+}
+pub fn instructions_to_lambda(heap: *Heap, num_params_: usize, instructions: []const Instruction) !Object {
+    const fun = try instructions_to_fun(heap, num_params_, instructions);
+    const nil = try Object.new_nil(heap);
+    return try Object.new_lambda(heap, fun, nil);
+}
+
 pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) !Object {
     const instructions = try ir_to_instructions(ally, ir);
     const instructions_obj = try Instruction.new_instructions(heap, instructions);
-    const nil = try Object.new_nil(heap);
-    return try Object.new_fun(heap, ir.params.len, nil, instructions_obj);
+    const boxed_ir = try ally.create(Ir);
+    boxed_ir.* = ir;
+    const ir_ptr = try Object.new_int(heap, @bitCast(@intFromPtr(boxed_ir)));
+    return try Object.new_fun(heap, ir.params.len, ir_ptr, instructions_obj);
 }
 
 pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) !Object {
