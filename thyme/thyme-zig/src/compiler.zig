@@ -1222,6 +1222,7 @@ pub const Waffle = struct {
 
     const Op = union(enum) {
         param, // -
+        also, // ignored, value
         let: Id, // def, value
         ref: Id, // -
         word: Word, // -
@@ -1251,26 +1252,28 @@ pub const Waffle = struct {
     pub fn format_indented(expr: Waffle, writer: *Writer, indentation: usize) error{WriteFailed}!void {
         for (0..indentation) |_| try writer.print("  ", .{});
         switch (expr.op) {
-            .param => try writer.print("param\n", .{}),
-            .let => |id| try writer.print("let %{}\n", .{id.id}),
-            .ref => |id| try writer.print("ref %{}\n", .{id.id}),
-            .word => |word| try writer.print("word {}\n", .{word}),
-            .object => |object| try writer.print("object *{x}\n", .{object.address}),
-            .new => |new| try writer.print("new [{x}]\n", .{new.tag}),
-            .tag => try writer.print("tag\n", .{}),
-            .num_pointers => try writer.print("num pointers\n", .{}),
-            .num_literals => try writer.print("num literals\n", .{}),
-            .load => try writer.print("load\n", .{}),
-            .add => try writer.print("add\n", .{}),
-            .subtract => try writer.print("subtract\n", .{}),
-            .multiply => try writer.print("multiply\n", .{}),
-            .divide => try writer.print("divide\n", .{}),
-            .modulo => try writer.print("modulo\n", .{}),
-            .compare => try writer.print("compare\n", .{}),
-            .call => try writer.print("call\n", .{}),
-            .if_not_zero => try writer.print("if not zero\n", .{}),
-            .crash => try writer.print("crash\n", .{}),
+            .param => try writer.print("param", .{}),
+            .also => try writer.print("also", .{}),
+            .let => |id| try writer.print("let %{}", .{id.id}),
+            .ref => |id| try writer.print("ref %{}", .{id.id}),
+            .word => |word| try writer.print("word {}", .{word}),
+            .object => |object| try writer.print("object *{x}", .{object.address}),
+            .new => |new| try writer.print("new [{x}]", .{new.tag}),
+            .tag => try writer.print("tag", .{}),
+            .num_pointers => try writer.print("num pointers", .{}),
+            .num_literals => try writer.print("num literals", .{}),
+            .load => try writer.print("load", .{}),
+            .add => try writer.print("add", .{}),
+            .subtract => try writer.print("subtract", .{}),
+            .multiply => try writer.print("multiply", .{}),
+            .divide => try writer.print("divide", .{}),
+            .modulo => try writer.print("modulo", .{}),
+            .compare => try writer.print("compare", .{}),
+            .call => try writer.print("call", .{}),
+            .if_not_zero => try writer.print("if not zero", .{}),
+            .crash => try writer.print("crash", .{}),
         }
+        try writer.print("\n", .{});
         for (expr.children) |child|
             try child.format_indented(writer, indentation + 1);
     }
@@ -1439,11 +1442,11 @@ pub fn optimize_waffle(ally: Ally, waffle: Waffle) !Waffle {
             };
             if (is_cheap) return try inline_waffle(ally, value, id, def);
 
-            // const num_references = count_references(value, id);
+            const num_references = count_references(value, id);
 
-            // if (num_references == 0) {
-            //     return .{ .op = .also, .children = children };
-            // }
+            if (num_references == 0) {
+                return .{ .op = .also, .children = children };
+            }
             // if (num_references == 1) {
             //     const used_before_impure = used: {
             //         find_usage_before_impure(value, id) catch |e| {
@@ -1528,6 +1531,12 @@ const WaffleToInstructions = struct {
         const stack_size_before = self.stack_size;
         switch (waffle.op) {
             .param => self.stack_size += 1,
+            .also => {
+                try self.compile(waffle.children[0]);
+                try self.emit(.{ .pop = 1 });
+                self.stack_size -= 1;
+                try self.compile(waffle.children[1]);
+            },
             .let => |id| {
                 const stack_size = self.stack_size;
                 try self.mapping.put(id, stack_size);
