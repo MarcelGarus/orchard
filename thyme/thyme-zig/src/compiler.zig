@@ -1215,255 +1215,451 @@ const optimize_ir_mod = struct {
     }
 };
 
-pub fn ir_to_instructions(ally: Ally, ir: Ir) ![]const Instruction {
-    return try ir_to_instructions_mod.compile(ally, ir);
-}
+pub const Waffle = struct {
+    // The operation gives the children semantic meaning.
+    op: Op,
+    children: []const Waffle,
 
-const ir_to_instructions_mod = struct {
-    const Id = Ir.Id;
-
-    const Builder = struct {
-        ally: Ally,
-        instructions: ArrayList(Instruction),
-        stack: *ArrayList(Id),
-
-        pub fn init(ally: Ally, initial_stack: *ArrayList(Id)) Builder {
-            return .{
-                .ally = ally,
-                .instructions = .empty,
-                .stack = initial_stack,
-            };
-        }
-
-        pub fn push_word(builder: *Builder, word: Word, id: Id) !void {
-            try builder.instructions.append(builder.ally, .{ .push_word = word });
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn push_address(builder: *Builder, object: Object, id: Id) !void {
-            try builder.instructions.append(builder.ally, .{ .push_address = object });
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn push_from_stack(builder: *Builder, id: Id) !void {
-            const offset = for (0.., builder.stack.items) |i, stack_id| {
-                if (stack_id.index == id.index)
-                    break builder.stack.items.len - 1 - i;
-            } else {
-                std.debug.print("stack: {any} id: {any}\n", .{ builder.stack, id });
-                @panic("id not on stack");
-            };
-            try builder.instructions.append(builder.ally, .{ .push_from_stack = offset });
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn pop(builder: *Builder, amount: usize) !void {
-            try builder.instructions.append(builder.ally, .{ .pop = amount });
-            builder.stack.items.len -= amount;
-        }
-        pub fn pop_below_top(builder: *Builder, amount: usize) !void {
-            try builder.instructions.append(builder.ally, .{ .pop_below_top = amount });
-            const top = builder.stack.pop() orelse @panic("stack empty");
-            builder.stack.items.len -= amount;
-            try builder.stack.append(builder.ally, top);
-        }
-        pub fn add(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .add);
-            _ = builder.stack.pop();
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn subtract(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .subtract);
-            _ = builder.stack.pop();
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn multiply(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .multiply);
-            _ = builder.stack.pop();
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn divide(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .divide);
-            _ = builder.stack.pop();
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn modulo(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .modulo);
-            _ = builder.stack.pop();
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn shift_left(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .shift_left);
-            _ = builder.stack.pop();
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn shift_right(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .shift_right);
-            _ = builder.stack.pop();
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn compare(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .compare);
-            _ = builder.stack.pop();
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn if_not_zero(builder: *Builder, then: []const Instruction, else_: []const Instruction, id: Id) !void {
-            try builder.instructions.append(builder.ally, .{ .if_not_zero = .{
-                .then = then,
-                .else_ = else_,
-            } });
-            _ = builder.stack.pop(); // condition
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn new(builder: *Builder, tag_: u8, num_pointers_: usize, num_literals_: usize, id: Id) !void {
-            try builder.instructions.append(builder.ally, .{ .new = .{
-                .tag = tag_,
-                .num_pointers = num_pointers_,
-                .num_literals = num_literals_,
-            } });
-            builder.stack.items.len -= num_pointers_ + num_literals_;
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn tag(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .tag);
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn num_pointers(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .num_pointers);
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn num_literals(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .num_literals);
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn load(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .load);
-            _ = builder.stack.pop();
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn eval(builder: *Builder, num_consumed: usize, id: Id) !void {
-            try builder.instructions.append(builder.ally, .eval);
-            _ = builder.stack.pop(); // list of instructions
-            builder.stack.items.len -= num_consumed;
-            try builder.stack.append(builder.ally, id);
-        }
-        pub fn crash(builder: *Builder, id: Id) !void {
-            try builder.instructions.append(builder.ally, .crash);
-            _ = builder.stack.pop();
-            try builder.stack.append(builder.ally, id);
-        }
+    const Op = union(enum) {
+        param, // -
+        let: Id, // def, value
+        ref: Id, // -
+        word: Word, // -
+        object: Object, // -
+        new: New, // pointers, literals
+        tag, // object
+        num_pointers, // object
+        num_literals, // object
+        load, // base, offset
+        add, // left, right
+        subtract, // left, right
+        multiply, // left, right
+        divide, // left, right
+        modulo, // left, right
+        compare, // left, right
+        call, // args, fun
+        if_not_zero, // condition, then, else
+        crash, // message
     };
 
-    pub fn compile(ally: Ally, ir: Ir) ![]const Instruction {
-        var stack = ArrayList(Id).empty;
-        for (ir.params) |param| try stack.append(ally, param);
-        var builder = Builder.init(ally, &stack);
-        for (ir.body.ids) |id|
-            try compile_node(ally, id, ir, &builder);
-        try builder.push_from_stack(ir.body.returns);
-        try builder.pop_below_top(ir.body.ids.len + ir.params.len);
-        return builder.instructions.items;
-    }
+    pub const Id = struct { id: usize };
+    pub const New = struct { tag: u8, num_pointers: usize, num_literals: usize };
 
-    fn compile_body(ally: Ally, body: Ir.Body, ir: Ir, stack: *ArrayList(Id)) ![]const Instruction {
-        const stack_size = stack.items.len;
-        var builder = Builder.init(ally, stack);
-        for (body.ids) |id| {
-            try compile_node(ally, id, ir, &builder);
+    pub fn format(waffle: Waffle, writer: *Writer) !void {
+        try waffle.format_indented(writer, 0);
+    }
+    pub fn format_indented(expr: Waffle, writer: *Writer, indentation: usize) error{WriteFailed}!void {
+        for (0..indentation) |_| try writer.print("  ", .{});
+        switch (expr.op) {
+            .param => try writer.print("param\n", .{}),
+            .let => |id| try writer.print("let %{}\n", .{id.id}),
+            .ref => |id| try writer.print("ref %{}\n", .{id.id}),
+            .word => |word| try writer.print("word {}\n", .{word}),
+            .object => |object| try writer.print("object *{x}\n", .{object.address}),
+            .new => |new| try writer.print("new [{x}]\n", .{new.tag}),
+            .tag => try writer.print("tag\n", .{}),
+            .num_pointers => try writer.print("num pointers\n", .{}),
+            .num_literals => try writer.print("num literals\n", .{}),
+            .load => try writer.print("load\n", .{}),
+            .add => try writer.print("add\n", .{}),
+            .subtract => try writer.print("subtract\n", .{}),
+            .multiply => try writer.print("multiply\n", .{}),
+            .divide => try writer.print("divide\n", .{}),
+            .modulo => try writer.print("modulo\n", .{}),
+            .compare => try writer.print("compare\n", .{}),
+            .call => try writer.print("call\n", .{}),
+            .if_not_zero => try writer.print("if not zero\n", .{}),
+            .crash => try writer.print("crash\n", .{}),
         }
-        try builder.push_from_stack(body.returns);
-        try builder.pop_below_top(body.ids.len);
-        if (stack.items.len != stack_size + 1) @panic("bad compile");
-        return builder.instructions.items;
+        for (expr.children) |child|
+            try child.format_indented(writer, indentation + 1);
+    }
+};
+
+pub fn ir_to_waffle(ally: Ally, ir: Ir) !Waffle {
+    var compiler = IrToWaffle{
+        .ally = ally,
+        .ir = ir,
+        .mapping = Map(Ir.Id, Waffle.Id).init(ally),
+    };
+    return try compiler.compile_fun(ir.params);
+}
+const IrToWaffle = struct {
+    ally: Ally,
+    ir: Ir,
+    mapping: Map(Ir.Id, Waffle.Id),
+
+    fn new_id(self: *IrToWaffle, ir_id: Ir.Id) !Waffle.Id {
+        const id = Waffle.Id{ .id = self.mapping.unmanaged.count() };
+        try self.mapping.put(ir_id, id);
+        return id;
+    }
+    fn ref(self: IrToWaffle, ir_id: Ir.Id) Waffle {
+        return .{
+            .op = .{ .ref = self.mapping.get(ir_id).? },
+            .children = &[_]Waffle{},
+        };
     }
 
-    fn compile_node(ally: Ally, id: Id, ir: Ir, builder: *Builder) error{OutOfMemory}!void {
-        switch (ir.get(id)) {
+    fn compile_fun(self: *IrToWaffle, params: []const Ir.Id) !Waffle {
+        if (params.len == 0) {
+            return try self.compile_body(self.ir.body.ids, self.ir.body.returns);
+        }
+        const param = try self.new_id(params[0]);
+        const children = try self.ally.alloc(Waffle, 2);
+        children[0] = .{ .op = .param, .children = &[_]Waffle{} };
+        children[1] = try self.compile_fun(params[1..]);
+        return .{ .op = .{ .let = param }, .children = children };
+    }
+    fn compile_body(self: *IrToWaffle, ids: []const Ir.Id, returns: Ir.Id) !Waffle {
+        if (ids.len == 0) return self.ref(returns);
+        const id = try self.new_id(ids[0]);
+        const children = try self.ally.alloc(Waffle, 2);
+        children[0] = try self.compile_node(self.ir.get(ids[0]));
+        children[1] = try self.compile_body(ids[1..], returns);
+        return .{ .op = .{ .let = id }, .children = children };
+    }
+    pub fn compile_node(self: *IrToWaffle, node: Ir.Node) error{OutOfMemory}!Waffle {
+        switch (node) {
             .param => unreachable,
-            .word => |word| try builder.push_word(word, id),
-            .object => |object| try builder.push_address(object, id),
+            .word => |word| return .{
+                .op = .{ .word = word },
+                .children = &[_]Waffle{},
+            },
+            .object => |object| return .{
+                .op = .{ .object = object },
+                .children = &[_]Waffle{},
+            },
             .new => |new| {
-                for (new.pointers) |ref| try builder.push_from_stack(ref);
-                for (new.literals) |ref| try builder.push_from_stack(ref);
-                try builder.new(new.tag, new.pointers.len, new.literals.len, id);
+                const children = try self.ally.alloc(Waffle, new.pointers.len + new.literals.len);
+                for (0.., new.pointers) |i, pointer| children[i] = self.ref(pointer);
+                for (new.pointers.len.., new.literals) |i, literal| children[i] = self.ref(literal);
+                return .{
+                    .op = .{ .new = .{
+                        .tag = new.tag,
+                        .num_pointers = new.pointers.len,
+                        .num_literals = new.literals.len,
+                    } },
+                    .children = children,
+                };
             },
             .tag => |obj| {
-                try builder.push_from_stack(obj);
-                try builder.tag(id);
+                const children = try self.ally.alloc(Waffle, 1);
+                children[0] = self.ref(obj);
+                return .{ .op = .tag, .children = children };
             },
             .num_pointers => |obj| {
-                try builder.push_from_stack(obj);
-                try builder.num_pointers(id);
+                const children = try self.ally.alloc(Waffle, 1);
+                children[0] = self.ref(obj);
+                return .{ .op = .num_pointers, .children = children };
             },
             .num_literals => |obj| {
-                try builder.push_from_stack(obj);
-                try builder.num_literals(id);
+                const children = try self.ally.alloc(Waffle, 1);
+                children[0] = self.ref(obj);
+                return .{ .op = .num_literals, .children = children };
             },
             .load => |load| {
-                try builder.push_from_stack(load.base);
-                try builder.push_from_stack(load.offset);
-                try builder.load(id);
+                const children = try self.ally.alloc(Waffle, 2);
+                children[0] = self.ref(load.base);
+                children[1] = self.ref(load.offset);
+                return .{ .op = .load, .children = children };
             },
             .add => |args| {
-                try builder.push_from_stack(args.left);
-                try builder.push_from_stack(args.right);
-                try builder.add(id);
+                const children = try self.ally.alloc(Waffle, 2);
+                children[0] = self.ref(args.left);
+                children[1] = self.ref(args.right);
+                return .{ .op = .add, .children = children };
             },
             .subtract => |args| {
-                try builder.push_from_stack(args.left);
-                try builder.push_from_stack(args.right);
-                try builder.subtract(id);
+                const children = try self.ally.alloc(Waffle, 2);
+                children[0] = self.ref(args.left);
+                children[1] = self.ref(args.right);
+                return .{ .op = .subtract, .children = children };
             },
             .multiply => |args| {
-                try builder.push_from_stack(args.left);
-                try builder.push_from_stack(args.right);
-                try builder.multiply(id);
+                const children = try self.ally.alloc(Waffle, 2);
+                children[0] = self.ref(args.left);
+                children[1] = self.ref(args.right);
+                return .{ .op = .multiply, .children = children };
             },
             .divide => |args| {
-                try builder.push_from_stack(args.left);
-                try builder.push_from_stack(args.right);
-                try builder.divide(id);
+                const children = try self.ally.alloc(Waffle, 2);
+                children[0] = self.ref(args.left);
+                children[1] = self.ref(args.right);
+                return .{ .op = .divide, .children = children };
             },
             .modulo => |args| {
-                try builder.push_from_stack(args.left);
-                try builder.push_from_stack(args.right);
-                try builder.modulo(id);
+                const children = try self.ally.alloc(Waffle, 2);
+                children[0] = self.ref(args.left);
+                children[1] = self.ref(args.right);
+                return .{ .op = .modulo, .children = children };
             },
             .compare => |args| {
-                try builder.push_from_stack(args.left);
-                try builder.push_from_stack(args.right);
-                try builder.compare(id);
+                const children = try self.ally.alloc(Waffle, 2);
+                children[0] = self.ref(args.left);
+                children[1] = self.ref(args.right);
+                return .{ .op = .compare, .children = children };
             },
             .call => |call| {
-                for (call.args) |arg| try builder.push_from_stack(arg);
-                try builder.push_from_stack(call.fun);
-                try builder.push_word(1, id);
-                try builder.load(id);
-                try builder.eval(call.args.len, id);
+                const children = try self.ally.alloc(Waffle, call.args.len + 1);
+                for (0.., call.args) |i, arg| children[i] = self.ref(arg);
+                children[call.args.len] = self.ref(call.fun);
+                return .{ .op = .call, .children = children };
             },
             .if_not_zero => |if_| {
-                try builder.push_from_stack(if_.condition);
-                const condition = builder.stack.pop() orelse @panic("stack empty");
-                const then = try compile_body(ally, if_.then, ir, builder.stack);
-                _ = builder.stack.pop();
-                const else_ = try compile_body(ally, if_.else_, ir, builder.stack);
-                _ = builder.stack.pop();
-                try builder.stack.append(builder.ally, condition);
-                try builder.if_not_zero(then, else_, id);
+                const children = try self.ally.alloc(Waffle, 3);
+                children[0] = self.ref(if_.condition);
+                children[1] = try self.compile_body(if_.then.ids, if_.then.returns);
+                children[2] = try self.compile_body(if_.else_.ids, if_.else_.returns);
+                return .{ .op = .if_not_zero, .children = children };
             },
             .crash => |message| {
-                try builder.push_from_stack(message);
-                try builder.crash(id);
+                const children = try self.ally.alloc(Waffle, 1);
+                children[0] = self.ref(message);
+                return .{ .op = .crash, .children = children };
             },
+        }
+    }
+};
+
+pub fn optimize_waffle(ally: Ally, waffle: Waffle) !Waffle {
+    const children = try ally.alloc(Waffle, waffle.children.len);
+    for (0.., waffle.children) |i, child|
+        children[i] = try optimize_waffle(ally, child);
+
+    switch (waffle.op) {
+        .let => |id| {
+            const def = children[0];
+            const value = children[1];
+
+            const is_cheap = switch (def.op) {
+                .word => true,
+                .object => true,
+                else => false,
+            };
+            if (is_cheap) return try inline_waffle(ally, value, id, def);
+
+            // const num_references = count_references(value, id);
+
+            // if (num_references == 0) {
+            //     return .{ .op = .also, .children = children };
+            // }
+            // if (num_references == 1) {
+            //     const used_before_impure = used: {
+            //         find_usage_before_impure(value, id) catch |e| {
+            //             switch (e) {
+            //                 error.Used => break :used true,
+            //                 error.NotUsed => break :used false,
+            //             }
+            //         };
+            //         break :used false;
+            //     };
+            //     if (used_before_impure) {
+            //         return try inline_waffle(ally, value, id, def);
+            //     }
+            // }
+        },
+        else => {},
+    }
+
+    return .{ .op = waffle.op, .children = children };
+}
+fn inline_waffle(ally: Ally, expr: Waffle, id: Waffle.Id, def: Waffle) !Waffle {
+    switch (expr.op) {
+        .ref => |ref| if (ref.id == id.id) return def,
+        else => {},
+    }
+
+    const children = try ally.alloc(Waffle, expr.children.len);
+    for (0.., expr.children) |i, child|
+        children[i] = try inline_waffle(ally, child, id, def);
+    return .{ .op = expr.op, .children = children };
+}
+fn count_references(expr: Waffle, id: Waffle.Id) usize {
+    switch (expr.op) {
+        .ref => |ref| return if (ref.id == id.id) 1 else 0,
+        else => {
+            var sum: usize = 0;
+            for (expr.children) |child| sum += count_references(child, id);
+            return sum;
+        },
+    }
+}
+fn find_usage_before_impure(expr: Waffle, id: Waffle.Id) error{ Used, NotUsed }!void {
+    switch (expr.op) {
+        .ref => |ref| if (ref.id == id.id) return error.Used,
+        .call => {
+            for (expr.children) |child| try find_usage_before_impure(child, id);
+            return error.NotUsed;
+        },
+        .if_not_zero => try find_usage_before_impure(expr.children[0], id),
+        .crash => {
+            for (expr.children) |child| try find_usage_before_impure(child, id);
+            return error.NotUsed;
+        },
+        else => {
+            for (expr.children) |child| try find_usage_before_impure(child, id);
+        },
+    }
+}
+
+pub fn waffle_to_instructions(ally: Ally, waffle: Waffle) ![]const Instruction {
+    var mapping = Map(Waffle.Id, usize).init(ally);
+    var compiler = WaffleToInstructions{
+        .ally = ally,
+        .instructions = ArrayList(Instruction).empty,
+        .stack_size = 0,
+        .mapping = &mapping,
+    };
+    try compiler.compile(waffle);
+    return compiler.instructions.items;
+}
+const WaffleToInstructions = struct {
+    ally: Ally,
+    instructions: ArrayList(Instruction),
+    stack_size: usize,
+    mapping: *Map(Waffle.Id, usize),
+
+    fn emit(self: *WaffleToInstructions, instruction: Instruction) !void {
+        try self.instructions.append(self.ally, instruction);
+    }
+
+    fn compile(self: *WaffleToInstructions, waffle: Waffle) error{OutOfMemory}!void {
+        const stack_size_before = self.stack_size;
+        switch (waffle.op) {
+            .param => self.stack_size += 1,
+            .let => |id| {
+                const stack_size = self.stack_size;
+                try self.mapping.put(id, stack_size);
+                try self.compile(waffle.children[0]);
+                try self.compile(waffle.children[1]);
+                try self.emit(.{ .pop_below_top = 1 });
+                self.stack_size -= 1;
+            },
+            .ref => |id| {
+                const offset = self.stack_size - self.mapping.get(id).? - 1;
+                try self.emit(.{ .push_from_stack = offset });
+                self.stack_size += 1;
+            },
+            .word => |word| {
+                try self.emit(.{ .push_word = word });
+                self.stack_size += 1;
+            },
+            .object => |object| {
+                try self.emit(.{ .push_address = object });
+                self.stack_size += 1;
+            },
+            .new => |new| {
+                for (waffle.children) |child| try self.compile(child);
+                try self.emit(.{ .new = .{
+                    .tag = new.tag,
+                    .num_pointers = new.num_pointers,
+                    .num_literals = new.num_literals,
+                } });
+                self.stack_size -= new.num_pointers + new.num_literals;
+                self.stack_size += 1;
+            },
+            .tag => {
+                try self.compile(waffle.children[0]);
+                try self.emit(.tag);
+                self.stack_size -= 1;
+                self.stack_size += 1;
+            },
+            .num_pointers => {
+                try self.compile(waffle.children[0]);
+                try self.emit(.num_pointers);
+                self.stack_size -= 1;
+                self.stack_size += 1;
+            },
+            .num_literals => {
+                try self.compile(waffle.children[0]);
+                try self.emit(.num_literals);
+                self.stack_size -= 1;
+                self.stack_size += 1;
+            },
+            .load => {
+                for (waffle.children) |child| try self.compile(child);
+                try self.emit(.load);
+                self.stack_size -= 2;
+                self.stack_size += 1;
+            },
+            .add => {
+                for (waffle.children) |child| try self.compile(child);
+                try self.emit(.add);
+                self.stack_size -= 2;
+                self.stack_size += 1;
+            },
+            .subtract => {
+                for (waffle.children) |child| try self.compile(child);
+                try self.emit(.subtract);
+                self.stack_size -= 2;
+                self.stack_size += 1;
+            },
+            .multiply => {
+                for (waffle.children) |child| try self.compile(child);
+                try self.emit(.multiply);
+                self.stack_size -= 2;
+                self.stack_size += 1;
+            },
+            .divide => {
+                for (waffle.children) |child| try self.compile(child);
+                try self.emit(.divide);
+                self.stack_size -= 2;
+                self.stack_size += 1;
+            },
+            .modulo => {
+                for (waffle.children) |child| try self.compile(child);
+                try self.emit(.modulo);
+                self.stack_size -= 2;
+                self.stack_size += 1;
+            },
+            .compare => {
+                for (waffle.children) |child| try self.compile(child);
+                try self.emit(.compare);
+                self.stack_size -= 2;
+                self.stack_size += 1;
+            },
+            .call => {
+                for (waffle.children) |child| try self.compile(child);
+                try self.emit(.{ .push_word = 1 });
+                try self.emit(.load);
+                try self.emit(.eval);
+                self.stack_size -= waffle.children.len;
+                self.stack_size += 1;
+            },
+            .if_not_zero => {
+                try self.compile(waffle.children[0]);
+                var then_compiler = WaffleToInstructions{
+                    .ally = self.ally,
+                    .instructions = ArrayList(Instruction).empty,
+                    .stack_size = self.stack_size - 1,
+                    .mapping = self.mapping,
+                };
+                try then_compiler.compile(waffle.children[1]);
+                var else_compiler = WaffleToInstructions{
+                    .ally = self.ally,
+                    .instructions = ArrayList(Instruction).empty,
+                    .stack_size = self.stack_size - 1,
+                    .mapping = self.mapping,
+                };
+                try else_compiler.compile(waffle.children[2]);
+                try self.emit(.{ .if_not_zero = .{
+                    .then = then_compiler.instructions.items,
+                    .else_ = else_compiler.instructions.items,
+                } });
+                self.stack_size -= 1;
+                self.stack_size += 1;
+            },
+            .crash => {
+                try self.compile(waffle.children[0]);
+                try self.emit(.crash);
+            },
+        }
+        const stack_size_after = self.stack_size;
+        if (stack_size_before + 1 != stack_size_after) {
+            std.debug.print("stack size before: {} after: {}\n", .{ stack_size_before, stack_size_after });
+            std.debug.print("when compiling:\n{f}", .{waffle});
+            @panic("bad compile");
         }
     }
 };
@@ -1472,14 +1668,17 @@ pub fn instructions_to_fun(heap: *Heap, num_params_: usize, instructions: []cons
     const instructions_obj = try Instruction.new_instructions(heap, instructions);
     return try Object.new_fun(heap, num_params_, try Object.new_nil(heap), instructions_obj);
 }
-pub fn instructions_to_lambda(heap: *Heap, num_params_: usize, instructions: []const Instruction) !Object {
-    const fun = try instructions_to_fun(heap, num_params_, instructions);
-    const nil = try Object.new_nil(heap);
-    return try Object.new_lambda(heap, fun, nil);
+
+pub fn waffle_to_fun(heap: *Heap, num_params: usize, waffle: Waffle) !Object {
+    const instructions = try waffle_to_instructions(waffle);
+    return try instructions_to_fun(heap, num_params, instructions);
 }
 
 pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) !Object {
-    const instructions = try ir_to_instructions(ally, ir);
+    const waffle = try ir_to_waffle(ally, ir);
+    const optimized_waffle = try optimize_waffle(ally, waffle);
+    std.debug.print("optimized waffle:\n{f}", .{optimized_waffle});
+    const instructions = try waffle_to_instructions(ally, optimized_waffle);
     const instructions_obj = try Instruction.new_instructions(heap, instructions);
     const boxed_ir = try ally.create(Ir);
     boxed_ir.* = ir;
