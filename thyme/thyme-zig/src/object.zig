@@ -26,7 +26,7 @@ address: Address,
 
 const Object = @This();
 
-fn get_allocation(object: Object) Allocation {
+pub fn get_allocation(object: Object) Allocation {
     return object.heap.get(object.address);
 }
 
@@ -265,8 +265,8 @@ pub fn format_indented(object: Object, writer: *Writer, indentation: usize) erro
             try writer.print("lambda\n", .{});
             for (0..(indentation + 1)) |_| try writer.print("  ", .{});
             try object.fun_of_lambda().format_indented(writer, indentation + 1);
-            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
-            try object.closure_of_lambda().format_indented(writer, indentation + 1);
+            // for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            // try object.closure_of_lambda().format_indented(writer, indentation + 1);
         },
     }
 }

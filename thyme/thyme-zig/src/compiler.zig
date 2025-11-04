@@ -551,7 +551,7 @@ pub const Ir = struct {
         }
 
         pub fn get(body: BodyBuilder, id: Id) Node {
-            return body.parent.nodes[id.index];
+            return body.parent.nodes.items[id.index];
         }
 
         pub fn finish(body: BodyBuilder, returns: Id) Body {
@@ -565,6 +565,13 @@ pub const Ir = struct {
             return body.create_and_push(.{ .object = obj });
         }
         pub fn new(body: *BodyBuilder, tag_: u8, pointers: []const Id, literals: []const Id) !Id {
+            if (tag_ == Object.TAG_LAMBDA) {
+                switch (body.get(pointers[0])) {
+                    .object => |obj| if (obj.kind() != .fun) @panic("lambda needs fun"),
+                    .new => |inner_new| if (inner_new.tag != Object.TAG_FUN) @panic("lambda needs fun"),
+                    else => {},
+                }
+            }
             return try body.create_and_push(.{ .new = .{
                 .tag = tag_,
                 .pointers = pointers,
@@ -1141,77 +1148,246 @@ const ast_to_ir_mod = struct {
 };
 
 pub fn optimize_ir(ally: Ally, heap: *Heap, ir: Ir) !Ir {
+    std.debug.print("Optimizing IR:\n{f}\n", .{ir});
+    var optimizer = OptimizeIr{
+        .ally = ally,
+        .ir = ir,
+        .heap = heap,
+        .mapping = Map(Ir.Id, Ir.Id).init(ally),
+    };
     var builder = Ir.Builder.init(ally);
-    const mapping = Map(Ir.Id, Ir.Id).init();
-    const body = try optimize_ir_mod.compile_body(
-        ally,
-        ir,
-        ir.body,
-        builder,
-        heap,
-        mapping,
-    );
+    for (ir.params) |old_param|
+        try optimizer.mapping.put(old_param, try builder.param());
+    const body = try optimizer.optimize_body(ir.body, &builder);
     return builder.finish(body);
 }
-
-const optimize_ir_mod = struct {
+const OptimizeIr = struct {
     const Id = Ir.Id;
 
-    pub fn compile_expr(
-        ally: Ally,
-        old: Ir,
-        old_id: Id,
-        body: Ir.BodyBuilder,
-        heap: *Heap,
-        mapping: *Map(Id, Id),
-    ) !Id {
-        switch (old.get(old_id)) {
+    ally: Ally,
+    ir: Ir,
+    heap: *Heap,
+    mapping: Map(Id, Id),
+
+    pub fn optimize_expr(self: *OptimizeIr, old_id: Id, body: *Ir.BodyBuilder) error{OutOfMemory}!Id {
+        switch (self.ir.get(old_id)) {
             .param => unreachable,
             .word => |word| return body.word(word),
             .object => |object| return body.object(object),
             .new => |new| {
-                const pointers = try ally.alloc(Id, new.pointers.len);
-                const literals = try ally.alloc(Id, new.literals.len);
-                for (0.., new.pointers) |i, pointer| pointers[i] = mapping.get(pointer);
-                for (0.., new.literals) |i, literal| literals[i] = mapping.get(literal);
-                return body.new(new.tag, &pointers, &literals);
+                const pointers = try self.ally.alloc(Id, new.pointers.len);
+                const literals = try self.ally.alloc(Id, new.literals.len);
+                for (0.., new.pointers) |i, pointer| pointers[i] = self.mapping.get(pointer).?;
+                for (0.., new.literals) |i, literal| literals[i] = self.mapping.get(literal).?;
+
+                // If this is a lambda and parts of the closure are known at
+                // compile time, bake those directly into the code. This allows
+                // us to optimize code further.
+                //
+                // (fun, closure) becomes
+                // (|a, b, c| fun(a, b, c, closure), {})
+                optimize_lambda: {
+                    if (new.tag != Object.TAG_LAMBDA) break :optimize_lambda;
+                    const fun = switch (body.get(new.pointers[0])) {
+                        .object => |obj| obj,
+                        else => break :optimize_lambda,
+                    };
+                    std.debug.print("fun *{x} {} is {f}\n", .{ fun.address, fun.address, fun });
+                    std.debug.print("old fun: {any}\n", .{self.ir.get(new.pointers[0])});
+                    const num_args = fun.num_params();
+                    switch (body.get(new.pointers[1])) {
+                        .object => |closure| {
+                            const wrapper = try ir_to_lambda(self.ally, self.heap, ir: {
+                                var builder = Ir.Builder.init(self.ally);
+                                for (0..num_args) |_| _ = try builder.param();
+                                var wrapper_body = builder.body();
+                                var args = ArrayList(Id).empty;
+                                for (builder.params.items) |param|
+                                    try args.append(self.ally, param);
+                                args.items[args.items.len - 1] = try wrapper_body.object(closure);
+                                const inner_fun = try wrapper_body.object(fun);
+                                const res = try wrapper_body.call(inner_fun, args.items);
+                                const body_ = wrapper_body.finish(res);
+                                break :ir builder.finish(body_);
+                            });
+                            return body.object(wrapper);
+                        },
+                        // .new => |closure_new| {},
+                        else => break :optimize_lambda,
+                    }
+                }
+
+                // If all the data of an object is known at compile time, just
+                // create the object once at compile time instead of every time
+                // the code runs.
+                optimize_all_comptime: {
+                    for (pointers) |pointer|
+                        switch (body.get(pointer)) {
+                            .object => {},
+                            else => break :optimize_all_comptime,
+                        };
+                    for (literals) |literal|
+                        switch (body.get(literal)) {
+                            .word => {},
+                            else => break :optimize_all_comptime,
+                        };
+                    var builder = try self.heap.object_builder(new.tag);
+                    for (pointers) |pointer|
+                        try builder.emit_pointer(body.get(pointer).object.address);
+                    for (literals) |literal|
+                        try builder.emit_literal(body.get(literal).word);
+                    const object = Object{ .heap = self.heap, .address = try builder.finish() };
+                    return body.object(object);
+                }
+
+                return body.new(new.tag, pointers, literals);
             },
-            .tag => |address| return body.tag(mapping.get(address)),
-            .num_pointers => |address| return body.num_pointers(mapping.get(address)),
-            .num_literals => |address| return body.num_literals(mapping.get(address)),
-            .load => |load| return body.load(mapping.get(load.address), mapping.get(load.offset)),
-            .add => |args| return body.add(mapping.get(args.left), mapping.get(args.right)),
-            .subtract => |args| return body.subtract(mapping.get(args.left), mapping.get(args.right)),
-            .multiply => |args| return body.multiply(mapping.get(args.left), mapping.get(args.right)),
-            .divide => |args| return body.divide(mapping.get(args.left), mapping.get(args.right)),
-            .modulo => |args| return body.modulo(mapping.get(args.left), mapping.get(args.right)),
-            .compare => |args| return body.compare(mapping.get(args.left), mapping.get(args.right)),
+            .tag => |old_address| {
+                const address = self.mapping.get(old_address).?;
+                switch (body.get(address)) {
+                    .object => |object| return body.word(@intCast(object.get_allocation().tag)),
+                    .new => |new| return body.word(@intCast(new.tag)),
+                    else => return body.tag(address),
+                }
+            },
+            .num_pointers => |old_address| {
+                const address = self.mapping.get(old_address).?;
+                switch (body.get(address)) {
+                    .object => |object| return body.word(@intCast(object.get_allocation().pointers.len)),
+                    .new => |new| return body.word(@intCast(new.pointers.len)),
+                    else => return body.num_pointers(address),
+                }
+            },
+            .num_literals => |old_address| {
+                const address = self.mapping.get(old_address).?;
+                switch (body.get(address)) {
+                    .object => |object| return body.word(@intCast(object.get_allocation().literals.len)),
+                    .new => |new| return body.word(@intCast(new.literals.len)),
+                    else => return body.num_literals(address),
+                }
+            },
+            .load => |load| {
+                // TODO: optimize
+                return body.load(self.mapping.get(load.base).?, self.mapping.get(load.offset).?);
+            },
+            .add => |args| {
+                const left = self.mapping.get(args.left).?;
+                const right = self.mapping.get(args.right).?;
+                switch (body.get(left)) {
+                    .word => |l| switch (body.get(right)) {
+                        .word => |r| return body.word(l +% r),
+                        else => return if (l == 0) right else body.add(right, left),
+                    },
+                    else => switch (body.get(right)) {
+                        .word => |r| return if (r == 0) left else body.add(left, right),
+                        else => return body.add(left, right),
+                    },
+                }
+            },
+            .subtract => |args| {
+                const left = self.mapping.get(args.left).?;
+                const right = self.mapping.get(args.right).?;
+                switch (body.get(right)) {
+                    .word => |r| switch (body.get(left)) {
+                        .word => |l| return body.word(l -% r),
+                        else => return if (r == 0) left else body.subtract(left, right),
+                    },
+                    else => return body.subtract(left, right),
+                }
+            },
+            .multiply => |args| {
+                const left = self.mapping.get(args.left).?;
+                const right = self.mapping.get(args.right).?;
+                // TODO: turn multiply by power of 2 into shift
+                switch (body.get(left)) {
+                    .word => |l| switch (body.get(right)) {
+                        .word => |r| return body.word(l *% r),
+                        else => return if (l == 1) right else body.multiply(right, left),
+                    },
+                    else => switch (body.get(right)) {
+                        .word => |r| return if (r == 1) left else body.multiply(left, right),
+                        else => return body.multiply(left, right),
+                    },
+                }
+            },
+            .divide => |args| {
+                const left = self.mapping.get(args.left).?;
+                const right = self.mapping.get(args.right).?;
+                switch (body.get(right)) {
+                    .word => |r| {
+                        // TODO: turn divide by power of 2 into shift
+                        if (r == 0) {
+                            // TODO: add body.unreachable
+                            return body.word(0);
+                        } else switch (body.get(left)) {
+                            .word => |l| return body.word(l / r),
+                            else => return if (r == 0) left else body.divide(left, right),
+                        }
+                    },
+                    else => return body.divide(left, right),
+                }
+            },
+            .modulo => |args| {
+                const left = self.mapping.get(args.left).?;
+                const right = self.mapping.get(args.right).?;
+                switch (body.get(right)) {
+                    .word => |r| if (r == 0) {
+                        // TODO: add body.unreachable
+                        return body.word(0);
+                    } else switch (body.get(left)) {
+                        .word => |l| return body.word(@mod(l, r)),
+                        else => return if (r == 0) left else body.modulo(left, right),
+                    },
+                    else => return body.modulo(left, right),
+                }
+            },
+            .compare => |args| {
+                const left = self.mapping.get(args.left).?;
+                const right = self.mapping.get(args.right).?;
+                switch (body.get(left)) {
+                    .word => |l| switch (body.get(right)) {
+                        .word => |r| return body.word(if (l == r) 0 else if (l > r) 1 else 2),
+                        else => return body.compare(left, right),
+                    },
+                    else => return body.compare(left, right),
+                }
+            },
             .call => |call| {
-                const args = try ally.alloc(Id, call.args.len);
-                for (0.., call.args) |i, arg| args[i] = mapping.get(arg);
-                return body.call(mapping.get(call.fun), args);
+                // TODO: all args comptime-known`try to call at comptime
+                // TODO: function small? inline
+                const args = try self.ally.alloc(Id, call.args.len);
+                for (0.., call.args) |i, arg| args[i] = self.mapping.get(arg).?;
+                return body.call(self.mapping.get(call.fun).?, args);
             },
-            .if_not_zero => |if_| return body.if_not_zero(
-                mapping.get(if_.condition),
-                try compile_body(ally, old, if_.then, body.parent, heap, mapping),
-                try compile_body(ally, old, if_.else_, body.parent, heap, mapping),
-            ),
-            .crash => |message| return body.crash(mapping.get(message)),
+            .if_not_zero => |if_| {
+                const condition = self.mapping.get(if_.condition).?;
+                switch (body.get(condition)) {
+                    .word => |c| {
+                        const run = if (c != 0) if_.then else if_.else_;
+                        for (run.ids) |inner_id| {
+                            const id = try self.optimize_expr(inner_id, body);
+                            try self.mapping.put(inner_id, id);
+                        }
+                        return self.mapping.get(run.returns).?;
+                    },
+                    else => return body.if_not_zero(
+                        self.mapping.get(if_.condition).?,
+                        try self.optimize_body(if_.then, body.parent),
+                        try self.optimize_body(if_.else_, body.parent),
+                    ),
+                }
+            },
+            .crash => |message| return body.crash(self.mapping.get(message).?),
         }
     }
 
-    fn compile_body(
-        ally: Ally,
-        old: Ir,
-        old_body: Ir.Body,
-        builder: *Ir.Builder,
-        heap: *Heap,
-        mapping: *Map(Id, Id),
-    ) !Ir.Body {
+    fn optimize_body(self: *OptimizeIr, old_body: Ir.Body, builder: *Ir.Builder) !Ir.Body {
         var body = builder.body();
-        for (old_body.ids) |id|
-            try mapping.put(id, try compile_expr(ally, old, id, heap));
-        return body.finish(mapping.get(old_body.returns));
+        for (old_body.ids) |old_id| {
+            const id = try self.optimize_expr(old_id, &body);
+            try self.mapping.put(old_id, id);
+        }
+        return body.finish(self.mapping.get(old_body.returns).?);
     }
 };
 
@@ -1678,19 +1854,14 @@ pub fn instructions_to_fun(heap: *Heap, num_params_: usize, instructions: []cons
     return try Object.new_fun(heap, num_params_, try Object.new_nil(heap), instructions_obj);
 }
 
-pub fn waffle_to_fun(heap: *Heap, num_params: usize, waffle: Waffle) !Object {
-    const instructions = try waffle_to_instructions(waffle);
-    return try instructions_to_fun(heap, num_params, instructions);
-}
-
 pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) !Object {
-    const waffle = try ir_to_waffle(ally, ir);
+    const optimized_ir = try optimize_ir(ally, heap, ir);
+    const waffle = try ir_to_waffle(ally, optimized_ir);
     const optimized_waffle = try optimize_waffle(ally, waffle);
-    std.debug.print("optimized waffle:\n{f}", .{optimized_waffle});
     const instructions = try waffle_to_instructions(ally, optimized_waffle);
     const instructions_obj = try Instruction.new_instructions(heap, instructions);
     const boxed_ir = try ally.create(Ir);
-    boxed_ir.* = ir;
+    boxed_ir.* = optimized_ir;
     const ir_ptr = try Object.new_int(heap, @bitCast(@intFromPtr(boxed_ir)));
     return try Object.new_fun(heap, ir.params.len, ir_ptr, instructions_obj);
 }
