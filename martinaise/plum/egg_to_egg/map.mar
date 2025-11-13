@@ -24,20 +24,7 @@ fun map_children[M](
 ): EggBody {
   var builder = egg_body_builder().&
   for param in body.params do
-    mapping.put(
-      param,
-      switch param.resolve()
-      case param(type) {
-        var mapped_type = type.map(mapper)
-        if type == mapped_type then
-          builder.push(param)
-        else
-          builder.param(mapped_type)
-      }
-      case case_param(param)
-        builder.case_param(param.switch_on.map(mapping.*), param.variant)
-      default unreachable()
-    )
+    mapping.put(param, param.map(mapper, builder, mapping))
   for child in body.children do
     mapping.put(child, child.map(mapper, builder, mapping))
   builder.finish(body.returns.map(mapping.*))
@@ -47,7 +34,10 @@ fun map_children[M](
   id: EggId, mapper: M, mapping: &Map[EggId, EggId]
 ): EggExpr {
   switch id.resolve()
-  case param(type) EggExpr.param(type.map(mapper))
+  case param(param)
+    EggExpr.param(EggParam {
+      identity = param.identity, type = param.type.map(mapper)
+    })
   case case_param(param)
     EggExpr.case_param(EggCaseParam {
       switch_on = param.switch_on.map(mapping.*), variant = param.variant

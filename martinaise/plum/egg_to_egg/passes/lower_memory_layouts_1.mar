@@ -31,24 +31,6 @@ fun lower_memory_layouts_1(egg: Egg): Egg {
 struct LowerMemoryLayouts1 { funs: &Map[String, EggFun] }
 
 fun map(
-  body: EggBody, mapper: LowerMemoryLayouts1, mapping: &Map[EggId, EggId]
-): EggBody {
-  var builder = egg_body_builder().&
-  for param in body.params do
-    mapping.put(
-      param,
-      switch param.resolve()
-      case param(type) builder.param(type.desugar_boxes_arrays_lambdas())
-      case case_param(param)
-        builder.case_param(param.switch_on.map(mapping.*), param.variant)
-      default unreachable()
-    )
-  for child in body.children do
-    mapping.put(child, child.map(mapper, builder, mapping))
-  builder.finish(body.returns.map(mapping.*))
-}
-
-fun map(
   id: EggId, mapper: LowerMemoryLayouts1,
   builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
@@ -109,7 +91,7 @@ fun map(
     for item in array.items.iter().enumerate() do
       builder.store_buffer_item(
         buffer,
-        item.item.type().desugar_boxes_arrays_lambdas(),
+        item_type.desugar_boxes_arrays_lambdas(),
         builder.int(item.index),
         item.item.map(mapping.*),
       )
@@ -128,7 +110,7 @@ fun map(
     )
     builder.loop_(list(builder.int(0)).to_slice(), {
       var builder = egg_body_builder().&
-      var cursor = builder.param(type_int)
+      var cursor = builder.param(new_identity(), type_int)
       builder.finish(
         builder.switch_on_ordering(
           builder.compare(cursor, length),
@@ -208,7 +190,7 @@ fun map(
         builder.decrement_refcount(buffer)
         builder.loop_(list(builder.int(0)).to_slice(), {
           var builder = egg_body_builder().&
-          var cursor = builder.param(type_int)
+          var cursor = builder.param(new_identity(), type_int)
           builder.finish(builder.switch_on_ordering(
             builder.compare(cursor, length),
             {
@@ -304,7 +286,14 @@ fun construct_inhabitant(builder: &EggBodyBuilder, type: EggType): EggId {
   }
   case lambda unreachable()
   case box(inner) builder.null_ptr() | inner also has exactly one inhabitant
-  case array(item_type) builder.array(empty_slice[EggId](), item_type)
+  case array(item_type)
+    builder.struct_(map(
+      "buffer" -> builder.new_buffer(
+        item_type.desugar_boxes_arrays_lambdas(), builder.int(0)
+      ),
+      "start" -> builder.int(0),
+      "end" -> builder.int(0),
+    ))
 }
 
 fun map(type: EggType, mapper: LowerMemoryLayouts1): EggType {
@@ -363,7 +352,7 @@ fun desugared_dup(builder: &EggBodyBuilder, value: EggId, type: EggType) {
     var buffer = builder.member(value, "buffer")
     builder.increment_refcount(buffer).ignore()
   }
-  case never builder.unreachable(type_nothing).ignore()
+  case never builder.crash("duped never", type_nothing).ignore()
   case struct_
     for field in type.plum().struct_.unwrap() do
       builder.desugared_dup(builder.member(value, field.key), field.value)
@@ -377,9 +366,14 @@ fun desugared_dup(builder: &EggBodyBuilder, value: EggId, type: EggType) {
     }
     builder.switch_(value, cases).ignore()
   }
-  case lambda
-    | TODO: handle null ptr
-    builder.increment_refcount(builder.member(value, "closure")).ignore()
+  case lambda {
+    var closure_ptr = builder.member(value, "closure")
+    builder.if_not_null_ptr(closure_ptr, {
+      var builder = egg_body_builder().&
+      builder.decrement_refcount(closure_ptr)
+      builder.finish_with_nothing()
+    })
+  }
 }
 
 | Traverses the value and drops all inner values. If it reaches a pointer, it
@@ -434,15 +428,18 @@ fun desugared_drop(
     builder.switch_(value, cases).ignore()
   }
   case lambda {
-    | TODO: handle null ptr
     var closure_ptr = builder.member(value, "closure")
-    var new_refcount = builder.decrement_refcount(closure_ptr)
-    builder.if_refcount_zero(new_refcount, {
+    builder.if_not_null_ptr(closure_ptr, {
       var builder = egg_body_builder().&
-      var free_fun_ptr = builder.member(value, "free")
-      builder.call_indirect(
-        free_fun_ptr, list(closure_ptr).to_slice(), type_nothing
-      )
+      var new_refcount = builder.decrement_refcount(closure_ptr)
+      builder.if_refcount_zero(new_refcount, {
+        var builder = egg_body_builder().&
+        var free_fun_ptr = builder.member(value, "free")
+        builder.call_indirect(
+          free_fun_ptr, list(closure_ptr).to_slice(), type_nothing
+        )
+        builder.finish_with_nothing()
+      })
       builder.finish_with_nothing()
     })
   }
@@ -457,7 +454,7 @@ fun free_box_fun(inner_type: EggType, funs: &Map[String, EggFun]): String {
     signature,
     body = {
       var builder = egg_body_builder().&
-      var box = builder.param(type_ptr)
+      var box = builder.param(new_identity(), type_ptr)
       if inner_type.num_inhabitants() <= NumInhabitants.one then {
         | This function will never be called, as the box is always a null ptr.
         | We may still need to construct the free function as part of the ABI.
@@ -491,18 +488,15 @@ fun free_buffer_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
     signature,
     body = {
       var builder = egg_body_builder().&
-      var buffer = builder.param(type_ptr)
+      var buffer = builder.param(new_identity(), type_ptr)
       var len = builder.get_buffer_length(buffer)
 
       if item_type.contains_ptr() then {
         builder.loop_(list(builder.int(0)).to_slice(), {
           var builder = egg_body_builder().&
-          var cursor = builder.param(type_int)
-          var cmp = builder.compare(cursor, len)
+          var cursor = builder.param(new_identity(), type_int)
           builder.switch_on_ordering(
-            cmp,
-            egg_body_builder().finish_with_unreachable(type_nothing),
-            egg_body_builder().finish_with_nothing(),
+            builder.compare(cursor, len),
             {
               var builder = egg_body_builder().&
               var item = builder.load_buffer_item(
@@ -516,6 +510,8 @@ fun free_buffer_fun(item_type: EggType, funs: &Map[String, EggFun]): String {
                 )
               )
             },
+            egg_body_builder().finish_with_nothing(),
+            egg_body_builder().finish_with_unreachable(type_nothing),
           ).ignore()
           builder.finish_with_nothing()
         }).ignore()

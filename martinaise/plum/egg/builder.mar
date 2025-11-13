@@ -22,8 +22,8 @@ fun finish(builder: EggBodyBuilder, returns: EggId): EggBody {
   }
 }
 
-fun param(builder: &EggBodyBuilder, type: EggType): EggId {
-  builder.push(EggExpr.param(type).create_with_new_identity())
+fun param(builder: &EggBodyBuilder, identity: Identity, type: EggType): EggId {
+  builder.push(EggExpr.param(EggParam { identity, type }))
 }
 
 fun case_param(
@@ -136,7 +136,9 @@ fun switch_(
           b."switch with incompatible types:"
           for case_ in cases do {
             var type = case_.value.returns.type()
-            b."\n{type.indented_limited(indentation(1), 80)}"
+            b."\n{indentation(1)}{case_.key}:"
+            b.write(case_.value, namespace().&, indentation(2))
+            b."\n{type.indented_limited(indentation(2), 80)}"
           }
           b.to_string()
         })
@@ -203,6 +205,7 @@ fun box(builder: &EggBodyBuilder, arg: EggId): EggId {
 }
 
 fun unbox(builder: &EggBodyBuilder, arg: EggId): EggId {
+  if arg.type().plum().box is none then panic("unbox of non-box {arg.type()}")
   builder.push(EggExpr.unbox(arg))
 }
 
@@ -675,7 +678,7 @@ fun compare_strings(builder: &EggBodyBuilder, a: EggId, b: EggId): EggId {
       builder.finish(
         builder.loop_(list(builder.int(0)).to_slice(), {
           var builder = egg_body_builder().&
-          var index = builder.param(type_int)
+          var index = builder.param(new_identity(), type_int)
           builder.finish(
             builder.switch_on_ordering(
               builder.compare(index, builder.array_len(a)),

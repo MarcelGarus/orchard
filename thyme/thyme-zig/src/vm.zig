@@ -26,7 +26,7 @@ const Heap = @import("heap.zig");
 const Address = Heap.Address;
 const Word = Heap.Word;
 const Instruction = @import("instruction.zig").Instruction;
-const Object = @import("object.zig");
+const object_mod = @import("object.zig");
 
 // Depending on the system, choose a different JIT implementation.
 const Jit = switch (builtin.cpu.arch) {
@@ -80,32 +80,31 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
     };
 }
 
-pub fn get_jitted(vm: *Vm, instructions: Object) !Jit.Jitted {
-    if (vm.jitted.get(instructions.address)) |jitted|
-        return jitted;
-    const parsed = try Instruction.parse_all(vm.ally, instructions);
+pub fn get_jitted(vm: *Vm, instructions: Address) !Jit.Jitted {
+    if (vm.jitted.get(instructions)) |jitted| return jitted;
+    const parsed = try Instruction.parse_instructions(vm.ally, vm.heap.*, instructions);
     const jitted = try Jit.compile(vm.jit_ally, parsed);
-    try vm.jitted.put(instructions.address, jitted);
+    try vm.jitted.put(instructions, jitted);
     return jitted;
 }
 
-pub fn eval(vm: *Vm, ally: Ally, env: anytype, code: []const u8) !Object {
+pub fn eval(vm: *Vm, ally: Ally, env: anytype, code: []const u8) !Address {
     const fun = try compiler.code_to_fun(ally, vm.heap, env, code);
-    return try vm.call(fun, &[_]Object{});
+    return try vm.call(fun, &[_]Address{});
 }
 
-pub fn call(vm: *Vm, fun: Object, args: []const Object) !Object {
-    std.debug.print("calling function {f}\n", .{fun});
+pub fn call(vm: *Vm, fun: Address, args: []const Address) !Address {
+    std.debug.print("calling function {}\n", .{fun});
 
-    if (fun.num_params() != args.len)
+    if (object_mod.get_int(vm.heap.*, vm.heap.load(fun, 2)) != args.len)
         @panic("called function with wrong number of params");
 
-    for (args) |arg| try vm.data_stack.push(@intCast(arg.address));
-    try vm.run(fun.instructions());
-    return .{ .heap = vm.heap, .address = vm.data_stack.pop() };
+    for (args) |arg| try vm.data_stack.push(@intCast(arg));
+    try vm.run(vm.heap.load(fun, 1));
+    return vm.data_stack.pop();
 }
 
-pub fn run(vm: *Vm, instructions: Object) error{ OutOfMemory, UnknownInstruction, BadEval }!void {
+pub fn run(vm: *Vm, instructions: Address) error{ OutOfMemory, ParseError, BadEval }!void {
     const jitted = try vm.get_jitted(instructions);
     try Jit.run(vm, jitted);
 }

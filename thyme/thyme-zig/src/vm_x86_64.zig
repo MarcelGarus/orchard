@@ -26,7 +26,6 @@ const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Address = Heap.Address;
 const Instruction = @import("instruction.zig").Instruction;
-const Object = @import("object.zig");
 const Vm = @import("vm.zig");
 
 const Ally = struct {};

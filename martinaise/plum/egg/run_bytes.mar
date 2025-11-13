@@ -1,0 +1,222 @@
+import mod.mar
+import ../dag.mar
+
+struct BytesHeap { allocations: List[BytesAllocation] }
+struct BytesAllocation { bytes: Slice[Byte], freed: Bool }
+
+fun heap(): BytesHeap { BytesHeap { allocations = list[BytesAllocation]() } }
+
+fun malloc(heap: &BytesHeap, size: Int): Int {
+  var index = heap.allocations.len
+  heap.allocations.&.push(BytesAllocation {
+    bytes = filled_slice(size, 0.lower_byte()), freed = false
+  })
+  index << 32
+}
+
+fun load_word(heap: &BytesHeap, ptr: Int): Int {
+  var index = ptr >> 32
+  var offset = ptr & {1 << 32 - 1}
+  var allocation = heap.allocations.get(index)
+  if allocation.freed then panic("use after free")
+  allocation.bytes.subslice(offset..+8).to_int()
+}
+
+fun load_byte(heap: &BytesHeap, ptr: Int): Byte {
+  var index = ptr >> 32
+  var offset = ptr & {1 << 32 - 1}
+  var allocation = heap.allocations.get(index)
+  if allocation.freed then panic("use after free")
+  allocation.bytes.get(offset)
+}
+
+fun store_word(heap: &BytesHeap, ptr: Int, word: Int) {
+  heap.store_bytes(ptr, word.to_bytes())
+}
+
+fun store_byte(heap: &BytesHeap, ptr: Int, byte: Byte) {
+  heap.store_bytes(ptr, list(byte).to_slice())
+}
+
+fun store_bytes(heap: &BytesHeap, ptr: Int, bytes: Slice[Byte]) {
+  var index = ptr >> 32
+  var offset = ptr & {1 << 32 - 1}
+  eprintln("storing into {ptr}, which is allocation {index}, offset {offset}")
+  var allocation = heap.allocations.get_ref(index)
+  if allocation.freed then panic("use after free")
+  for byte in bytes.iter().enumerate() do
+    allocation.bytes.&.set(offset + byte.index, byte.item)
+}
+
+fun free(heap: &BytesHeap, ptr: Int, size: Int) {
+  var index = ptr >> 32
+  var offset = ptr & {1 << 32 - 1}
+  var allocation = heap.allocations.get_ref(index)
+  if allocation.freed then panic("free after free")
+  allocation.freed = true
+}
+
+fun run(egg: Egg, args: Slice[Slice[Byte]]): Slice[Byte] {
+  switch run(egg.entry_point, args, heap().&, egg, list[String]().&)
+  case ok(value) value
+  case error(error) {
+    switch error
+    case continue_ panic("continue outside loop")
+    case crash(message) panic("code crashed: {message}")
+    case halt panic("code halted")
+  }
+}
+
+enum NonLocalBytesFlow { continue_: Slice[Slice[Byte]], crash: String, halt }
+
+fun run(
+  fun_: String, args: Slice[Slice[Byte]], heap: &BytesHeap, egg: Egg, stack: &List[String],
+): Result[Slice[Byte], NonLocalBytesFlow] {
+  var function = egg.funs.get(fun_)
+  stack.push(fun_)
+  eprintln("{indentation(stack.len)}{stack.last()}")
+  var result = function.body.run(args, map[EggId, Slice[Byte]]().&, heap, egg, stack)?
+  eprintln("{indentation(stack.len)}-> {result}")
+  stack.pop()
+  ok[Slice[Byte], NonLocalBytesFlow](result)
+}
+
+fun run(
+  body: EggBody, args: Slice[Slice[Byte]],
+  env: &Map[EggId, Slice[Byte]], heap: &BytesHeap, egg: Egg, stack: &List[String],
+): Result[Slice[Byte], NonLocalBytesFlow] {
+  for both in zip(body.params.iter(), args.iter()) do env.put(both.a, both.b)
+  for id in body.children do env.put(id, id.resolve().run(env, heap, egg, stack)?)
+  ok[Slice[Byte], NonLocalBytesFlow](env.get(body.returns))
+}
+
+fun run(
+  expr: EggExpr,
+  env: &Map[EggId, Slice[Byte]], heap: &BytesHeap, egg: Egg, stack: &List[String],
+): Result[Slice[Byte], NonLocalBytesFlow] {
+  | eprintln("Running: {expr.debug()}")
+  if stack.len >= 100 then panic("Stack overflow")
+  var stack_len = stack.len
+  stack.push(expr.debug().format().split("(").get(0))
+  eprintln("{indentation(stack.len)}{stack.last()}")
+
+  var result =
+    switch expr
+    case param panic("reached param")
+    case case_param panic("reached case_param")
+    case byte(byte) list(byte).to_slice()
+    case lower_byte(id) list(env.get(id).to_int().lower_byte()).to_slice()
+    case byte_to_int(id)  env.get(id).get(0).to_int().to_bytes()
+    case int(int) int.to_bytes()
+    case add(args)
+      {env.get(args.a).to_int() + env.get(args.b).to_int()}.to_bytes()
+    case subtract(args)
+      {env.get(args.a).to_int() - env.get(args.b).to_int()}.to_bytes()
+    case multiply(args)
+      {env.get(args.a).to_int() * env.get(args.b).to_int()}.to_bytes()
+    case unchecked_divide(args)
+      {env.get(args.a).to_int() / env.get(args.b).to_int()}.to_bytes()
+    case unchecked_modulo(args)
+      {env.get(args.a).to_int() % env.get(args.b).to_int()}.to_bytes()
+    case compare_zero(arg) {
+      var ordering = env.get(arg).to_int() <=> 0
+      var variant = switch ordering case equal 0 case greater 1 case less 2
+      list(variant.lower_byte()).to_slice()
+    }
+    case and_(args)
+      {env.get(args.a).to_int() & env.get(args.b).to_int()}.to_bytes()
+    case or_(args)
+      {or(env.get(args.a).to_int(), env.get(args.b).to_int())}.to_bytes()
+    case xor(args)
+      {env.get(args.a).to_int() ^ env.get(args.b).to_int()}.to_bytes()
+    case shift_left(args)
+      {env.get(args.a).to_int() << env.get(args.b).to_int()}.to_bytes()
+    case shift_right(args)
+      {env.get(args.a).to_int() >> env.get(args.b).to_int()}.to_bytes()
+    case padding(amount) filled_slice(amount, 16#aa.lower_byte())
+    case struct_(struct_) {
+      if struct_.is_not_empty() then panic("only empty structs allowed")
+      empty_slice[Byte]()
+    }
+    case aggregate(aggregate) {
+      var result = list[Byte]()
+      for part in aggregate do for byte in env.get(part) do result.&.push(byte)
+      result.to_slice()
+    }
+    case part(part) env.get(part.of).subslice(part.offset ..+ part.layout.size)
+    case switch_on_byte(switch_) {
+      var condition = env.get(switch_.condition).get(0)
+      var case_ = switch_.cases.get(condition.to_int())
+      case_.run(empty_slice[Slice[Byte]](), env, heap, egg, stack)?
+    }
+    case fun_ptr(name) name.put_on_heap().to_address().to_int().to_bytes()
+    case call_fun(call) {
+      var args = list[Slice[Byte]]()
+      for arg in call.args do args.&.push(env.get(arg))
+      call.fun_.run(args.to_slice(), heap, egg, stack)?
+    }
+    case call_indirect(call) {
+      var fun_ = env.get(call.fun_ptr).to_int().to_address().to_reference[String]().*
+      var args = list[Slice[Byte]]()
+      for arg in call.args do args.&.push(env.get(arg))
+      fun_.run(args.to_slice(), heap, egg, stack)?
+    }
+    case crash(crash)
+      panic({
+        var b = string_builder().&
+        b."code crashed"
+        b.to_string()
+      })
+    case unreachable panic("unreachable reached")
+    case halt panic("halted")
+    case loop_(loop_) {
+      var args = list[Slice[Byte]]()
+      for initial in loop_.initial do args.&.push(env.get(initial))
+      var loop_vars = args.to_slice()
+      var stack_len = stack.len
+      loop {
+        switch loop_.body.run(loop_vars, env, heap, egg, stack)
+        case ok(value) break(value)
+        case error(non_local) {
+          switch non_local
+          case continue_(next) {
+            loop_vars = next
+            stack.len = stack_len
+          }
+          default return error[Slice[Byte], NonLocalBytesFlow](non_local)
+        }
+      }
+    }
+    case continue_(continue_expr) {
+      var next = list[Slice[Byte]]()
+      for value in continue_expr.next do next.&.push(env.get(value))
+      return error[Slice[Byte], NonLocalBytesFlow](
+        NonLocalBytesFlow.continue_(next.to_slice())
+      )
+    }
+    case null_ptr 0.to_bytes()
+    case malloc(size) heap.malloc(env.get(size).to_int()).to_bytes()
+    case free(free) {
+      heap.free(env.get(free.ptr).to_int(), env.get(free.ptr).to_int())
+      empty_slice[Byte]()
+    }
+    case load_word(load) heap.load_word(env.get(load.ptr).to_int()).to_bytes()
+    case load_byte(load) list(heap.load_byte(env.get(load.ptr).to_int())).to_slice()
+    case store_word(store) {
+      heap.store_word(env.get(store.ptr).to_int(), env.get(store.value).to_int())
+      empty_slice[Byte]()
+    }
+    case store_byte(store) {
+      heap.store_byte(env.get(store.ptr).to_int(), env.get(store.value).get(0))
+      empty_slice[Byte]()
+    }
+    case store_bytes(store) {
+      heap.store_bytes(env.get(store.ptr).to_int(), store.bytes)
+      empty_slice[Byte]()
+    }
+    default todo("Run {expr.debug()}")
+
+  eprintln("{indentation(stack.len)}-> {result}")
+  stack.len = stack_len
+  ok[Slice[Byte], NonLocalBytesFlow](result)
+}

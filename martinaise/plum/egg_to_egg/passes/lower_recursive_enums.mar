@@ -10,26 +10,6 @@ fun lower_recursive_enums(egg: Egg): Egg {
 struct LowerRecursiveEnums {}
 
 fun map(
-  body: EggBody, mapper: LowerRecursiveEnums, mapping: &Map[EggId, EggId]
-): EggBody {
-  var builder = egg_body_builder().&
-  for param in body.params do
-    mapping.put(
-      param,
-      switch param.resolve()
-      case param(type) builder.param(type.break_up_unboxed_recursions())
-      case case_param(param)
-        builder.case_param(param.switch_on.map(mapping.*), param.variant)
-      default unreachable()
-    )
-  for child in body.children do {
-    var mapped = child.map(mapper, builder, mapping)
-    mapping.put(child, mapped)
-  }
-  builder.finish(body.returns.map(mapping.*))
-}
-
-fun map(
   id: EggId, mapper: LowerRecursiveEnums,
   builder: &EggBodyBuilder, mapping: &Map[EggId, EggId],
 ): EggId {
@@ -49,7 +29,7 @@ fun map(
       var variant = case_.key
       var case_ = case_.value
       var builder = egg_body_builder().&
-      var payload = builder.push(case_.params.get(0))
+      var payload = builder.case_param(condition, variant)
       if extra_boxes.contains(root_path.enum_variant(variant)) then
         payload = builder.unbox(payload)
       var body = builder.finish(case_.fill(payload, builder)).map(mapper, mapping)
@@ -85,6 +65,10 @@ fun map(
       continue_.next.map(mapping.*), continue_.type.break_up_unboxed_recursions()
     )
   default builder.push(id.map_children(mapper, mapping))
+}
+
+fun map(type: EggType, mapper: LowerRecursiveEnums): EggType {
+  type.break_up_unboxed_recursions()
 }
 
 fun break_up_unboxed_recursions(type: EggType): EggType {

@@ -6,7 +6,6 @@ const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Address = Heap.Address;
 const Instruction = @import("instruction.zig").Instruction;
-const Object = @import("object.zig");
 const Vm = @import("vm.zig");
 
 pub const Ally = struct {
@@ -78,14 +77,13 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
             },
             .new => |new| {
                 const stack = vm.data_stack.memory[0..vm.data_stack.used];
-                const literals = stack[stack.len - new.num_literals ..];
-                const pointers = stack[stack.len - new.num_pointers - new.num_literals .. stack.len - new.num_literals];
+                const words = stack[stack.len - new.num_words ..];
                 const address = try vm.heap.new(.{
                     .tag = new.tag,
-                    .pointers = pointers,
-                    .literals = literals,
+                    .has_pointers = new.has_pointers,
+                    .words = words,
                 });
-                vm.data_stack.pop_n(new.num_pointers + new.num_literals);
+                vm.data_stack.pop_n(new.num_words);
                 try vm.data_stack.push(address);
             },
             .tag => {
@@ -93,15 +91,14 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                 const tag = vm.heap.get(address).tag;
                 try vm.data_stack.push(@intCast(tag));
             },
-            .num_pointers => {
+            .has_pointers => {
                 const address = vm.data_stack.pop();
-                const num_pointers = vm.heap.get(address).pointers.len;
-                try vm.data_stack.push(@intCast(num_pointers));
+                try vm.data_stack.push(if (vm.heap.get(address).has_pointers) 1 else 0);
             },
-            .num_literals => {
+            .num_words => {
                 const address = vm.data_stack.pop();
-                const num_literals = vm.heap.get(address).literals.len;
-                try vm.data_stack.push(@intCast(num_literals));
+                const num_words = vm.heap.get(address).words.len;
+                try vm.data_stack.push(@intCast(num_words));
             },
             .load => {
                 const offset: usize = @intCast(vm.data_stack.pop());
@@ -128,18 +125,10 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                 mapping.deinit();
                 try vm.data_stack.push(mapped_keep);
             },
-            .eval => {
-                try vm.run(.{
-                    .heap = vm.heap,
-                    .address = vm.data_stack.pop(),
-                });
-            },
+            .eval => try vm.run(vm.data_stack.pop()),
             .crash => {
-                const message = Object{
-                    .heap = vm.heap,
-                    .address = vm.data_stack.pop(),
-                };
-                std.debug.print("Crashed:\n{f}\n", .{message});
+                const message = vm.data_stack.pop();
+                std.debug.print("Crashed:\n{x}\n", .{message});
                 @panic("crashed");
             },
             else => @panic("todo"),

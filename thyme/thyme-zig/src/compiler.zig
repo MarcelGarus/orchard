@@ -1,4 +1,4 @@
-// Parsing a string containing source code into an AST.
+// This file contains the Thyme compiler, turning source code into heap objects.
 
 const std = @import("std");
 const Writer = std.io.Writer;
@@ -8,11 +8,15 @@ const Map = std.AutoArrayHashMap;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
+const Address = Heap.Address;
 const Instruction = @import("instruction.zig").Instruction;
-const Object = @import("object.zig");
+const object_mod = @import("object.zig");
 const Vm = @import("vm.zig");
 
 const Str = []const u8;
+
+// The abstract syntax tree represents the syntax of the program, omitting stuff
+// that's irrelevant for the semantics such as comments and whitespace.
 
 const Ast = struct {
     expr: Expr,
@@ -23,18 +27,15 @@ const Ast = struct {
         body: []Expr,
         int: i64,
         string: Str,
-        struct_: []Field,
+        compound: []Expr,
         member: Member,
-        switch_: Switch,
+        if_: If,
         lambda: Lambda,
         call: Call,
         var_: Var,
     };
-    pub const Field = struct { name: Str, value: Expr };
-    pub const Member = struct { of: *Expr, name: Str };
-    pub const Enum = struct { variant: Str, payload: *Expr };
-    pub const Switch = struct { condition: *Expr, cases: []Case };
-    pub const Case = struct { variant: Str, payload: ?Str, body: Expr };
+    pub const Member = struct { of: *Expr, index: *Expr };
+    pub const If = struct { condition: *Expr, then: *Expr, else_: *Expr };
     pub const Lambda = struct { params: []Str, body: *Expr };
     pub const Call = struct { callee: *Expr, args: []Expr };
     pub const Var = struct { name: Str, value: *Expr };
@@ -55,7 +56,8 @@ const Ast = struct {
             .body => |body| {
                 for (0..indentation) |_| try writer.print("  ", .{});
                 try writer.print("{{\n", .{});
-                for (body) |child| try format_expr(child, writer, indentation + 1);
+                for (body) |child|
+                    try format_expr(child, writer, indentation + 1);
                 for (0..indentation) |_| try writer.print("  ", .{});
                 try writer.print("}}\n", .{});
             },
@@ -81,17 +83,16 @@ const Ast = struct {
                 for (0..indentation) |_| try writer.print("  ", .{});
                 try writer.print(".{s}\n", .{member.name});
             },
-            .switch_ => |switch_| {
-                try format_expr(switch_.condition.*, writer, indentation);
+            .if_ => |if_| {
                 for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("%\n", .{});
-                for (switch_.cases) |case| {
-                    for (0..indentation + 1) |_| try writer.print("  ", .{});
-                    try writer.print("case {s}", .{case.variant});
-                    if (case.payload) |payload| try writer.print("({s})", .{payload});
-                    try writer.print("\n", .{});
-                    try format_expr(case.body, writer, indentation + 2);
-                }
+                try writer.print("if\n", .{});
+                try format_expr(if_.condition.*, writer, indentation + 1);
+                for (0..indentation) |_| try writer.print("  ", .{});
+                try writer.print("then\n", .{});
+                try format_expr(if_.then.*, writer, indentation + 1);
+                for (0..indentation) |_| try writer.print("  ", .{});
+                try writer.print("else\n", .{});
+                try format_expr(if_.else_.*, writer, indentation + 1);
             },
             .lambda => |lambda| {
                 for (0..indentation) |_| try writer.print("  ", .{});
@@ -122,7 +123,11 @@ const Ast = struct {
 };
 
 pub fn str_to_ast(ally: Ally, input: Str) !Ast.Expr {
-    var parser = Parser{ .ally = ally, .input = input, .cursor = 0 };
+    var parser = Parser{
+        .ally = ally,
+        .input = input,
+        .cursor = 0,
+    };
     const exprs = parser.parse_exprs() catch |e| {
         std.debug.print("Error at {}: {}\n", .{ parser.cursor, e });
         @panic("bad");
@@ -134,7 +139,6 @@ pub fn str_to_ast(ally: Ally, input: Str) !Ast.Expr {
     }
     return .{ .body = exprs };
 }
-
 const Parser = struct {
     ally: Ally,
     input: Str,
@@ -188,7 +192,7 @@ const Parser = struct {
             const char = parser.current();
             const is_letter = std.mem.containsAtLeastScalar(
                 u8,
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_+-*/<>!=",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_+-*/<>!=@",
                 1,
                 char,
             );
@@ -223,7 +227,11 @@ const Parser = struct {
                 continue;
             }
             const char = parser.current();
-            const digit = std.mem.indexOfScalar(u8, "0123456789", char) orelse break;
+            const digit = std.mem.indexOfScalar(
+                u8,
+                "0123456789",
+                char,
+            ) orelse break;
             num = num * 10 + @as(i64, @intCast(digit));
             parser.advance();
         }
@@ -257,21 +265,15 @@ const Parser = struct {
         return error.UnknownEscapeSequence;
     }
 
-    fn parse_struct(parser: *Parser) !?Ast.Expr {
+    fn parse_compound(parser: *Parser) !?Ast.Expr {
         if (!parser.consume("[")) return null;
-        var fields = ArrayList(Ast.Field).empty;
-        while (parser.parse_name()) |name| {
-            const value: Ast.Expr =
-                if (parser.consume(":"))
-                    try parser.parse_expr() orelse return error.ExpectedValue
-                else
-                    .nil;
-
-            try fields.append(parser.ally, .{ .name = name, .value = value });
+        var parts = ArrayList(Ast.Expr).empty;
+        while (try parser.parse_expr()) |expr| {
+            try parts.append(parser.ally, expr);
         }
         if (!parser.consume("]")) return error.ExpectedClosingBracket;
 
-        return .{ .struct_ = fields.items };
+        return .{ .compound = parts.items };
     }
 
     fn parse_lambda(parser: *Parser) !?Ast.Expr {
@@ -285,7 +287,39 @@ const Parser = struct {
         const body = try parser.parse_expr() orelse return error.ExpectedLambdaBody;
         const boxed_body = try parser.ally.create(Ast.Expr);
         boxed_body.* = body;
-        return .{ .lambda = .{ .params = params.items, .body = boxed_body } };
+        return .{ .lambda = .{
+            .params = params.items,
+            .body = boxed_body,
+        } };
+    }
+
+    fn parse_if(parser: *Parser) !?Ast.Expr {
+        if (!parser.consume("if")) return null;
+        const condition = try parser.parse_expr() orelse return error.ExpectedCondition;
+        if (!parser.consume("then")) return error.ExpectedThen;
+        const then = try parser.parse_expr() orelse return error.ExpectedThenExpr;
+        if (!parser.consume("else")) return error.ExpectedElse;
+        const else_ = try parser.parse_expr() orelse return error.ExpectedElseExpr;
+
+        const boxed_condition = try parser.ally.create(Ast.Expr);
+        const boxed_then = try parser.ally.create(Ast.Expr);
+        const boxed_else = try parser.ally.create(Ast.Expr);
+        boxed_condition.* = condition;
+        boxed_then.* = then;
+        boxed_else.* = else_;
+
+        return .{ .if_ = .{
+            .condition = boxed_condition,
+            .then = boxed_then,
+            .else_ = boxed_else,
+        } };
+    }
+
+    fn parse_block(parser: *Parser) !?Ast.Expr {
+        if (!parser.consume("{")) return null;
+        const exprs = try parser.parse_exprs();
+        if (!parser.consume("}")) return error.ExpectedClosingBrace;
+        return .{ .body = exprs };
     }
 
     fn parse_expr(parser: *Parser) error{
@@ -294,7 +328,7 @@ const Parser = struct {
         NoEscapeSequence,
         UnknownEscapeSequence,
         ExpectedArrow,
-        ExpectedFieldName,
+        ExpectedIndex,
         ExpectedValue,
         ExpectedVariant,
         ExpectedPayload,
@@ -305,9 +339,10 @@ const Parser = struct {
         ExpectedClosingParen,
         ExpectedClosingBracket,
         ExpectedCondition,
-        ExpectedCaseVariant,
-        ExpectedCasePayload,
-        ExpectedCaseBody,
+        ExpectedThen,
+        ExpectedThenExpr,
+        ExpectedElse,
+        ExpectedElseExpr,
         ExpectedVarValue,
         VarNeedsName,
     }!?Ast.Expr {
@@ -316,12 +351,14 @@ const Parser = struct {
                 .{ .int = int }
             else if (try parser.parse_string()) |string|
                 .{ .string = string }
-            else if (try parser.parse_struct()) |struct_|
+            else if (try parser.parse_compound()) |struct_|
                 struct_
             else if (try parser.parse_lambda()) |lambda|
                 lambda
             else if (try parser.parse_block()) |expr|
                 expr
+            else if (try parser.parse_if()) |if_|
+                if_
             else if (parser.parse_name()) |name|
                 .{ .name = name }
             else
@@ -329,10 +366,15 @@ const Parser = struct {
 
         while (true) {
             if (parser.consume(":")) {
-                const name = parser.parse_name() orelse return error.ExpectedFieldName;
+                const index = try parser.parse_expr() orelse return error.ExpectedIndex;
+                const boxed_index = try parser.ally.create(Ast.Expr);
+                boxed_index.* = index;
                 const boxed_of = try parser.ally.create(Ast.Expr);
                 boxed_of.* = expr;
-                expr = .{ .member = .{ .of = boxed_of, .name = name } };
+                expr = .{ .member = .{
+                    .of = boxed_of,
+                    .index = boxed_index,
+                } };
             } else if (parser.consume("(")) {
                 var args = ArrayList(Ast.Expr).empty;
                 while (try parser.parse_expr()) |arg| {
@@ -342,7 +384,10 @@ const Parser = struct {
                 if (!parser.consume(")")) return error.ExpectedClosingParen;
                 const boxed_callee = try parser.ally.create(Ast.Expr);
                 boxed_callee.* = expr;
-                expr = .{ .call = .{ .callee = boxed_callee, .args = args.items } };
+                expr = .{ .call = .{
+                    .callee = boxed_callee,
+                    .args = args.items,
+                } };
             } else if (parser.consume("= ") or parser.consume("=\n")) {
                 const name = switch (expr) {
                     .name => |n| n,
@@ -352,41 +397,10 @@ const Parser = struct {
                 const boxed_right = try parser.ally.create(Ast.Expr);
                 boxed_right.* = right;
                 expr = .{ .var_ = .{ .name = name, .value = boxed_right } };
-            } else if (parser.consume("%")) {
-                if (!parser.consume("{")) return error.ExpectedOpeningBrace;
-                var cases = ArrayList(Ast.Case).empty;
-                while (parser.parse_name()) |variant| {
-                    const payload = payload: {
-                        if (parser.consume(":")) {
-                            const name = parser.parse_name() orelse return error.ExpectedCasePayload;
-                            break :payload name;
-                        }
-                        break :payload null;
-                    };
-                    if (!parser.consume("->")) return error.ExpectedArrow;
-                    const body = try parser.parse_expr() orelse return error.ExpectedCaseBody;
-                    try cases.append(parser.ally, .{
-                        .variant = variant,
-                        .payload = payload,
-                        .body = body,
-                    });
-                }
-                if (!parser.consume("}")) return error.ExpectedClosingBrace;
-
-                const boxed_condition = try parser.ally.create(Ast.Expr);
-                boxed_condition.* = expr;
-                return .{ .switch_ = .{ .condition = boxed_condition, .cases = cases.items } };
             } else break;
         }
 
         return expr;
-    }
-
-    fn parse_block(parser: *Parser) !?Ast.Expr {
-        if (!parser.consume("{")) return null;
-        const exprs = try parser.parse_exprs();
-        if (!parser.consume("}")) return error.ExpectedClosingBrace;
-        return .{ .body = exprs };
     }
 
     fn parse_exprs(parser: *Parser) ![]Ast.Expr {
@@ -396,13 +410,17 @@ const Parser = struct {
     }
 };
 
+// The Intermediate Representation is a semantic representation of code.
+// Variable names have been removed, nested expressions been flattened, and
+// everything is just a graph.
+
 pub const Ir = struct {
     nodes: []Node,
     params: []Id,
     body: Body,
 
     pub const Id = struct {
-        index: usize,
+        index: usize, // index into the nodes list
 
         pub fn format(id: Id, writer: *Writer) !void {
             try writer.print("%{}", .{id.index});
@@ -410,14 +428,14 @@ pub const Ir = struct {
     };
     pub const Body = struct { ids: []const Id, returns: Id };
     pub const Node = union(enum) {
-        param,
+        param, // doesn't occur in the function body
         word: Word,
-        object: Object,
-        new: New,
-        tag: Id,
-        num_pointers: Id,
-        num_literals: Id,
-        load: Load,
+        object: Address,
+        new: New, // creates a new object, results in address
+        tag: Id, // takes address, results in tag (tag byte cast to word)
+        has_pointers: Id, // takes address, returns 1 or 0
+        num_words: Id, // takes address, returns number of words
+        load: Load, // loads a field of an object
         add: Args,
         subtract: Args,
         multiply: Args,
@@ -428,7 +446,7 @@ pub const Ir = struct {
         if_not_zero: If,
         crash: Id,
     };
-    pub const New = struct { tag: u8, pointers: []const Id, literals: []const Id };
+    pub const New = struct { tag: u8, has_pointers: bool, words: []const Id };
     pub const Load = struct { base: Id, offset: Id };
     pub const Args = struct { left: Id, right: Id };
     pub const Call = struct { fun: Id, args: []const Id };
@@ -438,45 +456,66 @@ pub const Ir = struct {
         return ir.nodes[id.index];
     }
 
-    pub fn format(ir: Ir, writer: *Writer) !void {
-        try ir.format_indented(writer, 0);
+    pub fn format(ir: Ir, heap: Heap, writer: *Writer) !void {
+        try ir.format_indented(heap, writer, 0);
     }
-    pub fn format_indented(ir: Ir, writer: *Writer, indentation: usize) !void {
+    pub fn format_indented(ir: Ir, heap: Heap, writer: *Writer, indentation: usize) !void {
         try writer.print("code", .{});
         for (ir.params) |param| try writer.print(" {f}", .{param});
         try writer.print("\n", .{});
-        try format_body(ir.body, ir, writer, indentation + 1);
+        try format_body(ir.body, ir, heap, writer, indentation + 1);
     }
-    fn format_body(body: Body, ir: Ir, writer: *Writer, indentation: usize) !void {
+    fn format_body(body: Body, ir: Ir, heap: Heap, writer: *Writer, indentation: usize) !void {
         for (body.ids) |id| {
             for (0..indentation) |_| try writer.print("  ", .{});
             try writer.print("{f} = ", .{id});
-            try format_node(ir.get(id), ir, writer, indentation);
+            try format_node(ir.get(id), ir, heap, writer, indentation);
         }
         for (0..indentation) |_| try writer.print("  ", .{});
         try writer.print("{f}\n", .{body.returns});
     }
-    fn format_node(node: Node, ir: Ir, writer: *Writer, indentation: usize) error{WriteFailed}!void {
+    fn format_node(node: Node, ir: Ir, heap: Heap, writer: *Writer, indentation: usize) error{WriteFailed}!void {
         switch (node) {
             .param => try writer.print("param\n", .{}),
             .word => |word| try writer.print("word {}\n", .{word}),
-            .object => |object| try writer.print("object *{x}\n", .{object.address}),
+            .object => |object| {
+                try writer.print("object ", .{});
+                try heap.format_indented(object, writer, indentation);
+                try writer.print("\n", .{});
+            },
             .new => |new| {
                 try writer.print("new [{x}]", .{new.tag});
-                for (new.pointers) |pointer| try writer.print(" {f}", .{pointer});
-                for (new.literals) |literal| try writer.print(" {f}", .{literal});
+                for (new.words) |word| try writer.print(" {f}", .{word});
                 try writer.print("\n", .{});
             },
             .tag => |address| try writer.print("tag {f}\n", .{address}),
-            .num_pointers => |address| try writer.print("num_pointers {f}\n", .{address}),
-            .num_literals => |address| try writer.print("num_literals {f}\n", .{address}),
-            .load => |load| try writer.print("load {f} {f}\n", .{ load.base, load.offset }),
-            .add => |args| try writer.print("add {f} {f}\n", .{ args.left, args.right }),
-            .subtract => |args| try writer.print("subtract {f} {f}\n", .{ args.left, args.right }),
-            .multiply => |args| try writer.print("multiply {f} {f}\n", .{ args.left, args.right }),
-            .divide => |args| try writer.print("divide {f} {f}\n", .{ args.left, args.right }),
-            .modulo => |args| try writer.print("modulo {f} {f}\n", .{ args.left, args.right }),
-            .compare => |args| try writer.print("compare {f} {f}\n", .{ args.left, args.right }),
+            .has_pointers => |address| {
+                try writer.print("has_pointers {f}\n", .{address});
+            },
+            .num_words => |address| {
+                try writer.print("num_words {f}\n", .{address});
+            },
+            .load => |load| {
+                try writer.print("load {f} {f}\n", .{ load.base, load.offset });
+            },
+            .add => |args| {
+                try writer.print("add {f} {f}\n", .{ args.left, args.right });
+            },
+            .subtract => |args| {
+                try writer.print("subtract {f} {f}\n", .{ args.left, args.right });
+            },
+            .multiply => |args| {
+                try writer.print("multiply {f} {f}\n", .{ args.left, args.right });
+            },
+            .divide => |args| {
+                try writer.print("divide {f} {f}\n", .{ args.left, args.right });
+            },
+            .modulo => |args| {
+                try writer.print("modulo {f} {f}\n", .{ args.left, args.right });
+            },
+            .compare => |args| {
+                try writer.print("compare {f} {f}\n", .{ args.left, args.right });
+            },
             .call => |call| {
                 try writer.print("call {f} with", .{call.fun});
                 for (call.args) |arg| try writer.print(" {f}", .{arg});
@@ -484,10 +523,10 @@ pub const Ir = struct {
             },
             .if_not_zero => |if_| {
                 try writer.print("if {f} != 0 then\n", .{if_.condition});
-                try format_body(if_.then, ir, writer, indentation + 1);
+                try format_body(if_.then, ir, heap, writer, indentation + 1);
                 for (0..indentation) |_| try writer.print("  ", .{});
                 try writer.print("else\n", .{});
-                try format_body(if_.else_, ir, writer, indentation + 1);
+                try format_body(if_.else_, ir, heap, writer, indentation + 1);
             },
             .crash => |message| try writer.print("crash {f}\n", .{message}),
         }
@@ -561,58 +600,79 @@ pub const Ir = struct {
         pub fn word(body: *BodyBuilder, word_: Word) !Id {
             return body.create_and_push(.{ .word = word_ });
         }
-        pub fn object(body: *BodyBuilder, obj: Object) !Id {
+        pub fn object(body: *BodyBuilder, obj: Address) !Id {
             return body.create_and_push(.{ .object = obj });
         }
-        pub fn new(body: *BodyBuilder, tag_: u8, pointers: []const Id, literals: []const Id) !Id {
-            if (tag_ == Object.TAG_LAMBDA) {
-                switch (body.get(pointers[0])) {
-                    .object => |obj| if (obj.kind() != .fun) @panic("lambda needs fun"),
-                    .new => |inner_new| if (inner_new.tag != Object.TAG_FUN) @panic("lambda needs fun"),
-                    else => {},
-                }
-            }
+        pub fn new(body: *BodyBuilder, tag_: u8, has_pointers_: bool, words: []const Id) !Id {
             return try body.create_and_push(.{ .new = .{
                 .tag = tag_,
-                .pointers = pointers,
-                .literals = literals,
+                .has_pointers = has_pointers_,
+                .words = words,
             } });
         }
         pub fn tag(body: *BodyBuilder, address: Id) !Id {
             return body.create_and_push(.{ .tag = address });
         }
-        pub fn num_pointers(body: *BodyBuilder, address: Id) !Id {
-            return body.create_and_push(.{ .num_pointers = address });
+        pub fn has_pointers(body: *BodyBuilder, address: Id) !Id {
+            return body.create_and_push(.{ .has_pointers = address });
         }
-        pub fn num_literals(body: *BodyBuilder, address: Id) !Id {
-            return body.create_and_push(.{ .num_literals = address });
+        pub fn num_words(body: *BodyBuilder, address: Id) !Id {
+            return body.create_and_push(.{ .num_words = address });
         }
         pub fn load(body: *BodyBuilder, address: Id, offset: Id) !Id {
-            return body.create_and_push(.{ .load = .{ .base = address, .offset = offset } });
+            return body.create_and_push(.{ .load = .{
+                .base = address,
+                .offset = offset,
+            } });
         }
         pub fn add(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .add = .{ .left = left, .right = right } });
+            return body.create_and_push(.{ .add = .{
+                .left = left,
+                .right = right,
+            } });
         }
         pub fn subtract(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .subtract = .{ .left = left, .right = right } });
+            return body.create_and_push(.{ .subtract = .{
+                .left = left,
+                .right = right,
+            } });
         }
         pub fn multiply(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .multiply = .{ .left = left, .right = right } });
+            return body.create_and_push(.{ .multiply = .{
+                .left = left,
+                .right = right,
+            } });
         }
         pub fn divide(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .divide = .{ .left = left, .right = right } });
+            return body.create_and_push(.{ .divide = .{
+                .left = left,
+                .right = right,
+            } });
         }
         pub fn modulo(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .modulo = .{ .left = left, .right = right } });
+            return body.create_and_push(.{ .modulo = .{
+                .left = left,
+                .right = right,
+            } });
         }
         pub fn compare(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .compare = .{ .left = left, .right = right } });
+            return body.create_and_push(.{ .compare = .{
+                .left = left,
+                .right = right,
+            } });
         }
         pub fn call(body: *BodyBuilder, fun: Id, args: []const Id) !Id {
-            return body.create_and_push(.{ .call = .{ .fun = fun, .args = args } });
+            return body.create_and_push(.{ .call = .{
+                .fun = fun,
+                .args = args,
+            } });
         }
         pub fn if_not_zero(body: *BodyBuilder, condition: Id, then: Body, else_: Body) !Id {
-            return body.create_and_push(.{ .if_not_zero = .{ .condition = condition, .then = then, .else_ = else_ } });
+            return body.create_and_push(.{ .if_not_zero = .{
+                .condition = condition,
+                .then = then,
+                .else_ = else_,
+            } });
         }
         pub fn crash(body: *BodyBuilder, message: Id) !Id {
             return body.create_and_push(.{ .crash = message });
@@ -620,7 +680,7 @@ pub const Ir = struct {
 
         // Higher-level convenience functions
 
-        fn assert_has_tag(body: *BodyBuilder, obj: Id, tag_: u8, message: Object) !void {
+        fn assert_has_tag(body: *BodyBuilder, obj: Id, tag_: u8, message: Address) !void {
             _ = try body.if_not_zero(
                 try body.subtract(try body.tag(obj), try body.word(tag_)),
                 then: {
@@ -638,10 +698,7 @@ pub const Ir = struct {
         pub fn new_int(body: *BodyBuilder, value: Id) !Id {
             const words = try body.parent.ally.alloc(Id, 1);
             words[0] = value;
-            return try body.new(Object.TAG_INT, &[_]Id{}, words);
-        }
-        pub fn assert_is_int(body: *BodyBuilder, obj: Id, message: Object) !void {
-            try body.assert_has_tag(obj, Object.TAG_INT, message);
+            return try body.new(0, false, words);
         }
         pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
             const zero = try body.word(0);
@@ -652,15 +709,8 @@ pub const Ir = struct {
             return try body.num_literals(symbol);
         }
 
-        pub fn new_struct(body: *BodyBuilder, keys_and_values: []Id) !Id {
-            return try body.new(Object.TAG_STRUCT, keys_and_values, &[_]Id{});
-        }
-        pub fn assert_is_struct(body: *BodyBuilder, obj: Id, message: Object) !void {
-            try body.assert_has_tag(obj, Object.TAG_STRUCT, message);
-        }
-
         pub fn new_closure(body: *BodyBuilder, captured: []Id) !Id {
-            return try body.new(Object.TAG_CLOSURE, captured, &[_]Id{});
+            return try body.new(0, true, captured);
         }
         pub fn get_closure_var(body: *BodyBuilder, closure: Id, index: i64) !Id {
             return try body.load(closure, body.word(index));
@@ -670,10 +720,7 @@ pub const Ir = struct {
             const pointers = try body.parent.ally.alloc(Id, 2);
             pointers[0] = fun;
             pointers[1] = closure;
-            return try body.new(Object.TAG_LAMBDA, pointers, &[_]Id{});
-        }
-        pub fn assert_is_lambda(body: *BodyBuilder, obj: Id, message: Object) !void {
-            try body.assert_has_tag(obj, Object.TAG_LAMBDA, message);
+            return try body.new(0, true, pointers);
         }
         pub fn get_lambda_fun(body: *BodyBuilder, lambda: Id) !Id {
             const zero = try body.word(0);
@@ -696,10 +743,10 @@ pub const Ir = struct {
 };
 
 pub fn ast_to_ir(ally: Ally, heap: *Heap, env: anytype, ast: Ast.Expr) !Ir {
-    return try ast_to_ir_mod.compile(ally, env, ast, heap);
+    return try AstToIr.compile(ally, env, ast, heap);
 }
 
-const ast_to_ir_mod = struct {
+const AstToIr = struct {
     const Node = Ir.Node;
     const Id = Ir.Id;
     const Body = Ir.Body;
@@ -713,7 +760,10 @@ const ast_to_ir_mod = struct {
             return .{ .bindings = .empty };
         }
         fn bind(bindings: *Bindings, ally: Ally, name: Str, id: Id) !void {
-            try bindings.bindings.append(ally, .{ .name = name, .id = id });
+            try bindings.bindings.append(ally, .{
+                .name = name,
+                .id = id,
+            });
         }
         fn get(bindings: Bindings, name: Str) !Id {
             for (bindings.bindings.items) |binding|
@@ -724,349 +774,209 @@ const ast_to_ir_mod = struct {
     };
     const Binding = struct { name: Str, id: Id };
 
+    ally: Ally,
+    heap: *Heap,
+    nil: Address,
+
     pub fn compile(ally: Ally, env: anytype, expr: Ast.Expr, heap: *Heap) !Ir {
-        const common = common: {
-            const nil = try Object.new_nil(heap);
-            const compare_symbols_rec_fun = try ir_to_fun(ally, heap, ir: {
-                var builder = Ir.Builder.init(ally);
-                const a = try builder.param(); // a symbol object
-                const b = try builder.param(); // a symbol object
-                const cursor = try builder.param(); // a literal word
-                const rec = try builder.param(); // a reference to this function
-                var body = builder.body();
-                const len = try body.get_symbol_len_in_words(a);
-                const diff = try body.subtract(len, cursor);
-                const res = try body.if_not_zero(
-                    diff,
-                    not_done: {
-                        var inner = body.child_body();
-                        const a_word = try inner.load(a, cursor);
-                        const b_word = try inner.load(b, cursor);
-                        const word_diff = try inner.subtract(a_word, b_word);
-                        const res = try inner.if_not_zero(
-                            word_diff,
-                            word_differs: {
-                                var innerer = body.child_body();
-                                const zero = try innerer.word(0);
-                                break :word_differs innerer.finish(zero);
-                            },
-                            word_same: {
-                                var innerer = body.child_body();
-                                const one = try innerer.word(1);
-                                const next_cursor = try innerer.add(cursor, one);
-                                var args = try ally.alloc(Id, 4);
-                                args[0] = a;
-                                args[1] = b;
-                                args[2] = next_cursor;
-                                args[3] = rec;
-                                const res = try innerer.call(rec, args);
-                                break :word_same innerer.finish(res);
-                            },
-                        );
-                        break :not_done inner.finish(res);
-                    },
-                    done_comparing: {
-                        var inner = body.child_body();
-                        const one = try inner.word(1);
-                        break :done_comparing inner.finish(one);
-                    },
-                );
-                const body_ = body.finish(res);
-                break :ir builder.finish(body_);
-            });
-            const compare_symbols_fun = try ir_to_fun(ally, heap, ir: {
-                var builder = Ir.Builder.init(ally);
-                const a = try builder.param(); // a symbol object
-                const b = try builder.param(); // a symbol object
-                var body = builder.body();
-                const rec = try body.object(compare_symbols_rec_fun);
-                var args = try ally.alloc(Id, 4);
-                args[0] = a;
-                args[1] = b;
-                args[2] = try body.word(0);
-                args[3] = rec;
-                const res = try body.call(rec, args);
-                const body_ = body.finish(res);
-                break :ir builder.finish(body_);
-            });
-            const member_rec_fun = try ir_to_fun(ally, heap, ir: {
-                var builder = Ir.Builder.init(ally);
-                const struct_ = try builder.param(); // a struct object
-                const name = try builder.param(); // a symbol object
-                const cursor = try builder.param(); // a literal word
-                const rec = try builder.param(); // a reference to this function
-                var body = builder.body();
-                const num_fields_times_two = try body.num_pointers(struct_);
-                const diff = try body.subtract(num_fields_times_two, cursor);
-                const res = try body.if_not_zero(
-                    diff,
-                    not_done: {
-                        var inner = body.child_body();
-                        const field_name = try inner.load(struct_, cursor);
-                        const compare_symbols = try inner.object(compare_symbols_fun);
-                        const compare_args = try ally.alloc(Id, 2);
-                        compare_args[0] = name;
-                        compare_args[1] = field_name;
-                        const matches = try inner.call(compare_symbols, compare_args);
-                        const res = try inner.if_not_zero(
-                            matches,
-                            match: {
-                                var innerer = body.child_body();
-                                const one = try innerer.word(1);
-                                const value_index = try innerer.add(cursor, one);
-                                const field_value = try innerer.load(struct_, value_index);
-                                break :match innerer.finish(field_value);
-                            },
-                            no_match: {
-                                var innerer = body.child_body();
-                                const two = try innerer.word(2);
-                                const next_cursor = try innerer.add(cursor, two);
-                                var rec_args = try ally.alloc(Id, 4);
-                                rec_args[0] = struct_;
-                                rec_args[1] = name;
-                                rec_args[2] = next_cursor;
-                                rec_args[3] = rec;
-                                const res = try innerer.call(rec, rec_args);
-                                break :no_match innerer.finish(res);
-                            },
-                        );
-                        break :not_done inner.finish(res);
-                    },
-                    field_not_found: {
-                        var inner = body.child_body();
-                        const message = try inner.object(try Object.new_symbol(heap, "field not found"));
-                        break :field_not_found try inner.finish_with_crash(message);
-                    },
-                );
-                const body_ = body.finish(res);
-                break :ir builder.finish(body_);
-            });
-            const member_fun = try ir_to_fun(ally, heap, ir: {
-                var builder = Ir.Builder.init(ally);
-                const struct_ = try builder.param(); // a struct object
-                const name = try builder.param(); // a symbol object
-                var body = builder.body();
-                const rec = try body.object(member_rec_fun);
-                var args = try ally.alloc(Id, 4);
-                args[0] = struct_;
-                args[1] = name;
-                args[2] = try body.word(0);
-                args[3] = rec;
-                const res = try body.call(rec, args);
-                const body_ = body.finish(res);
-                break :ir builder.finish(body_);
-            });
-            break :common Common{
-                .nil = nil,
-                .compare_symbols_fun = compare_symbols_fun,
-                .member_fun = member_fun,
-                .member_of_non_struct_symbol = try Object.new_symbol(heap, "member of non-struct"),
-                .switch_on_non_struct_symbol = try Object.new_symbol(heap, "switch on non-struct"),
-                .call_non_lambda_symbol = try Object.new_symbol(heap, "call non-lambda"),
-            };
+        var compiler = AstToIr{
+            .ally = ally,
+            .heap = heap,
+            .nil = try object_mod.new_nil(heap),
         };
 
+        var bindings = Bindings.init();
         var builder = Builder.init(ally);
         var body = builder.body();
-        var bindings = Bindings.init();
         inline for (@typeInfo(@TypeOf(env)).@"struct".fields) |field| {
             const ref = try body.object(@field(env, field.name));
             try bindings.bind(ally, field.name, ref);
         }
-        const result = try compile_expr(ally, expr, &body, &bindings, heap, common);
+        const result = try compiler.compile_expr(expr, &body, &bindings);
         const body_result = body.finish(result);
         return builder.finish(body_result);
     }
 
-    const Common = struct {
-        nil: Object,
-        compare_symbols_fun: Object,
-        member_fun: Object,
-        member_of_non_struct_symbol: Object,
-        switch_on_non_struct_symbol: Object,
-        call_non_lambda_symbol: Object,
-    };
-
     fn compile_expr(
-        ally: Ally,
+        self: *AstToIr,
         expr: Ast.Expr,
         body: *Ir.BodyBuilder,
         bindings: *Bindings,
-        heap: *Heap,
-        common: Common,
     ) error{OutOfMemory}!Id {
         switch (expr) {
-            .nil => return try body.object(common.nil),
+            .nil => return try body.object(self.nil),
             .name => |name| return bindings.get(name),
-            .body => |bod| return compile_body(ally, bod, body, bindings, heap, common),
-            .int => |int| return body.object(try Object.new_int(heap, int)),
-            .string => @panic("string"),
-            .struct_ => |struct_| {
-                var fields = try ally.alloc(Id, struct_.len * 2);
-                for (0.., struct_) |i, field| {
-                    fields[2 * i] = try body.object(try Object.new_symbol(heap, field.name));
-                    fields[2 * i + 1] = try compile_expr(ally, field.value, body, bindings, heap, common);
+            .body => |bod| return self.compile_body(bod, body, bindings),
+            .int => |int| {
+                var builder = try self.heap.object_builder(@intFromEnum(object_mod.Tag.int));
+                try builder.emit_literal(@bitCast(int));
+                return body.object(try builder.finish());
+            },
+            .string => |string| {
+                var builder = try self.heap.object_builder(@intFromEnum(object_mod.Tag.symbol));
+                const num_words = (string.len + 7) / 8;
+                for (0..num_words) |i| {
+                    var w: Word = 0;
+                    for (0..@min(string.len - i * 8, 8)) |j|
+                        w |= @as(Word, string[i * 8 + j]) << @intCast(j * 8);
+                    try builder.emit_literal(w);
                 }
-                return try body.new_struct(fields);
+                return body.object(try builder.finish());
+            },
+            .compound => |parts| {
+                const compiled = try self.ally.alloc(Id, parts.len);
+                for (0.., parts) |i, part| {
+                    compiled[i] = try self.compile_expr(part, body, bindings);
+                }
+                return body.new(0, true, compiled);
             },
             .member => |member| {
-                const of = try compile_expr(ally, member.of.*, body, bindings, heap, common);
-                try body.assert_is_struct(of, common.member_of_non_struct_symbol);
-                const member_fun = try body.object(common.member_fun);
-                const name = try body.object(try Object.new_symbol(heap, member.name));
-                const args = try ally.alloc(Id, 2);
-                args[0] = of;
-                args[1] = name;
-                return try body.call(member_fun, args);
+                const of = try self.compile_expr(member.of.*, body, bindings);
+                const index = try self.compile_expr(member.index.*, body, bindings);
+                const zero = try body.word(0);
+                const index_value = try body.load(index, zero);
+                return try body.load(of, index_value);
             },
-            .switch_ => |switch_| {
-                const condition = try compile_expr(ally, switch_.condition.*, body, bindings, heap, common);
-                try body.assert_is_struct(condition, common.switch_on_non_struct_symbol);
-                const num_pointers = try body.num_pointers(condition);
-                _ = try body.if_not_zero(
-                    num_pointers,
+            .if_ => |if_| {
+                const condition = try self.compile_expr(if_.condition.*, body, bindings);
+                const zero = try body.word(0);
+                const condition_value = try body.load(condition, zero);
+                return try body.if_not_zero(
+                    condition_value,
                     then: {
-                        var child = body.child_body();
-                        break :then try child.finish_with_zero();
+                        const snapshot = bindings.bindings.items.len;
+                        var inner = body.child_body();
+                        const then = try self.compile_expr(if_.then.*, &inner, bindings);
+                        bindings.bindings.items.len = snapshot;
+                        break :then inner.finish(then);
                     },
                     else_: {
-                        var child = body.child_body();
-                        const message = try Object.new_symbol(heap, "no fields");
-                        const message_ref = try child.object(message);
-                        break :else_ try child.finish_with_crash(message_ref);
+                        const snapshot = bindings.bindings.items.len;
+                        var inner = body.child_body();
+                        const else_ = try self.compile_expr(if_.else_.*, &inner, bindings);
+                        bindings.bindings.items.len = snapshot;
+                        break :else_ inner.finish(else_);
                     },
                 );
-
-                const zero = try body.word(0);
-                const one = try body.word(1);
-                const variant = try body.load(condition, zero);
-                const payload = try body.load(condition, one);
-
-                var res = child: {
-                    var child = body.child_body();
-                    const message = try Object.new_symbol(heap, "no switch case matched");
-                    const message_ref = try child.object(message);
-                    break :child try child.finish_with_crash(message_ref);
-                };
-                for (0..switch_.cases.len) |i| {
-                    const case = switch_.cases[switch_.cases.len - 1 - i];
-                    const candidate = try Object.new_symbol(heap, case.variant);
-                    var inner = body.child_body();
-                    const candidate_ref = try inner.object(candidate);
-                    const symbol_compare_ref = try inner.object(common.compare_symbols_fun);
-                    const args = try ally.alloc(Id, 2);
-                    args[0] = variant;
-                    args[1] = candidate_ref;
-                    const matches = try inner.call(symbol_compare_ref, args);
-                    const check = try inner.if_not_zero(
-                        matches,
-                        then: {
-                            const snapshot = bindings.bindings.items.len;
-                            if (case.payload) |payload_name|
-                                try bindings.bind(ally, payload_name, payload);
-                            var innerer = inner.child_body();
-                            const then = try compile_expr(
-                                ally,
-                                case.body,
-                                &innerer,
-                                bindings,
-                                heap,
-                                common,
-                            );
-                            bindings.bindings.items.len = snapshot;
-                            break :then innerer.finish(then);
-                        },
-                        res,
-                    );
-                    res = inner.finish(check);
-                }
-                for (res.ids) |id| try body.ids.append(ally, id);
-                return res.returns;
             },
             .lambda => |lambda| {
-                const captured = try get_captured(ally, lambda);
+                const captured = try get_captured(
+                    self.ally,
+                    lambda,
+                );
                 const closure = closure: {
                     var captured_values = ArrayList(Id).empty;
                     for (captured.items) |name|
-                        try captured_values.append(ally, try bindings.get(name));
+                        try captured_values.append(
+                            self.ally,
+                            try bindings.get(name),
+                        );
                     break :closure try body.new_closure(captured_values.items);
                 };
                 const lambda_ir = ir: {
                     var lambda_bindings = Bindings.init();
-                    var lambda_builder = Builder.init(ally);
+                    var lambda_builder = Builder.init(self.ally);
                     for (lambda.params) |param|
-                        try lambda_bindings.bind(ally, param, try lambda_builder.param());
+                        try lambda_bindings.bind(
+                            self.ally,
+                            param,
+                            try lambda_builder.param(),
+                        );
                     const closure_param = try lambda_builder.param();
                     var lambda_body = lambda_builder.body();
                     for (0.., captured.items) |i, name| {
                         const offset = try lambda_body.word(@intCast(i));
-                        const value = try lambda_body.load(closure_param, offset);
-                        try lambda_bindings.bind(ally, name, value);
+                        const value = try lambda_body.load(
+                            closure_param,
+                            offset,
+                        );
+                        try lambda_bindings.bind(self.ally, name, value);
                     }
-                    const result = try compile_expr(
-                        ally,
+                    const result = try self.compile_expr(
                         lambda.body.*,
                         &lambda_body,
                         &lambda_bindings,
-                        heap,
-                        common,
                     );
                     const body_result = lambda_body.finish(result);
                     break :ir lambda_builder.finish(body_result);
                 };
-                const lambda_fun = try body.object(try ir_to_fun(ally, heap, lambda_ir));
+                const lambda_fun = try body.object(
+                    try ir_to_fun(self.ally, self.heap, lambda_ir),
+                );
                 return body.new_lambda(lambda_fun, closure);
             },
             .call => |call| {
-                const callee = try compile_expr(ally, call.callee.*, body, bindings, heap, common);
+                const callee = try self.compile_expr(call.callee.*, body, bindings);
+                const zero = try body.word(0);
+                const one = try body.word(1);
+                const two = try body.word(2);
+                const fun = try body.load(callee, zero);
+                const closure = try body.load(callee, one);
+
                 var args = ArrayList(Id).empty;
                 for (call.args) |arg|
-                    try args.append(ally, try compile_expr(ally, arg, body, bindings, heap, common));
-                try body.assert_is_lambda(callee, common.call_non_lambda_symbol);
-                const fun = try body.get_lambda_fun(callee);
-                const closure = try body.get_lambda_closure(callee);
-                try args.append(ally, closure);
+                    try args.append(
+                        self.ally,
+                        try self.compile_expr(arg, body, bindings),
+                    );
+                try args.append(self.ally, closure);
 
+                const fun_tag = try body.tag(fun);
+                const diff_to_one = try body.subtract(fun_tag, one);
+                _ = try body.if_not_zero(
+                    diff_to_one,
+                    then: {
+                        var inner = body.child_body();
+                        const not_a_fun = try inner.object(
+                            try object_mod.new_symbol(self.heap, "not a fun"),
+                        );
+                        break :then try inner.finish_with_crash(not_a_fun);
+                    },
+                    else_: {
+                        var inner = body.child_body();
+                        break :else_ inner.finish(zero);
+                    },
+                );
                 const num_args = try body.word(args.items.len);
-                const two = try body.word(2);
                 const num_params = try body.load(fun, two);
                 const diff = try body.subtract(num_args, num_params);
-
-                return try body.if_not_zero(
+                _ = try body.if_not_zero(
                     diff,
                     mismatched: {
                         var inner = body.child_body();
-                        const message = try inner.object(try Object.new_symbol(heap, "wrong number of arguments"));
+                        const message = try inner.object(
+                            try object_mod.new_symbol(self.heap, "wrong number of arguments"),
+                        );
                         const result = try inner.crash(message);
                         break :mismatched inner.finish(result);
                     },
                     correct: {
                         var inner = body.child_body();
-                        const result = try inner.call(fun, args.items);
+                        const result = try inner.word(0);
                         break :correct inner.finish(result);
                     },
                 );
+
+                return try body.call(fun, args.items);
             },
             .var_ => |var_| {
-                const id = try compile_expr(ally, var_.value.*, body, bindings, heap, common);
-                try bindings.bind(ally, var_.name, id);
-                return body.object(common.nil);
+                const id = try self.compile_expr(var_.value.*, body, bindings);
+                try bindings.bind(self.ally, var_.name, id);
+                return body.object(self.nil);
             },
         }
     }
 
     fn compile_body(
-        ally: Ally,
+        self: *AstToIr,
         exprs: []Ast.Expr,
         body: *BodyBuilder,
         bindings: *Bindings,
-        heap: *Heap,
-        common: Common,
     ) !Id {
         var last: ?Id = null;
         for (exprs) |expr|
-            last = try compile_expr(ally, expr, body, bindings, heap, common);
-        return last orelse body.object(common.nil);
+            last = try self.compile_expr(expr, body, bindings);
+        return last orelse body.object(self.nil);
     }
 
     fn get_captured(ally: Ally, lambda: Ast.Lambda) !ArrayList(Str) {
@@ -1095,12 +1005,8 @@ const ast_to_ir_mod = struct {
         switch (expr) {
             .nil => {},
             .name => |name| {
-                for (ignore.items) |ig|
-                    if (std.mem.eql(u8, ig, name))
-                        return;
-                for (out.items) |o|
-                    if (std.mem.eql(u8, o, name))
-                        return;
+                for (ignore.items) |ig| if (std.mem.eql(u8, ig, name)) return;
+                for (out.items) |o| if (std.mem.eql(u8, o, name)) return;
                 try out.append(ally, name);
             },
             .body => |bod| {
@@ -1109,21 +1015,16 @@ const ast_to_ir_mod = struct {
             },
             .int => {},
             .string => {},
-            .struct_ => |struct_| {
-                for (struct_) |field| {
-                    try collect_captured_in_new_scope(ally, field.value, ignore, out);
+            .compound => |parts| {
+                for (parts) |part| {
+                    try collect_captured_in_new_scope(ally, part, ignore, out);
                 }
             },
             .member => |member| try collect_captured_in_new_scope(ally, member.of.*, ignore, out),
-            .switch_ => |switch_| {
-                try collect_captured_in_new_scope(ally, switch_.condition.*, ignore, out);
-                for (switch_.cases) |case| {
-                    const num_ignored = ignore.items.len;
-                    if (case.payload) |payload|
-                        try ignore.append(ally, payload);
-                    try collect_captured(ally, case.body, ignore, out);
-                    ignore.items.len = num_ignored;
-                }
+            .if_ => |if_| {
+                try collect_captured_in_new_scope(ally, if_.condition.*, ignore, out);
+                try collect_captured_in_new_scope(ally, if_.then.*, ignore, out);
+                try collect_captured_in_new_scope(ally, if_.else_.*, ignore, out);
             },
             .lambda => |lambda| {
                 const num_ignored = ignore.items.len;
@@ -1147,8 +1048,36 @@ const ast_to_ir_mod = struct {
     }
 };
 
+pub fn optimize_object(ally: Ally, heap: *Heap, object: Address) !Address {
+    switch (@as(object_mod.Tag, @enumFromInt(heap.get(object).tag))) {
+        .int => return object,
+        .symbol => return object,
+        .composite => {
+            var parts = try ally.alloc(Address, heap.get(object).words.len);
+            for (0.., heap.get(object).words) |i, word|
+                parts[i] = try optimize_object(ally, heap, word);
+            var builder = try heap.object_builder(@intFromEnum(object_mod.Tag.composite));
+            for (parts) |part| try builder.emit_pointer(part);
+            return try builder.finish();
+        },
+        .fun => return object,
+        .lambda => @panic("TODO: optimize lambda"),
+    }
+    // if (heap.get(object).tag == @intFromEnum(object_mod.Tag.lambda)) {
+    //     // This is a lambda with a fun and a closure.
+
+    //     // Fun has IR, instructions, and num_args.
+    //     // const ir_ptr_addr = heap.load(object, 0);
+    //     // const ir_ptr: *const Ir = @ptrCast(heap.get_int(ir_ptr_addr));
+    //     // const better_ir = try optimize_ir(ally, heap, ir_ptr.*);
+    //     // // ir_to_fun(ally, heap, ir: Ir)
+    //     // _ = better_ir;
+    //     _ = ally;
+    //     @panic("TODO: optimize IR including the closure!");
+    // } else {}
+    // @panic("TODO");
+}
 pub fn optimize_ir(ally: Ally, heap: *Heap, ir: Ir) !Ir {
-    std.debug.print("Optimizing IR:\n{f}\n", .{ir});
     var optimizer = OptimizeIr{
         .ally = ally,
         .ir = ir,
@@ -1159,7 +1088,16 @@ pub fn optimize_ir(ally: Ally, heap: *Heap, ir: Ir) !Ir {
     for (ir.params) |old_param|
         try optimizer.mapping.put(old_param, try builder.param());
     const body = try optimizer.optimize_body(ir.body, &builder);
-    return builder.finish(body);
+    const better_ir = builder.finish(body);
+    heap.dump_raw();
+    std.debug.print("Optimized IR:\n", .{});
+    {
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        ir.format(heap.*, bw) catch unreachable;
+    }
+    return better_ir;
 }
 const OptimizeIr = struct {
     const Id = Ir.Id;
@@ -1173,12 +1111,12 @@ const OptimizeIr = struct {
         switch (self.ir.get(old_id)) {
             .param => unreachable,
             .word => |word| return body.word(word),
-            .object => |object| return body.object(object),
+            .object => |object| return body.object(
+                try optimize_object(self.ally, self.heap, object),
+            ),
             .new => |new| {
-                const pointers = try self.ally.alloc(Id, new.pointers.len);
-                const literals = try self.ally.alloc(Id, new.literals.len);
-                for (0.., new.pointers) |i, pointer| pointers[i] = self.mapping.get(pointer).?;
-                for (0.., new.literals) |i, literal| literals[i] = self.mapping.get(literal).?;
+                const words = try self.ally.alloc(Id, new.words.len);
+                for (0.., new.words) |i, word| words[i] = self.mapping.get(word).?;
 
                 // If this is a lambda and parts of the closure are known at
                 // compile time, bake those directly into the code. This allows
@@ -1186,89 +1124,102 @@ const OptimizeIr = struct {
                 //
                 // (fun, closure) becomes
                 // (|a, b, c| fun(a, b, c, closure), {})
-                optimize_lambda: {
-                    if (new.tag != Object.TAG_LAMBDA) break :optimize_lambda;
-                    const fun = switch (body.get(new.pointers[0])) {
-                        .object => |obj| obj,
-                        else => break :optimize_lambda,
-                    };
-                    std.debug.print("fun *{x} {} is {f}\n", .{ fun.address, fun.address, fun });
-                    std.debug.print("old fun: {any}\n", .{self.ir.get(new.pointers[0])});
-                    const num_args = fun.num_params();
-                    switch (body.get(new.pointers[1])) {
-                        .object => |closure| {
-                            const wrapper = try ir_to_lambda(self.ally, self.heap, ir: {
-                                var builder = Ir.Builder.init(self.ally);
-                                for (0..num_args) |_| _ = try builder.param();
-                                var wrapper_body = builder.body();
-                                var args = ArrayList(Id).empty;
-                                for (builder.params.items) |param|
-                                    try args.append(self.ally, param);
-                                args.items[args.items.len - 1] = try wrapper_body.object(closure);
-                                const inner_fun = try wrapper_body.object(fun);
-                                const res = try wrapper_body.call(inner_fun, args.items);
-                                const body_ = wrapper_body.finish(res);
-                                break :ir builder.finish(body_);
-                            });
-                            return body.object(wrapper);
-                        },
-                        // .new => |closure_new| {},
-                        else => break :optimize_lambda,
-                    }
-                }
+                // optimize_lambda: {
+                //     if (new.tag != Object.TAG_LAMBDA) break :optimize_lambda;
+                //     const fun = switch (body.get(new.pointers[0])) {
+                //         .object => |obj| obj,
+                //         else => break :optimize_lambda,
+                //     };
+                //     std.debug.print("fun *{x} {} is {f}\n", .{ fun, fun, fun });
+                //     std.debug.print("old fun: {any}\n", .{self.ir.get(new.pointers[0])});
+                //     const num_args = fun.num_params();
+                //     switch (body.get(new.pointers[1])) {
+                //         .object => |closure| {
+                //             const wrapper = try ir_to_lambda(self.ally, self.heap, ir: {
+                //                 var builder = Ir.Builder.init(self.ally);
+                //                 for (0..num_args) |_| _ = try builder.param();
+                //                 var wrapper_body = builder.body();
+                //                 var args = ArrayList(Id).empty;
+                //                 for (builder.params.items) |param|
+                //                     try args.append(self.ally, param);
+                //                 args.items[args.items.len - 1] = try wrapper_body.object(closure);
+                //                 const inner_fun = try wrapper_body.object(fun);
+                //                 const res = try wrapper_body.call(inner_fun, args.items);
+                //                 const body_ = wrapper_body.finish(res);
+                //                 break :ir builder.finish(body_);
+                //             });
+                //             return body.object(wrapper);
+                //         },
+                //         // .new => |closure_new| {},
+                //         else => break :optimize_lambda,
+                //     }
+                // }
 
                 // If all the data of an object is known at compile time, just
                 // create the object once at compile time instead of every time
                 // the code runs.
                 optimize_all_comptime: {
-                    for (pointers) |pointer|
-                        switch (body.get(pointer)) {
-                            .object => {},
-                            else => break :optimize_all_comptime,
-                        };
-                    for (literals) |literal|
-                        switch (body.get(literal)) {
-                            .word => {},
-                            else => break :optimize_all_comptime,
-                        };
-                    var builder = try self.heap.object_builder(new.tag);
-                    for (pointers) |pointer|
-                        try builder.emit_pointer(body.get(pointer).object.address);
-                    for (literals) |literal|
-                        try builder.emit_literal(body.get(literal).word);
-                    const object = Object{ .heap = self.heap, .address = try builder.finish() };
-                    return body.object(object);
+                    if (new.has_pointers) {
+                        for (words) |word|
+                            switch (body.get(word)) {
+                                .word => {},
+                                .object => {},
+                                else => break :optimize_all_comptime,
+                            };
+                        var builder = try self.heap.object_builder(new.tag);
+                        for (words) |word| try builder.emit_pointer(body.get(word).object);
+                        return body.object(try builder.finish());
+                    } else {
+                        for (words) |word|
+                            switch (body.get(word)) {
+                                .word => {},
+                                .object => {},
+                                else => break :optimize_all_comptime,
+                            };
+                        var builder = try self.heap.object_builder(new.tag);
+                        for (words) |word| try builder.emit_literal(body.get(word).word);
+                        return body.object(try builder.finish());
+                    }
                 }
 
-                return body.new(new.tag, pointers, literals);
+                return body.new(new.tag, new.has_pointers, words);
             },
             .tag => |old_address| {
                 const address = self.mapping.get(old_address).?;
                 switch (body.get(address)) {
-                    .object => |object| return body.word(@intCast(object.get_allocation().tag)),
+                    .object => |object| return body.word(
+                        @intCast(self.heap.get(object).tag),
+                    ),
                     .new => |new| return body.word(@intCast(new.tag)),
                     else => return body.tag(address),
                 }
             },
-            .num_pointers => |old_address| {
+            .has_pointers => |old_address| {
                 const address = self.mapping.get(old_address).?;
                 switch (body.get(address)) {
-                    .object => |object| return body.word(@intCast(object.get_allocation().pointers.len)),
-                    .new => |new| return body.word(@intCast(new.pointers.len)),
-                    else => return body.num_pointers(address),
+                    // .object => |object| return body.word(
+                    //     @intCast(self.heap.get(object).words.len),
+                    // ),
+                    // .new => |new| return body.word(@intCast(new.pointers.len)),
+                    else => return body.has_pointers(address),
                 }
             },
-            .num_literals => |old_address| {
+            .num_words => |old_address| {
                 const address = self.mapping.get(old_address).?;
                 switch (body.get(address)) {
-                    .object => |object| return body.word(@intCast(object.get_allocation().literals.len)),
-                    .new => |new| return body.word(@intCast(new.literals.len)),
-                    else => return body.num_literals(address),
+                    // .object => |object| return body.word(
+                    //     @intCast(self.heap.get(object).literals.len),
+                    // ),
+                    // .new => |new| return body.word(@intCast(new.literals.len)),
+                    else => return body.num_words(address),
                 }
             },
             .load => |load| {
                 // TODO: optimize
-                return body.load(self.mapping.get(load.base).?, self.mapping.get(load.offset).?);
+                return body.load(
+                    self.mapping.get(load.base).?,
+                    self.mapping.get(load.offset).?,
+                );
             },
             .add => |args| {
                 const left = self.mapping.get(args.left).?;
@@ -1279,7 +1230,9 @@ const OptimizeIr = struct {
                         else => return if (l == 0) right else body.add(right, left),
                     },
                     else => switch (body.get(right)) {
-                        .word => |r| return if (r == 0) left else body.add(left, right),
+                        .word => |r| {
+                            return if (r == 0) left else body.add(left, right);
+                        },
                         else => return body.add(left, right),
                     },
                 }
@@ -1302,10 +1255,14 @@ const OptimizeIr = struct {
                 switch (body.get(left)) {
                     .word => |l| switch (body.get(right)) {
                         .word => |r| return body.word(l *% r),
-                        else => return if (l == 1) right else body.multiply(right, left),
+                        else => {
+                            return if (l == 1) right else body.multiply(right, left);
+                        },
                     },
                     else => switch (body.get(right)) {
-                        .word => |r| return if (r == 1) left else body.multiply(left, right),
+                        .word => |r| {
+                            return if (r == 1) left else body.multiply(left, right);
+                        },
                         else => return body.multiply(left, right),
                     },
                 }
@@ -1321,7 +1278,9 @@ const OptimizeIr = struct {
                             return body.word(0);
                         } else switch (body.get(left)) {
                             .word => |l| return body.word(l / r),
-                            else => return if (r == 0) left else body.divide(left, right),
+                            else => {
+                                return if (r == 0) left else body.divide(left, right);
+                            },
                         }
                     },
                     else => return body.divide(left, right),
@@ -1402,11 +1361,11 @@ pub const Waffle = struct {
         let: Id, // def, value
         ref: Id, // -
         word: Word, // -
-        object: Object, // -
+        object: Address, // -
         new: New, // pointers, literals
         tag, // object
-        num_pointers, // object
-        num_literals, // object
+        has_pointers, // object
+        num_words, // object
         load, // base, offset
         add, // left, right
         subtract, // left, right
@@ -1420,34 +1379,24 @@ pub const Waffle = struct {
     };
 
     pub const Id = struct { id: usize };
-    pub const New = struct { tag: u8, num_pointers: usize, num_literals: usize };
+    pub const New = struct { tag: u8, has_pointers: bool };
 
     pub fn format(waffle: Waffle, writer: *Writer) !void {
         try waffle.format_indented(writer, 0);
     }
     pub fn format_indented(expr: Waffle, writer: *Writer, indentation: usize) error{WriteFailed}!void {
         for (0..indentation) |_| try writer.print("  ", .{});
+        try writer.print("{s}", .{@tagName(expr.op)});
         switch (expr.op) {
-            .param => try writer.print("param", .{}),
-            .also => try writer.print("also", .{}),
-            .let => |id| try writer.print("let %{}", .{id.id}),
-            .ref => |id| try writer.print("ref %{}", .{id.id}),
-            .word => |word| try writer.print("word {}", .{word}),
-            .object => |object| try writer.print("object *{x}", .{object.address}),
-            .new => |new| try writer.print("new [{x}]", .{new.tag}),
-            .tag => try writer.print("tag", .{}),
-            .num_pointers => try writer.print("num pointers", .{}),
-            .num_literals => try writer.print("num literals", .{}),
-            .load => try writer.print("load", .{}),
-            .add => try writer.print("add", .{}),
-            .subtract => try writer.print("subtract", .{}),
-            .multiply => try writer.print("multiply", .{}),
-            .divide => try writer.print("divide", .{}),
-            .modulo => try writer.print("modulo", .{}),
-            .compare => try writer.print("compare", .{}),
-            .call => try writer.print("call", .{}),
-            .if_not_zero => try writer.print("if not zero", .{}),
-            .crash => try writer.print("crash", .{}),
+            inline else => |payload| {
+                switch (@TypeOf(payload)) {
+                    void => {},
+                    Id => try writer.print(" %{}", .{payload.id}),
+                    Word => try writer.print(" {x}", .{payload}),
+                    New => try writer.print(" [{x}]", .{payload.tag}),
+                    else => @compileError("bad payload " ++ @typeName(@TypeOf(payload))),
+                }
+            },
         }
         try writer.print("\n", .{});
         for (expr.children) |child|
@@ -1510,14 +1459,12 @@ const IrToWaffle = struct {
                 .children = &[_]Waffle{},
             },
             .new => |new| {
-                const children = try self.ally.alloc(Waffle, new.pointers.len + new.literals.len);
-                for (0.., new.pointers) |i, pointer| children[i] = self.ref(pointer);
-                for (new.pointers.len.., new.literals) |i, literal| children[i] = self.ref(literal);
+                const children = try self.ally.alloc(Waffle, new.words.len);
+                for (0.., new.words) |i, word| children[i] = self.ref(word);
                 return .{
                     .op = .{ .new = .{
                         .tag = new.tag,
-                        .num_pointers = new.pointers.len,
-                        .num_literals = new.literals.len,
+                        .has_pointers = new.has_pointers,
                     } },
                     .children = children,
                 };
@@ -1527,15 +1474,15 @@ const IrToWaffle = struct {
                 children[0] = self.ref(obj);
                 return .{ .op = .tag, .children = children };
             },
-            .num_pointers => |obj| {
+            .has_pointers => |obj| {
                 const children = try self.ally.alloc(Waffle, 1);
                 children[0] = self.ref(obj);
-                return .{ .op = .num_pointers, .children = children };
+                return .{ .op = .has_pointers, .children = children };
             },
-            .num_literals => |obj| {
+            .num_words => |obj| {
                 const children = try self.ally.alloc(Waffle, 1);
                 children[0] = self.ref(obj);
-                return .{ .op = .num_literals, .children = children };
+                return .{ .op = .num_words, .children = children };
             },
             .load => |load| {
                 const children = try self.ally.alloc(Waffle, 2);
@@ -1730,18 +1677,18 @@ const WaffleToInstructions = struct {
                 try self.emit(.{ .push_word = word });
                 self.stack_size += 1;
             },
-            .object => |object| {
-                try self.emit(.{ .push_address = object });
+            .object => |address| {
+                try self.emit(.{ .push_address = .{ .address = address } });
                 self.stack_size += 1;
             },
             .new => |new| {
                 for (waffle.children) |child| try self.compile(child);
                 try self.emit(.{ .new = .{
                     .tag = new.tag,
-                    .num_pointers = new.num_pointers,
-                    .num_literals = new.num_literals,
+                    .has_pointers = new.has_pointers,
+                    .num_words = waffle.children.len,
                 } });
-                self.stack_size -= new.num_pointers + new.num_literals;
+                self.stack_size -= waffle.children.len;
                 self.stack_size += 1;
             },
             .tag => {
@@ -1750,15 +1697,15 @@ const WaffleToInstructions = struct {
                 self.stack_size -= 1;
                 self.stack_size += 1;
             },
-            .num_pointers => {
+            .has_pointers => {
                 try self.compile(waffle.children[0]);
-                try self.emit(.num_pointers);
+                try self.emit(.has_pointers);
                 self.stack_size -= 1;
                 self.stack_size += 1;
             },
-            .num_literals => {
+            .num_words => {
                 try self.compile(waffle.children[0]);
-                try self.emit(.num_literals);
+                try self.emit(.num_words);
                 self.stack_size -= 1;
                 self.stack_size += 1;
             },
@@ -1849,12 +1796,185 @@ const WaffleToInstructions = struct {
     }
 };
 
-pub fn instructions_to_fun(heap: *Heap, num_params_: usize, instructions: []const Instruction) !Object {
-    const instructions_obj = try Instruction.new_instructions(heap, instructions);
-    return try Object.new_fun(heap, num_params_, try Object.new_nil(heap), instructions_obj);
+const Builtins = struct {
+    @"@collect_garbage": Address,
+    @"@crash": Address,
+    @"@add": Address,
+    @"@subtract": Address,
+    @"@multiply": Address,
+    @"@divide": Address,
+    @"@compare": Address,
+};
+
+pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
+    // "collect_garbage" accepts a lambda that takes zero arguments. It makes a
+    // heap checkpoint, calls the lambda, and does a garbage collection, freeing
+    // everything that the lambda allocated except the return value.
+    const unchecked_collect_garbage = try instructions_to_fun(heap, 2, &[_]Instruction{
+        // stack: (fun closure)
+        .heap_checkpoint, // (fun closure checkpoint)
+        .{ .push_from_stack = 1 }, // (fun closure checkpoint closure)
+        .{ .push_from_stack = 3 }, // (fun closure checkpoint closure fun)
+        .{ .push_word = 1 }, // (fun closure checkpoint closure fun 1)
+        .load, // (fun closure checkpoint closure instructions)
+        .eval, // (fun closure checkpoint result)
+        .collect_garbage, // (fun closure result)
+        .{ .pop_below_top = 1 }, // (result)
+    });
+    const collect_garbage = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const lambda = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const zero = try body.word(0);
+        const one = try body.word(1);
+        const two = try body.word(2);
+        const fun = try body.load(lambda, zero);
+        const closure = try body.load(lambda, one);
+        const fun_tag = try body.tag(fun);
+        const compared = try body.compare(fun_tag, one);
+        _ = try body.if_not_zero(
+            compared,
+            then: {
+                var inner = body.child_body();
+                const message = try inner.object(
+                    try object_mod.new_symbol(heap, "expected lambda"),
+                );
+                break :then try inner.finish_with_crash(message);
+            },
+            else_: {
+                var inner = body.child_body();
+                break :else_ inner.finish(zero);
+            },
+        );
+        const num_args = try body.load(fun, two);
+        const only_takes_closure = try body.compare(num_args, one);
+        _ = try body.if_not_zero(
+            only_takes_closure,
+            then: {
+                var inner = body.child_body();
+                const message = try inner.object(
+                    try object_mod.new_symbol(heap, "expected lambda with zero arguments"),
+                );
+                break :then try inner.finish_with_crash(message);
+            },
+            else_: {
+                var inner = body.child_body();
+                break :else_ inner.finish(zero);
+            },
+        );
+        const unchecked = try body.object(unchecked_collect_garbage);
+        const args = try ally.alloc(Ir.Id, 2);
+        args[0] = lambda;
+        args[1] = closure;
+        const result = try body.call(unchecked, args);
+        const body_ = body.finish(result);
+        break :ir builder.finish(body_);
+    });
+
+    const crash = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const message = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const res = try body.crash(message);
+        const body_ = body.finish(res);
+        break :ir builder.finish(body_);
+    });
+
+    const int_add = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const a = try builder.param();
+        const b = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const a_val = try body.get_int_value(a);
+        const b_val = try body.get_int_value(b);
+        const res_val = try body.add(a_val, b_val);
+        const res = try body.new_int(res_val);
+        const body_ = body.finish(res);
+        break :ir builder.finish(body_);
+    });
+
+    const int_subtract = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const a = try builder.param();
+        const b = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const a_val = try body.get_int_value(a);
+        const b_val = try body.get_int_value(b);
+        const res_val = try body.subtract(a_val, b_val);
+        const res = try body.new_int(res_val);
+        const body_ = body.finish(res);
+        break :ir builder.finish(body_);
+    });
+
+    const int_multiply = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const a = try builder.param();
+        const b = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const a_val = try body.get_int_value(a);
+        const b_val = try body.get_int_value(b);
+        const res_val = try body.multiply(a_val, b_val);
+        const res = try body.new_int(res_val);
+        const body_ = body.finish(res);
+        break :ir builder.finish(body_);
+    });
+
+    const int_divide = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const a = try builder.param();
+        const b = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const a_val = try body.get_int_value(a);
+        const b_val = try body.get_int_value(b);
+        const res_val = try body.divide(a_val, b_val);
+        const res = try body.new_int(res_val);
+        const body_ = body.finish(res);
+        break :ir builder.finish(body_);
+    });
+
+    const int_compare_to_num = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const a = try builder.param();
+        const b = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const a_val = try body.get_int_value(a);
+        const b_val = try body.get_int_value(b);
+        const diff = try body.compare(a_val, b_val);
+        const res = try body.new_int(diff);
+        const body_ = body.finish(res);
+        break :ir builder.finish(body_);
+    });
+
+    return .{
+        .@"@collect_garbage" = collect_garbage,
+        .@"@crash" = crash,
+        .@"@add" = int_add,
+        .@"@subtract" = int_subtract,
+        .@"@multiply" = int_multiply,
+        .@"@divide" = int_divide,
+        .@"@compare" = int_compare_to_num,
+    };
 }
 
-pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) !Object {
+pub fn instructions_to_fun(heap: *Heap, num_params_: usize, instructions: []const Instruction) !Address {
+    const instructions_obj = try Instruction.new_instructions(heap, instructions);
+    const num_params_obj = try object_mod.new_int(heap, @intCast(num_params_));
+    return try object_mod.new_fun(
+        heap,
+        num_params_obj,
+        try object_mod.new_nil(heap),
+        instructions_obj,
+    );
+}
+
+pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address {
     const optimized_ir = try optimize_ir(ally, heap, ir);
     const waffle = try ir_to_waffle(ally, optimized_ir);
     const optimized_waffle = try optimize_waffle(ally, waffle);
@@ -1862,17 +1982,21 @@ pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) !Object {
     const instructions_obj = try Instruction.new_instructions(heap, instructions);
     const boxed_ir = try ally.create(Ir);
     boxed_ir.* = optimized_ir;
-    const ir_ptr = try Object.new_int(heap, @bitCast(@intFromPtr(boxed_ir)));
-    return try Object.new_fun(heap, ir.params.len, ir_ptr, instructions_obj);
+    const ir_ptr = try object_mod.new_int(heap, @bitCast(@intFromPtr(boxed_ir)));
+    const num_params_obj = try object_mod.new_int(heap, @intCast(ir.params.len));
+    return try object_mod.new_fun(heap, num_params_obj, ir_ptr, instructions_obj);
 }
 
-pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) !Object {
+pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) !Address {
     const fun = try ir_to_fun(ally, heap, ir);
-    const nil = try Object.new_nil(heap);
-    return try Object.new_lambda(heap, fun, nil);
+    const nil = try object_mod.new_nil(heap);
+    var builder = try heap.object_builder(@intFromEnum(object_mod.Tag.lambda));
+    try builder.emit_pointer(fun);
+    try builder.emit_pointer(nil);
+    return try builder.finish();
 }
 
-pub fn code_to_fun(ally: Ally, heap: *Heap, env: anytype, code: Str) !Object {
+pub fn code_to_fun(ally: Ally, heap: *Heap, env: anytype, code: Str) !Address {
     const ast = try str_to_ast(ally, code);
     const ir = try ast_to_ir(ally, heap, env, ast);
     return try ir_to_fun(ally, heap, ir);

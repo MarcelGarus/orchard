@@ -54,9 +54,12 @@ fun run(
 ): Result[EggPestoValue, NonLocalPestoFlow] {
   var function = egg.funs.get(fun_)
   stack.push(fun_)
-  var result = function.body.run(args, map[EggId, EggPestoValue]().&, egg, stack)
+  eprintln("{indentation(stack.len)}{stack.last()}")
+  var result = function.body
+    .run(args, map[EggId, EggPestoValue]().&, egg, stack)?
+  eprintln("{indentation(stack.len)}-> {result}")
   stack.pop()
-  result
+  ok[EggPestoValue, NonLocalPestoFlow](result)
 }
 
 fun run(
@@ -75,8 +78,8 @@ fun run(
   | eprintln("Running: {expr.debug()}")
   if stack.len >= 100 then panic("Stack overflow")
   var stack_len = stack.len
-  | stack.push(expr.debug().format().split("(").get(0))
-  | eprintln("{indentation(stack.len)}{stack.last()}")
+  stack.push(expr.debug().format().split("(").get(0))
+  eprintln("{indentation(stack.len)}{stack.last()}")
 
   var result =
     switch expr
@@ -158,7 +161,21 @@ fun run(
       for arg in call.args do args.&.push(env.get(arg))
       fun_.run(args.to_slice(), egg, stack)?
     }
-    case crash(crash) panic("Pesto code crashed")
+    case crash(crash)
+      panic({
+        var b = string_builder().&
+        b."Pesto code crashed: "
+        var message = env.get(crash.message)
+          .struct_.unwrap().get("utf8_bytes")
+          .struct_.unwrap()
+        for byte
+        in message.get("buffer").buffer.unwrap().items
+          .subslice(
+            message.get("start").int.unwrap()..message.get("end").int.unwrap()
+          )
+        do b."{byte.byte.unwrap().to_char()}"
+        b.to_string()
+      })
     case unreachable panic("unreachable reached")
     case halt panic("Pesto code halted")
     case loop_(loop_) {
@@ -222,6 +239,7 @@ fun run(
       var buffer = env.get(store.buffer).buffer.unwrap()
       var index = env.get(store.index).int.unwrap()
       var item = env.get(store.item)
+      eprintln("storing item {item} at index {index}")
       buffer.items.&.set(index, item)
       EggPestoValue.struct_(map[String, EggPestoValue]())
     }
@@ -236,7 +254,7 @@ fun run(
     }
     default todo("Run {expr.debug()}")
 
-  | eprintln("{indentation(stack.len)}-> {result}")
+  eprintln("{indentation(stack.len)}-> {result}")
   stack.len = stack_len
   ok[EggPestoValue, NonLocalPestoFlow](result)
 }

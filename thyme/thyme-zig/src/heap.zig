@@ -43,22 +43,22 @@ pub fn is_full(heap: Heap) bool {
 // the memory layout and can't mix pointers and literals.
 pub const Allocation = struct {
     tag: u8,
-    pointers: []const Address, // point to other heap allocations
-    literals: []const Word, // word literals
+    has_pointers: bool,
+    words: []const Word,
 };
 
 // In the memory, every allocation has the following layout:
 //
-// [header][pointers][literals]
+// [header][word][word]...
 
 const Header = packed struct {
-    num_pointers: u24,
-    num_literals: u24,
-    tag: u8,
+    num_words: u48, // 6 bytes, max 281474976710655 words, ca. 2 PiB
+    tag: u8, // gratis extra payload of allocation
     meta: packed struct {
         // meta stuff used by the heap itself
         marked: u1 = 0, // marking for mark-sweep garbage collection
-        padding: u7 = 0,
+        has_pointers: u1 = 0,
+        padding: u6 = 0,
     },
 };
 comptime {
@@ -80,8 +80,7 @@ pub const ObjectBuilder = struct {
         if (heap.is_full()) return error.OutOfMemory;
         heap.memory[start] = @bitCast(Header{
             .tag = tag,
-            .num_pointers = 0,
-            .num_literals = 0,
+            .num_words = 0,
             .meta = .{},
         });
         return .{ .heap = heap, .start = start };
@@ -97,37 +96,39 @@ pub const ObjectBuilder = struct {
         builder.num_pointers += 1;
     }
     pub fn emit_literal(builder: *ObjectBuilder, word: Word) !void {
+        if (builder.num_pointers > 0) @panic("literal after pointer");
         try builder.emit(word);
         builder.num_literals += 1;
     }
     pub fn finish(builder: *ObjectBuilder) !Address {
         const header: *Header = @ptrCast(&builder.heap.memory[builder.start]);
-        header.num_pointers = @intCast(builder.num_pointers);
-        header.num_literals = @intCast(builder.num_literals);
-        builder.heap.used += 1 + builder.num_pointers + builder.num_literals;
+        const num_words = builder.num_pointers + builder.num_literals;
+        header.meta.has_pointers = if (builder.num_pointers > 0) 1 else 0;
+        header.num_words = @intCast(num_words);
+        builder.heap.used += 1 + num_words;
         return builder.start;
     }
 };
 
 pub fn new(heap: *Heap, allocation: Allocation) !Address {
     var builder = try heap.object_builder(allocation.tag);
-    for (allocation.pointers) |pointer| try builder.emit_pointer(pointer);
-    for (allocation.literals) |literal| try builder.emit_literal(literal);
+    if (allocation.has_pointers) {
+        for (allocation.words) |word| try builder.emit_pointer(word);
+    } else {
+        for (allocation.words) |word| try builder.emit_literal(word);
+    }
     return try builder.finish();
 }
 
 pub fn get(heap: Heap, address: Address) Allocation {
     const header: Header = @bitCast(heap.memory[address]);
-    const pointers: []const Address = @ptrCast(
-        heap.memory[address + 1 ..][0..@intCast(header.num_pointers)],
-    );
-    const literals: []const Word = @ptrCast(
-        heap.memory[address + 1 ..][@intCast(header.num_pointers)..][0..@intCast(header.num_literals)],
+    const words: []const Address = @ptrCast(
+        heap.memory[address + 1 ..][0..@intCast(header.num_words)],
     );
     return .{
         .tag = header.tag,
-        .pointers = pointers,
-        .literals = literals,
+        .has_pointers = header.meta.has_pointers == 1,
+        .words = words,
     };
 }
 pub fn load(heap: Heap, base: Address, word_index: usize) Word {
@@ -147,18 +148,19 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Address, Addr
     while (read < heap.used) {
         // Adjust the pointers using the mapping so far.
         const header: Header = @bitCast(heap.memory[read]);
-        for (0..header.num_pointers) |j| {
-            const pointer = heap.memory[read + 1 + j];
-            if (map.get(pointer)) |to| heap.memory[read + 1 + j] = to;
+        if (header.meta.has_pointers == 1) {
+            for (0..header.num_words) |i| {
+                const pointer = heap.memory[read + 1 + i];
+                if (map.get(pointer)) |to| heap.memory[read + 1 + i] = to;
+            }
         }
-        const total_words = 1 + header.num_pointers + header.num_literals;
+        const total_words = 1 + header.num_words;
         // Compare to existing objects.
         var it = map.iterator();
         while (it.next()) |mapping| {
             const candidate = mapping.value_ptr.*;
             const candidate_header: Header = @bitCast(heap.memory[candidate]);
-            if (header.num_pointers != candidate_header.num_pointers) continue;
-            if (header.num_literals != candidate_header.num_literals) continue;
+            if (header.num_words != candidate_header.num_words) continue;
             if (std.mem.eql(
                 Word,
                 heap.memory[read..][0..total_words],
@@ -175,7 +177,7 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Address, Addr
                     heap.memory[write + i] = heap.memory[read + i];
             }
             try map.put(read, write);
-            write += 1 + header.num_pointers + header.num_literals;
+            write += 1 + header.num_words;
         }
 
         read += total_words;
@@ -198,7 +200,7 @@ fn mark(heap: *Heap, boundary: usize, address: usize) void {
     const header: *Header = @ptrCast(&heap.memory[address]);
     if (header.meta.marked == 1) return;
     header.meta.marked = 1;
-    for (0..header.num_pointers) |i|
+    for (0..header.num_words) |i|
         heap.mark(boundary, @intCast(heap.memory[address + 1 + i]));
 }
 fn sweep(heap: *Heap, ally: Ally, boundary: usize) !Map(Address, Address) {
@@ -207,16 +209,15 @@ fn sweep(heap: *Heap, ally: Ally, boundary: usize) !Map(Address, Address) {
     var map = Map(Address, Address).init(ally);
     while (read < heap.used) {
         const header: *Header = @ptrCast(&heap.memory[read]);
-        const size = 1 + header.num_pointers + header.num_literals;
+        const size = 1 + header.num_words;
         if (header.meta.marked == 1) {
             header.meta.marked = 0;
             if (read != write) {
-                for (0..header.num_pointers) |i| {
+                for (0..header.num_words) |i| {
                     const pointer = heap.memory[read + 1 + i];
                     if (map.get(pointer)) |to| heap.memory[read + 1 + i] = to;
                 }
-                for (0..size) |i|
-                    heap.memory[write + i] = heap.memory[read + i];
+                for (0..size) |i| heap.memory[write + i] = heap.memory[read + i];
                 try map.put(read, write);
             }
             read += size;
@@ -242,13 +243,11 @@ pub fn dump(heap: Heap) void {
     while (i < heap.used) {
         std.debug.print("{x:3} | ", .{i});
         const header: Header = @bitCast(heap.memory[i]);
-        std.debug.print("[{x}] ({} pointers)", .{ header.tag, header.num_pointers });
-        for (0..header.num_pointers) |j|
-            std.debug.print(" *{x}", .{heap.memory[i + 1 + j]});
-        for (0..header.num_literals) |j|
-            std.debug.print(" {x}", .{heap.memory[i + 1 + header.num_pointers + j]});
+        std.debug.print("[{x}] ({} words)", .{ header.tag, header.num_words });
+        for (0..header.num_words) |j|
+            std.debug.print(" {x}", .{heap.memory[i + 1 + j]});
         std.debug.print("\n", .{});
-        i += 1 + header.num_pointers + header.num_literals;
+        i += 1 + header.num_words;
     }
 }
 pub fn dump_stats(heap: Heap) void {
@@ -270,7 +269,37 @@ pub fn dump_stats(heap: Heap) void {
     while (i < num_words) {
         num_objects += 1;
         const header: Header = @bitCast(heap.memory[i]);
-        i += 1 + header.num_pointers + header.num_literals;
+        i += 1 + header.num_words;
     }
     std.debug.print(", {} objects\n", .{num_objects});
+}
+
+pub fn format(heap: Heap, object: Address, writer: *Writer) !void {
+    try heap.format_indented(object, writer, 0);
+}
+pub fn format_indented(heap: Heap, object: Address, writer: *Writer, indentation: usize) error{WriteFailed}!void {
+    if (indentation > 100) return error.WriteFailed;
+    try writer.print("{x}@{}", .{ object, heap.get(object).words.len });
+    try writer.print("[\n", .{});
+    const allocation = heap.get(object);
+    if (allocation.has_pointers) {
+        for (allocation.words) |pointer| {
+            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            try heap.format_indented(pointer, writer, indentation + 1);
+            try writer.print("\n", .{});
+        }
+    } else {
+        for (allocation.words) |literal| {
+            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            try writer.print("{:<19} | {x:<16} | ", .{ literal, literal });
+            for (0..8) |i| {
+                const c: u8 = @truncate(literal >> @intCast(i * 8));
+                if (c == 0) break;
+                try writer.print("{c}", .{c});
+            }
+            try writer.print("\n", .{});
+        }
+    }
+    for (0..indentation) |_| try writer.print("  ", .{});
+    try writer.print("]", .{});
 }

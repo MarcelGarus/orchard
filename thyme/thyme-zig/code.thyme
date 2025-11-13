@@ -1,3 +1,26 @@
+# Thyme
+#
+# Values:              representation in heap
+# - nil: {}            [0]
+# - numbers: 1         [0] 1
+# - strings: "hi"      [0] (utf8-encoded literals words)
+# - compounds: [a, b]  [0] a b
+# - functions: |a| a   [1] ir instructions num_args
+#
+# Other Expressions:
+# - builtins:
+#   @load(a, b)            %0 = load a b
+#   @add(a, b)             %0 = load a 0
+#                          %1 = load b 0
+#                          %2 = add %0 %1
+#                          %3 = new [0] %2
+#   @subtract(a, b)        ...
+#   @multiply(a, b)        ...
+#   @divide(a, b)          ...
+#   @modulo(a, b)          ...
+#   @compare(a, b)         ...
+#   @collect_garbage(fun)  ...
+
 # Nil
 #
 # Nil is a value that is used when we don't really need a value. If you have an
@@ -5,222 +28,196 @@
 
 nil = {}
 
-# Collect garbage
+# Crashing
 
-collect_garbage = |lambda| builtins:collect_garbage(lambda)
+crash = |message| @crash(message)
+unreachable = || crash("unreachable")
+todo = || crash("todo")
+assert = |check, message| if check then nil else crash(message)
 
-# Crash stuff
-
-crash = |message| builtins:crash(message)
-unreachable = || crash([unreachable])
-todo = || crash([todo])
-assert = |check, message| check % { true -> nil false -> crash(message) }
-
-# Recursion and Loops
-
-rec1 = |a, fun| {
-  rec = |rec, a| fun(a, |a| rec(rec, a))
-  rec(rec, a)
-}
-rec2 = |a, b, fun| {
-  rec = |rec, a, b| fun(a, b, |a, b| rec(rec, a, b))
-  rec(rec, a, b)
-}
-rec3 = |a, b, c, fun| {
-  rec = |rec, a, b, c| fun(a, b, c, |a, b, c| rec(rec, a, b, c))
-  rec(rec, a, b, c)
-}
-rec4 = |a, b, c, d, fun| {
-  rec = |rec, a, b, c, d| fun(a, b, c, d, |a, b, c, d| rec(rec, a, b, c, d))
-  rec(rec, a, b, c, d)
-}
-
-loop = |state, body| {
-  rec1(state, |state, rec| {
-    body(state) % { break: result -> result continue: next -> rec(next) }
-  })
-}
-
-# Bool stuff
-
-true  = [true:  nil]
-false = [false: nil]
-
-not = |a| a % { true -> false false -> true }
-
-and = |a, b| a % { true -> b      false -> false }
-or  = |a, b| a % { true -> true   false -> b }
-xor = |a, b| a % { true -> not(b) false -> b }
-
-#assert(true, [true_is_not_true])
-#assert(not(false))
-
-# Int stuff
-
-+   = |a, b| builtins:add(a, b)
--   = |a, b| builtins:subtract(a, b)
-*   = |a, b| builtins:multiply(a, b)
-/   = |a, b| builtins:divide(a, b)
-mod = |a, b| builtins:modulo(a, b)
-
-== = |a, b| builtins:if_not_zero(-(a, b), false, true)
-!= = |a, b| builtins:if_not_zero(-(a, b), true, false)
-<  = |a, b| ==(builtins:int_compare_to_num(a, b), 2)
->  = |a, b| ==(builtins:int_compare_to_num(a, b), 1)
-<= = |a, b| !=(builtins:int_compare_to_num(a, b), 1)
->= = |a, b| !=(builtins:int_compare_to_num(a, b), 2)
-
-round_up_to_power_of = |number, base| {
-  loop(1, |candidate| {
-    >=(candidate, number) % {
-      true -> [break: candidate]
-      false -> [continue: *(candidate, base)]
-    }
-  })
-}
-#assert(==(round_up_to_power_of(0, 2), 1), [round_up_to_power_of_is_bad])
-#assert(==(round_up_to_power_of(1, 2), 1), [round_up_to_power_of_is_bad])
-#assert(==(round_up_to_power_of(2, 2), 2), [round_up_to_power_of_is_bad])
-#assert(==(round_up_to_power_of(3, 2), 4), [round_up_to_power_of_is_bad])
-#assert(==(round_up_to_power_of(9, 2), 16), [round_up_to_power_of_is_bad])
-
-# log_2 returns the floored result
-log_2 = |number| {
-  assert(>(number, 0), [log_arg_must_be_positive])
-  rec2(0, 1, |candidate, two_pow_candidate, rec| {
-    next_candidate = +(candidate, 1)
-    next_two_pow_candidate = *(two_pow_candidate, 2)
-    >(next_two_pow_candidate, number) % {
-      true -> candidate
-      false -> rec(next_candidate, next_two_pow_candidate)
-    }
-  })
-}
-#assert(==(log_2(1), 0), [log_2_is_bad])
-#assert(==(log_2(2), 1), [log_2_is_bad])
-#assert(==(log_2(3), 1), [log_2_is_bad])
-#assert(==(log_2(4), 2), [log_2_is_bad])
-#assert(==(log_2(5), 2), [log_2_is_bad])
-#assert(==(log_2(7), 2), [log_2_is_bad])
-#assert(==(log_2(8), 3), [log_2_is_bad])
-
-# List stuff
+## Bool
 #
-# Lists are stored as a binary tree of minimal height, where nodes are
-# filled from the left. The length tells us exactly the layout of this
-# tree. For example, a list of 5 items results in the following tree:
-# [
-#   length: 5
-#   items: [
-#     left: [left: [left: 0 right: 1] right: [left: 2 right: 3]]
-#     right: [left: [left: 4 right: nil] right: nil]
-#   ]
-# ]
-
-list_empty = [length: 0 items: nil]
-
-list_push = {
-  create_empty_tree = |depth| {
-    rec1(depth, |depth, rec| {
-      ==(depth, 0) % {
-        true -> nil
-        false -> {
-          child = rec(-(depth, 1))
-          [left: child right: child]
-        }
-      }
-    })
-  }
-  create_tree_with_single_item = |depth, item| {
-    rec2(depth, item, |depth, item, rec| {
-      ==(depth, 0) % {
-        true -> item
-        false -> [
-          left: rec(-(depth, 1), item)
-          right: create_empty_tree(-(depth, 1))
-        ]
-      }
-    })
-  }
-  set_in_tree = |items, length, index, item| {
-    rec4(items, length, index, item, |items, length, index, item, rec| {
-      ==(length, 1) % {
-        true -> item
-        false -> {
-          num_child = /(length, 2)  # TODO: shift
-          <(index, num_child) % {
-            true -> [
-              left: rec(items:left, num_child, index, item) right: items:right
-            ]
-            false -> [
-              left: items:left
-              right: rec(items:right, num_child, -(index, num_child), item)
-            ]
-          }
-        }
-      }
-    })
-  }
-  |list, item| {
-    length = list:length
-    ==(length, 0) % {
-      true -> [length: 1 items: item]
-      false -> [
-        length: +(length, 1)
-        items: ==(length, round_up_to_power_of(length, 2)) % {
-          true -> [
-            left: list:items
-            right: create_tree_with_single_item(log_2(length), item)
-          ]
-          false -> set_in_tree(
-            list:items, round_up_to_power_of(length, 2), length, item
-          )
-        }
-      ]
-    }
-  }
-}
-
-list_get = |list, index| {
-  >=(index, list:length) % {
-    true -> crash([out_of_bounds])
-    false -> rec3(
-      list:items,
-      round_up_to_power_of(list:length, 2),
-      index,
-      |items, cap, index, rec| {
-        cap_child = /(cap, 2)  # TODO: shift
-        <(index, cap_child) % {
-          true -> rec(items:left, cap_child, index)
-          false -> rec(items:right, cap_child, -(index, cap_child))
-        }
-      },
-    )
-  }
-}
-
-core = [
-  crash: crash
-  collect_garbage: collect_garbage
-  unreachable
-  todo
-  assert
-  rec1
-  rec2
-  rec3
-  rec4
-  loop
-  bool: [true false not and or xor]
-  int: [+ - * / mod == != < > <= >= round_up_to_power_of log_2]
-  list: [empty: list_empty push: list_push get: list_get]
-]
-
-collect_garbage = core:collect_garbage
-empty = core:list:empty
-push = core:list:push
-
-foo = collect_garbage(|| push(empty, 2))
-
-push(foo, 3)
-
-#push(push(push(push(push(empty, 1), 2), 3), 4), 5)
+#true  = 1
+#false = 0
+#
+#not = |a| if a then false else true
+#
+#and = |a, b| if a then b else false
+#or  = |a, b| if a then true else b
+#xor = |a, b| if a then not(b) else b
+#
+#assert(true, "true is not true")
+#assert(not(false))
+#
+## Basic Int Stuff
+#
+#+   = |a, b| @add(a, b)
+#-   = |a, b| @subtract(a, b)
+#*   = |a, b| @multiply(a, b)
+#/   = |a, b| @divide(a, b)
+#mod = |a, b| @modulo(a, b)
+#
+#== = |a, b| not(-(a, b))
+#!= = |a, b| if -(a, b) then true else false
+#<  = |a, b| ==(@compare(a, b), 2)
+#>  = |a, b| ==(@compare(a, b), 1)
+#<= = |a, b| !=(@compare(a, b), 1)
+#>= = |a, b| !=(@compare(a, b), 2)
+#
+#round_up_to_power_of = |number, base| {
+#  recursive(number, base, 1, |number, base, candidate| {
+#    if >=(candidate, number) then
+#      candidate
+#    else
+#      recurse(number, base, *(candidate, base))
+#  })
+#}
+#
+#assert(==(round_up_to_power_of(0, 2), 1), "round up to power of is bad")
+#assert(==(round_up_to_power_of(1, 2), 1), "round up to power of is bad")
+#assert(==(round_up_to_power_of(2, 2), 2), "round up to power of is bad")
+#assert(==(round_up_to_power_of(3, 2), 4), "round up to power of is bad")
+#assert(==(round_up_to_power_of(9, 2), 16), "round up to power of is bad")
+#
+## log_2 returns the floored result
+#log_2 = |number| {
+#  assert(>(number, 0), [log_arg_must_be_positive])
+#  rec2(0, 1, |candidate, two_pow_candidate, rec| {
+#    next_candidate = +(candidate, 1)
+#    next_two_pow_candidate = *(two_pow_candidate, 2)
+#    >(next_two_pow_candidate, number) % {
+#      true -> candidate
+#      false -> rec(next_candidate, next_two_pow_candidate)
+#    }
+#  })
+#}
+##assert(==(log_2(1), 0), [log_2_is_bad])
+##assert(==(log_2(2), 1), [log_2_is_bad])
+##assert(==(log_2(3), 1), [log_2_is_bad])
+##assert(==(log_2(4), 2), [log_2_is_bad])
+##assert(==(log_2(5), 2), [log_2_is_bad])
+##assert(==(log_2(7), 2), [log_2_is_bad])
+##assert(==(log_2(8), 3), [log_2_is_bad])
+#
+## Collect garbage
+#
+#collect_garbage = |lambda| @collect_garbage(lambda)
+#
+## Lists
+##
+## Lists are stored as a binary tree of minimal height, where nodes are
+## filled from the left. The length tells us exactly the layout of this
+## tree. For example, a list of 1, 2, 3, 4, 5 is the following tree:
+##
+## [[[[0, 1], [2, 3]], [[4 0], [0, 0]]]; 5]
+#
+#list_empty = [nil; 0]
+#
+#list_push = {
+#  create_empty_tree = |depth| {
+#    rec1(depth, |depth, rec| {
+#      ==(depth, 0) % {
+#        true -> nil
+#        false -> {
+#          child = rec(-(depth, 1))
+#          [left: child right: child]
+#        }
+#      }
+#    })
+#  }
+#  create_tree_with_single_item = |depth, item| {
+#    rec2(depth, item, |depth, item, rec| {
+#      ==(depth, 0) % {
+#        true -> item
+#        false -> [
+#          left: rec(-(depth, 1), item)
+#          right: create_empty_tree(-(depth, 1))
+#        ]
+#      }
+#    })
+#  }
+#  set_in_tree = |items, length, index, item| {
+#    rec4(items, length, index, item, |items, length, index, item, rec| {
+#      ==(length, 1) % {
+#        true -> item
+#        false -> {
+#          num_child = /(length, 2)  # TODO: shift
+#          <(index, num_child) % {
+#            true -> [
+#              left: rec(items:left, num_child, index, item) right: items:right
+#            ]
+#            false -> [
+#              left: items:left
+#              right: rec(items:right, num_child, -(index, num_child), item)
+#            ]
+#          }
+#        }
+#      }
+#    })
+#  }
+#  |list, item| {
+#    length = list:length
+#    ==(length, 0) % {
+#      true -> [length: 1 items: item]
+#      false -> [
+#        length: +(length, 1)
+#        items: ==(length, round_up_to_power_of(length, 2)) % {
+#          true -> [
+#            left: list:items
+#            right: create_tree_with_single_item(log_2(length), item)
+#          ]
+#          false -> set_in_tree(
+#            list:items, round_up_to_power_of(length, 2), length, item
+#          )
+#        }
+#      ]
+#    }
+#  }
+#}
+#
+#list_get = |list, index| {
+#  >=(index, list:length) % {
+#    true -> crash([out_of_bounds])
+#    false -> rec3(
+#      list:items,
+#      round_up_to_power_of(list:length, 2),
+#      index,
+#      |items, cap, index, rec| {
+#        cap_child = /(cap, 2)  # TODO: shift
+#        <(index, cap_child) % {
+#          true -> rec(items:left, cap_child, index)
+#          false -> rec(items:right, cap_child, -(index, cap_child))
+#        }
+#      },
+#    )
+#  }
+#}
+#
+#core = [
+#  crash: crash
+#  collect_garbage: collect_garbage
+#  unreachable
+#  todo
+#  assert
+#  rec1
+#  rec2
+#  rec3
+#  rec4
+#  loop
+#  bool: [true false not and or xor]
+#  int: [+ - * / mod == != < > <= >= round_up_to_power_of log_2]
+#  list: [empty: list_empty push: list_push get: list_get]
+#]
+#
+#collect_garbage = core:collect_garbage
+#empty = core:list:empty
+#push = core:list:push
+#
+#foo = collect_garbage(|| push(empty, 2))
+#
+#push(foo, 3)
+#
+#push
+#
+##push(push(push(push(push(empty, 1), 2), 3), 4), 5)
+#

@@ -92,9 +92,7 @@ fun print_stats(sushi: Sushi) {
   )
 }
 fun print_stats(ground: Ground) {
-  print(
-    ", {ground.bytes.len} bytes"
-  )
+  print(", {ground.bytes.len} bytes")
 }
 
 fun lower(egg: Egg, pass: LoweringPass): Egg {
@@ -109,11 +107,12 @@ fun lower(egg: Egg, pass: LoweringPass): Egg {
 
 fun optimize(egg: Egg, passes: List[OptPass]): Egg {
   print_compile_step("  optimize")
-  var timer = start_timer()
-  var egg = egg.apply_until_stable(passes.to_slice())
-  print_time(timer.read_duration())
-  print_stats(egg)
-  println()
+  println("skipped")
+  | var timer = start_timer()
+  | var egg = egg.apply_until_stable(passes.to_slice())
+  | print_time(timer.read_duration())
+  | print_stats(egg)
+  | println()
   egg
 }
 
@@ -282,33 +281,33 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | Now that the most tricky language features (first-class types and lambdas)
   | have been eliminated/simplified, we optimize the code using a set of
   | idempotent passes, applying them over and over until the Egg stabilizes.
-  var optimizations = list(
-    OptPass.deduplicate,
-    OptPass.devirtualize_lambda_calls,
-    OptPass.evaluate_comptime,
-    OptPass.fold_members,
-    OptPass.fold_switches,
-    OptPass.hoist_known_switch_results,
-    OptPass.inline_functions,
-    OptPass.simplify_arithmetics,
-    OptPass.simplify_arrays,
-    OptPass.simplify_bitwise,
-    OptPass.simplify_boxes,
-    OptPass.simplify_compare_to_enum,
-    OptPass.simplify_loops,
-    OptPass.unroll_small_arrays,
-    OptPass.use_enum_flows,
-    OptPass.merge_switch_chains,
-    OptPass.nest_into_switches_with_a_single_case,
-    OptPass.factor_out_loop_fixpoints,
-    OptPass.hoist_out_of_generators,
-    OptPass.hoist_out_of_loops,
-    OptPass.sink_continues,
-    OptPass.tree_shake,
-    OptPass.inline_functions_only_used_once,
+  var optimizations = list[OptPass](
+    | OptPass.deduplicate,
+    | OptPass.devirtualize_lambda_calls,
+    | OptPass.evaluate_comptime,
+    | OptPass.fold_members,
+    | OptPass.fold_switches,
+    | OptPass.hoist_known_switch_results,
+    | OptPass.inline_functions,
+    | OptPass.simplify_arithmetics,
+    | OptPass.simplify_arrays,
+    | OptPass.simplify_bitwise,
+    | OptPass.simplify_boxes,
+    | OptPass.simplify_compare_to_enum,
+    | OptPass.simplify_loops,
+    | OptPass.unroll_small_arrays,
+    | OptPass.use_enum_flows,
+    | OptPass.merge_switch_chains,
+    | OptPass.nest_into_switches_with_a_single_case,
+    | OptPass.factor_out_loop_fixpoints,
+    | OptPass.hoist_out_of_generators,
+    | OptPass.hoist_out_of_loops,
+    | OptPass.sink_continues,
+    | OptPass.tree_shake,
+    | OptPass.inline_functions_only_used_once,
   )
   var egg = egg.optimize(optimizations)
-  eprintln(egg)
+  | eprintln(egg.run(list(EggPlumValue.int(5)).to_slice()))
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
@@ -321,6 +320,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
 
   | Defunctionalize
   | TODO: Describe
+  eprintln(egg)
   var egg = egg.lower(LoweringPass.defunctionalize)
   var egg = egg.optimize(optimizations)
 
@@ -361,6 +361,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   | size is possibly infinite, we need pointer indirections and multiple
   | allocations. So first, we wrap recursive variants of enums with Boxes.
   var egg = egg.lower(LoweringPass.lower_recursive_enums)
+  | eprintln(egg.run(list(EggPlumValue.int(5)).to_slice()))
 
   | After that, we insert dup and drop expressions into the code. When a value
   | is created, we are responsible for dropping it when it's no longer used. If
@@ -389,7 +390,29 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
     "store_buffer_bytes", "free_buffer",
   ))
 
+  var optimizations = list[OptPass](
+    | OptPass.fold_members,
+    | OptPass.fold_switches,
+    | OptPass.hoist_known_switch_results,
+    | OptPass.inline_functions,
+    | OptPass.simplify_arithmetics,
+    | OptPass.simplify_bitwise,
+    | OptPass.simplify_boxes,
+    | OptPass.simplify_compare_to_enum,
+    | OptPass.simplify_loops,
+    | OptPass.unroll_small_arrays,
+    | OptPass.use_enum_flows,
+    | OptPass.merge_switch_chains,
+    | OptPass.nest_into_switches_with_a_single_case,
+    | OptPass.factor_out_loop_fixpoints,
+    | OptPass.hoist_out_of_loops,
+    | OptPass.sink_continues,
+    | OptPass.tree_shake,
+    | OptPass.inline_functions_only_used_once,
+  )
   var egg = egg.optimize(optimizations)
+  | eprintln(egg)
+  | eprintln(egg.run(list(EggPestoValue.int(5)).to_slice()))
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
@@ -408,17 +431,17 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
 
   var egg = egg.lower(LoweringPass.lower_memory_layouts_2)
 
-  var optimizations = list(
-    OptPass.deduplicate,
+  var optimizations = list[OptPass](
+    | OptPass.deduplicate,
     | OptPass.hoist_known_switch_results, | TODO: does this apply?
-    OptPass.inline_functions,
-    OptPass.simplify_aggregates_parts_loads_and_stores,
-    OptPass.simplify_arithmetics,
-    OptPass.simplify_bitwise,
-    OptPass.hoist_out_of_loops,
-    OptPass.make_switches_branchless,
-    OptPass.sink_continues,
-    OptPass.tree_shake,
+    | OptPass.inline_functions,
+    | OptPass.simplify_aggregates_parts_loads_and_stores,
+    | OptPass.simplify_arithmetics,
+    | OptPass.simplify_bitwise,
+    | OptPass.hoist_out_of_loops,
+    | OptPass.make_switches_branchless,
+    | OptPass.sink_continues,
+    | OptPass.tree_shake,
   )
   var egg = egg.optimize(optimizations)
 
@@ -442,6 +465,8 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   var egg = egg.lower(LoweringPass.lower_loads_and_stores)
   var egg = egg.lower(LoweringPass.lower_compare)
   var egg = egg.lower(LoweringPass.lower_crash)
+
+  eprintln(egg.run(list(5.to_bytes()).to_slice()))
 
   egg.assert_only(list(
     "param", "case_param", "byte", "lower_byte", "byte_to_int", "int", "add",
@@ -471,19 +496,14 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   print_time(timer.read_duration())
   print_stats(waffle)
   println()
-  if false then println(waffle)
 
-  print_compile_step("  optimize")
-  var timer = start_timer()
-  var waffle = waffle.optimize()
-  print_time(timer.read_duration())
-  print_stats(waffle)
-  println()
-  if false then println(waffle)
-  | if false then {
-  |   println("Running Waffle")
-  |   println(waffle.run(5.to_bytes()))
-  | }
+  | print_compile_step("  optimize")
+  | var timer = start_timer()
+  | var waffle = waffle.optimize()
+  | print_time(timer.read_duration())
+  | print_stats(waffle)
+  | println()
+  println(waffle.run(5.to_bytes()))
 
   print_compile_step("Sushi")
   var timer = start_timer()
@@ -505,6 +525,7 @@ fun compile(module: Module, function: String): Result[Ground, Error] {
   print_time(timer.read_duration())
   print_stats(sushi)
   println()
+  | eprintln(sushi)
 
   | TODO:
   | - detect cold blocks

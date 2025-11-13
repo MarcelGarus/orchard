@@ -10,11 +10,10 @@ const instructions_to_fun = compiler.instructions_to_fun;
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Instruction = @import("instruction.zig").Instruction;
-const Object = @import("object.zig");
 const Vm = @import("vm.zig");
 
 pub fn main() !void {
-    std.debug.print("Hi.\n", .{});
+    std.debug.print("Welcome to Thyme.\n", .{});
 
     var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
     const ally = debug_ally.allocator();
@@ -23,7 +22,68 @@ pub fn main() !void {
     const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    const expected_int_symbol = try Object.new_symbol(&heap, "expected int");
+    // const compare_symbols_rec_fun = try ir_to_fun(ally, heap, ir: {
+    //     var builder = Ir.Builder.init(ally);
+    //     const a = try builder.param(); // a symbol object
+    //     const b = try builder.param(); // a symbol object
+    //     const cursor = try builder.param(); // a literal word
+    //     const rec = try builder.param(); // a reference to this function
+    //     var body = builder.body();
+    //     const len = try body.get_symbol_len_in_words(a);
+    //     const diff = try body.subtract(len, cursor);
+    //     const res = try body.if_not_zero(
+    //         diff,
+    //         not_done: {
+    //             var inner = body.child_body();
+    //             const a_word = try inner.load(a, cursor);
+    //             const b_word = try inner.load(b, cursor);
+    //             const word_diff = try inner.subtract(a_word, b_word);
+    //             const res = try inner.if_not_zero(
+    //                 word_diff,
+    //                 word_differs: {
+    //                     var innerer = body.child_body();
+    //                     const zero = try innerer.word(0);
+    //                     break :word_differs innerer.finish(zero);
+    //                 },
+    //                 word_same: {
+    //                     var innerer = body.child_body();
+    //                     const one = try innerer.word(1);
+    //                     const next_cursor = try innerer.add(cursor, one);
+    //                     var args = try ally.alloc(Id, 4);
+    //                     args[0] = a;
+    //                     args[1] = b;
+    //                     args[2] = next_cursor;
+    //                     args[3] = rec;
+    //                     const res = try innerer.call(rec, args);
+    //                     break :word_same innerer.finish(res);
+    //                 },
+    //             );
+    //             break :not_done inner.finish(res);
+    //         },
+    //         done_comparing: {
+    //             var inner = body.child_body();
+    //             const one = try inner.word(1);
+    //             break :done_comparing inner.finish(one);
+    //         },
+    //     );
+    //     const body_ = body.finish(res);
+    //     break :ir builder.finish(body_);
+    // });
+    // const compare_symbols_fun = try ir_to_fun(ally, heap, ir: {
+    //     var builder = Ir.Builder.init(ally);
+    //     const a = try builder.param(); // a symbol object
+    //     const b = try builder.param(); // a symbol object
+    //     var body = builder.body();
+    //     const rec = try body.object(compare_symbols_rec_fun);
+    //     var args = try ally.alloc(Id, 4);
+    //     args[0] = a;
+    //     args[1] = b;
+    //     args[2] = try body.word(0);
+    //     args[3] = rec;
+    //     const res = try body.call(rec, args);
+    //     const body_ = body.finish(res);
+    //     break :ir builder.finish(body_);
+    // });
 
     // const foo = try ir_to_fun(ally, &heap, ir: {
     //     var builder = Ir.Builder.init(ally);
@@ -42,211 +102,15 @@ pub fn main() !void {
     //     return;
     // }
 
-    // "collect_garbage" accepts a lambda that takes zero arguments. Makes a
-    // heap checkpoint, calls the lambda, and does a garbage collection, freeing
-    // everything that the lambda allocated except the return value.
-    const unchecked_collect_garbage = try instructions_to_fun(&heap, 2, &[_]Instruction{
-        // stack: (lambda)
-        .heap_checkpoint, // (lambda checkpoint)
-        .{ .push_from_stack = 1 }, // (lambda checkpoint lambda)
-        .{ .push_word = 1 }, // (lambda checkpoint lambda 1)
-        .load, // (lambda checkpoint closure)
-        .{ .push_from_stack = 2 }, // (lambda checkpoint closure lambda)
-        .{ .push_word = 0 }, // (lambda checkpoint closure lambda 0)
-        .load, // (lambda checkpoint closure fun)
-        .{ .push_word = 1 }, // (lambda checkpoint closure fun 1)
-        .load, // (lambda checkpoint closure instructions)
-        .eval, // (lambda checkpoint result)
-        .collect_garbage, // (lambda result)
-        .{ .pop_below_top = 1 }, // (result)
-    });
-    const collect_garbage = try ir_to_lambda(ally, &heap, ir: {
-        var builder = Ir.Builder.init(ally);
-        const lambda = try builder.param();
-        _ = try builder.param(); // closure
-        var body = builder.body();
-        const zero = try body.word(0);
-        const one = try body.word(1);
-        const two = try body.word(2);
-        const tag = try body.tag(lambda);
-        const lambda_tag = try body.word(Object.TAG_LAMBDA);
-        const compared = try body.compare(tag, lambda_tag);
-        _ = try body.if_not_zero(
-            compared,
-            then: {
-                var inner = body.child_body();
-                const message = try inner.object(try Object.new_symbol(&heap, "expected lambda"));
-                break :then inner.finish(message);
-            },
-            else_: {
-                var inner = body.child_body();
-                break :else_ inner.finish(zero);
-            },
-        );
-        const fun = try body.load(lambda, zero);
-        const num_args = try body.load(fun, two);
-        const only_takes_closure = try body.compare(num_args, one);
-        _ = try body.if_not_zero(
-            only_takes_closure,
-            then: {
-                var inner = body.child_body();
-                const message = try inner.object(try Object.new_symbol(&heap, "expected lambda with zero arguments"));
-                break :then inner.finish(message);
-            },
-            else_: {
-                var inner = body.child_body();
-                break :else_ inner.finish(zero);
-            },
-        );
-        const unchecked = try body.object(unchecked_collect_garbage);
-        const args = try ally.alloc(compiler.Ir.Id, 1);
-        args[0] = lambda;
-        const result = try body.call(unchecked, args);
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
-    });
-
-    const crash = try ir_to_lambda(ally, &heap, ir: {
-        var builder = Ir.Builder.init(ally);
-        const message = try builder.param();
-        const closure = try builder.param();
-        _ = closure;
-        var body = builder.body();
-        const res = try body.crash(message);
-        const body_ = body.finish(res);
-        break :ir builder.finish(body_);
-    });
-
-    const int_add = try ir_to_lambda(ally, &heap, ir: {
-        var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
-        const closure = try builder.param();
-        _ = closure;
-        var body = builder.body();
-        try body.assert_is_int(a, expected_int_symbol);
-        try body.assert_is_int(b, expected_int_symbol);
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const res_val = try body.add(a_val, b_val);
-        const res = try body.new_int(res_val);
-        const body_ = body.finish(res);
-        break :ir builder.finish(body_);
-    });
-
-    const int_subtract = try ir_to_lambda(ally, &heap, ir: {
-        var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
-        const closure = try builder.param();
-        _ = closure;
-        var body = builder.body();
-        try body.assert_is_int(a, expected_int_symbol);
-        try body.assert_is_int(b, expected_int_symbol);
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const res_val = try body.subtract(a_val, b_val);
-        const res = try body.new_int(res_val);
-        const body_ = body.finish(res);
-        break :ir builder.finish(body_);
-    });
-
-    const int_multiply = try ir_to_lambda(ally, &heap, ir: {
-        var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
-        const closure = try builder.param();
-        _ = closure;
-        var body = builder.body();
-        try body.assert_is_int(a, expected_int_symbol);
-        try body.assert_is_int(b, expected_int_symbol);
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const res_val = try body.multiply(a_val, b_val);
-        const res = try body.new_int(res_val);
-        const body_ = body.finish(res);
-        break :ir builder.finish(body_);
-    });
-
-    const int_divide = try ir_to_lambda(ally, &heap, ir: {
-        var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
-        const closure = try builder.param();
-        _ = closure;
-        var body = builder.body();
-        try body.assert_is_int(a, expected_int_symbol);
-        try body.assert_is_int(b, expected_int_symbol);
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const res_val = try body.divide(a_val, b_val);
-        const res = try body.new_int(res_val);
-        const body_ = body.finish(res);
-        break :ir builder.finish(body_);
-    });
-
-    const if_not_zero = try ir_to_lambda(ally, &heap, ir: {
-        var builder = Ir.Builder.init(ally);
-        const condition = try builder.param();
-        const then_ = try builder.param();
-        const else_ = try builder.param();
-        const closure = try builder.param();
-        _ = closure;
-        var body = builder.body();
-        try body.assert_is_int(condition, expected_int_symbol);
-        const condition_val = try body.get_int_value(condition);
-        const res = try body.if_not_zero(
-            condition_val,
-            then: {
-                var inner = body.child_body();
-                break :then inner.finish(then_);
-            },
-            else_: {
-                var inner = body.child_body();
-                break :else_ inner.finish(else_);
-            },
-        );
-        const body_ = body.finish(res);
-        break :ir builder.finish(body_);
-    });
-
-    const int_compare_to_num = try ir_to_lambda(ally, &heap, ir: {
-        var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
-        const closure = try builder.param();
-        _ = closure;
-        var body = builder.body();
-        try body.assert_is_int(a, expected_int_symbol);
-        try body.assert_is_int(b, expected_int_symbol);
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const diff = try body.compare(a_val, b_val);
-        const res = try body.new_int(diff);
-        const body_ = body.finish(res);
-        break :ir builder.finish(body_);
-    });
-
+    const builtins = try compiler.create_builtins(ally, &heap);
     const file = try std.fs.cwd().openFile("code.thyme", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
+    const result = try vm.eval(ally, builtins, code);
 
-    const builtins = try Object.new_struct(&heap, .{
-        .collect_garbage = collect_garbage,
-        .crash = crash,
-        .add = int_add,
-        .subtract = int_subtract,
-        .multiply = int_multiply,
-        .divide = int_divide,
-        .if_not_zero = if_not_zero,
-        .int_compare_to_num = int_compare_to_num,
-    });
-
-    const result = try vm.eval(ally, .{ .builtins = builtins }, code);
-
-    std.debug.print("{f}\n", .{result});
+    std.debug.print("{}\n", .{result});
 
     heap.dump_stats();
-    _ = try heap.garbage_collect(ally, start_of_heap, result.address);
+    _ = try heap.garbage_collect(ally, start_of_heap, result);
     _ = try heap.deduplicate(ally, start_of_heap);
     heap.dump_stats();
     // heap.dump_raw();

@@ -1,7 +1,7 @@
 import mod.mar
 
 fun run(waffle: Waffle, input: Slice[Byte]): Slice[Byte] {
-  switch waffle.entry_point.run(input, waffle, no_indentation)
+  switch waffle.entry_point.run(input, heap().&, waffle, no_indentation)
   case ok(value) value
   case error(error) {
     switch error
@@ -14,12 +14,16 @@ fun run(waffle: Waffle, input: Slice[Byte]): Slice[Byte] {
 enum NonLocalWaffleFlow { continue_: Slice[Byte], crash: String, halt }
 
 fun run(
-  fun_: String, args: Slice[Byte], waffle: Waffle, indentation: Indentation
+  fun_: String,
+  args: Slice[Byte],
+  heap: &BytesHeap,
+  waffle: Waffle,
+  indentation: Indentation,
 ): Result[Slice[Byte], NonLocalWaffleFlow] {
-  if indentation.amount > 10 then panic("stack overflow")
+  if indentation.amount > 100 then panic("stack overflow")
   eprintln("{indentation}{fun_} {args}")
   var fun_ = waffle.funs.get(fun_)
-  var result = fun_.body.run(map(fun_.param -> args).&, waffle, indentation)
+  var result = fun_.body.run(map(fun_.param -> args).&, heap, waffle, indentation)
   eprintln("{indentation}-> {result.debug()}")
   result
 }
@@ -27,17 +31,19 @@ fun run(
 fun run(
   body: WaffleBody,
   env: &Map[WaffleId, Slice[Byte]],
+  heap: &BytesHeap,
   waffle: Waffle,
   indentation: Indentation,
 ): Result[Slice[Byte], NonLocalWaffleFlow] {
   for id in body.locals do
-    env.put(id, id.resolve().run(env, waffle, indentation)?)
-  body.returns.run(env, waffle, indentation)
+    env.put(id, id.resolve().run(env, heap, waffle, indentation)?)
+  body.returns.run(env, heap, waffle, indentation)
 }
 
 fun run(
   expr: WaffleExpr,
   env: &Map[WaffleId, Slice[Byte]],
+  heap: &BytesHeap, 
   waffle: Waffle,
   indentation: Indentation,
 ): Result[Slice[Byte], NonLocalWaffleFlow] {
@@ -51,119 +57,120 @@ fun run(
     case local(id) env.get(id)
     case aggregate(aggregate) {
       var bytes = list[Byte]()
-      for part in aggregate do bytes.&.push_all(part.run(env, waffle, indentation + 1)?)
+      for part in aggregate do bytes.&.push_all(part.run(env, heap, waffle, indentation + 1)?)
       bytes.to_slice()
     }
     case part(part)
-      part.of.run(env, waffle, indentation + 1)?.subslice(part.offset ..+ part.layout.size)
+      part.of.run(env, heap, waffle, indentation + 1)?.subslice(part.offset ..+ part.layout.size)
     case switch_(switch_)
-      switch_.cases.get(switch_.condition.run(env, waffle, indentation + 1)?.get(0).to_int())
-        .run(env, waffle, indentation + 1)?
+      switch_.cases.get(switch_.condition.run(env, heap, waffle, indentation + 1)?.get(0).to_int())
+        .run(env, heap, waffle, indentation + 1)?
     case fun_ptr(signature) {
       var fun_index = 0
       for fun_ in waffle.funs.iter().enumerate() do
         if fun_.item.key == signature then fun_index = fun_.index
       fun_index.to_bytes()
     }
-    case call(call) call.function.run(call.args.run(env, waffle, indentation + 1)?, waffle, indentation + 1)?
+    case call(call) call.function.run(call.args.run(env, heap, waffle, indentation + 1)?, heap, waffle, indentation + 1)?
     case call_indirect(call) {
-      var args_and_fun = call.args_and_fun.run(env, waffle, indentation + 1)?
+      var args_and_fun = call.args_and_fun.run(env, heap, waffle, indentation + 1)?
       var args_size = args_and_fun.len - call.padding_before_fun_ptr - 8
       var args = args_and_fun.subslice(0..args_size)
       var fun_index = args_and_fun.subslice((args_size + call.padding_before_fun_ptr)..(args_size + call.padding_before_fun_ptr + 8)).to_int()
       var signature = waffle.funs.iter().skip(fun_index).&.next().unwrap().key
-      signature.run(args, waffle, indentation + 1)?
+      signature.run(args, heap, waffle, indentation + 1)?
     }
     case lower_byte(int)
-      list(int.run(env, waffle, indentation + 1)?.to_int().lower_byte()).to_slice()
+      list(int.run(env, heap, waffle, indentation + 1)?.to_int().lower_byte()).to_slice()
     case byte_to_int(byte)
-      byte.run(env, waffle, indentation + 1)?.get(0).to_int().to_bytes()
+      byte.run(env, heap, waffle, indentation + 1)?.get(0).to_int().to_bytes()
     case add(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       {ints.a + ints.b}.to_bytes()
     }
     case subtract(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       var res = ints.a - ints.b
       eprintln("{indentation}{ints.a} - {ints.b} = {res}. In bytes: {res.to_bytes()}")
       {ints.a - ints.b}.to_bytes()
     }
     case multiply(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       {ints.a * ints.b}.to_bytes()
     }
     case divide(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       {ints.a / ints.b}.to_bytes()
     }
     case modulo(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       {ints.a % ints.b}.to_bytes()
     }
     case shift_left(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       {ints.a << ints.b}.to_bytes()
     }
     case shift_right(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       {ints.a >> ints.b}.to_bytes()
     }
     case compare_zero(arg) {
-      var int = arg.run(env, waffle, indentation + 1)?.to_int()
+      var int = arg.run(env, heap, waffle, indentation + 1)?.to_int()
       switch int <=> 0
       case equal   list(0.lower_byte()).to_slice()
       case greater list(1.lower_byte()).to_slice()
       case less    list(2.lower_byte()).to_slice()
     }
     case and_(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       {ints.a & ints.b}.to_bytes()
     }
     case or_(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       {ints.a.or(ints.b)}.to_bytes()
     }
     case xor(args) {
-      var ints = args.run(env, waffle, indentation + 1)?.to_two_ints()
+      var ints = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
       {ints.a ^ ints.b}.to_bytes()
     }
     case malloc(size) {
-      var size = size.run(env, waffle, indentation + 1)?.to_int()
-      var memory = uninitialized_slice[Byte](size)
-      memory.data.to_int().to_bytes()
+      var size = size.run(env, heap, waffle, indentation + 1)?.to_int()
+      heap.malloc(size).to_bytes()
     }
-    case free empty_slice[Byte]()
+    case free(args) {
+      var args = args.run(env, heap, waffle, indentation + 1)?.to_two_ints()
+      heap.free(args.a, args.b)
+      empty_slice[Byte]()
+    }
     case load_word(ptr) {
-      var address = ptr.run(env, waffle, indentation + 1)?.to_int().to_address()
-      eprintln("loaded word {Slice[Byte] { data = address, len = 8 }}")
-      Slice[Byte] { data = address, len = 8 }
+      var ptr = ptr.run(env, heap, waffle, indentation + 1)?.to_int()
+      heap.load_word(ptr).to_bytes()
     }
     case load_byte(ptr) {
-      var address = ptr.run(env, waffle, indentation + 1)?.to_int().to_address()
-      Slice[Byte] { data = address, len = 1 }
+      var ptr = ptr.run(env, heap, waffle, indentation + 1)?.to_int()
+      list(heap.load_byte(ptr)).to_slice()
     }
     case store_word(args) {
-      var args = args.run(env, waffle, indentation + 1)?
-      var ptr = args.subslice(0..8).to_int().to_address()
+      var args = args.run(env, heap, waffle, indentation + 1)?
+      var ptr = args.subslice(0..8).to_int()
       var value = args.subslice(8..16).to_int()
-      ptr.to_reference[Int]().* = value
+      heap.store_word(ptr, value)
       empty_slice[Byte]()
     }
     case store_byte(args) {
-      var args = args.run(env, waffle, indentation + 1)?
-      var ptr = args.subslice(0..8).to_int().to_address()
+      var args = args.run(env, heap, waffle, indentation + 1)?
+      var ptr = args.subslice(0..8).to_int()
       var value = args.get(8)
-      ptr.to_reference[Byte]().* = value
+      heap.store_byte(ptr, value)
       empty_slice[Byte]()
     }
     case store_bytes(store) {
-      var ptr = store.ptr.run(env, waffle, indentation + 1)?.to_int().to_address()
-      for byte in store.bytes.iter().enumerate() do
-        {ptr + byte.index}.to_reference[Byte]().* = byte.item
+      var ptr = store.ptr.run(env, heap, waffle, indentation + 1)?.to_int()
+      heap.store_bytes(ptr, store.bytes)
       empty_slice[Byte]()
     }
     case crash(message) {
-      var message = message.run(env, waffle, indentation + 1)?
+      var message = message.run(env, heap, waffle, indentation + 1)?
       var message = String {
         data = message.subslice(0..8).to_int().to_address(),
         len = message.subslice(8..16).to_int(),
@@ -173,9 +180,9 @@ fun run(
     case unreachable panic("reached unreachable")
     case halt return error[Slice[Byte], NonLocalWaffleFlow](NonLocalWaffleFlow.halt)
     case loop_(loop_) {
-      env.put(loop_.param, loop_.initial.run(env, waffle, indentation + 1)?)
+      env.put(loop_.param, loop_.initial.run(env, heap, waffle, indentation + 1)?)
       loop {
-        switch loop_.body.run(env, waffle, indentation + 1)
+        switch loop_.body.run(env, heap, waffle, indentation + 1)
         case ok(value) break(value)
         case error(non_local) {
           switch non_local
@@ -186,7 +193,7 @@ fun run(
     }
     case continue_(continue_)
       return error[Slice[Byte], NonLocalWaffleFlow](
-        NonLocalWaffleFlow.continue_(continue_.next.run(env, waffle, indentation + 1)?)
+        NonLocalWaffleFlow.continue_(continue_.next.run(env, heap, waffle, indentation + 1)?)
       )
   eprintln("{indentation}-> {result}")
   ok[Slice[Byte], NonLocalWaffleFlow](result)

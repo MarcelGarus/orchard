@@ -1,31 +1,36 @@
-| All egg operations are managed using a global DAG. See the builder.mar for
-| functions that create new ops and put them into the DAG.
-
 import mod.mar
 
-struct EggId { id: Id }
+struct EggId { index: Int }
 
-fun resolve(id: EggId): EggExpr { egg_dag.get(id.id) }
+fun ==(a: EggId, b: EggId): Bool { a.index == b.index }
+fun hash[H](hasher: H, id: EggId) { hasher.hash(id.index) }
 
-fun hash[H](hasher: H, id: EggId) { hasher.hash(id.id) }
-fun ==(a: EggId, b: EggId): Bool { a.id == b.id }
-
-var egg_dag = dag[EggExpr]().put_on_heap()
-var all_egg_exprs = map[EggExpr, EggId]().put_on_heap()
-
-fun create_with_new_identity(expr: EggExpr): EggId {
-  var id = EggId { id = egg_dag.put(expr) }
-  if not(all_egg_exprs.contains(expr)) then
-    all_egg_exprs.put(expr, id)
-  id
+fun write[W](writer: W, id: EggId) {
+  writer."{"{id.index}".styled(style_of_id)}"
 }
+
+var egg_exprs = list[EggExpr]().put_on_heap()
+var egg_expr_to_id = map[EggExpr, EggId]().put_on_heap()
+
 fun create(expr: EggExpr): EggId {
-  if all_egg_exprs.get_maybe(expr) is some(id) then return id
-  var id = expr.create_with_new_identity()
-  all_egg_exprs.put(expr, id)
+  | if egg_expr_to_id.get_maybe(expr) is some(id) then return id
+  var id = EggId { index = egg_exprs.len }
+  egg_exprs.push(expr)
+  | egg_expr_to_id.put(expr, id)
   id
 }
+fun resolve(id: EggId): EggExpr { egg_exprs.get(id.index) }
 fun update(id: EggId, expr: EggExpr): EggId {
-  egg_dag.nodes.&.set(id.id.index, expr)
+  egg_exprs.set(id.index, expr)
   id
 }
+
+var next_identity = 0.put_on_heap()
+struct Identity { value: Int }
+fun new_identity(): Identity {
+  var identity = Identity { value = next_identity.* }
+  next_identity += 1
+  identity
+}
+fun ==(a: Identity, b: Identity): Bool { a.value == b.value }
+fun hash(hasher: &Hasher, identity: Identity) { hasher.hash(identity.value) }
