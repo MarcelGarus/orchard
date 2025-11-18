@@ -24,6 +24,7 @@
 //               - pointer to a fun
 //               - pointer to a closure (composite)
 
+const std = @import("std");
 const Heap = @import("heap.zig");
 const Address = Heap.Address;
 const Word = Heap.Word;
@@ -65,7 +66,8 @@ pub fn assert_symbol(heap: *Heap, obj: Address) !void {
 pub fn get_symbol(heap: Heap, symbol: Address) []const u8 {
     var chars: []const u8 = @ptrCast(heap.get(symbol).words);
     while (chars.len > 0 and chars[chars.len - 1] == 0) {
-        chars.len -= 0;
+        std.debug.print("chars: {any}\n", .{chars});
+        chars.len -= 1;
     }
     return chars;
 }
@@ -98,23 +100,25 @@ pub fn new_fun(heap: *Heap, num_params_: Address, ir_: Address, instructions_: A
 pub fn assert_fun(heap: *Heap, obj: Address) !void {
     if (heap.get(obj).tag != @intFromEnum(Tag.lambda)) return error.NotFun;
 }
-pub fn get_fun(heap: *Heap, fun: Fun) Fun {
+pub fn get_fun(heap: *Heap, fun: Address) Fun {
     return .{
-        .fun = heap.load(fun, 0),
-        .closure = heap.load(fun, 1),
+        .ir_ = heap.load(fun, 0),
+        .instructions_ = heap.load(fun, 1),
+        .num_params = heap.load(fun, 2),
     };
 }
 
 pub const Lambda = struct { fun: Address, closure: Address };
 pub fn new_lambda(heap: *Heap, lambda: Lambda) !Address {
     var builder = try heap.object_builder(@intFromEnum(Tag.lambda));
-    builder.emit_pointer(lambda.fun);
-    builder.emit_pointer(lambda.closure);
+    try builder.emit_pointer(lambda.fun);
+    try builder.emit_pointer(lambda.closure);
+    return try builder.finish();
 }
 pub fn assert_lambda(heap: *Heap, obj: Address) !void {
     if (heap.get(obj).tag != @intFromEnum(Tag.lambda)) return error.NotLambda;
 }
-pub fn get_lambda(heap: *Heap, lambda: Lambda) Lambda {
+pub fn get_lambda(heap: *Heap, lambda: Address) Lambda {
     return .{
         .fun = heap.load(lambda, 0),
         .closure = heap.load(lambda, 1),

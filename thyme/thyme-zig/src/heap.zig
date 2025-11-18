@@ -85,7 +85,7 @@ pub const ObjectBuilder = struct {
         });
         return .{ .heap = heap, .start = start };
     }
-    fn emit(builder: *ObjectBuilder, word: Address) !void {
+    fn emit(builder: *ObjectBuilder, word: Word) !void {
         const offset = builder.start + 1 + builder.num_pointers + builder.num_literals;
         if (offset == builder.heap.memory.len) return error.OutOfMemory;
         builder.heap.memory[offset] = word;
@@ -200,8 +200,9 @@ fn mark(heap: *Heap, boundary: usize, address: usize) void {
     const header: *Header = @ptrCast(&heap.memory[address]);
     if (header.meta.marked == 1) return;
     header.meta.marked = 1;
-    for (0..header.num_words) |i|
-        heap.mark(boundary, @intCast(heap.memory[address + 1 + i]));
+    if (header.meta.has_pointers == 1)
+        for (0..header.num_words) |i|
+            heap.mark(boundary, @intCast(heap.memory[address + 1 + i]));
 }
 fn sweep(heap: *Heap, ally: Ally, boundary: usize) !Map(Address, Address) {
     var read: usize = @intCast(boundary);
@@ -279,25 +280,42 @@ pub fn format(heap: Heap, object: Address, writer: *Writer) !void {
 }
 pub fn format_indented(heap: Heap, object: Address, writer: *Writer, indentation: usize) error{WriteFailed}!void {
     if (indentation > 100) return error.WriteFailed;
-    try writer.print("{x}@{}", .{ object, heap.get(object).words.len });
+    try writer.print("{x}: {}", .{ object, heap.get(object).tag });
     try writer.print("[\n", .{});
     const allocation = heap.get(object);
-    if (allocation.has_pointers) {
-        for (allocation.words) |pointer| {
-            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
-            try heap.format_indented(pointer, writer, indentation + 1);
-            try writer.print("\n", .{});
+    const object_mod = @import("object.zig");
+    const compiler_mod = @import("compiler.zig");
+    if (allocation.tag == @intFromEnum(object_mod.Tag.fun)) {
+        for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+        const ir_ptr = allocation.words[0];
+        switch (@as(object_mod.Tag, @enumFromInt(heap.get(ir_ptr).tag))) {
+            .int => {
+                const ir: *compiler_mod.Ir = @ptrFromInt(@as(usize, @bitCast(
+                    object_mod.get_int(heap, allocation.words[0]),
+                )));
+                try ir.format_indented(heap, writer, indentation + 1);
+            },
+            .composite => try writer.print("function without IR\n", .{}),
+            else => unreachable,
         }
     } else {
-        for (allocation.words) |literal| {
-            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
-            try writer.print("{:<19} | {x:<16} | ", .{ literal, literal });
-            for (0..8) |i| {
-                const c: u8 = @truncate(literal >> @intCast(i * 8));
-                if (c == 0) break;
-                try writer.print("{c}", .{c});
+        if (allocation.has_pointers) {
+            for (allocation.words) |pointer| {
+                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+                try heap.format_indented(pointer, writer, indentation + 1);
+                try writer.print("\n", .{});
             }
-            try writer.print("\n", .{});
+        } else {
+            for (allocation.words) |literal| {
+                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+                try writer.print("{:<19} | {x:<16} | ", .{ literal, literal });
+                for (0..8) |i| {
+                    const c: u8 = @truncate(literal >> @intCast(i * 8));
+                    if (c == 0) break;
+                    try writer.print("{c}", .{c});
+                }
+                try writer.print("\n", .{});
+            }
         }
     }
     for (0..indentation) |_| try writer.print("  ", .{});

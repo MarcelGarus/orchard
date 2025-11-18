@@ -56,8 +56,7 @@ const Ast = struct {
             .body => |body| {
                 for (0..indentation) |_| try writer.print("  ", .{});
                 try writer.print("{{\n", .{});
-                for (body) |child|
-                    try format_expr(child, writer, indentation + 1);
+                for (body) |child| try format_expr(child, writer, indentation + 1);
                 for (0..indentation) |_| try writer.print("  ", .{});
                 try writer.print("}}\n", .{});
             },
@@ -108,8 +107,7 @@ const Ast = struct {
                 try format_expr(call.callee.*, writer, indentation);
                 for (0..indentation + 1) |_| try writer.print("  ", .{});
                 try writer.print("(\n", .{});
-                for (call.args) |arg|
-                    try format_expr(arg, writer, indentation + 2);
+                for (call.args) |arg| try format_expr(arg, writer, indentation + 2);
                 for (0..indentation + 1) |_| try writer.print("  ", .{});
                 try writer.print(")\n", .{});
             },
@@ -123,11 +121,7 @@ const Ast = struct {
 };
 
 pub fn str_to_ast(ally: Ally, input: Str) !Ast.Expr {
-    var parser = Parser{
-        .ally = ally,
-        .input = input,
-        .cursor = 0,
-    };
+    var parser = Parser{ .ally = ally, .input = input, .cursor = 0 };
     const exprs = parser.parse_exprs() catch |e| {
         std.debug.print("Error at {}: {}\n", .{ parser.cursor, e });
         @panic("bad");
@@ -145,10 +139,7 @@ const Parser = struct {
     cursor: usize,
 
     fn current(parser: Parser) u8 {
-        return if (parser.is_at_end())
-            0
-        else
-            parser.input[parser.cursor];
+        return if (parser.is_at_end()) 0 else parser.input[parser.cursor];
     }
     fn advance(parser: *Parser) void {
         parser.cursor += 1;
@@ -196,16 +187,8 @@ const Parser = struct {
                 1,
                 char,
             );
-            const is_digit = std.mem.containsAtLeastScalar(
-                u8,
-                "0123456789",
-                1,
-                char,
-            );
-            if (is_letter or (parser.cursor > start and is_digit))
-                parser.advance()
-            else
-                break;
+            const is_digit = std.mem.containsAtLeastScalar(u8, "0123456789", 1, char);
+            if (is_letter or (parser.cursor > start and is_digit)) parser.advance() else break;
         }
         const end = parser.cursor;
         if (start == end) return null;
@@ -227,11 +210,7 @@ const Parser = struct {
                 continue;
             }
             const char = parser.current();
-            const digit = std.mem.indexOfScalar(
-                u8,
-                "0123456789",
-                char,
-            ) orelse break;
+            const digit = std.mem.indexOfScalar(u8, "0123456789", char) orelse break;
             num = num * 10 + @as(i64, @intCast(digit));
             parser.advance();
         }
@@ -244,9 +223,11 @@ const Parser = struct {
         if (!parser.consume("\"")) return null;
         var b = ArrayList(u8).empty;
         while (true) {
-            if (parser.is_at_end())
-                return error.StringDoesNotEnd;
-            if (parser.consume("\"")) break;
+            if (parser.is_at_end()) return error.StringDoesNotEnd;
+            if (parser.current() == '\"') {
+                parser.advance();
+                break;
+            }
             if (try parser.parse_escaped()) |escaped|
                 try b.appendSlice(parser.ally, escaped)
             else
@@ -268,11 +249,8 @@ const Parser = struct {
     fn parse_compound(parser: *Parser) !?Ast.Expr {
         if (!parser.consume("[")) return null;
         var parts = ArrayList(Ast.Expr).empty;
-        while (try parser.parse_expr()) |expr| {
-            try parts.append(parser.ally, expr);
-        }
+        while (try parser.parse_expr()) |expr| try parts.append(parser.ally, expr);
         if (!parser.consume("]")) return error.ExpectedClosingBracket;
-
         return .{ .compound = parts.items };
     }
 
@@ -287,10 +265,7 @@ const Parser = struct {
         const body = try parser.parse_expr() orelse return error.ExpectedLambdaBody;
         const boxed_body = try parser.ally.create(Ast.Expr);
         boxed_body.* = body;
-        return .{ .lambda = .{
-            .params = params.items,
-            .body = boxed_body,
-        } };
+        return .{ .lambda = .{ .params = params.items, .body = boxed_body } };
     }
 
     fn parse_if(parser: *Parser) !?Ast.Expr {
@@ -308,11 +283,7 @@ const Parser = struct {
         boxed_then.* = then;
         boxed_else.* = else_;
 
-        return .{ .if_ = .{
-            .condition = boxed_condition,
-            .then = boxed_then,
-            .else_ = boxed_else,
-        } };
+        return .{ .if_ = .{ .condition = boxed_condition, .then = boxed_then, .else_ = boxed_else } };
     }
 
     fn parse_block(parser: *Parser) !?Ast.Expr {
@@ -371,10 +342,7 @@ const Parser = struct {
                 boxed_index.* = index;
                 const boxed_of = try parser.ally.create(Ast.Expr);
                 boxed_of.* = expr;
-                expr = .{ .member = .{
-                    .of = boxed_of,
-                    .index = boxed_index,
-                } };
+                expr = .{ .member = .{ .of = boxed_of, .index = boxed_index } };
             } else if (parser.consume("(")) {
                 var args = ArrayList(Ast.Expr).empty;
                 while (try parser.parse_expr()) |arg| {
@@ -384,10 +352,7 @@ const Parser = struct {
                 if (!parser.consume(")")) return error.ExpectedClosingParen;
                 const boxed_callee = try parser.ally.create(Ast.Expr);
                 boxed_callee.* = expr;
-                expr = .{ .call = .{
-                    .callee = boxed_callee,
-                    .args = args.items,
-                } };
+                expr = .{ .call = .{ .callee = boxed_callee, .args = args.items } };
             } else if (parser.consume("= ") or parser.consume("=\n")) {
                 const name = switch (expr) {
                     .name => |n| n,
@@ -489,33 +454,15 @@ pub const Ir = struct {
                 try writer.print("\n", .{});
             },
             .tag => |address| try writer.print("tag {f}\n", .{address}),
-            .has_pointers => |address| {
-                try writer.print("has_pointers {f}\n", .{address});
-            },
-            .num_words => |address| {
-                try writer.print("num_words {f}\n", .{address});
-            },
-            .load => |load| {
-                try writer.print("load {f} {f}\n", .{ load.base, load.offset });
-            },
-            .add => |args| {
-                try writer.print("add {f} {f}\n", .{ args.left, args.right });
-            },
-            .subtract => |args| {
-                try writer.print("subtract {f} {f}\n", .{ args.left, args.right });
-            },
-            .multiply => |args| {
-                try writer.print("multiply {f} {f}\n", .{ args.left, args.right });
-            },
-            .divide => |args| {
-                try writer.print("divide {f} {f}\n", .{ args.left, args.right });
-            },
-            .modulo => |args| {
-                try writer.print("modulo {f} {f}\n", .{ args.left, args.right });
-            },
-            .compare => |args| {
-                try writer.print("compare {f} {f}\n", .{ args.left, args.right });
-            },
+            .has_pointers => |address| try writer.print("has_pointers {f}\n", .{address}),
+            .num_words => |address| try writer.print("num_words {f}\n", .{address}),
+            .load => |load| try writer.print("load {f} {f}\n", .{ load.base, load.offset }),
+            .add => |args| try writer.print("add {f} {f}\n", .{ args.left, args.right }),
+            .subtract => |args| try writer.print("subtract {f} {f}\n", .{ args.left, args.right }),
+            .multiply => |args| try writer.print("multiply {f} {f}\n", .{ args.left, args.right }),
+            .divide => |args| try writer.print("divide {f} {f}\n", .{ args.left, args.right }),
+            .modulo => |args| try writer.print("modulo {f} {f}\n", .{ args.left, args.right }),
+            .compare => |args| try writer.print("compare {f} {f}\n", .{ args.left, args.right }),
             .call => |call| {
                 try writer.print("call {f} with", .{call.fun});
                 for (call.args) |arg| try writer.print(" {f}", .{arg});
@@ -538,18 +485,11 @@ pub const Ir = struct {
         params: ArrayList(Id),
 
         pub fn init(ally: Ally) Builder {
-            return .{
-                .ally = ally,
-                .nodes = .empty,
-                .params = .empty,
-            };
+            return .{ .ally = ally, .nodes = .empty, .params = .empty };
         }
 
         pub fn body(builder: *Builder) BodyBuilder {
-            return .{
-                .parent = builder,
-                .ids = .empty,
-            };
+            return .{ .parent = builder, .ids = .empty };
         }
 
         fn create(builder: *Builder, node: Node) !Id {
@@ -565,11 +505,7 @@ pub const Ir = struct {
         }
 
         pub fn finish(builder: Builder, bod: Body) Ir {
-            return .{
-                .nodes = builder.nodes.items,
-                .params = builder.params.items,
-                .body = bod,
-            };
+            return .{ .nodes = builder.nodes.items, .params = builder.params.items, .body = bod };
         }
     };
     pub const BodyBuilder = struct {
@@ -583,10 +519,7 @@ pub const Ir = struct {
         }
 
         pub fn child_body(body: BodyBuilder) BodyBuilder {
-            return .{
-                .parent = body.parent,
-                .ids = .empty,
-            };
+            return .{ .parent = body.parent, .ids = .empty };
         }
 
         pub fn get(body: BodyBuilder, id: Id) Node {
@@ -620,59 +553,31 @@ pub const Ir = struct {
             return body.create_and_push(.{ .num_words = address });
         }
         pub fn load(body: *BodyBuilder, address: Id, offset: Id) !Id {
-            return body.create_and_push(.{ .load = .{
-                .base = address,
-                .offset = offset,
-            } });
+            return body.create_and_push(.{ .load = .{ .base = address, .offset = offset } });
         }
         pub fn add(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .add = .{
-                .left = left,
-                .right = right,
-            } });
+            return body.create_and_push(.{ .add = .{ .left = left, .right = right } });
         }
         pub fn subtract(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .subtract = .{
-                .left = left,
-                .right = right,
-            } });
+            return body.create_and_push(.{ .subtract = .{ .left = left, .right = right } });
         }
         pub fn multiply(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .multiply = .{
-                .left = left,
-                .right = right,
-            } });
+            return body.create_and_push(.{ .multiply = .{ .left = left, .right = right } });
         }
         pub fn divide(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .divide = .{
-                .left = left,
-                .right = right,
-            } });
+            return body.create_and_push(.{ .divide = .{ .left = left, .right = right } });
         }
         pub fn modulo(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .modulo = .{
-                .left = left,
-                .right = right,
-            } });
+            return body.create_and_push(.{ .modulo = .{ .left = left, .right = right } });
         }
         pub fn compare(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .compare = .{
-                .left = left,
-                .right = right,
-            } });
+            return body.create_and_push(.{ .compare = .{ .left = left, .right = right } });
         }
         pub fn call(body: *BodyBuilder, fun: Id, args: []const Id) !Id {
-            return body.create_and_push(.{ .call = .{
-                .fun = fun,
-                .args = args,
-            } });
+            return body.create_and_push(.{ .call = .{ .fun = fun, .args = args } });
         }
         pub fn if_not_zero(body: *BodyBuilder, condition: Id, then: Body, else_: Body) !Id {
-            return body.create_and_push(.{ .if_not_zero = .{
-                .condition = condition,
-                .then = then,
-                .else_ = else_,
-            } });
+            return body.create_and_push(.{ .if_not_zero = .{ .condition = condition, .then = then, .else_ = else_ } });
         }
         pub fn crash(body: *BodyBuilder, message: Id) !Id {
             return body.create_and_push(.{ .crash = message });
@@ -698,19 +603,15 @@ pub const Ir = struct {
         pub fn new_int(body: *BodyBuilder, value: Id) !Id {
             const words = try body.parent.ally.alloc(Id, 1);
             words[0] = value;
-            return try body.new(0, false, words);
+            return try body.new(@intFromEnum(object_mod.Tag.int), false, words);
         }
         pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
             const zero = try body.word(0);
             return try body.load(int, zero);
         }
 
-        pub fn get_symbol_len_in_words(body: *BodyBuilder, symbol: Id) !Id {
-            return try body.num_literals(symbol);
-        }
-
         pub fn new_closure(body: *BodyBuilder, captured: []Id) !Id {
-            return try body.new(0, true, captured);
+            return try body.new(@intFromEnum(object_mod.Tag.composite), true, captured);
         }
         pub fn get_closure_var(body: *BodyBuilder, closure: Id, index: i64) !Id {
             return try body.load(closure, body.word(index));
@@ -720,7 +621,7 @@ pub const Ir = struct {
             const pointers = try body.parent.ally.alloc(Id, 2);
             pointers[0] = fun;
             pointers[1] = closure;
-            return try body.new(0, true, pointers);
+            return try body.new(@intFromEnum(object_mod.Tag.lambda), true, pointers);
         }
         pub fn get_lambda_fun(body: *BodyBuilder, lambda: Id) !Id {
             const zero = try body.word(0);
@@ -760,14 +661,10 @@ const AstToIr = struct {
             return .{ .bindings = .empty };
         }
         fn bind(bindings: *Bindings, ally: Ally, name: Str, id: Id) !void {
-            try bindings.bindings.append(ally, .{
-                .name = name,
-                .id = id,
-            });
+            try bindings.bindings.append(ally, .{ .name = name, .id = id });
         }
         fn get(bindings: Bindings, name: Str) !Id {
-            for (bindings.bindings.items) |binding|
-                if (std.mem.eql(u8, binding.name, name)) return binding.id;
+            for (bindings.bindings.items) |binding| if (std.mem.eql(u8, binding.name, name)) return binding.id;
             std.debug.print("name {s}\n", .{name});
             @panic("name not in scope");
         }
@@ -779,12 +676,7 @@ const AstToIr = struct {
     nil: Address,
 
     pub fn compile(ally: Ally, env: anytype, expr: Ast.Expr, heap: *Heap) !Ir {
-        var compiler = AstToIr{
-            .ally = ally,
-            .heap = heap,
-            .nil = try object_mod.new_nil(heap),
-        };
-
+        var compiler = AstToIr{ .ally = ally, .heap = heap, .nil = try object_mod.new_nil(heap) };
         var bindings = Bindings.init();
         var builder = Builder.init(ally);
         var body = builder.body();
@@ -797,12 +689,7 @@ const AstToIr = struct {
         return builder.finish(body_result);
     }
 
-    fn compile_expr(
-        self: *AstToIr,
-        expr: Ast.Expr,
-        body: *Ir.BodyBuilder,
-        bindings: *Bindings,
-    ) error{OutOfMemory}!Id {
+    fn compile_expr(self: *AstToIr, expr: Ast.Expr, body: *Ir.BodyBuilder, bindings: *Bindings) error{OutOfMemory}!Id {
         switch (expr) {
             .nil => return try body.object(self.nil),
             .name => |name| return bindings.get(name),
@@ -825,20 +712,41 @@ const AstToIr = struct {
             },
             .compound => |parts| {
                 const compiled = try self.ally.alloc(Id, parts.len);
-                for (0.., parts) |i, part| {
-                    compiled[i] = try self.compile_expr(part, body, bindings);
-                }
-                return body.new(0, true, compiled);
+                for (0.., parts) |i, part| compiled[i] = try self.compile_expr(part, body, bindings);
+                return body.new(@intFromEnum(object_mod.Tag.composite), true, compiled);
             },
             .member => |member| {
-                const of = try self.compile_expr(member.of.*, body, bindings);
-                const index = try self.compile_expr(member.index.*, body, bindings);
+                const of_obj = try self.compile_expr(member.of.*, body, bindings);
+                const index_obj = try self.compile_expr(member.index.*, body, bindings);
+                const member_expects_composite = try object_mod.new_symbol(self.heap, "member expects composite");
+                const member_expects_int_index = try object_mod.new_symbol(self.heap, "member expects int index");
+                try body.assert_has_tag(of_obj, @intFromEnum(object_mod.Tag.composite), member_expects_composite);
+                try body.assert_has_tag(index_obj, @intFromEnum(object_mod.Tag.int), member_expects_int_index);
                 const zero = try body.word(0);
-                const index_value = try body.load(index, zero);
-                return try body.load(of, index_value);
+                const index = try body.load(index_obj, zero);
+                const num_words = try body.num_words(of_obj);
+                const compared = try body.compare(index, num_words); // should be less, aka 2
+                const two = try body.word(2);
+                const is_invalid = try body.subtract(compared, two);
+                _ = try body.if_not_zero(
+                    is_invalid,
+                    then: {
+                        var inner = body.child_body();
+                        const load_out_of_bounds_addr = try object_mod.new_symbol(self.heap, "load out of bounds");
+                        const load_out_of_bounds = try body.object(load_out_of_bounds_addr);
+                        break :then try inner.finish_with_crash(load_out_of_bounds);
+                    },
+                    else_: {
+                        var inner = body.child_body();
+                        break :else_ inner.finish(zero);
+                    },
+                );
+                return try body.load(of_obj, index);
             },
             .if_ => |if_| {
                 const condition = try self.compile_expr(if_.condition.*, body, bindings);
+                const if_expects_int = try object_mod.new_symbol(self.heap, "if expects int");
+                try body.assert_has_tag(condition, @intFromEnum(object_mod.Tag.int), if_expects_int);
                 const zero = try body.word(0);
                 const condition_value = try body.load(condition, zero);
                 return try body.if_not_zero(
@@ -860,49 +768,29 @@ const AstToIr = struct {
                 );
             },
             .lambda => |lambda| {
-                const captured = try get_captured(
-                    self.ally,
-                    lambda,
-                );
-                const closure = closure: {
-                    var captured_values = ArrayList(Id).empty;
-                    for (captured.items) |name|
-                        try captured_values.append(
-                            self.ally,
-                            try bindings.get(name),
-                        );
-                    break :closure try body.new_closure(captured_values.items);
-                };
+                const captured = try get_captured(self.ally, lambda);
                 const lambda_ir = ir: {
                     var lambda_bindings = Bindings.init();
                     var lambda_builder = Builder.init(self.ally);
-                    for (lambda.params) |param|
-                        try lambda_bindings.bind(
-                            self.ally,
-                            param,
-                            try lambda_builder.param(),
-                        );
+                    for (lambda.params) |param| try lambda_bindings.bind(self.ally, param, try lambda_builder.param());
                     const closure_param = try lambda_builder.param();
                     var lambda_body = lambda_builder.body();
                     for (0.., captured.items) |i, name| {
                         const offset = try lambda_body.word(@intCast(i));
-                        const value = try lambda_body.load(
-                            closure_param,
-                            offset,
-                        );
+                        const value = try lambda_body.load(closure_param, offset);
                         try lambda_bindings.bind(self.ally, name, value);
                     }
-                    const result = try self.compile_expr(
-                        lambda.body.*,
-                        &lambda_body,
-                        &lambda_bindings,
-                    );
+                    const result = try self.compile_expr(lambda.body.*, &lambda_body, &lambda_bindings);
                     const body_result = lambda_body.finish(result);
                     break :ir lambda_builder.finish(body_result);
                 };
-                const lambda_fun = try body.object(
-                    try ir_to_fun(self.ally, self.heap, lambda_ir),
-                );
+                const better_lambda_ir = try optimize_ir(self.ally, self.heap, lambda_ir);
+                const lambda_fun = try body.object(try ir_to_fun(self.ally, self.heap, better_lambda_ir));
+                const closure = closure: {
+                    var captured_values = ArrayList(Id).empty;
+                    for (captured.items) |name| try captured_values.append(self.ally, try bindings.get(name));
+                    break :closure try body.new_closure(captured_values.items);
+                };
                 return body.new_lambda(lambda_fun, closure);
             },
             .call => |call| {
@@ -914,22 +802,17 @@ const AstToIr = struct {
                 const closure = try body.load(callee, one);
 
                 var args = ArrayList(Id).empty;
-                for (call.args) |arg|
-                    try args.append(
-                        self.ally,
-                        try self.compile_expr(arg, body, bindings),
-                    );
+                for (call.args) |arg| try args.append(self.ally, try self.compile_expr(arg, body, bindings));
                 try args.append(self.ally, closure);
 
                 const fun_tag = try body.tag(fun);
-                const diff_to_one = try body.subtract(fun_tag, one);
+                const expected_fun_tag = try body.word(@intFromEnum(object_mod.Tag.fun));
+                const diff_to_fun_tag = try body.subtract(fun_tag, expected_fun_tag);
                 _ = try body.if_not_zero(
-                    diff_to_one,
+                    diff_to_fun_tag,
                     then: {
                         var inner = body.child_body();
-                        const not_a_fun = try inner.object(
-                            try object_mod.new_symbol(self.heap, "not a fun"),
-                        );
+                        const not_a_fun = try inner.object(try object_mod.new_symbol(self.heap, "not a fun"));
                         break :then try inner.finish_with_crash(not_a_fun);
                     },
                     else_: {
@@ -938,7 +821,8 @@ const AstToIr = struct {
                     },
                 );
                 const num_args = try body.word(args.items.len);
-                const num_params = try body.load(fun, two);
+                const num_params_obj = try body.load(fun, two);
+                const num_params = try body.load(num_params_obj, zero);
                 const diff = try body.subtract(num_args, num_params);
                 _ = try body.if_not_zero(
                     diff,
@@ -967,15 +851,9 @@ const AstToIr = struct {
         }
     }
 
-    fn compile_body(
-        self: *AstToIr,
-        exprs: []Ast.Expr,
-        body: *BodyBuilder,
-        bindings: *Bindings,
-    ) !Id {
+    fn compile_body(self: *AstToIr, exprs: []Ast.Expr, body: *BodyBuilder, bindings: *Bindings) !Id {
         var last: ?Id = null;
-        for (exprs) |expr|
-            last = try self.compile_expr(expr, body, bindings);
+        for (exprs) |expr| last = try self.compile_expr(expr, body, bindings);
         return last orelse body.object(self.nil);
     }
 
@@ -1009,17 +887,10 @@ const AstToIr = struct {
                 for (out.items) |o| if (std.mem.eql(u8, o, name)) return;
                 try out.append(ally, name);
             },
-            .body => |bod| {
-                for (bod) |child|
-                    try collect_captured(ally, child, ignore, out);
-            },
+            .body => |bod| for (bod) |child| try collect_captured(ally, child, ignore, out),
             .int => {},
             .string => {},
-            .compound => |parts| {
-                for (parts) |part| {
-                    try collect_captured_in_new_scope(ally, part, ignore, out);
-                }
-            },
+            .compound => |parts| for (parts) |part| try collect_captured_in_new_scope(ally, part, ignore, out),
             .member => |member| try collect_captured_in_new_scope(ally, member.of.*, ignore, out),
             .if_ => |if_| {
                 try collect_captured_in_new_scope(ally, if_.condition.*, ignore, out);
@@ -1034,9 +905,7 @@ const AstToIr = struct {
             },
             .call => |call| {
                 try collect_captured_in_new_scope(ally, call.callee.*, ignore, out);
-                for (call.args) |arg| {
-                    try collect_captured_in_new_scope(ally, arg, ignore, out);
-                }
+                for (call.args) |arg| try collect_captured_in_new_scope(ally, arg, ignore, out);
             },
             .var_ => |var_| {
                 const num_ignored = ignore.items.len;
@@ -1054,50 +923,59 @@ pub fn optimize_object(ally: Ally, heap: *Heap, object: Address) !Address {
         .symbol => return object,
         .composite => {
             var parts = try ally.alloc(Address, heap.get(object).words.len);
-            for (0.., heap.get(object).words) |i, word|
-                parts[i] = try optimize_object(ally, heap, word);
+            for (0.., heap.get(object).words) |i, word| parts[i] = try optimize_object(ally, heap, word);
             var builder = try heap.object_builder(@intFromEnum(object_mod.Tag.composite));
             for (parts) |part| try builder.emit_pointer(part);
             return try builder.finish();
         },
         .fun => return object,
-        .lambda => @panic("TODO: optimize lambda"),
-    }
-    // if (heap.get(object).tag == @intFromEnum(object_mod.Tag.lambda)) {
-    //     // This is a lambda with a fun and a closure.
+        .lambda => {
+            const fun = heap.load(object, 0);
+            const closure = try optimize_object(ally, heap, heap.load(object, 1));
 
-    //     // Fun has IR, instructions, and num_args.
-    //     // const ir_ptr_addr = heap.load(object, 0);
-    //     // const ir_ptr: *const Ir = @ptrCast(heap.get_int(ir_ptr_addr));
-    //     // const better_ir = try optimize_ir(ally, heap, ir_ptr.*);
-    //     // // ir_to_fun(ally, heap, ir: Ir)
-    //     // _ = better_ir;
-    //     _ = ally;
-    //     @panic("TODO: optimize IR including the closure!");
-    // } else {}
-    // @panic("TODO");
+            // If this lambda doesn't capture anything, it's already optimized.
+            if (heap.get(closure).words.len == 0) return object;
+
+            // Otherwise, we bake the captured values into the lambda body.
+            // Essentially, we just wrap the original fun:
+            //
+            // lambda tuple before:
+            // (original_fun, original_closure)
+            //
+            // lambda tuple after:
+            // (
+            //   fun(a, b, _) original_fun(a, b, original_closure),
+            //   empty_closure,
+            // )
+            //
+            // And then we optimize the fun, which may lead to inlining of
+            // original_fun and then constant-folding of the original_closure.
+            const num_params: usize = @intCast(object_mod.get_int(heap.*, heap.load(fun, 2)));
+            const better_ir = ir: {
+                var builder = Ir.Builder.init(ally);
+                var args = ArrayList(Ir.Id).empty;
+                for (0..num_params - 1) |_| try args.append(ally, try builder.param());
+                _ = try builder.param();
+                var b = builder.body();
+                const inner_fun = try b.object(fun);
+                const inner_closure = try b.object(closure);
+                try args.append(ally, inner_closure);
+                const result = try b.call(inner_fun, args.items);
+                const body = b.finish(result);
+                break :ir builder.finish(body);
+            };
+            const better_fun = try ir_to_fun(ally, heap, better_ir);
+            const empty_closure = try object_mod.new_nil(heap);
+            return try object_mod.new_lambda(heap, .{ .fun = better_fun, .closure = empty_closure });
+        },
+    }
 }
 pub fn optimize_ir(ally: Ally, heap: *Heap, ir: Ir) !Ir {
-    var optimizer = OptimizeIr{
-        .ally = ally,
-        .ir = ir,
-        .heap = heap,
-        .mapping = Map(Ir.Id, Ir.Id).init(ally),
-    };
+    var optimizer = OptimizeIr{ .ally = ally, .ir = ir, .heap = heap, .mapping = Map(Ir.Id, Ir.Id).init(ally) };
     var builder = Ir.Builder.init(ally);
-    for (ir.params) |old_param|
-        try optimizer.mapping.put(old_param, try builder.param());
+    for (ir.params) |old_param| try optimizer.mapping.put(old_param, try builder.param());
     const body = try optimizer.optimize_body(ir.body, &builder);
-    const better_ir = builder.finish(body);
-    heap.dump_raw();
-    std.debug.print("Optimized IR:\n", .{});
-    {
-        var buffer: [64]u8 = undefined;
-        const bw = std.debug.lockStderrWriter(&buffer);
-        defer std.debug.unlockStderrWriter();
-        ir.format(heap.*, bw) catch unreachable;
-    }
-    return better_ir;
+    return builder.finish(body);
 }
 const OptimizeIr = struct {
     const Id = Ir.Id;
@@ -1111,49 +989,10 @@ const OptimizeIr = struct {
         switch (self.ir.get(old_id)) {
             .param => unreachable,
             .word => |word| return body.word(word),
-            .object => |object| return body.object(
-                try optimize_object(self.ally, self.heap, object),
-            ),
+            .object => |object| return body.object(try optimize_object(self.ally, self.heap, object)),
             .new => |new| {
                 const words = try self.ally.alloc(Id, new.words.len);
                 for (0.., new.words) |i, word| words[i] = self.mapping.get(word).?;
-
-                // If this is a lambda and parts of the closure are known at
-                // compile time, bake those directly into the code. This allows
-                // us to optimize code further.
-                //
-                // (fun, closure) becomes
-                // (|a, b, c| fun(a, b, c, closure), {})
-                // optimize_lambda: {
-                //     if (new.tag != Object.TAG_LAMBDA) break :optimize_lambda;
-                //     const fun = switch (body.get(new.pointers[0])) {
-                //         .object => |obj| obj,
-                //         else => break :optimize_lambda,
-                //     };
-                //     std.debug.print("fun *{x} {} is {f}\n", .{ fun, fun, fun });
-                //     std.debug.print("old fun: {any}\n", .{self.ir.get(new.pointers[0])});
-                //     const num_args = fun.num_params();
-                //     switch (body.get(new.pointers[1])) {
-                //         .object => |closure| {
-                //             const wrapper = try ir_to_lambda(self.ally, self.heap, ir: {
-                //                 var builder = Ir.Builder.init(self.ally);
-                //                 for (0..num_args) |_| _ = try builder.param();
-                //                 var wrapper_body = builder.body();
-                //                 var args = ArrayList(Id).empty;
-                //                 for (builder.params.items) |param|
-                //                     try args.append(self.ally, param);
-                //                 args.items[args.items.len - 1] = try wrapper_body.object(closure);
-                //                 const inner_fun = try wrapper_body.object(fun);
-                //                 const res = try wrapper_body.call(inner_fun, args.items);
-                //                 const body_ = wrapper_body.finish(res);
-                //                 break :ir builder.finish(body_);
-                //             });
-                //             return body.object(wrapper);
-                //         },
-                //         // .new => |closure_new| {},
-                //         else => break :optimize_lambda,
-                //     }
-                // }
 
                 // If all the data of an object is known at compile time, just
                 // create the object once at compile time instead of every time
@@ -1162,18 +1001,18 @@ const OptimizeIr = struct {
                     if (new.has_pointers) {
                         for (words) |word|
                             switch (body.get(word)) {
-                                .word => {},
                                 .object => {},
                                 else => break :optimize_all_comptime,
                             };
                         var builder = try self.heap.object_builder(new.tag);
                         for (words) |word| try builder.emit_pointer(body.get(word).object);
-                        return body.object(try builder.finish());
+                        const object = try builder.finish();
+                        const better_object = try optimize_object(self.ally, self.heap, object);
+                        return body.object(better_object);
                     } else {
                         for (words) |word|
                             switch (body.get(word)) {
                                 .word => {},
-                                .object => {},
                                 else => break :optimize_all_comptime,
                             };
                         var builder = try self.heap.object_builder(new.tag);
@@ -1187,9 +1026,7 @@ const OptimizeIr = struct {
             .tag => |old_address| {
                 const address = self.mapping.get(old_address).?;
                 switch (body.get(address)) {
-                    .object => |object| return body.word(
-                        @intCast(self.heap.get(object).tag),
-                    ),
+                    .object => |object| return body.word(@intCast(self.heap.get(object).tag)),
                     .new => |new| return body.word(@intCast(new.tag)),
                     else => return body.tag(address),
                 }
@@ -1215,11 +1052,19 @@ const OptimizeIr = struct {
                 }
             },
             .load => |load| {
-                // TODO: optimize
-                return body.load(
-                    self.mapping.get(load.base).?,
-                    self.mapping.get(load.offset).?,
-                );
+                const base = self.mapping.get(load.base).?;
+                const offset = self.mapping.get(load.offset).?;
+                switch (body.get(base)) {
+                    .object => |object| switch (body.get(offset)) {
+                        .word => |index| {
+                            const loaded = self.heap.load(object, index);
+                            return if (self.heap.get(object).has_pointers) body.object(loaded) else body.word(loaded);
+                        },
+                        else => {},
+                    },
+                    else => {},
+                }
+                return body.load(base, offset);
             },
             .add => |args| {
                 const left = self.mapping.get(args.left).?;
@@ -1230,9 +1075,7 @@ const OptimizeIr = struct {
                         else => return if (l == 0) right else body.add(right, left),
                     },
                     else => switch (body.get(right)) {
-                        .word => |r| {
-                            return if (r == 0) left else body.add(left, right);
-                        },
+                        .word => |r| return if (r == 0) left else body.add(left, right),
                         else => return body.add(left, right),
                     },
                 }
@@ -1255,14 +1098,10 @@ const OptimizeIr = struct {
                 switch (body.get(left)) {
                     .word => |l| switch (body.get(right)) {
                         .word => |r| return body.word(l *% r),
-                        else => {
-                            return if (l == 1) right else body.multiply(right, left);
-                        },
+                        else => return if (l == 1) right else body.multiply(right, left),
                     },
                     else => switch (body.get(right)) {
-                        .word => |r| {
-                            return if (r == 1) left else body.multiply(left, right);
-                        },
+                        .word => |r| return if (r == 1) left else body.multiply(left, right),
                         else => return body.multiply(left, right),
                     },
                 }
@@ -1278,9 +1117,7 @@ const OptimizeIr = struct {
                             return body.word(0);
                         } else switch (body.get(left)) {
                             .word => |l| return body.word(l / r),
-                            else => {
-                                return if (r == 0) left else body.divide(left, right);
-                            },
+                            else => return if (r == 0) left else body.divide(left, right),
                         }
                     },
                     else => return body.divide(left, right),
@@ -1312,11 +1149,49 @@ const OptimizeIr = struct {
                 }
             },
             .call => |call| {
-                // TODO: all args comptime-known`try to call at comptime
-                // TODO: function small? inline
+                const fun = self.mapping.get(call.fun).?;
                 const args = try self.ally.alloc(Id, call.args.len);
                 for (0.., call.args) |i, arg| args[i] = self.mapping.get(arg).?;
-                return body.call(self.mapping.get(call.fun).?, args);
+
+                // We want to inline functions. This can be dangerous though: If
+                // we inline a function that receives itself as an argument and
+                // then calls itself again, the compiler might get stuck in an
+                // infinite loop. That's why we check if the args contain the
+                // function.
+                // TODO: all args comptime-known? try to call at comptime
+                inline_: {
+                    const fun_address = switch (body.get(fun)) {
+                        .object => |address| address,
+                        else => break :inline_,
+                    };
+                    for (args) |arg| if (self.id_contains(arg, fun_address, body.*)) {
+                        std.debug.print("not inlining because fun {x} receives itself as arg in {f}\n", .{ fun_address, arg });
+                        break :inline_;
+                    };
+                    const ir_ptr_ptr = self.heap.load(fun_address, 0);
+                    const ir_ptr: *Ir = @ptrFromInt(@as(usize, @bitCast(
+                        object_mod.get_int(self.heap.*, ir_ptr_ptr),
+                    )));
+                    const ir = ir_ptr.*;
+                    if (ir.params.len != args.len) {
+                        break :inline_;
+                    }
+                    var child_optimizer = OptimizeIr{
+                        .ally = self.ally,
+                        .ir = ir,
+                        .heap = self.heap,
+                        .mapping = Map(Id, Id).init(self.ally),
+                    };
+                    for (ir.params, args) |param, arg|
+                        try child_optimizer.mapping.put(param, arg);
+                    for (ir.body.ids) |child| {
+                        const id = try child_optimizer.optimize_expr(child, body);
+                        try child_optimizer.mapping.put(child, id);
+                    }
+                    return child_optimizer.mapping.get(ir.body.returns).?;
+                }
+
+                return body.call(fun, args);
             },
             .if_not_zero => |if_| {
                 const condition = self.mapping.get(if_.condition).?;
@@ -1340,13 +1215,148 @@ const OptimizeIr = struct {
         }
     }
 
+    fn id_contains(self: OptimizeIr, id: Id, needle: Address, body: Ir.BodyBuilder) bool {
+        std.debug.print("id {f} contains {x}?\n", .{ id, needle });
+        switch (body.get(id)) {
+            .param => return false,
+            .object => |address| return self.address_contains(address, needle),
+            else => return true,
+        }
+    }
+    fn address_contains(self: OptimizeIr, address: Address, needle: Address) bool {
+        std.debug.print("address {x} contains {x}?\n", .{ address, needle });
+        if (address == needle) return true;
+        if (address < needle) return false;
+        switch (@as(object_mod.Tag, @enumFromInt(self.heap.get(address).tag))) {
+            .int => return false,
+            .symbol => return false,
+            .composite => {
+                for (self.heap.get(address).words) |part| if (self.address_contains(part, needle)) return true;
+                return false;
+            },
+            .fun => {
+                const fun = object_mod.get_fun(self.heap, address);
+                return self.address_contains(fun.instructions_, needle);
+            },
+            .lambda => {
+                const lambda = object_mod.get_lambda(self.heap, address);
+                if (self.address_contains(lambda.fun, needle)) return true;
+                if (self.address_contains(lambda.closure, needle)) return true;
+                return false;
+            },
+        }
+    }
+
+    const IdSet = std.AutoArrayHashMap(Id, void);
+
     fn optimize_body(self: *OptimizeIr, old_body: Ir.Body, builder: *Ir.Builder) !Ir.Body {
         var body = builder.body();
         for (old_body.ids) |old_id| {
             const id = try self.optimize_expr(old_id, &body);
             try self.mapping.put(old_id, id);
         }
-        return body.finish(self.mapping.get(old_body.returns).?);
+        const better_body = body.finish(self.mapping.get(old_body.returns).?);
+
+        // Tree shaking
+        //
+        // We go through the body from the bottom to the top, tracking which locals are
+        // referenced later in the body. This way, when we encounter an expression, we
+        // know immediately whether we can throw it away.
+        var needed = IdSet.init(self.ally);
+        try needed.put(better_body.returns, {});
+        var rev_ids = std.ArrayList(Ir.Id).empty;
+        for (0..better_body.ids.len) |i| {
+            const id = better_body.ids[better_body.ids.len - 1 - i];
+            if (!needed.contains(id) and is_pure_biased(id, builder.nodes.items)) continue;
+            var ignore = IdSet.init(self.ally);
+            try collect_captured(id, builder.nodes.items, &needed, &ignore);
+            try rev_ids.append(self.ally, id);
+        }
+        std.mem.reverse(Ir.Id, rev_ids.items);
+        return .{ .ids = rev_ids.items, .returns = better_body.returns };
+    }
+
+    fn is_pure_biased(id: Ir.Id, nodes: []Ir.Node) bool {
+        return switch (nodes[id.index]) {
+            .param => unreachable,
+            .word => true,
+            .object => true,
+            .new => true,
+            .tag => true,
+            .has_pointers => true,
+            .num_words => true,
+            .load => true,
+            .add => true,
+            .subtract => true,
+            .multiply => true,
+            .divide => true,
+            .modulo => true,
+            .compare => true,
+            .call => false,
+            .if_not_zero => false,
+            .crash => false,
+        };
+    }
+    fn collect_captured(id: Ir.Id, nodes: []Ir.Node, out: *IdSet, ignore: *IdSet) !void {
+        return switch (nodes[id.index]) {
+            .param => unreachable,
+            .word => {},
+            .object => {},
+            .new => |new| for (new.words) |word| try found_captured(word, out, ignore),
+            .tag => |of| try found_captured(of, out, ignore),
+            .has_pointers => |of| try found_captured(of, out, ignore),
+            .num_words => |of| try found_captured(of, out, ignore),
+            .load => |load| {
+                try found_captured(load.base, out, ignore);
+                try found_captured(load.offset, out, ignore);
+            },
+            .add => |args| {
+                try found_captured(args.left, out, ignore);
+                try found_captured(args.right, out, ignore);
+            },
+            .subtract => |args| {
+                try found_captured(args.left, out, ignore);
+                try found_captured(args.right, out, ignore);
+            },
+            .multiply => |args| {
+                try found_captured(args.left, out, ignore);
+                try found_captured(args.right, out, ignore);
+            },
+            .divide => |args| {
+                try found_captured(args.left, out, ignore);
+                try found_captured(args.right, out, ignore);
+            },
+            .modulo => |args| {
+                try found_captured(args.left, out, ignore);
+                try found_captured(args.right, out, ignore);
+            },
+            .compare => |args| {
+                try found_captured(args.left, out, ignore);
+                try found_captured(args.right, out, ignore);
+            },
+            .call => |call| {
+                try found_captured(call.fun, out, ignore);
+                for (call.args) |arg| try found_captured(arg, out, ignore);
+            },
+            .if_not_zero => |if_| {
+                try found_captured(if_.condition, out, ignore);
+                for (if_.then.ids) |child| {
+                    try collect_captured(child, nodes, out, ignore);
+                    try ignore.put(child, {});
+                }
+                try found_captured(if_.then.returns, out, ignore);
+                for (if_.else_.ids) |child| {
+                    try collect_captured(child, nodes, out, ignore);
+                    try ignore.put(child, {});
+                }
+                try found_captured(if_.else_.returns, out, ignore);
+            },
+            .crash => |message| try found_captured(message, out, ignore),
+        };
+    }
+    fn found_captured(id: Ir.Id, out: *IdSet, ignore: *IdSet) !void {
+        if (ignore.contains(id)) return;
+        try out.put(id, {});
     }
 };
 
@@ -1399,8 +1409,7 @@ pub const Waffle = struct {
             },
         }
         try writer.print("\n", .{});
-        for (expr.children) |child|
-            try child.format_indented(writer, indentation + 1);
+        for (expr.children) |child| try child.format_indented(writer, indentation + 1);
     }
 };
 
@@ -1423,16 +1432,11 @@ const IrToWaffle = struct {
         return id;
     }
     fn ref(self: IrToWaffle, ir_id: Ir.Id) Waffle {
-        return .{
-            .op = .{ .ref = self.mapping.get(ir_id).? },
-            .children = &[_]Waffle{},
-        };
+        return .{ .op = .{ .ref = self.mapping.get(ir_id).? }, .children = &[_]Waffle{} };
     }
 
     fn compile_fun(self: *IrToWaffle, params: []const Ir.Id) !Waffle {
-        if (params.len == 0) {
-            return try self.compile_body(self.ir.body.ids, self.ir.body.returns);
-        }
+        if (params.len == 0) return try self.compile_body(self.ir.body.ids, self.ir.body.returns);
         const param = try self.new_id(params[0]);
         const children = try self.ally.alloc(Waffle, 2);
         children[0] = .{ .op = .param, .children = &[_]Waffle{} };
@@ -1450,22 +1454,13 @@ const IrToWaffle = struct {
     pub fn compile_node(self: *IrToWaffle, node: Ir.Node) error{OutOfMemory}!Waffle {
         switch (node) {
             .param => unreachable,
-            .word => |word| return .{
-                .op = .{ .word = word },
-                .children = &[_]Waffle{},
-            },
-            .object => |object| return .{
-                .op = .{ .object = object },
-                .children = &[_]Waffle{},
-            },
+            .word => |word| return .{ .op = .{ .word = word }, .children = &[_]Waffle{} },
+            .object => |object| return .{ .op = .{ .object = object }, .children = &[_]Waffle{} },
             .new => |new| {
                 const children = try self.ally.alloc(Waffle, new.words.len);
                 for (0.., new.words) |i, word| children[i] = self.ref(word);
                 return .{
-                    .op = .{ .new = .{
-                        .tag = new.tag,
-                        .has_pointers = new.has_pointers,
-                    } },
+                    .op = .{ .new = .{ .tag = new.tag, .has_pointers = new.has_pointers } },
                     .children = children,
                 };
             },
@@ -1550,8 +1545,7 @@ const IrToWaffle = struct {
 
 pub fn optimize_waffle(ally: Ally, waffle: Waffle) !Waffle {
     const children = try ally.alloc(Waffle, waffle.children.len);
-    for (0.., waffle.children) |i, child|
-        children[i] = try optimize_waffle(ally, child);
+    for (0.., waffle.children) |i, child| children[i] = try optimize_waffle(ally, child);
 
     switch (waffle.op) {
         .let => |id| {
@@ -1623,9 +1617,7 @@ fn find_usage_before_impure(expr: Waffle, id: Waffle.Id) error{ Used, NotUsed }!
             for (expr.children) |child| try find_usage_before_impure(child, id);
             return error.NotUsed;
         },
-        else => {
-            for (expr.children) |child| try find_usage_before_impure(child, id);
-        },
+        else => for (expr.children) |child| try find_usage_before_impure(child, id),
     }
 }
 
@@ -1837,9 +1829,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
             compared,
             then: {
                 var inner = body.child_body();
-                const message = try inner.object(
-                    try object_mod.new_symbol(heap, "expected lambda"),
-                );
+                const message = try inner.object(try object_mod.new_symbol(heap, "expected lambda"));
                 break :then try inner.finish_with_crash(message);
             },
             else_: {
@@ -1966,16 +1956,25 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
 pub fn instructions_to_fun(heap: *Heap, num_params_: usize, instructions: []const Instruction) !Address {
     const instructions_obj = try Instruction.new_instructions(heap, instructions);
     const num_params_obj = try object_mod.new_int(heap, @intCast(num_params_));
-    return try object_mod.new_fun(
-        heap,
-        num_params_obj,
-        try object_mod.new_nil(heap),
-        instructions_obj,
-    );
+    return try object_mod.new_fun(heap, num_params_obj, try object_mod.new_nil(heap), instructions_obj);
 }
 
 pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address {
+    std.debug.print("Original IR:\n", .{});
+    {
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        ir.format(heap.*, bw) catch unreachable;
+    }
     const optimized_ir = try optimize_ir(ally, heap, ir);
+    std.debug.print("Optimized IR:\n", .{});
+    {
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        optimized_ir.format(heap.*, bw) catch unreachable;
+    }
     const waffle = try ir_to_waffle(ally, optimized_ir);
     const optimized_waffle = try optimize_waffle(ally, waffle);
     const instructions = try waffle_to_instructions(ally, optimized_waffle);

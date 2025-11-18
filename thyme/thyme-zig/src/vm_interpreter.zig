@@ -19,15 +19,16 @@ pub const Ally = struct {
 pub const Jitted = []const Instruction;
 
 pub fn compile(ally: Ally, instructions: []const Instruction) !Jitted {
-    // TODO: copy instructions to safety, they should be allocated after this call
+    std.debug.print("jitting", .{});
+    // TODO: copy instructions to safety, they should be deallocated after this call
     _ = ally;
     return instructions;
 }
 
 pub fn run(vm: *Vm, instructions: Jitted) !void {
     for (instructions) |instruction| {
-        // std.debug.print("{any}\n", .{data_stack.items});
-        // std.debug.print("Running {f}", .{instruction});
+        std.debug.print("{any}\n", .{vm.data_stack.used});
+        std.debug.print("Running {f}", .{instruction});
 
         switch (instruction) {
             .push_word => |word| try vm.data_stack.push(word),
@@ -128,7 +129,14 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
             .eval => try vm.run(vm.data_stack.pop()),
             .crash => {
                 const message = vm.data_stack.pop();
-                std.debug.print("Crashed:\n{x}\n", .{message});
+                std.debug.print("Crashed:\n", .{});
+                {
+                    var buffer: [64]u8 = undefined;
+                    const bw = std.debug.lockStderrWriter(&buffer);
+                    defer std.debug.unlockStderrWriter();
+                    vm.heap.format(message, bw) catch unreachable;
+                    bw.print("\n", .{}) catch unreachable;
+                }
                 @panic("crashed");
             },
             else => @panic("todo"),

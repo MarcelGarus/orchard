@@ -115,16 +115,18 @@ pub const Instruction = union(enum) {
 
     const ParseResult = struct { instruction: Instruction, rest: Address };
     pub fn parse_instructions(ally: Ally, heap: Heap, instructions: Address) ![]const Instruction {
-        var object = instructions;
+        var current = instructions;
         var out = ArrayList(Instruction).empty;
         while (true) {
-            if (heap.get(object).words.len == 0) {
+            std.debug.print("parsing {x}\n", .{current});
+            if (heap.get(current).words.len == 0) {
                 break; // nil
             } else {
-                const instruction = heap.load(instructions, 0);
-                const rest = heap.load(instructions, 1);
+                const instruction = heap.load(current, 0);
+                const rest = heap.load(current, 1);
+                std.debug.print("parsing single {x}\n", .{instruction});
                 try out.append(ally, try parse_instruction(ally, heap, instruction));
-                object = rest;
+                current = rest;
             }
         }
         return out.items;
@@ -135,7 +137,9 @@ pub const Instruction = union(enum) {
         instruction: Address,
     ) error{ ParseError, OutOfMemory }!Instruction {
         const instruction_words = heap.get(instruction).words;
+        std.debug.print("words: {any}\n", .{instruction_words});
         const variant = object_mod.get_symbol(heap, instruction_words[0]);
+        std.debug.print("instr {s}\n", .{variant});
         inline for (@typeInfo(Instruction).@"union".fields) |field| {
             if (std.mem.eql(u8, variant, field.name)) {
                 const payload = switch (field.type) {
@@ -183,8 +187,8 @@ pub const Instruction = union(enum) {
                     try instruction.format_indented(writer, indentation + 1);
             },
             .new => |new| try writer.print(
-                "new [{}] {} pointers, {} literals\n",
-                .{ new.tag, new.num_pointers, new.num_literals },
+                "new [{}] with {} {s}\n",
+                .{ new.tag, new.num_words, if (new.has_pointers) "pointers" else "literals" },
             ),
             inline else => try writer.print("{s}\n", .{@tagName(instr)}),
         }

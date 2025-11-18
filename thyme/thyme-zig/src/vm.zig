@@ -30,7 +30,7 @@ const object_mod = @import("object.zig");
 
 // Depending on the system, choose a different JIT implementation.
 const Jit = switch (builtin.cpu.arch) {
-    .riscv32 => @import("vm_x86_64.zig"), // a JIT compiler
+    //.x86_64 => @import("vm_x86_64.zig"), // a JIT compiler
     else => @import("vm_interpreter.zig"), // an interpreter
 };
 
@@ -82,7 +82,9 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
 
 pub fn get_jitted(vm: *Vm, instructions: Address) !Jit.Jitted {
     if (vm.jitted.get(instructions)) |jitted| return jitted;
+    std.debug.print("parsing\n", .{});
     const parsed = try Instruction.parse_instructions(vm.ally, vm.heap.*, instructions);
+    std.debug.print("jitting\n", .{});
     const jitted = try Jit.compile(vm.jit_ally, parsed);
     try vm.jitted.put(instructions, jitted);
     return jitted;
@@ -105,6 +107,7 @@ pub fn call(vm: *Vm, fun: Address, args: []const Address) !Address {
 }
 
 pub fn run(vm: *Vm, instructions: Address) error{ OutOfMemory, ParseError, BadEval }!void {
+    std.debug.print("running instructions at {x}\n", .{instructions});
     const jitted = try vm.get_jitted(instructions);
     try Jit.run(vm, jitted);
 }

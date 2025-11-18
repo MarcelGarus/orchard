@@ -107,12 +107,19 @@ pub fn main() !void {
     const code = try file.readToEndAlloc(ally, 1000000);
     const result = try vm.eval(ally, builtins, code);
 
-    std.debug.print("{}\n", .{result});
+    {
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        try heap.format(result, bw);
+        try bw.print("\n", .{});
+    }
 
     heap.dump_stats();
     _ = try heap.garbage_collect(ally, start_of_heap, result);
     _ = try heap.deduplicate(ally, start_of_heap);
     heap.dump_stats();
+
     // heap.dump_raw();
     // heap.dump();
 }
