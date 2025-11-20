@@ -1044,10 +1044,10 @@ const OptimizeIr = struct {
             .num_words => |old_address| {
                 const address = self.mapping.get(old_address).?;
                 switch (body.get(address)) {
-                    // .object => |object| return body.word(
-                    //     @intCast(self.heap.get(object).literals.len),
-                    // ),
-                    // .new => |new| return body.word(@intCast(new.literals.len)),
+                    .object => |object| return body.word(
+                        @intCast(self.heap.get(object).words.len),
+                    ),
+                    .new => |new| return body.word(@intCast(new.words.len)),
                     else => return body.num_words(address),
                 }
             },

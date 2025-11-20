@@ -11,6 +11,9 @@ const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Instruction = @import("instruction.zig").Instruction;
 const Vm = @import("vm.zig");
+const graphics = @import("graphics.zig");
+const object_mod = @import("object.zig");
+const Address = Heap.Address;
 
 pub fn main() !void {
     std.debug.print("Welcome to Thyme.\n", .{});
@@ -22,103 +25,43 @@ pub fn main() !void {
     const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    // const compare_symbols_rec_fun = try ir_to_fun(ally, heap, ir: {
-    //     var builder = Ir.Builder.init(ally);
-    //     const a = try builder.param(); // a symbol object
-    //     const b = try builder.param(); // a symbol object
-    //     const cursor = try builder.param(); // a literal word
-    //     const rec = try builder.param(); // a reference to this function
-    //     var body = builder.body();
-    //     const len = try body.get_symbol_len_in_words(a);
-    //     const diff = try body.subtract(len, cursor);
-    //     const res = try body.if_not_zero(
-    //         diff,
-    //         not_done: {
-    //             var inner = body.child_body();
-    //             const a_word = try inner.load(a, cursor);
-    //             const b_word = try inner.load(b, cursor);
-    //             const word_diff = try inner.subtract(a_word, b_word);
-    //             const res = try inner.if_not_zero(
-    //                 word_diff,
-    //                 word_differs: {
-    //                     var innerer = body.child_body();
-    //                     const zero = try innerer.word(0);
-    //                     break :word_differs innerer.finish(zero);
-    //                 },
-    //                 word_same: {
-    //                     var innerer = body.child_body();
-    //                     const one = try innerer.word(1);
-    //                     const next_cursor = try innerer.add(cursor, one);
-    //                     var args = try ally.alloc(Id, 4);
-    //                     args[0] = a;
-    //                     args[1] = b;
-    //                     args[2] = next_cursor;
-    //                     args[3] = rec;
-    //                     const res = try innerer.call(rec, args);
-    //                     break :word_same innerer.finish(res);
-    //                 },
-    //             );
-    //             break :not_done inner.finish(res);
-    //         },
-    //         done_comparing: {
-    //             var inner = body.child_body();
-    //             const one = try inner.word(1);
-    //             break :done_comparing inner.finish(one);
-    //         },
-    //     );
-    //     const body_ = body.finish(res);
-    //     break :ir builder.finish(body_);
-    // });
-    // const compare_symbols_fun = try ir_to_fun(ally, heap, ir: {
-    //     var builder = Ir.Builder.init(ally);
-    //     const a = try builder.param(); // a symbol object
-    //     const b = try builder.param(); // a symbol object
-    //     var body = builder.body();
-    //     const rec = try body.object(compare_symbols_rec_fun);
-    //     var args = try ally.alloc(Id, 4);
-    //     args[0] = a;
-    //     args[1] = b;
-    //     args[2] = try body.word(0);
-    //     args[3] = rec;
-    //     const res = try body.call(rec, args);
-    //     const body_ = body.finish(res);
-    //     break :ir builder.finish(body_);
-    // });
-
-    // const foo = try ir_to_fun(ally, &heap, ir: {
-    //     var builder = Ir.Builder.init(ally);
-    //     const a = try builder.param();
-    //     var body = builder.body();
-    //     const b = try body.word(1);
-    //     const sum = try body.add(a, b);
-    //     const body_ = body.finish(sum);
-    //     break :ir builder.finish(body_);
-    // });
-
-    // const object = try vm.call(ally, foo, &[_]Object{.{ .address = 4, .heap = &heap }});
-    // std.debug.print("Returned: {}\n", .{object.address});
-
-    // if (true) {
-    //     return;
-    // }
-
     const builtins = try compiler.create_builtins(ally, &heap);
     const file = try std.fs.cwd().openFile("code.thyme", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
-    const result = try vm.eval(ally, builtins, code);
+    const render_lambda = try vm.eval(ally, builtins, code);
 
     {
         var buffer: [64]u8 = undefined;
         const bw = std.debug.lockStderrWriter(&buffer);
         defer std.debug.unlockStderrWriter();
-        try heap.format(result, bw);
+        try heap.format(render_lambda, bw);
         try bw.print("\n", .{});
     }
 
-    heap.dump_stats();
-    _ = try heap.garbage_collect(ally, start_of_heap, result);
-    _ = try heap.deduplicate(ally, start_of_heap);
-    heap.dump_stats();
+    graphics.init();
+    defer graphics.deinit();
+    while (!graphics.should_close()) {
+        const size = graphics.get_size();
+        const width_obj = try object_mod.new_int(&heap, @intCast(size.width));
+        const height_obj = try object_mod.new_int(&heap, @intCast(size.height));
+        const drawing_instructions_obj = try vm.call(
+            heap.load(render_lambda, 0),
+            &[_]Address{ width_obj, height_obj, heap.load(render_lambda, 1) },
+        );
+        const drawing_instructions = try graphics.DrawingInstruction.parse_all(
+            ally,
+            drawing_instructions_obj,
+            vm.heap.*,
+        );
+        std.debug.print("{any}\n", .{drawing_instructions});
+        try graphics.render(ally, drawing_instructions);
+    }
+
+    _ = start_of_heap;
+    //heap.dump_stats();
+    //_ = try heap.garbage_collect(ally, start_of_heap, result);
+    //_ = try heap.deduplicate(ally, start_of_heap);
+    //heap.dump_stats();
 
     // heap.dump_raw();
     // heap.dump();
