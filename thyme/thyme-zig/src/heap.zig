@@ -28,10 +28,7 @@ memory: []Word,
 used: usize,
 
 pub fn init(ally: Ally, capacity: usize) !Heap {
-    return .{
-        .memory = try ally.alloc(Word, capacity),
-        .used = 0,
-    };
+    return .{ .memory = try ally.alloc(Word, capacity), .used = 0 };
 }
 
 pub fn is_full(heap: Heap) bool {
@@ -139,6 +136,10 @@ const Checkpoint = struct { used: Word };
 
 pub fn checkpoint(heap: Heap) Checkpoint {
     return .{ .used = heap.used };
+}
+
+pub fn restore(heap: *Heap, checkpoint_: Checkpoint) void {
+    heap.used = checkpoint_.used;
 }
 
 pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Address, Address) {

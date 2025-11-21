@@ -20,7 +20,6 @@ pub const DrawingInstruction = union(enum) {
     pub fn parse_all(ally: Ally, obj: Address, heap: Heap) ![]const DrawingInstruction {
         var current = obj;
         var out = ArrayList(DrawingInstruction).empty;
-        std.debug.print("{}\n", .{heap.get(current).words.len});
         while (heap.get(current).words.len != 0) {
             const words = heap.get(current).words;
             try out.append(ally, try parse(words[0], heap));

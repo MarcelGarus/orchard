@@ -22,7 +22,6 @@ pub fn main() !void {
     const ally = debug_ally.allocator();
 
     var heap = try Heap.init(ally, 200000);
-    const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
     const builtins = try compiler.create_builtins(ally, &heap);
@@ -41,6 +40,13 @@ pub fn main() !void {
     graphics.init();
     defer graphics.deinit();
     while (!graphics.should_close()) {
+        const frame_checkpoint = heap.checkpoint();
+        defer heap.restore(frame_checkpoint);
+
+        var frame_arena = std.heap.ArenaAllocator.init(ally);
+        defer frame_arena.deinit();
+        const frame_ally = frame_arena.allocator();
+
         const size = graphics.get_size();
         const width_obj = try object_mod.new_int(&heap, @intCast(size.width));
         const height_obj = try object_mod.new_int(&heap, @intCast(size.height));
@@ -49,15 +55,15 @@ pub fn main() !void {
             &[_]Address{ width_obj, height_obj, heap.load(render_lambda, 1) },
         );
         const drawing_instructions = try graphics.DrawingInstruction.parse_all(
-            ally,
+            frame_ally,
             drawing_instructions_obj,
             vm.heap.*,
         );
+
         std.debug.print("{any}\n", .{drawing_instructions});
-        try graphics.render(ally, drawing_instructions);
+        try graphics.render(frame_ally, drawing_instructions);
     }
 
-    _ = start_of_heap;
     //heap.dump_stats();
     //_ = try heap.garbage_collect(ally, start_of_heap, result);
     //_ = try heap.deduplicate(ally, start_of_heap);

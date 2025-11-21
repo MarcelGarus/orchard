@@ -96,7 +96,7 @@ pub fn eval(vm: *Vm, ally: Ally, env: anytype, code: []const u8) !Address {
 }
 
 pub fn call(vm: *Vm, fun: Address, args: []const Address) !Address {
-    std.debug.print("calling function {}\n", .{fun});
+    //std.debug.print("calling function {}\n", .{fun});
 
     if (object_mod.get_int(vm.heap.*, vm.heap.load(fun, 2)) != args.len)
         @panic("called function with wrong number of params");
@@ -107,7 +107,7 @@ pub fn call(vm: *Vm, fun: Address, args: []const Address) !Address {
 }
 
 pub fn run(vm: *Vm, instructions: Address) error{ OutOfMemory, ParseError, BadEval }!void {
-    std.debug.print("running instructions at {x}\n", .{instructions});
+    //std.debug.print("running instructions at {x}\n", .{instructions});
     const jitted = try vm.get_jitted(instructions);
     try Jit.run(vm, jitted);
 }

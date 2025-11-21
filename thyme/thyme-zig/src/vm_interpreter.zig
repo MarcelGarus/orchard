@@ -27,8 +27,8 @@ pub fn compile(ally: Ally, instructions: []const Instruction) !Jitted {
 
 pub fn run(vm: *Vm, instructions: Jitted) !void {
     for (instructions) |instruction| {
-        std.debug.print("{any}\n", .{vm.data_stack.used});
-        std.debug.print("Running {f}", .{instruction});
+        //std.debug.print("{any}\n", .{vm.data_stack.used});
+        //std.debug.print("Running {f}", .{instruction});
 
         switch (instruction) {
             .push_word => |word| try vm.data_stack.push(word),

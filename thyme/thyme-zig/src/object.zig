@@ -65,10 +65,7 @@ pub fn assert_symbol(heap: *Heap, obj: Address) !void {
 }
 pub fn get_symbol(heap: Heap, symbol: Address) []const u8 {
     var chars: []const u8 = @ptrCast(heap.get(symbol).words);
-    while (chars.len > 0 and chars[chars.len - 1] == 0) {
-        std.debug.print("chars: {any}\n", .{chars});
-        chars.len -= 1;
-    }
+    while (chars.len > 0 and chars[chars.len - 1] == 0) chars.len -= 1;
     return chars;
 }
 // pub fn format_symbol(heap: Heap, symbol: Address, writer: *Writer) !void {
