@@ -17,28 +17,79 @@ vg: nvg,
 
 const Graphics = @This();
 
-pub const Color = struct { r: u8, g: u8, b: u8 };
+pub const Position = struct { x: i64, y: i64 };
+pub const Size = struct { width: i64, height: i64 };
+
+pub const Color = struct {
+    r: u8,
+    g: u8,
+    b: u8,
+
+    pub fn parse(obj: Address, heap: Heap) !Color {
+        const words = heap.get(obj).words;
+        return .{
+            .r = @intCast(object_mod.get_int(heap, words[0])),
+            .g = @intCast(object_mod.get_int(heap, words[1])),
+            .b = @intCast(object_mod.get_int(heap, words[2])),
+        };
+    }
+};
+
+pub const Path = struct {
+    segments: []const Segment,
+
+    pub const Segment = union(enum) {
+        move_to: Position,
+        line_to: Position,
+
+        pub fn parse(obj: Address, heap: Heap) !Segment {
+            const symbol = object_mod.get_symbol(heap, heap.load(obj, 0));
+            if (std.mem.eql(u8, symbol, "move to")) {
+                return .{ .move_to = .{
+                    .x = object_mod.get_int(heap, heap.load(obj, 1)),
+                    .y = object_mod.get_int(heap, heap.load(obj, 2)),
+                } };
+            }
+            if (std.mem.eql(u8, symbol, "line to")) {
+                return .{ .line_to = .{
+                    .x = object_mod.get_int(heap, heap.load(obj, 1)),
+                    .y = object_mod.get_int(heap, heap.load(obj, 2)),
+                } };
+            }
+            std.debug.print("segment: {s}\n", .{symbol});
+            return error.UnknownPathSegment;
+        }
+    };
+
+    pub fn parse(ally: Ally, obj: Address, heap: Heap) !Path {
+        var segments = ArrayList(Segment).empty;
+        var current = obj;
+        while (true) {
+            if (heap.get(current).words.len == 0) {
+                break;
+            }
+            try segments.append(ally, try Segment.parse(heap.load(current, 0), heap));
+            current = heap.load(current, 1);
+        }
+        return .{ .segments = segments.items };
+    }
+};
 
 pub const DrawingInstruction = union(enum) {
-    draw_rectangle: struct {
-        x: i64,
-        y: i64,
-        width: i64,
-        height: i64,
-        color: Color,
-    },
+    draw_rectangle: struct { pos: Position, size: Size, color: Color },
+    fill_path: struct { path: Path, color: Color },
 
     pub fn parse_all(ally: Ally, obj: Address, heap: Heap) ![]const DrawingInstruction {
         var current = obj;
         var out = ArrayList(DrawingInstruction).empty;
         while (heap.get(current).words.len != 0) {
             const words = heap.get(current).words;
-            try out.append(ally, try parse(words[0], heap));
+            try out.append(ally, try parse(ally, words[0], heap));
             current = words[1];
         }
         return out.items;
     }
-    pub fn parse(obj: Address, heap: Heap) !DrawingInstruction {
+    pub fn parse(ally: Ally, obj: Address, heap: Heap) !DrawingInstruction {
         const symbol_obj = heap.load(obj, 0);
         const symbol = object_mod.get_symbol(heap, symbol_obj);
 
@@ -47,17 +98,20 @@ pub const DrawingInstruction = union(enum) {
             const y = object_mod.get_int(heap, heap.load(obj, 2));
             const width = object_mod.get_int(heap, heap.load(obj, 3));
             const height = object_mod.get_int(heap, heap.load(obj, 4));
-            const r: u8 = @intCast(object_mod.get_int(heap, heap.load(obj, 5)));
-            const g: u8 = @intCast(object_mod.get_int(heap, heap.load(obj, 6)));
-            const b: u8 = @intCast(object_mod.get_int(heap, heap.load(obj, 7)));
+            const color = try Color.parse(heap.load(obj, 5), heap);
             return .{ .draw_rectangle = .{
-                .x = x,
-                .y = y,
-                .width = width,
-                .height = height,
-                .color = .{ .r = r, .g = g, .b = b },
+                .pos = .{ .x = x, .y = y },
+                .size = .{ .width = width, .height = height },
+                .color = color,
             } };
         }
+        if (std.mem.eql(u8, symbol, "fill path")) {
+            const path = try Path.parse(ally, heap.load(obj, 1), heap);
+            const color = try Color.parse(heap.load(obj, 2), heap);
+            return .{ .fill_path = .{ .path = path, .color = color } };
+        }
+
+        std.debug.print("drawing instruction {s}\n", .{symbol});
         @panic("unknown drawing instruction");
     }
 };
@@ -89,19 +143,12 @@ pub fn init(ally: Ally) !Graphics {
         null,
     );
     if (window == null) return error.GLFWInitFailed;
-
     _ = gl.glfwSetKeyCallback(window, keyCallback);
-
     gl.glfwMakeContextCurrent(window);
-
     if (gl.gladLoadGL() == 0) return error.GLADInitFailed;
-
     const vg = try nvg.gl.init(ally, .{ .stencil_strokes = true, .debug = true });
-
     gl.glfwSwapInterval(0);
-
     gl.glfwSetTime(0);
-
     return .{ .window = window, .scale = scale, .vg = vg };
 }
 
@@ -115,7 +162,6 @@ pub fn should_close(self: Graphics) bool {
     return gl.glfwWindowShouldClose(self.window) == gl.GLFW_TRUE;
 }
 
-pub const Position = struct { x: usize, y: usize };
 pub fn get_mouse_pos(self: Graphics) Position {
     var double_mx: f64 = undefined;
     var double_my: f64 = undefined;
@@ -125,7 +171,6 @@ pub fn get_mouse_pos(self: Graphics) Position {
     return .{ .mx = @intFromFloat(mx), .my = @intFromFloat(my) };
 }
 
-pub const Size = struct { width: usize, height: usize };
 pub fn get_size(self: Graphics) Size {
     var int_width: i32 = undefined;
     var int_height: i32 = undefined;
@@ -161,40 +206,19 @@ pub fn render(self: Graphics, size: Size, instructions: []const DrawingInstructi
 
     self.vg.beginFrame(@floatFromInt(size.width), @floatFromInt(size.height), pxRatio);
 
-    drawEyes(self.vg, @as(f32, @floatFromInt(size.width)) - 250, 50, 150, 100, 50, 50, 1);
-    drawGraph(
-        self.vg,
-        0,
-        @as(f32, @floatFromInt(size.height)) / 2,
-        @floatFromInt(size.width),
-        @as(f32, @floatFromInt(size.height)) / 2,
-        1,
-    );
+    //drawEyes(self.vg, @as(f32, @floatFromInt(size.width)) - 250, 50, 150, 100, 50, 50, 1);
+    //drawGraph(
+    //    self.vg,
+    //    0,
+    //    @as(f32, @floatFromInt(size.height)) / 2,
+    //    @floatFromInt(size.width),
+    //    @as(f32, @floatFromInt(size.height)) / 2,
+    //    1,
+    //);
     try render_all(self.vg, instructions);
 
     self.vg.endFrame();
-
     gl.glfwSwapBuffers(self.window);
-
-    //const width: usize = @intCast(rl.getScreenWidth());
-    //const height: usize = @intCast(rl.getScreenHeight());
-    //
-    //var image = rl.Image.genColor(@intCast(width), @intCast(height), rl.Color.white);
-    //defer image.unload();
-    //try render_all(&image, instructions);
-    //
-    //rl.beginDrawing();
-    //var rl_texture = try rl.Texture.fromImage(image);
-    //rl.drawTexturePro(
-    //    rl_texture,
-    //    .{ .x = 0, .y = 0, .width = @floatFromInt(width), .height = @floatFromInt(height) },
-    //    .{ .x = 0, .y = 0, .width = @floatFromInt(width), .height = @floatFromInt(height) },
-    //    .{ .x = 0.0, .y = 0.0 },
-    //    0.0,
-    //    .white,
-    //);
-    //defer rl_texture.unload();
-    //rl.endDrawing();
 }
 
 fn render_all(vg: nvg, instructions: []const DrawingInstruction) !void {
@@ -203,15 +227,32 @@ fn render_all(vg: nvg, instructions: []const DrawingInstruction) !void {
 fn render_single(vg: nvg, instruction: DrawingInstruction) !void {
     switch (instruction) {
         .draw_rectangle => |args| {
-            const x: f32 = @floatFromInt(args.x);
-            const y: f32 = @floatFromInt(args.y);
-            const width: f32 = @floatFromInt(args.width);
-            const height: f32 = @floatFromInt(args.height);
+            const x: f32 = @floatFromInt(args.pos.x);
+            const y: f32 = @floatFromInt(args.pos.y);
+            const width: f32 = @floatFromInt(args.size.width);
+            const height: f32 = @floatFromInt(args.size.height);
             vg.beginPath();
             vg.moveTo(x, y);
             vg.lineTo(x + width, y);
             vg.lineTo(x + width, y + height);
             vg.lineTo(x, y + height);
+            vg.fillColor(nvg.rgb(args.color.r, args.color.g, args.color.b));
+            vg.fill();
+        },
+        .fill_path => |args| {
+            vg.beginPath();
+            for (args.path.segments) |segment| {
+                switch (segment) {
+                    .move_to => |pos| vg.moveTo(
+                        @floatFromInt(pos.x),
+                        @floatFromInt(pos.y),
+                    ),
+                    .line_to => |pos| vg.lineTo(
+                        @floatFromInt(pos.x),
+                        @floatFromInt(pos.y),
+                    ),
+                }
+            }
             vg.fillColor(nvg.rgb(args.color.r, args.color.g, args.color.b));
             vg.fill();
         },

@@ -118,13 +118,11 @@ pub const Instruction = union(enum) {
         var current = instructions;
         var out = ArrayList(Instruction).empty;
         while (true) {
-            std.debug.print("parsing {x}\n", .{current});
             if (heap.get(current).words.len == 0) {
                 break; // nil
             } else {
                 const instruction = heap.load(current, 0);
                 const rest = heap.load(current, 1);
-                std.debug.print("parsing single {x}\n", .{instruction});
                 try out.append(ally, try parse_instruction(ally, heap, instruction));
                 current = rest;
             }
@@ -137,9 +135,7 @@ pub const Instruction = union(enum) {
         instruction: Address,
     ) error{ ParseError, OutOfMemory }!Instruction {
         const instruction_words = heap.get(instruction).words;
-        std.debug.print("words: {any}\n", .{instruction_words});
         const variant = object_mod.get_symbol(heap, instruction_words[0]);
-        std.debug.print("instr {s}\n", .{variant});
         inline for (@typeInfo(Instruction).@"union".fields) |field| {
             if (std.mem.eql(u8, variant, field.name)) {
                 const payload = switch (field.type) {

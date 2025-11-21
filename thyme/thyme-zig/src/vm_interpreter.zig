@@ -19,7 +19,6 @@ pub const Ally = struct {
 pub const Jitted = []const Instruction;
 
 pub fn compile(ally: Ally, instructions: []const Instruction) !Jitted {
-    std.debug.print("jitting", .{});
     // TODO: copy instructions to safety, they should be deallocated after this call
     _ = ally;
     return instructions;
