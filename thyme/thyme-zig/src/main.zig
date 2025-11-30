@@ -20,55 +20,85 @@ pub fn main() !void {
     const ally = debug_ally.allocator();
 
     var heap = try Heap.init(ally, 200000);
+    const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
     const builtins = try compiler.create_builtins(ally, &heap);
     const file = try std.fs.cwd().openFile("code.thyme", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
-    const render_lambda = try vm.eval(ally, builtins, code);
+    var app = try vm.eval(ally, builtins, code);
 
     {
-        var buffer: [64]u8 = undefined;
-        const bw = std.debug.lockStderrWriter(&buffer);
-        defer std.debug.unlockStderrWriter();
-        try heap.format(render_lambda, bw);
-        try bw.print("\n", .{});
+      var buffer: [64]u8 = undefined;
+      const bw = std.debug.lockStderrWriter(&buffer);
+      defer std.debug.unlockStderrWriter();
+      try heap.format(app, bw);
+      try bw.print("\n", .{});
     }
 
     var gfx = try Graphics.init(ally);
     defer gfx.deinit();
     while (!gfx.should_close()) {
-        const frame_checkpoint = heap.checkpoint();
-        defer heap.restore(frame_checkpoint);
+        { // Render a frame.
+            const frame_checkpoint = heap.checkpoint();
+            defer heap.restore(frame_checkpoint);
 
-        var frame_arena = std.heap.ArenaAllocator.init(ally);
-        defer frame_arena.deinit();
-        const frame_ally = frame_arena.allocator();
+            var frame_arena = std.heap.ArenaAllocator.init(ally);
+            defer frame_arena.deinit();
+            const frame_ally = frame_arena.allocator();
 
-        const size = gfx.get_size();
-        const width_obj = try object_mod.new_int(&heap, @intCast(size.width));
-        const height_obj = try object_mod.new_int(&heap, @intCast(size.height));
-        std.debug.print("calling\n", .{});
-        const drawing_instructions_obj = try vm.call(
-            heap.load(render_lambda, 0),
-            &[_]Address{ width_obj, height_obj, heap.load(render_lambda, 1) },
-        );
-        {
-            var buffer: [64]u8 = undefined;
-            const bw = std.debug.lockStderrWriter(&buffer);
-            defer std.debug.unlockStderrWriter();
-            try heap.format(drawing_instructions_obj, bw);
-            try bw.print("\n", .{});
+            const size = gfx.get_size();
+            //const mouse = gfx.get_mouse_pos();
+            const render_lambda = heap.load(app, 0);
+            try object_mod.assert_lambda(&heap, render_lambda);
+            const drawing_instructions_obj = try vm.call(
+                heap.load(render_lambda, 0),
+                &[_]Address{
+                    try object_mod.new_int(&heap, size.width),
+                    try object_mod.new_int(&heap, size.height),
+                    heap.load(render_lambda, 1),
+                },
+            );
+            const drawing_instructions = try Graphics.DrawingInstruction.parse_all(
+                frame_ally,
+                drawing_instructions_obj,
+                vm.heap.*,
+            );
+            try gfx.render(size, drawing_instructions);
         }
-        std.debug.print("parsing\n", .{});
-        const drawing_instructions = try Graphics.DrawingInstruction.parse_all(
-            frame_ally,
-            drawing_instructions_obj,
-            vm.heap.*,
-        );
-        std.debug.print("rendering\n", .{});
-        try gfx.render(size, drawing_instructions);
-        gfx.poll_events();
+
+        { // Poll for updates.
+            gfx.poll_events();
+
+            const update_lambda = heap.load(app, 1);
+            try object_mod.assert_lambda(&heap, update_lambda);
+            for (gfx.event_queue.items) |event| {
+                std.debug.print("Pressed char: {d}\n", .{event.codepoint});
+                app = try vm.call(
+                    heap.load(update_lambda, 0),
+                    &[_]Address{
+                        try object_mod.new_int(&heap, @intCast(event.codepoint)),
+                        heap.load(update_lambda, 1),
+                    },
+                );
+
+                {
+                  var buffer: [64]u8 = undefined;
+                  const bw = std.debug.lockStderrWriter(&buffer);
+                  defer std.debug.unlockStderrWriter();
+                  try heap.format(app, bw);
+                  try bw.print("\n", .{});
+                }
+            }
+            if (gfx.event_queue.items.len > 0) {
+                gfx.event_queue.items.len = 0;
+                app = try heap.garbage_collect(ally, start_of_heap, app);
+            }
+
+            //const mapping = try heap.garbage_collect(ally, update_checkpoint, app);
+            //app = mapping.get(app) orelse app;
+            //ally.free(mapping);
+        }
     }
 
     //heap.dump_stats();

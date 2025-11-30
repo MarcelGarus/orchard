@@ -11,10 +11,6 @@ const gl = @cImport({
 });
 const nvg = @import("nanovg");
 
-window: ?*gl.GLFWwindow = null,
-scale: f32,
-vg: nvg,
-
 const Graphics = @This();
 
 pub const Position = struct { x: i64, y: i64 };
@@ -80,6 +76,14 @@ pub const DrawingInstruction = union(enum) {
     fill_path: struct { path: Path, color: Color },
 
     pub fn parse_all(ally: Ally, obj: Address, heap: Heap) ![]const DrawingInstruction {
+        //std.debug.print("Parsing: ", .{});
+        //{
+          //    var buffer: [64]u8 = undefined;
+          //    const bw = std.debug.lockStderrWriter(&buffer);
+          //    defer std.debug.unlockStderrWriter();
+          //    try heap.format(obj, bw);
+          //    try bw.print("\n", .{});
+          //}
         var current = obj;
         var out = ArrayList(DrawingInstruction).empty;
         while (heap.get(current).words.len != 0) {
@@ -116,6 +120,59 @@ pub const DrawingInstruction = union(enum) {
     }
 };
 
+ally: Ally,
+window: ?*gl.GLFWwindow = null,
+scale: f32 = 1,
+vg: nvg,
+event_queue: ArrayList(Event),
+
+pub const Event = struct {
+    codepoint: usize,
+};
+
+pub fn init(ally: Ally) !*Graphics {
+    // Initialize libraries.
+    if (gl.glfwInit() == gl.GLFW_FALSE) return error.GLFWInitFailed;
+    gl.glfwWindowHint(gl.GLFW_CONTEXT_VERSION_MAJOR, 2);
+    gl.glfwWindowHint(gl.GLFW_CONTEXT_VERSION_MINOR, 0);
+    gl.glfwWindowHint(gl.GLFW_SAMPLES, 4);
+
+    // Get graphics scale.
+    const monitor = gl.glfwGetPrimaryMonitor();
+    var scale: f32 = 1;
+    if (!builtin.target.os.tag.isDarwin())
+        gl.glfwGetMonitorContentScale(monitor, &scale, null);
+
+    // Create a window.
+    const window = gl.glfwCreateWindow(
+        @as(i32, @intFromFloat(scale * 1000)),
+        @as(i32, @intFromFloat(scale * 600)),
+        "Thyme",
+        null,
+        null,
+    );
+    if (window == null) return error.WindowCreationFailed;
+    _ = gl.glfwSetKeyCallback(window, keyCallback);
+    _ = gl.glfwSetCharCallback(window, charCallback);
+    gl.glfwMakeContextCurrent(window);
+    if (gl.gladLoadGL() == 0) return error.GLADInitFailed;
+    gl.glfwSwapInterval(1);
+    gl.glfwSetTime(0);
+    const vg = try nvg.gl.init(ally, .{ .stencil_strokes = true, .debug = true });
+
+    // Bundle everything up in a graphics object and store that in the window.
+    const graphics = try ally.create(Graphics);
+    graphics.* = .{
+        .ally = ally,
+        .window = window,
+        .scale = scale,
+        .vg = vg,
+        .event_queue = ArrayList(Event).empty,
+    };
+    gl.glfwSetWindowUserPointer(window, graphics);
+    return graphics;
+}
+
 fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
     _ = scancode;
     _ = mods;
@@ -123,39 +180,16 @@ fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_i
         gl.glfwSetWindowShouldClose(window, gl.GL_TRUE);
 }
 
-pub fn init(ally: Ally) !Graphics {
-    var window: ?*gl.GLFWwindow = null;
-
-    if (gl.glfwInit() == gl.GLFW_FALSE) return error.GLFWInitFailed;
-    gl.glfwWindowHint(gl.GLFW_CONTEXT_VERSION_MAJOR, 2);
-    gl.glfwWindowHint(gl.GLFW_CONTEXT_VERSION_MINOR, 0);
-    gl.glfwWindowHint(gl.GLFW_SAMPLES, 4);
-
-    const monitor = gl.glfwGetPrimaryMonitor();
-    var scale: f32 = 1;
-    if (!builtin.target.os.tag.isDarwin())
-        gl.glfwGetMonitorContentScale(monitor, &scale, null);
-    window = gl.glfwCreateWindow(
-        @as(i32, @intFromFloat(scale * 1000)),
-        @as(i32, @intFromFloat(scale * 600)),
-        "Thyme",
-        null,
-        null,
-    );
-    if (window == null) return error.GLFWInitFailed;
-    _ = gl.glfwSetKeyCallback(window, keyCallback);
-    gl.glfwMakeContextCurrent(window);
-    if (gl.gladLoadGL() == 0) return error.GLADInitFailed;
-    const vg = try nvg.gl.init(ally, .{ .stencil_strokes = true, .debug = true });
-    gl.glfwSwapInterval(0);
-    gl.glfwSetTime(0);
-    return .{ .window = window, .scale = scale, .vg = vg };
+fn charCallback(window: ?*gl.GLFWwindow, codepoint: c_uint) callconv(.c) void {
+    const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
+    graphics.event_queue.append(graphics.ally, .{ .codepoint = codepoint })
+        catch @panic("couldn't append event");
 }
 
-pub fn deinit(self: Graphics) void {
-    defer gl.glfwTerminate();
-    defer gl.glfwDestroyWindow(self.window);
-    defer self.vg.deinit();
+pub fn deinit(self: *Graphics) void {
+    gl.glfwDestroyWindow(self.window);
+    self.vg.deinit();
+    gl.glfwTerminate();
 }
 
 pub fn should_close(self: Graphics) bool {
@@ -168,7 +202,7 @@ pub fn get_mouse_pos(self: Graphics) Position {
     gl.glfwGetCursorPos(self.window, &double_mx, &double_my);
     const mx = @as(f32, @floatCast(double_mx)) / self.scale;
     const my = @as(f32, @floatCast(double_my)) / self.scale;
-    return .{ .mx = @intFromFloat(mx), .my = @intFromFloat(my) };
+    return .{ .x = @intFromFloat(mx), .y = @intFromFloat(my) };
 }
 
 pub fn get_size(self: Graphics) Size {
@@ -189,7 +223,16 @@ pub fn get_time(self: Graphics) f32 {
 
 pub fn poll_events(self: Graphics) void {
     _ = self;
-    gl.glfwPollEvents();
+    // We need to give GLFW the chance to process events internally. There are
+    // several ways to do that:
+    // - PollEvents() processes all queued-up events, then returns. Good for
+    //   games, where stuff happens all the time and you always need new frames.
+    // - WaitEvents() blocks and puts the thread asleep until at least one event
+    //   happens. Great for editors, etc. because of energy-efficiency.
+    // - WaitEventsTimeout(0.7) blocks with a maximum duration in seconds. Good
+    //   for non-games with occasional updates such as a clock.
+    // See https://www.glfw.org/docs/latest/input_guide.html
+    gl.glfwWaitEvents();
 }
 
 pub fn render(self: Graphics, size: Size, instructions: []const DrawingInstruction) !void {

@@ -115,14 +115,12 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                 const checkpoint = vm.data_stack.pop();
                 vm.heap.dump_stats();
                 std.debug.print("garbage collecting...\n", .{});
-                var mapping = try vm.heap.garbage_collect(
+                const mapped_keep = try vm.heap.garbage_collect(
                     vm.ally,
                     .{ .used = checkpoint },
                     keep,
                 );
                 vm.heap.dump_stats();
-                const mapped_keep = mapping.get(keep) orelse unreachable;
-                mapping.deinit();
                 try vm.data_stack.push(mapped_keep);
             },
             .eval => try vm.run(vm.data_stack.pop()),

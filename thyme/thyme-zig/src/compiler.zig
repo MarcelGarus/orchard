@@ -293,6 +293,25 @@ const Parser = struct {
         return .{ .body = exprs };
     }
 
+    fn parse_expr_without_suffix(parser: *Parser) !?Ast.Expr {
+        return if (parser.parse_int()) |int|
+            .{ .int = int }
+        else if (try parser.parse_string()) |string|
+            .{ .string = string }
+        else if (try parser.parse_compound()) |struct_|
+            struct_
+        else if (try parser.parse_lambda()) |lambda|
+            lambda
+        else if (try parser.parse_block()) |expr|
+            expr
+        else if (try parser.parse_if()) |if_|
+            if_
+        else if (parser.parse_name()) |name|
+            .{ .name = name }
+        else
+            null;
+    }
+
     fn parse_expr(parser: *Parser) error{
         OutOfMemory,
         StringDoesNotEnd,
@@ -303,8 +322,10 @@ const Parser = struct {
         ExpectedValue,
         ExpectedVariant,
         ExpectedPayload,
+        ExpectedName,
         ExpectedLambdaBody,
         ExpectedOpeningBrace,
+        ExpectedOpeningParen,
         ExpectedClosingPipe,
         ExpectedClosingBrace,
         ExpectedClosingParen,
@@ -317,27 +338,11 @@ const Parser = struct {
         ExpectedVarValue,
         VarNeedsName,
     }!?Ast.Expr {
-        var expr: Ast.Expr =
-            if (parser.parse_int()) |int|
-                .{ .int = int }
-            else if (try parser.parse_string()) |string|
-                .{ .string = string }
-            else if (try parser.parse_compound()) |struct_|
-                struct_
-            else if (try parser.parse_lambda()) |lambda|
-                lambda
-            else if (try parser.parse_block()) |expr|
-                expr
-            else if (try parser.parse_if()) |if_|
-                if_
-            else if (parser.parse_name()) |name|
-                .{ .name = name }
-            else
-                return null;
+        var expr: Ast.Expr = try parser.parse_expr_without_suffix() orelse return null;
 
         while (true) {
             if (parser.consume(":")) {
-                const index = try parser.parse_expr() orelse return error.ExpectedIndex;
+                const index = try parser.parse_expr_without_suffix() orelse return error.ExpectedIndex;
                 const boxed_index = try parser.ally.create(Ast.Expr);
                 boxed_index.* = index;
                 const boxed_of = try parser.ally.create(Ast.Expr);
@@ -352,6 +357,19 @@ const Parser = struct {
                 if (!parser.consume(")")) return error.ExpectedClosingParen;
                 const boxed_callee = try parser.ally.create(Ast.Expr);
                 boxed_callee.* = expr;
+                expr = .{ .call = .{ .callee = boxed_callee, .args = args.items } };
+            } else if (parser.consume(".")) {
+                const name = parser.parse_name() orelse return error.ExpectedName;
+                if (!parser.consume("(")) return error.ExpectedOpeningParen;
+                var args = ArrayList(Ast.Expr).empty;
+                try args.append(parser.ally, expr);
+                while (try parser.parse_expr()) |arg| {
+                    try args.append(parser.ally, arg);
+                    _ = parser.consume(",");
+                }
+                if (!parser.consume(")")) return error.ExpectedClosingParen;
+                const boxed_callee = try parser.ally.create(Ast.Expr);
+                boxed_callee.* = .{ .name = name };
                 expr = .{ .call = .{ .callee = boxed_callee, .args = args.items } };
             } else if (parser.consume("= ") or parser.consume("=\n")) {
                 const name = switch (expr) {
@@ -1973,21 +1991,21 @@ pub fn instructions_to_fun(heap: *Heap, num_params_: usize, instructions: []cons
 }
 
 pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address {
-    std.debug.print("Original IR:\n", .{});
-    {
-        var buffer: [64]u8 = undefined;
-        const bw = std.debug.lockStderrWriter(&buffer);
-        defer std.debug.unlockStderrWriter();
-        ir.format(heap.*, bw) catch unreachable;
-    }
+    //std.debug.print("Original IR:\n", .{});
+    //{
+    //    var buffer: [64]u8 = undefined;
+    //    const bw = std.debug.lockStderrWriter(&buffer);
+    //    defer std.debug.unlockStderrWriter();
+    //    ir.format(heap.*, bw) catch unreachable;
+    //}
     const optimized_ir = try optimize_ir(ally, heap, ir);
-    std.debug.print("Optimized IR:\n", .{});
-    {
-        var buffer: [64]u8 = undefined;
-        const bw = std.debug.lockStderrWriter(&buffer);
-        defer std.debug.unlockStderrWriter();
-        optimized_ir.format(heap.*, bw) catch unreachable;
-    }
+    //std.debug.print("Optimized IR:\n", .{});
+    //{
+    //    var buffer: [64]u8 = undefined;
+    //    const bw = std.debug.lockStderrWriter(&buffer);
+    //    defer std.debug.unlockStderrWriter();
+    //    optimized_ir.format(heap.*, bw) catch unreachable;
+    //}
     const waffle = try ir_to_waffle(ally, optimized_ir);
     const optimized_waffle = try optimize_waffle(ally, waffle);
     const instructions = try waffle_to_instructions(ally, optimized_waffle);

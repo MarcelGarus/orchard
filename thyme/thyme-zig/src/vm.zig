@@ -82,7 +82,6 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
 
 pub fn get_jitted(vm: *Vm, instructions: Address) !Jit.Jitted {
     if (vm.jitted.get(instructions)) |jitted| return jitted;
-    std.debug.print("parsing\n", .{});
     const parsed = try Instruction.parse_instructions(vm.ally, vm.heap.*, instructions);
     std.debug.print("jitting\n", .{});
     const jitted = try Jit.compile(vm.jit_ally, parsed);

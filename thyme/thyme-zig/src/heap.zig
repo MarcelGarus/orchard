@@ -192,11 +192,11 @@ pub fn garbage_collect(
     ally: Ally,
     from: Checkpoint,
     keep: Address,
-) !Map(Address, Address) {
+) !Address {
     heap.mark(from.used, keep);
-    return try heap.sweep(ally, from.used);
+    return try heap.sweep(ally, from.used, keep);
 }
-fn mark(heap: *Heap, boundary: usize, address: usize) void {
+fn mark(heap: *Heap, boundary: Address, address: Address) void {
     if (address < boundary) return;
     const header: *Header = @ptrCast(&heap.memory[address]);
     if (header.meta.marked == 1) return;
@@ -205,10 +205,11 @@ fn mark(heap: *Heap, boundary: usize, address: usize) void {
         for (0..header.num_words) |i|
             heap.mark(boundary, @intCast(heap.memory[address + 1 + i]));
 }
-fn sweep(heap: *Heap, ally: Ally, boundary: usize) !Map(Address, Address) {
-    var read: usize = @intCast(boundary);
-    var write: usize = @intCast(boundary);
+fn sweep(heap: *Heap, ally: Ally, boundary: Address, keep: Address) !Address {
+    var read: Address = @intCast(boundary);
+    var write: Address = @intCast(boundary);
     var map = Map(Address, Address).init(ally);
+    defer map.deinit();
     while (read < heap.used) {
         const header: *Header = @ptrCast(&heap.memory[read]);
         const size = 1 + header.num_words;
@@ -229,7 +230,7 @@ fn sweep(heap: *Heap, ally: Ally, boundary: usize) !Map(Address, Address) {
         }
     }
     heap.used = write;
-    return map;
+    return map.get(keep) orelse keep;
 }
 
 pub fn dump_raw(heap: Heap) void {
@@ -313,7 +314,7 @@ pub fn format_indented(heap: Heap, object: Address, writer: *Writer, indentation
                 for (0..8) |i| {
                     const c: u8 = @truncate(literal >> @intCast(i * 8));
                     if (c == 0) break;
-                    try writer.print("{c}", .{c});
+                    try writer.print("{c}", .{if (c >= 32 and c <= 126) c else '.'});
                 }
                 try writer.print("\n", .{});
             }
