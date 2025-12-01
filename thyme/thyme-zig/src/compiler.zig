@@ -1570,6 +1570,12 @@ pub fn optimize_waffle(ally: Ally, waffle: Waffle) !Waffle {
             const def = children[0];
             const value = children[1];
 
+            const is_param =
+            switch (def.op) {
+              .param => true,
+              else => false,
+            };
+
             const is_cheap = switch (def.op) {
                 .word => true,
                 .object => true,
@@ -1579,10 +1585,10 @@ pub fn optimize_waffle(ally: Ally, waffle: Waffle) !Waffle {
 
             const num_references = count_references(value, id);
 
-            if (num_references == 0) {
+            if (num_references == 0 and !is_param) {
                 return .{ .op = .also, .children = children };
             }
-            // if (num_references == 1) {
+            // if (num_references == 1 and !is_param) {
             //     const used_before_impure = used: {
             //         find_usage_before_impure(value, id) catch |e| {
             //             switch (e) {
