@@ -67,6 +67,9 @@ const Stack = struct {
     pub fn get(self: *Stack, offset: usize) Word {
         return self.memory[self.used - 1 - offset];
     }
+    pub fn is_empty(self: Stack) bool {
+        return self.used == 0;
+    }
 };
 
 pub fn init(heap: *Heap, ally: Ally) !Vm {
@@ -90,8 +93,11 @@ pub fn get_jitted(vm: *Vm, instructions: Address) !Jit.Jitted {
 }
 
 pub fn eval(vm: *Vm, ally: Ally, env: anytype, code: []const u8) !Address {
+    if (!vm.data_stack.is_empty()) @panic("eval in eval");
     const fun = try compiler.code_to_fun(ally, vm.heap, env, code);
-    return try vm.call(fun, &[_]Address{});
+    const result = try vm.call(fun, &[_]Address{});
+    if (!vm.data_stack.is_empty()) @panic("bad stack");
+    return result;
 }
 
 pub fn call(vm: *Vm, fun: Address, args: []const Address) !Address {
