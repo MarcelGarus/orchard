@@ -16,7 +16,6 @@
 // implementations then contain the logic that operates on that data.
 
 const std = @import("std");
-const Map = std.AutoArrayHashMap;
 const ArrayList = std.ArrayList;
 const Ally = std.mem.Allocator;
 const builtin = @import("builtin");
@@ -41,7 +40,8 @@ data_stack: Stack,
 call_stack: Stack,
 
 jit_ally: Jit.Ally, // Allocator that is used for jitted code.
-jitted: Map(Address, Jit.Jitted),
+jitted: ArrayList(JittedEntry),
+const JittedEntry = struct { address: Address, jitted: Jit.Jitted };
 
 const Vm = @This();
 
@@ -76,25 +76,34 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
     return .{
         .ally = ally,
         .heap = heap,
-        .data_stack = try Stack.init(ally, 1000),
+        .data_stack = try Stack.init(ally, 10000),
         .call_stack = try Stack.init(ally, 100),
         .jit_ally = try Jit.Ally.init(ally),
-        .jitted = Map(Address, Jit.Jitted).init(ally),
+        .jitted = ArrayList(JittedEntry).empty,
     };
 }
 
 pub fn get_jitted(vm: *Vm, instructions: Address) !Jit.Jitted {
-    if (vm.jitted.get(instructions)) |jitted| return jitted;
+    for (vm.jitted.items) |entry|
+        if (entry.address == instructions) return entry.jitted;
     const parsed = try Instruction.parse_instructions(vm.ally, vm.heap.*, instructions);
     std.debug.print("jitting\n", .{});
     const jitted = try Jit.compile(vm.jit_ally, parsed);
-    try vm.jitted.put(instructions, jitted);
+    try vm.jitted.append(vm.ally, .{ .address = instructions, .jitted = jitted });
     return jitted;
 }
 
 pub fn eval(vm: *Vm, ally: Ally, env: anytype, code: []const u8) !Address {
     if (!vm.data_stack.is_empty()) @panic("eval in eval");
     const fun = try compiler.code_to_fun(ally, vm.heap, env, code);
+    {
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        try bw.print("evaling ", .{});
+        try vm.heap.format(fun, bw);
+        try bw.print("\n", .{});
+    }
     const result = try vm.call(fun, &[_]Address{});
     if (!vm.data_stack.is_empty()) @panic("bad stack");
     return result;
@@ -115,4 +124,19 @@ pub fn run(vm: *Vm, instructions: Address) error{ OutOfMemory, ParseError, BadEv
     //std.debug.print("running instructions at {x}\n", .{instructions});
     const jitted = try vm.get_jitted(instructions);
     try Jit.run(vm, jitted);
+}
+
+pub fn garbage_collect(vm: *Vm, checkpoint: Heap.Checkpoint, keep: Address) !Address {
+    const mapped = vm.heap.garbage_collect(vm.ally, checkpoint, keep);
+
+    var i: usize = 0;
+    while (i < vm.jitted.items.len) {
+        if (vm.jitted.items[i].address >= checkpoint.used) {
+            _ = vm.jitted.swapRemove(i);
+        } else {
+            i += 1;
+        }
+    }
+
+    return mapped;
 }
