@@ -739,35 +739,12 @@ const AstToIr = struct {
             .member => |member| {
                 const of_obj = try self.compile_expr(member.of.*, body, bindings);
                 const index_obj = try self.compile_expr(member.index.*, body, bindings);
-                const member_expects_composite = try object_mod.new_symbol(self.heap, "member expects composite");
-                const member_expects_int_index = try object_mod.new_symbol(self.heap, "member expects int index");
-                try body.assert_has_tag(of_obj, @intFromEnum(object_mod.Tag.composite), member_expects_composite);
-                try body.assert_has_tag(index_obj, @intFromEnum(object_mod.Tag.int), member_expects_int_index);
                 const zero = try body.word(0);
                 const index = try body.load(index_obj, zero);
-                const num_words = try body.num_words(of_obj);
-                const compared = try body.compare(index, num_words); // should be less, aka 2
-                const two = try body.word(2);
-                const is_invalid = try body.subtract(compared, two);
-                _ = try body.if_not_zero(
-                    is_invalid,
-                    then: {
-                        var inner = body.child_body();
-                        const load_out_of_bounds_addr = try object_mod.new_symbol(self.heap, "load out of bounds");
-                        const load_out_of_bounds = try body.object(load_out_of_bounds_addr);
-                        break :then try inner.finish_with_crash(load_out_of_bounds);
-                    },
-                    else_: {
-                        var inner = body.child_body();
-                        break :else_ inner.finish(zero);
-                    },
-                );
                 return try body.load(of_obj, index);
             },
             .if_ => |if_| {
                 const condition = try self.compile_expr(if_.condition.*, body, bindings);
-                const if_expects_int = try object_mod.new_symbol(self.heap, "if expects int");
-                try body.assert_has_tag(condition, @intFromEnum(object_mod.Tag.int), if_expects_int);
                 const zero = try body.word(0);
                 const condition_value = try body.load(condition, zero);
                 return try body.if_not_zero(
@@ -818,49 +795,12 @@ const AstToIr = struct {
                 const callee = try self.compile_expr(call.callee.*, body, bindings);
                 const zero = try body.word(0);
                 const one = try body.word(1);
-                const two = try body.word(2);
                 const fun = try body.load(callee, zero);
                 const closure = try body.load(callee, one);
 
                 var args = ArrayList(Id).empty;
                 for (call.args) |arg| try args.append(self.ally, try self.compile_expr(arg, body, bindings));
                 try args.append(self.ally, closure);
-
-                const fun_tag = try body.tag(fun);
-                const expected_fun_tag = try body.word(@intFromEnum(object_mod.Tag.fun));
-                const diff_to_fun_tag = try body.subtract(fun_tag, expected_fun_tag);
-                _ = try body.if_not_zero(
-                    diff_to_fun_tag,
-                    then: {
-                        var inner = body.child_body();
-                        const not_a_fun = try inner.object(try object_mod.new_symbol(self.heap, "not a fun"));
-                        break :then try inner.finish_with_crash(not_a_fun);
-                    },
-                    else_: {
-                        var inner = body.child_body();
-                        break :else_ inner.finish(zero);
-                    },
-                );
-                const num_args = try body.word(args.items.len);
-                const num_params_obj = try body.load(fun, two);
-                const num_params = try body.load(num_params_obj, zero);
-                const diff = try body.subtract(num_args, num_params);
-                _ = try body.if_not_zero(
-                    diff,
-                    mismatched: {
-                        var inner = body.child_body();
-                        const message = try inner.object(
-                            try object_mod.new_symbol(self.heap, "wrong number of arguments"),
-                        );
-                        const result = try inner.crash(message);
-                        break :mismatched inner.finish(result);
-                    },
-                    correct: {
-                        var inner = body.child_body();
-                        const result = try inner.word(0);
-                        break :correct inner.finish(result);
-                    },
-                );
 
                 return try body.call(fun, args.items);
             },
@@ -1018,29 +958,29 @@ const OptimizeIr = struct {
                 // If all the data of an object is known at compile time, just
                 // create the object once at compile time instead of every time
                 // the code runs.
-                optimize_all_comptime: {
-                    if (new.has_pointers) {
-                        for (words) |word|
-                            switch (body.get(word)) {
-                                .object => {},
-                                else => break :optimize_all_comptime,
-                            };
-                        var builder = try self.heap.object_builder(new.tag);
-                        for (words) |word| try builder.emit_pointer(body.get(word).object);
-                        const object = try builder.finish();
-                        const better_object = try optimize_object(self.ally, self.heap, object);
-                        return body.object(better_object);
-                    } else {
-                        for (words) |word|
-                            switch (body.get(word)) {
-                                .word => {},
-                                else => break :optimize_all_comptime,
-                            };
-                        var builder = try self.heap.object_builder(new.tag);
-                        for (words) |word| try builder.emit_literal(body.get(word).word);
-                        return body.object(try builder.finish());
-                    }
-                }
+                // optimize_all_comptime: {
+                //     if (new.has_pointers) {
+                //         for (words) |word|
+                //             switch (body.get(word)) {
+                //                 .object => {},
+                //                 else => break :optimize_all_comptime,
+                //             };
+                //         var builder = try self.heap.object_builder(new.tag);
+                //         for (words) |word| try builder.emit_pointer(body.get(word).object);
+                //         const object = try builder.finish();
+                //         const better_object = try optimize_object(self.ally, self.heap, object);
+                //         return body.object(better_object);
+                //     } else {
+                //         for (words) |word|
+                //             switch (body.get(word)) {
+                //                 .word => {},
+                //                 else => break :optimize_all_comptime,
+                //             };
+                //         var builder = try self.heap.object_builder(new.tag);
+                //         for (words) |word| try builder.emit_literal(body.get(word).word);
+                //         return body.object(try builder.finish());
+                //     }
+                // }
 
                 return body.new(new.tag, new.has_pointers, words);
             },
@@ -1080,6 +1020,12 @@ const OptimizeIr = struct {
                         .word => |index| {
                             const loaded = self.heap.load(object, index);
                             return if (self.heap.get(object).has_pointers) body.object(loaded) else body.word(loaded);
+                        },
+                        else => {},
+                    },
+                    .new => |new| switch (body.get(offset)) {
+                        .word => |index| {
+                            return new.words[index];
                         },
                         else => {},
                     },
@@ -1574,10 +1520,10 @@ pub fn optimize_waffle(ally: Ally, waffle: Waffle) !Waffle {
             const value = children[1];
 
             const is_param =
-            switch (def.op) {
-              .param => true,
-              else => false,
-            };
+                switch (def.op) {
+                    .param => true,
+                    else => false,
+                };
 
             const is_cheap = switch (def.op) {
                 .word => true,
