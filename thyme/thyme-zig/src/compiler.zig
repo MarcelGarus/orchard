@@ -682,7 +682,10 @@ const AstToIr = struct {
             try bindings.bindings.append(ally, .{ .name = name, .id = id });
         }
         fn get(bindings: Bindings, name: Str) !Id {
-            for (bindings.bindings.items) |binding| if (std.mem.eql(u8, binding.name, name)) return binding.id;
+            for (0..bindings.bindings.items.len) |i| {
+                const binding = bindings.bindings.items[bindings.bindings.items.len - 1 - i];
+                if (std.mem.eql(u8, binding.name, name)) return binding.id;
+            }
             std.debug.print("name {s}\n", .{name});
             @panic("name not in scope");
         }
