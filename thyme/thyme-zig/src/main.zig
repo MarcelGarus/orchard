@@ -19,7 +19,7 @@ pub fn main() !void {
     var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
     const ally = debug_ally.allocator();
 
-    var heap = try Heap.init(ally, 200000);
+    var heap = try Heap.init(ally, 1000000);
     const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
@@ -29,12 +29,14 @@ pub fn main() !void {
     var app = try vm.eval(ally, builtins, code);
 
     {
-      var buffer: [64]u8 = undefined;
-      const bw = std.debug.lockStderrWriter(&buffer);
-      defer std.debug.unlockStderrWriter();
-      try heap.format(app, bw);
-      try bw.print("\n", .{});
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        try heap.format(app, bw);
+        try bw.print("\n", .{});
     }
+
+    //if (true) return;
 
     var gfx = try Graphics.init(ally);
     defer gfx.deinit();
@@ -59,6 +61,13 @@ pub fn main() !void {
                     heap.load(render_lambda, 1),
                 },
             );
+            // {
+            //     var buffer: [64]u8 = undefined;
+            //     const bw = std.debug.lockStderrWriter(&buffer);
+            //     defer std.debug.unlockStderrWriter();
+            //     try heap.format(drawing_instructions_obj, bw);
+            //     try bw.print("\n", .{});
+            // }
             const drawing_instructions = try Graphics.DrawingInstruction.parse_all(
                 frame_ally,
                 drawing_instructions_obj,
@@ -83,27 +92,24 @@ pub fn main() !void {
                 );
 
                 {
-                  var buffer: [64]u8 = undefined;
-                  const bw = std.debug.lockStderrWriter(&buffer);
-                  defer std.debug.unlockStderrWriter();
-                  try heap.format(app, bw);
-                  try bw.print("\n", .{});
+                    var buffer: [64]u8 = undefined;
+                    const bw = std.debug.lockStderrWriter(&buffer);
+                    defer std.debug.unlockStderrWriter();
+                    try heap.format(app, bw);
+                    try bw.print("\n", .{});
                 }
             }
             if (gfx.event_queue.items.len > 0) {
                 gfx.event_queue.items.len = 0;
-                app = try heap.garbage_collect(ally, start_of_heap, app);
+                // app = try vm.garbage_collect(start_of_heap, app);
+                _ = start_of_heap;
             }
-
-            //const mapping = try heap.garbage_collect(ally, update_checkpoint, app);
-            //app = mapping.get(app) orelse app;
-            //ally.free(mapping);
         }
     }
 
     //heap.dump_stats();
-    //_ = try heap.garbage_collect(ally, start_of_heap, result);
-    //_ = try heap.deduplicate(ally, start_of_heap);
+    //_ = try vm.garbage_collect(start_of_heap, result);
+    //_ = try vm.deduplicate(start_of_heap);
     //heap.dump_stats();
 
     // heap.dump_raw();
