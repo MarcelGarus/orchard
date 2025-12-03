@@ -132,7 +132,7 @@ pub fn load(heap: Heap, base: Address, word_index: usize) Word {
     return heap.memory[base + 1 + word_index];
 }
 
-const Checkpoint = struct { used: Word };
+pub const Checkpoint = struct { used: Word };
 
 pub fn checkpoint(heap: Heap) Checkpoint {
     return .{ .used = heap.used };
@@ -206,10 +206,10 @@ fn mark(heap: *Heap, boundary: Address, address: Address) void {
             heap.mark(boundary, @intCast(heap.memory[address + 1 + i]));
 }
 fn sweep(heap: *Heap, ally: Ally, boundary: Address, keep: Address) !Address {
-    var read: Address = @intCast(boundary);
-    var write: Address = @intCast(boundary);
-    var map = Map(Address, Address).init(ally);
-    defer map.deinit();
+    var read = boundary;
+    var write = boundary;
+    var mapping = Map(Address, Address).init(ally);
+    defer mapping.deinit();
     while (read < heap.used) {
         const header: *Header = @ptrCast(&heap.memory[read]);
         const size = 1 + header.num_words;
@@ -218,10 +218,10 @@ fn sweep(heap: *Heap, ally: Ally, boundary: Address, keep: Address) !Address {
             if (read != write) {
                 for (0..header.num_words) |i| {
                     const pointer = heap.memory[read + 1 + i];
-                    if (map.get(pointer)) |to| heap.memory[read + 1 + i] = to;
+                    if (mapping.get(pointer)) |to| heap.memory[read + 1 + i] = to;
                 }
                 for (0..size) |i| heap.memory[write + i] = heap.memory[read + i];
-                try map.put(read, write);
+                try mapping.put(read, write);
             }
             read += size;
             write += size;
@@ -230,7 +230,7 @@ fn sweep(heap: *Heap, ally: Ally, boundary: Address, keep: Address) !Address {
         }
     }
     heap.used = write;
-    return map.get(keep) orelse keep;
+    return mapping.get(keep) orelse keep;
 }
 
 pub fn dump_raw(heap: Heap) void {
