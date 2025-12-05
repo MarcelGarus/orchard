@@ -142,6 +142,7 @@ fill_rectangle = |position, size, color| {
     color,
   )
 }
+draw_both = |a, b| cons(["also" a], b)
 
 # Text Rendering
 
@@ -1114,7 +1115,7 @@ render_glyph_row_rec = |rec, row, x, y, scale, i, color| {
   if i.==(@num_words(row)) then
     nil
   else if row:i then
-    concat(
+    draw_both(
       fill_rectangle([x.+(*(i, scale)) y], [scale scale], color),
       rec(rec, row, x, y, scale, i.+(1), color),
     )
@@ -1129,7 +1130,7 @@ render_glyph_rec = |rec, glyph, x, y, scale, i, color| {
   if i.==(@num_words(glyph)) then
     nil
   else
-    concat(
+    draw_both(
       render_glyph_row(glyph:i, x, y.+(i.*(scale)), scale, color),
       rec(rec, glyph, x, y, scale, i.+(1), color),
     )
@@ -1148,28 +1149,32 @@ get_glyph_rec = |rec, char, i| {
 }
 get_glyph = |char| get_glyph_rec(get_glyph_rec, char, 0)
 
-render_text_rec = |rec, text, x, y, scale, color| {
+render_text_rec = |rec, text, base_x, base_y, curr_x, curr_y, scale, color| {
   if is_nil(text) then
     nil
   else {
     char = text:0
-    glyph = get_glyph(char)
-    width = @num_words(glyph:0)
-
-    concat(
-      render_glyph(glyph, x, y, scale, color)
-      rec(rec, text.tail(), x.+(width.+(1).*(scale)), y, scale, color),
-    )
+    if char.==(10) then {
+      # newline
+      rec(rec, text.tail(), base_x, base_y, base_x, curr_y.+(14.*(scale)), scale, color)
+    } else {
+      glyph = get_glyph(char)
+      width = @num_words(glyph:0)
+      draw_both(
+        render_glyph(glyph, curr_x, curr_y, scale, color)
+        rec(rec, text.tail(), base_x, base_y, curr_x.+(width.+(1).*(scale)), curr_y, scale, color),
+      )
+    }
   }
 }
 render_text = |text, x, y, scale, color| {
-  render_text_rec(render_text_rec, text, x, y, scale, color)
+  render_text_rec(render_text_rec, text, x, y, x, y, scale, color)
 }
 
 render = |state, width, height| {
-  concat(
+  draw_both(
     fill_rectangle([0 0], [200 height], yellow),
-    concat(
+    draw_both(
       render_glyph(get_glyph(100), 5, 5, 3, blue),
       render_text(state, 10, 40, 1, black),
     )

@@ -72,18 +72,19 @@ pub const Path = struct {
 };
 
 pub const DrawingInstruction = union(enum) {
+    also: []const DrawingInstruction,
     draw_rectangle: struct { pos: Position, size: Size, color: Color },
     fill_path: struct { path: Path, color: Color },
 
     pub fn parse_all(ally: Ally, obj: Address, heap: Heap) ![]const DrawingInstruction {
         //std.debug.print("Parsing: ", .{});
         //{
-          //    var buffer: [64]u8 = undefined;
-          //    const bw = std.debug.lockStderrWriter(&buffer);
-          //    defer std.debug.unlockStderrWriter();
-          //    try heap.format(obj, bw);
-          //    try bw.print("\n", .{});
-          //}
+        //    var buffer: [64]u8 = undefined;
+        //    const bw = std.debug.lockStderrWriter(&buffer);
+        //    defer std.debug.unlockStderrWriter();
+        //    try heap.format(obj, bw);
+        //    try bw.print("\n", .{});
+        //}
         var current = obj;
         var out = ArrayList(DrawingInstruction).empty;
         while (heap.get(current).words.len != 0) {
@@ -93,10 +94,13 @@ pub const DrawingInstruction = union(enum) {
         }
         return out.items;
     }
-    pub fn parse(ally: Ally, obj: Address, heap: Heap) !DrawingInstruction {
+    pub fn parse(ally: Ally, obj: Address, heap: Heap) error{ OutOfMemory, UnknownPathSegment }!DrawingInstruction {
         const symbol_obj = heap.load(obj, 0);
         const symbol = object_mod.get_symbol(heap, symbol_obj);
 
+        if (std.mem.eql(u8, symbol, "also")) {
+            return .{ .also = try parse_all(ally, heap.load(obj, 1), heap) };
+        }
         if (std.mem.eql(u8, symbol, "draw rectangle")) {
             const x = object_mod.get_int(heap, heap.load(obj, 1));
             const y = object_mod.get_int(heap, heap.load(obj, 2));
@@ -249,15 +253,6 @@ pub fn render(self: Graphics, size: Size, instructions: []const DrawingInstructi
 
     self.vg.beginFrame(@floatFromInt(size.width), @floatFromInt(size.height), pxRatio);
 
-    //drawEyes(self.vg, @as(f32, @floatFromInt(size.width)) - 250, 50, 150, 100, 50, 50, 1);
-    //drawGraph(
-    //    self.vg,
-    //    0,
-    //    @as(f32, @floatFromInt(size.height)) / 2,
-    //    @floatFromInt(size.width),
-    //    @as(f32, @floatFromInt(size.height)) / 2,
-    //    1,
-    //);
     try render_all(self.vg, instructions);
 
     self.vg.endFrame();
@@ -267,8 +262,9 @@ pub fn render(self: Graphics, size: Size, instructions: []const DrawingInstructi
 fn render_all(vg: nvg, instructions: []const DrawingInstruction) !void {
     for (instructions) |instruction| try render_single(vg, instruction);
 }
-fn render_single(vg: nvg, instruction: DrawingInstruction) !void {
+fn render_single(vg: nvg, instruction: DrawingInstruction) error{OutOfMemory}!void {
     switch (instruction) {
+        .also => |instructions| try render_all(vg, instructions),
         .draw_rectangle => |args| {
             const x: f32 = @floatFromInt(args.pos.x);
             const y: f32 = @floatFromInt(args.pos.y);

@@ -89,15 +89,15 @@ pub fn main() !void {
                         try object_mod.new_int(&heap, @intCast(event.codepoint)),
                         heap.load(update_lambda, 1),
                     },
-                );
-
-                {
-                    var buffer: [64]u8 = undefined;
-                    const bw = std.debug.lockStderrWriter(&buffer);
-                    defer std.debug.unlockStderrWriter();
-                    try heap.format(app, bw);
-                    try bw.print("\n", .{});
                 }
+
+                // {
+                //     var buffer: [64]u8 = undefined;
+                //     const bw = std.debug.lockStderrWriter(&buffer);
+                //     defer std.debug.unlockStderrWriter();
+                //     try heap.format(app, bw);
+                //     try bw.print("\n", .{});
+                // }
             }
             if (gfx.event_queue.items.len > 0) {
                 gfx.event_queue.items.len = 0;
