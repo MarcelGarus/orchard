@@ -205,10 +205,6 @@ const Parser = struct {
         const start = parser.cursor;
         var num: i64 = 0;
         while (true) {
-            if (parser.current() == '_') {
-                parser.advance();
-                continue;
-            }
             const char = parser.current();
             const digit = std.mem.indexOfScalar(u8, "0123456789", char) orelse break;
             num = num * 10 + @as(i64, @intCast(digit));
@@ -374,7 +370,10 @@ const Parser = struct {
             } else if (parser.consume("= ") or parser.consume("=\n")) {
                 const name = switch (expr) {
                     .name => |n| n,
-                    else => return error.VarNeedsName,
+                    else => {
+                        std.debug.print("not name: {any}\n", .{expr});
+                        return error.VarNeedsName;
+                    },
                 };
                 const right = try parser.parse_expr() orelse return error.ExpectedVarValue;
                 const boxed_right = try parser.ally.create(Ast.Expr);
