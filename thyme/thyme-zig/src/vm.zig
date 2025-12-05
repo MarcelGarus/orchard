@@ -53,7 +53,7 @@ const Stack = struct {
         return .{ .memory = try ally.alloc(Word, size), .used = 0 };
     }
     pub fn push(self: *Stack, word: Word) !void {
-        // TODO: check for overflow
+        if (self.memory.len == self.used) @panic("stack overflow");
         self.memory[self.used] = word;
         self.used += 1;
     }
