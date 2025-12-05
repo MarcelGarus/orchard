@@ -130,8 +130,14 @@ scale: f32 = 1,
 vg: nvg,
 event_queue: ArrayList(Event),
 
-pub const Event = struct {
-    codepoint: usize,
+pub const Event = union(enum) {
+    entered_char: struct { codepoint: usize },
+    pressed_key: struct {
+        keycode: usize,
+        control_pressed: bool,
+        alt_pressed: bool,
+        shift_pressed: bool,
+    },
 };
 
 pub fn init(ally: Ally) !*Graphics {
@@ -156,8 +162,8 @@ pub fn init(ally: Ally) !*Graphics {
         null,
     );
     if (window == null) return error.WindowCreationFailed;
-    _ = gl.glfwSetKeyCallback(window, keyCallback);
     _ = gl.glfwSetCharCallback(window, charCallback);
+    _ = gl.glfwSetKeyCallback(window, keyCallback);
     gl.glfwMakeContextCurrent(window);
     if (gl.gladLoadGL() == 0) return error.GLADInitFailed;
     gl.glfwSwapInterval(1);
@@ -177,17 +183,28 @@ pub fn init(ally: Ally) !*Graphics {
     return graphics;
 }
 
-fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
-    _ = scancode;
-    _ = mods;
-    if (key == gl.GLFW_KEY_ESCAPE and action == gl.GLFW_PRESS)
-        gl.glfwSetWindowShouldClose(window, gl.GL_TRUE);
-}
-
 fn charCallback(window: ?*gl.GLFWwindow, codepoint: c_uint) callconv(.c) void {
     const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
-    graphics.event_queue.append(graphics.ally, .{ .codepoint = codepoint })
-        catch @panic("couldn't append event");
+    graphics.event_queue.append(graphics.ally, .{
+        .entered_char = .{ .codepoint = codepoint },
+    }) catch @panic("couldn't append event");
+}
+
+fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
+    _ = scancode;
+    const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
+    if (action == gl.GLFW_PRESS) { // or action == gl.GLFW_REPEAT
+        if (key == gl.GLFW_KEY_ESCAPE)
+            gl.glfwSetWindowShouldClose(window, gl.GL_TRUE);
+        graphics.event_queue.append(graphics.ally, .{
+            .pressed_key = .{
+                .keycode = @intCast(key),
+                .control_pressed = mods & gl.GLFW_MOD_CONTROL != 0,
+                .alt_pressed = mods & gl.GLFW_MOD_ALT != 0,
+                .shift_pressed = mods & gl.GLFW_MOD_SHIFT != 0,
+            },
+        }) catch @panic("couldn't append event");
+    }
 }
 
 pub fn deinit(self: *Graphics) void {

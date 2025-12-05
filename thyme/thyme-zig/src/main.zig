@@ -82,12 +82,34 @@ pub fn main() !void {
             const update_lambda = heap.load(app, 1);
             try object_mod.assert_lambda(&heap, update_lambda);
             for (gfx.event_queue.items) |event| {
-                std.debug.print("Pressed char: {d}\n", .{event.codepoint});
-                app = try vm.call(
-                    heap.load(update_lambda, 0),
-                    &[_]Address{
-                        try object_mod.new_int(&heap, @intCast(event.codepoint)),
-                        heap.load(update_lambda, 1),
+                switch (event) {
+                    .entered_char => |char| {
+                        std.debug.print("Entered char: {d}\n", .{char.codepoint});
+                        app = try vm.call(
+                            heap.load(update_lambda, 0),
+                            &[_]Address{
+                                try object_mod.new_int(&heap, @intCast(char.codepoint)),
+                                heap.load(update_lambda, 1),
+                            },
+                        );
+                    },
+                    .pressed_key => |key| {
+                        const forward = key.control_pressed or key.keycode == 257 or key.keycode == 259;
+                        if (forward) {
+                            std.debug.print("Pressed key: {d}\n", .{key.keycode});
+                            app = try vm.call(
+                                heap.load(update_lambda, 0),
+                                &[_]Address{
+                                    try object_mod.new_int(
+                                        &heap,
+                                        if (key.keycode == 257) 10 else @intCast(key.keycode),
+                                    ),
+                                    heap.load(update_lambda, 1),
+                                },
+                            );
+                        } else {
+                            std.debug.print("Ignoring key: {d}\n", .{key.keycode});
+                        }
                     },
                 }
 
