@@ -40,17 +40,61 @@ pub fn main() !void {
 
     var gfx = try Graphics.init(ally);
     defer gfx.deinit();
+
+    // Cached drawing instructions.
+    var previous_size = gfx.get_size();
+    var drawing_instructions: ?[]const Graphics.DrawingInstruction = null;
+    var drawing_instructions_ally: ?std.heap.ArenaAllocator = null;
+
     while (!gfx.should_close()) {
-        { // Render a frame.
+        const there_are_events = gfx.event_queue.items.len > 0;
+
+        if (there_are_events) {
+            const update_lambda = heap.load(app, 1);
+            try object_mod.assert_lambda(&heap, update_lambda);
+            for (gfx.event_queue.items) |event| {
+                // TODO: do the decision of handling in thyme
+                const thyme_event = switch (event) {
+                    .entered_char => |char| try object_mod.new_int(&heap, @intCast(char.codepoint)),
+                    .pressed_key => |key| if (key.control_pressed or key.keycode == 257 or key.keycode == 259)
+                        try object_mod.new_int(&heap, if (key.keycode == 257) 10 else @intCast(key.keycode))
+                    else {
+                        std.debug.print("Ignoring key: {d}\n", .{key.keycode});
+                        continue;
+                    },
+                };
+                std.debug.print("Event: {d}\n", .{thyme_event});
+                app = try vm.call(heap.load(update_lambda, 0), &[_]Address{ thyme_event, heap.load(update_lambda, 1) });
+
+                // {
+                //     var buffer: [64]u8 = undefined;
+                //     const bw = std.debug.lockStderrWriter(&buffer);
+                //     defer std.debug.unlockStderrWriter();
+                //     try heap.format(app, bw);
+                //     try bw.print("\n", .{});
+                // }
+
+            }
+            gfx.event_queue.items.len = 0;
+            // app = try vm.garbage_collect(start_of_heap, app);
+            _ = start_of_heap;
+        }
+
+        const size = gfx.get_size();
+        if (there_are_events or size.width != previous_size.width or size.height != previous_size.height) {
+            if (drawing_instructions) |_| {
+                // Clear cached drawing instructions.
+                drawing_instructions = null;
+                drawing_instructions_ally.?.deinit();
+            }
+        }
+        previous_size = size;
+
+        if (drawing_instructions == null) {
+            std.debug.print("rendering\n", .{});
+            // There are no cached drawing instructions; render a frame.
             const frame_checkpoint = heap.checkpoint();
             defer heap.restore(frame_checkpoint);
-
-            var frame_arena = std.heap.ArenaAllocator.init(ally);
-            defer frame_arena.deinit();
-            const frame_ally = frame_arena.allocator();
-
-            const size = gfx.get_size();
-            //const mouse = gfx.get_mouse_pos();
             const render_lambda = heap.load(app, 0);
             try object_mod.assert_lambda(&heap, render_lambda);
             const drawing_instructions_obj = try vm.call(
@@ -61,72 +105,17 @@ pub fn main() !void {
                     heap.load(render_lambda, 1),
                 },
             );
-            // {
-            //     var buffer: [64]u8 = undefined;
-            //     const bw = std.debug.lockStderrWriter(&buffer);
-            //     defer std.debug.unlockStderrWriter();
-            //     try heap.format(drawing_instructions_obj, bw);
-            //     try bw.print("\n", .{});
-            // }
-            const drawing_instructions = try Graphics.DrawingInstruction.parse_all(
-                frame_ally,
+            drawing_instructions_ally = std.heap.ArenaAllocator.init(ally);
+            drawing_instructions = try Graphics.DrawingInstruction.parse_all(
+                drawing_instructions_ally.?.allocator(),
                 drawing_instructions_obj,
                 vm.heap.*,
             );
-            try gfx.render(size, drawing_instructions);
         }
 
-        { // Poll for updates.
-            gfx.poll_events();
+        try gfx.render(size, drawing_instructions.?);
 
-            const update_lambda = heap.load(app, 1);
-            try object_mod.assert_lambda(&heap, update_lambda);
-            for (gfx.event_queue.items) |event| {
-                switch (event) {
-                    .entered_char => |char| {
-                        std.debug.print("Entered char: {d}\n", .{char.codepoint});
-                        app = try vm.call(
-                            heap.load(update_lambda, 0),
-                            &[_]Address{
-                                try object_mod.new_int(&heap, @intCast(char.codepoint)),
-                                heap.load(update_lambda, 1),
-                            },
-                        );
-                    },
-                    .pressed_key => |key| {
-                        const forward = key.control_pressed or key.keycode == 257 or key.keycode == 259;
-                        if (forward) {
-                            std.debug.print("Pressed key: {d}\n", .{key.keycode});
-                            app = try vm.call(
-                                heap.load(update_lambda, 0),
-                                &[_]Address{
-                                    try object_mod.new_int(
-                                        &heap,
-                                        if (key.keycode == 257) 10 else @intCast(key.keycode),
-                                    ),
-                                    heap.load(update_lambda, 1),
-                                },
-                            );
-                        } else {
-                            std.debug.print("Ignoring key: {d}\n", .{key.keycode});
-                        }
-                    },
-                }
-
-                // {
-                //     var buffer: [64]u8 = undefined;
-                //     const bw = std.debug.lockStderrWriter(&buffer);
-                //     defer std.debug.unlockStderrWriter();
-                //     try heap.format(app, bw);
-                //     try bw.print("\n", .{});
-                // }
-            }
-            if (gfx.event_queue.items.len > 0) {
-                gfx.event_queue.items.len = 0;
-                // app = try vm.garbage_collect(start_of_heap, app);
-                _ = start_of_heap;
-            }
-        }
+        gfx.poll_events();
     }
 
     //heap.dump_stats();
