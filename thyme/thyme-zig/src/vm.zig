@@ -77,7 +77,7 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
         .ally = ally,
         .heap = heap,
         .data_stack = try Stack.init(ally, 10000),
-        .call_stack = try Stack.init(ally, 100),
+        .call_stack = try Stack.init(ally, 10000),
         .jit_ally = try Jit.Ally.init(ally),
         .jitted = ArrayList(JittedEntry).empty,
     };
