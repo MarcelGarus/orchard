@@ -1,26 +1,42 @@
 # Thyme
+
+# Thyme is a functional language that works on a heap of immutable objects. Thyme's operations are
+# low-level and unsafe. Similar to assembly, it's dynamically typed and you can cause segfaults if you're
+# not careful. This is quite unusual for a functional programming language (I think).
 #
-# Welcome to Thyme code! Thyme is a functional language that only operations on
-# immutable values. It has the following kinds of values:
-#
-# - numbers: 1          [0] 1
-# - strings: "hi"       [0] (utf8-encoded literals words)
-# - composites: [a, b]  [0] a b
-# - functions: |a| a    [1] ir instructions num_args
-#
-# Other Expressions:
-# - builtins:
-#   @load(a, b)            %0 = load a b
-#   @add(a, b)             %0 = load a 0
-#                          %1 = load b 0
-#                          %2 = add %0 %1
-#                          %3 = new [0] %2
-#   @subtract(a, b)        ...
-#   @multiply(a, b)        ...
-#   @divide(a, b)          ...
-#   @modulo(a, b)          ...
-#   @compare(a, b)         ...
-#   @collect_garbage(fun)  ...
+# Thyme operates on a heap of immutable objects, or values. Every object contains a couple of words
+# (64-bit values). Either, all of the words are literals (just data), or they are pointers to other objects.
+# Because the heap tracks this (as well as the size of objects), it knows how objects are connected and
+# can deduplicate and garbage collect them.
+
+# Language Features
+
+# Thyme supports number literals, like this:
+3
+# This just created an object containing a single word on the heap.
+
+# It also supports strings, like this:
+"Hello"
+# This created an object containing a single word. Of those 8 bytes, 5 are filled with the UTF-8 encoding
+# of "Hello", the other 3 are zero. Longer strings will result in bigger objects with multiple words.
+
+# Number and string literals create objects on the heap and the expressions themselves evaluate to a
+# pointer to that object. Generally, every expression in Thyme evaluates to a pointer to an object. You can
+# use composites (using brackets) to create objects that contain other objects:
+[1 "hi"]
+# Using a colon, you can index into composites:
+[1 "hi"]:0
+
+# You can bind expressions to names and reference them later:
+foo = 1
+bar = foo
+
+# Now comes the cool part: The entire program itself is part of the heap! This source code you are reading
+# is compiled into a linked list of instructions for a stack-based VM. These instructions live on the heap.
+# Because there is no separation between data and code (computers are van Neumann-style), we can
+# create new instructions on the fly and run them.
+
+# TODO: do that and remove builtins
 
 # Nil
 #
@@ -100,24 +116,14 @@ assert(not(xor(false, false)))
 cons = |head, tail| [head tail]
 head = |list| list:0
 tail = |list| list:1
-push_rec = |rec, list, item| {
-  if is_nil(list) then
-    cons(item, nil)
-  else
-    cons(head(list), rec(rec, tail(list), item))
-}
+push_rec = |rec, list, item| if is_nil(list) then cons(item, nil) else cons(head(list), rec(rec, tail(list), item))
 push = |list, item| push_rec(push_rec, list, item)
-concat_rec = |rec, a, b| {
-  if is_nil(a) then b else cons(head(a), rec(rec, tail(a), b))
-}
+concat_rec = |rec, a, b| if is_nil(a) then b else cons(head(a), rec(rec, tail(a), b))
 concat = |a, b| concat_rec(concat_rec, a, b)
-pop_rec = |rec, list| {
-  if list.tail().is_nil() then
-    nil
-  else
-    cons(list.head(), rec(rec, list.tail()))
-}
+pop_rec = |rec, list| if list.tail().is_nil() then nil else cons(list.head(), rec(rec, list.tail()))
 pop = |list| pop_rec(pop_rec, list)
+len_rec = |rec, list| if list.tail().is_nil() then 0 else +(1, rec(rec, list.tail()))
+len = |list| len_rec(len_rec, list)
 
 # Color
 
@@ -1270,17 +1276,10 @@ render_glyph_rec = |rec, glyph, x, y, scale, i, color| {
       rec(rec, glyph, x, y, scale, i.+(1), color),
     )
 }
-render_glyph = |glyph, x, y, scale, color| {
-  render_glyph_rec(render_glyph_rec, glyph, x, y, scale, 0, color)
-}
+render_glyph = |glyph, x, y, scale, color| render_glyph_rec(render_glyph_rec, glyph, x, y, scale, 0, color)
 
 get_glyph_rec = |rec, char, i| {
-  if i.==(@num_words(font)) then
-    tofu
-  else if char.==(font:i:0) then
-    font:i:1
-  else
-    rec(rec, char, i.+(1))
+  if i.==(@num_words(font)) then tofu else if char.==(font:i:0) then font:i:1 else rec(rec, char, i.+(1))
 }
 get_glyph = |char| get_glyph_rec(get_glyph_rec, char, 0)
 
@@ -1314,21 +1313,20 @@ render_text_rec = |rec, text, base_x, base_y, curr_x, curr_y, scale, color| {
     }
   }
 }
-render_text = |text, x, y, scale, color| {
-  render_text_rec(render_text_rec, text, x, y, x, y, scale, color)
-}
+render_text = |text, x, y, scale, color| render_text_rec(render_text_rec, text, x, y, x, y, scale, color)
 
 initial_state = nil
 render = |state, width, height| {
   draw_both(
-    fill_rectangle([0 0], [200 height], yellow),
+    fill_path(start_path([20 200]).line_to([300 30]).line_to([400 400]), yellow),
     render_text(state, 10, 40, 2, black),
   )
 }
 update_rec = |update_rec, state, key| {
   new_state =
-    if key.==(259) then state.pop()
-    else if key.==(10).or(key.>=(32).and(key.<=(126))) then state.push(key)
+    if key.==(259) then {
+      if state.is_nil() then state else state.pop()
+    } else if key.==(10).or(key.>=(32).and(key.<=(126))) then state.push(key)
     else state
   [
     |width, height| render(new_state, width, height)
@@ -1342,10 +1340,6 @@ app = [
   initial_state
 ]
 app
-#app2 = app:1(42)
-#app3 = app2:1(42)
-#app3:0(300, 300)
-#app3
 
 # More advanced int stuff
 
