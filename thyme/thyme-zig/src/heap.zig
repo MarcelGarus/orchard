@@ -281,9 +281,13 @@ pub fn format(heap: Heap, object: Address, writer: *Writer) !void {
     try heap.format_indented(object, writer, 0);
 }
 pub fn format_indented(heap: Heap, object: Address, writer: *Writer, indentation: usize) error{WriteFailed}!void {
-    if (indentation > 100) return error.WriteFailed;
-    try writer.print("{x}: {}", .{ object, heap.get(object).tag });
+    if (indentation > 200) @panic("we're in too deep");
+    try writer.print("{x}: {}*{}", .{ object, heap.get(object).words.len, heap.get(object).tag });
     try writer.print("[\n", .{});
+    if (heap.get(object).words.len > 100) {
+        try writer.print("...]", .{});
+        return;
+    }
     const allocation = heap.get(object);
     const object_mod = @import("object.zig");
     const compiler_mod = @import("compiler.zig");

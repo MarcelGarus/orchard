@@ -58,6 +58,8 @@ pub fn main() !void {
                     .entered_char => |char| try object_mod.new_int(&heap, @intCast(char.codepoint)),
                     .pressed_key => |key| if (key.control_pressed or key.keycode == 257 or key.keycode == 259)
                         try object_mod.new_int(&heap, if (key.keycode == 257) 10 else @intCast(key.keycode))
+                    else if (key.keycode >= 262 or key.keycode <= 265)
+                        try object_mod.new_int(&heap, @intCast(key.keycode))
                     else {
                         std.debug.print("Ignoring key: {d}\n", .{key.keycode});
                         continue;
@@ -73,7 +75,6 @@ pub fn main() !void {
                 //     try heap.format(app, bw);
                 //     try bw.print("\n", .{});
                 // }
-
             }
             gfx.event_queue.items.len = 0;
             // app = try vm.garbage_collect(start_of_heap, app);

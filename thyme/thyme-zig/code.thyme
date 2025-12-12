@@ -65,7 +65,7 @@ assert(true)
 -   = |a, b| @subtract(a, b)
 *   = |a, b| @multiply(a, b)
 /   = |a, b| @divide(a, b)
-#mod = |a, b| @modulo(a, b)
+mod = |a, b| @modulo(a, b)
 
 == = |a, b| if -(a, b) then false else true
 != = |a, b| if -(a, b) then true else false
@@ -78,6 +78,8 @@ assert(==(+(1, 1), 2))
 assert(==(-(10, 1), 9))
 assert(==(*(3, 5), 15))
 assert(==(/(8, 2), 4))
+assert(10.mod(10).==(0))
+assert(12.mod(10).==(2))
 
 is_nil = |obj| ==(@num_words(obj), 0)
 
@@ -118,12 +120,35 @@ head = |list| list:0
 tail = |list| list:1
 push_rec = |rec, list, item| if is_nil(list) then cons(item, nil) else cons(head(list), rec(rec, tail(list), item))
 push = |list, item| push_rec(push_rec, list, item)
+get_rec = |rec, list, index| if index.==(0) then list:0 else rec(rec, list:1, index.-(1))
+get = |list, index| get_rec(get_rec, list, index)
+insert_rec = |rec, list, index, item| {
+  if index.==(0) then
+    cons(item, list)
+  else {
+    if list.is_nil() then crash("bad index") else {}
+    cons(list:0, rec(rec, list:1, index.-(1), item))
+  }
+}
+insert = |list, index, item| insert_rec(insert_rec, list, index, item)
+remove_rec = |rec, list, index| if index.==(0) then list:1 else cons(list:0, rec(rec, list:1, index.-(1)))
+remove = |list, index| remove_rec(remove_rec, list, index)
 concat_rec = |rec, a, b| if is_nil(a) then b else cons(head(a), rec(rec, tail(a), b))
 concat = |a, b| concat_rec(concat_rec, a, b)
 pop_rec = |rec, list| if list.tail().is_nil() then nil else cons(list.head(), rec(rec, list.tail()))
 pop = |list| pop_rec(pop_rec, list)
-len_rec = |rec, list| if list.tail().is_nil() then 0 else +(1, rec(rec, list.tail()))
+len_rec = |rec, list| if list.is_nil() then 0 else rec(rec, list.tail()).+(1)
 len = |list| len_rec(len_rec, list)
+
+# Turning ints into strings
+
+digit_to_char = |digit| 48.+(digit)
+int_to_str_rec = |rec, int|
+  if int.>=(10) then
+    concat(rec(rec, int./(10)), cons(digit_to_char(int.mod(10)), nil))
+  else
+    cons(digit_to_char(int), nil)
+int_to_str = |int| int_to_str_rec(int_to_str_rec, int)
 
 # Color
 
@@ -163,27 +188,10 @@ font = {
   _ = 0
   M = 1
   [
+    [10 []] # newline
     [" " [[_ _]]]
-    ["!" [[_ _]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [_ _]
-          [M M]
-          [M M]]]
-    [33  [[_ _ _]
-          [M _ M]
-          [M _ M]
-          [M _ M]
-          [_ _ _]
-          [_ _ _]
-          [_ _ _]
-          [_ _ _]
-          [_ _ _]
-          [_ _ _]]]
+    ["!" [[_ _] [M M] [M M] [M M] [M M] [M M] [M M] [] [M M] [M M]]]
+    [34  [[_ _ _] [M _ M] [M _ M] [M _ M]]] # quotes
     ["#" [[_ _ _ _ _ _]
           [_ _ _ _ _ _]
           [_ M _ _ M _]
@@ -224,90 +232,15 @@ font = {
           [M M _ _ M M M _]
           [M M _ _ M M M M]
           [_ M M M M _ M M]]]
-    ["'" [[_]
-          [M]
-          [M]
-          [M]]]
-    ["(" [[_ M M]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [_ M M]]]
-    [")" [[M M _]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [M M _]]]
-    ["*" [[_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [M M _ _ M M]
-          [_ M M M M _]
-          [_ _ M M _ _]
-          [_ _ M M _ _]
-          [_ M M M M _]
-          [M M _ _ M M]
-          [_ _ _ _ _ _ _]]]
-    ["+" [[_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ M M _ _]
-          [_ _ M M _ _]
-          [M M M M M M]
-          [M M M M M M]
-          [_ _ M M _ _]
-          [_ _ M M _ _]]]
-    ["," [[_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [M M]
-          [M M]
-          [_ M]
-          [M _]]]
-    ["_" [[_ _ _ _ _]
-          [_ _ _ _ _]
-          [_ _ _ _ _]
-          [_ _ _ _ _]
-          [_ _ _ _ _]
-          [M M M M M]
-          [M M M M M]]]
-    ["." [[_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [M M]
-          [M M]]]
-    ["/" [[_ _ _ M M]
-          [_ _ _ M M]
-          [_ _ M M _]
-          [_ _ M M _]
-          [_ _ M M _]
-          [_ M M _ _]
-          [_ M M _ _]
-          [_ M M _ _]
-          [M M _ _ _]
-          [M M _ _ _]]]
+    ["'" [[_] [M] [M] [M]]]
+    ["(" [[_ M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [_ M M]]]
+    [")" [[M M _] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [M M]]]
+    ["*" [[_ _ _ _ _ _] [] [] [M M _ _ M M] [_ M M M M] [_ _ M M] [_ _ M M] [_ M M M M] [M M _ _ M M]]]
+    ["+" [[_ _ _ _ _ _] [] [] [_ _ M M] [_ _ M M] [M M M M M M] [M M M M M M] [_ _ M M] [_ _ M M]]]
+    ["," [[_ _] [] [] [] [] [] [] [] [M M] [M M] [_ M] [M]]]
+    ["-" [[_ _ _ _ _] [] [] [] [] [M M M M M] [M M M M M]]]
+    ["." [[_ _] [] [] [] [] [] [] [] [M M] [M M]]]
+    ["/" [[_ _ _ M M] [_ _ _ M M] [_ _ M M] [_ _ M M] [_ _ M M] [_ M M] [_ M M] [_ M M] [M M] [M M]]]
     ["0" [[_ _ _ _ _ _]
           [_ M M M M _]
           [M M _ _ M M]
@@ -318,16 +251,7 @@ font = {
           [M M _ _ M M]
           [M M _ _ M M]
           [_ M M M M _]]]
-    ["1" [[_ _]
-          [_ M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]]]
+    ["1" [[_ _] [_ M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M]]]
     ["2" [[_ _ _ _ _ _]
           [_ M M M M _]
           [M _ _ _ M M]
@@ -408,53 +332,11 @@ font = {
           [_ _ _ _ M M]
           [_ _ _ M M _]
           [_ M M M _ _]]]
-    [":" [[_ _]
-          [_ _]
-          [_ _]
-          [M M]
-          [M M]
-          [_ _]
-          [_ _]
-          [_ _]
-          [M M]
-          [M M]]]
-    [";" [[_ _]
-          [_ _]
-          [_ _]
-          [M M]
-          [M M]
-          [_ _]
-          [_ _]
-          [_ _]
-          [M M]
-          [M M]
-          [_ M]
-          [M _]]]
-    ["<" [[_ _ _ _ _]
-          [_ _ _ _ _]
-          [_ _ _ M M]
-          [_ _ M M _]
-          [_ M M _ _]
-          [M M _ _ _]
-          [_ M M _ _]
-          [_ _ M M _]
-          [_ _ _ M M]]]
-    ["=" [[_ _ _ _ _]
-          [_ _ _ _ _]
-          [_ _ _ _ _]
-          [_ _ _ _ _]
-          [M M M M M]
-          [_ _ _ _ _]
-          [M M M M M]]]
-    [">" [[_ _ _ _ _]
-          [_ _ _ _ _]
-          [M M _ _ _]
-          [_ M M _ _]
-          [_ _ M M _]
-          [_ _ _ M M]
-          [_ _ M M _]
-          [_ M M _ _]
-          [M M _ _ _]]]
+    [":" [[_ _] [] [] [M M] [M M] [] [] [] [M M] [M M]]]
+    [";" [[_ _] [] [] [M M] [M M] [] [] [] [M M] [M M] [_ M] [M]]]
+    ["<" [[_ _ _ _ _] [] [_ _ _ M M] [_ _ M M] [_ M M] [M M] [_ M M] [_ _ M M] [_ _ _ M M]]]
+    ["=" [[_ _ _ _ _] [] [] [] [M M M M M] [] [M M M M M]]]
+    [">" [[_ _ _ _ _] [] [M M] [_ M M] [_ _ M M] [_ _ _ M M] [_ _ M M] [_ M M] [M M]]]
     ["?" [[_ _ _ _ _ _]
           [_ M M M M _]
           [M _ _ _ M M]
@@ -495,16 +377,7 @@ font = {
           [M M _ _ M M]
           [M M _ _ M M]
           [M M M M M _]]]
-    ["C" [[_ _ _ _ _ _]
-          [_ M M M M _]
-          [M M _ _ _ M]
-          [M M _ _ _ _]
-          [M M _ _ _ _]
-          [M M _ _ _ _]
-          [M M _ _ _ _]
-          [M M _ _ _ _]
-          [M M _ _ _ M]
-          [_ M M M M _]]]
+    ["C" [[_ _ _ _ _ _] [_ M M M M] [M M _ _ _ M] [M M] [M M] [M M] [M M] [M M] [M M _ _ _ M] [_ M M M M]]]
     ["D" [[_ _ _ _ _ _]
           [M M M M M _]
           [M M _ _ M M]
@@ -515,26 +388,8 @@ font = {
           [M M _ _ M M]
           [M M _ _ M M]
           [M M M M M _]]]
-    ["E" [[_ _ _ _ _]
-          [M M M M M]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M M M _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M M M M]]]
-    ["F" [[_ _ _ _ _]
-          [M M M M M]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M M M _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]]]
+    ["E" [[_ _ _ _ _] [M M M M M] [M M] [M M] [M M] [M M M M] [M M] [M M] [M M] [M M M M M]]]
+    ["F" [[_ _ _ _ _] [M M M M M] [M M] [M M] [M M] [M M M M] [M M] [M M] [M M] [M M]]]
     ["G" [[_ _ _ _ _ _]
           [_ M M M M _]
           [M M _ _ _ M]
@@ -555,16 +410,7 @@ font = {
           [M M _ _ M M]
           [M M _ _ M M]
           [M M _ _ M M]]]
-    ["I" [[_ _ _ _]
-          [M M M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [M M M M]]]
+    ["I" [[_ _ _ _] [M M M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [M M M M]]]
     ["J" [[_ _ _ _ _ _]
           [_ _ _ _ M M]
           [_ _ _ _ M M]
@@ -575,26 +421,17 @@ font = {
           [M M _ _ M M]
           [M M _ _ M M]
           [_ M M M M _]]]
-    ["K" [[_ _ _ _ _ _]
-          [M M _ _ _ M]
-          [M M _ _ M _]
-          [M M _ M _ _]
+    ["K" [[_ _ _ _ _ _ _]
+          [M M _ _ _ M M]
+          [M M _ _ M M]
+          [M M _ M M _]
+          [M M M M _ _]
           [M M M _ _ _]
-          [M M M _ _ _]
-          [M M M _ _ _]
-          [M M _ M _ _]
-          [M M _ _ M _]
-          [M M _ _ _ M]]]
-    ["L" [[_ _ _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M M M M]]]
+          [M M M M _ _]
+          [M M _ M M _]
+          [M M _ _ M M]
+          [M M _ _ _ M M]]]
+    ["L" [[_ _ _ _ _] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M M M M]]]
     ["M" [[_ _ _ _ _ _ _ _ _ _]
           [M _ _ _ _ _ _ _ M M]
           [M M _ _ _ _ _ M M M]
@@ -635,7 +472,7 @@ font = {
           [M M _ _ _ _]
           [M M _ _ _ _]
           [M M _ _ _ _]]]
-    ["Q" [[_ _ _ _ _ _ _]
+    ["Q" [[_ _ _ _ _ _ _ _]
           [_ M M M M _ _]
           [M M _ _ M M _]
           [M M _ _ M M _]
@@ -645,7 +482,8 @@ font = {
           [M M _ _ M M _]
           [M M _ _ M M _]
           [_ M M M M _ _]
-          [_ _ _ _ M M M]]]
+          [_ _ _ _ M M _]
+          [_ _ _ _ _ M M M]]]
     ["R" [[_ _ _ _ _ _]
           [M M M M M _]
           [M M _ _ M M]
@@ -686,16 +524,16 @@ font = {
           [M M _ _ M M]
           [M M _ _ M M]
           [_ M M M M _]]]
-    ["V" [[_ _ _ _ _ _]
-          [M M _ _ M M]
-          [M M _ _ M M]
-          [M M _ _ M M]
-          [M M _ _ M M]
-          [M M _ _ M M]
-          [M M _ _ M M]
-          [M M _ _ M M]
-          [M M _ _ M _]
-          [M M M M _ _]]]
+    ["V" [[_ _ _ _ _ _ _]
+          [M M _ _ _ M M]
+          [M M _ _ _ M M]
+          [M M _ _ _ M M]
+          [M M _ _ _ M M]
+          [_ M M _ M M _]
+          [_ M M _ M M _]
+          [_ _ M M M _]
+          [_ _ M M M _ _]
+          [_ _ _ M _ _ _]]]
     ["W" [[_ _ _ _ _ _ _ _ _ _]
           [M M _ _ M M _ _ M M]
           [M M _ _ M M _ _ M M]
@@ -710,9 +548,9 @@ font = {
           [M M _ _ M M]
           [M M _ _ M M]
           [M M _ _ M M]
-          [M M _ _ M M]
+          [_ M M M M _]
           [_ _ M M _ _]
-          [M M _ _ M M]
+          [_ M M M M _]
           [M M _ _ M M]
           [M M _ _ M M]
           [M M _ _ M M]]]
@@ -728,76 +566,20 @@ font = {
           [_ _ M M _ _]]]
     ["Z" [[_ _ _ _ _ _]
           [M M M M M M]
-          [_ _ _ M M M]
+          [_ _ _ _ M M]
           [_ _ _ M M _]
-          [_ _ M M M _]
+          [_ _ _ M M _]
           [_ _ M M _ _]
           [_ M M _ _ _]
           [_ M M _ _ _]
           [M M _ _ _ _]
           [M M M M M M]]]
-    ["[" [[M M M]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M M]]]
-    ["\\"[[M M _ _ _]
-          [M M _ _ _]
-          [_ M M _ _]
-          [_ M M _ _]
-          [_ M M _ _]
-          [_ _ M M _]
-          [_ _ M M _]
-          [_ _ M M _]
-          [_ _ _ M M]
-          [_ _ _ M M]]]
-    ["]" [[M M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [_ M M]
-          [M M M]]]
-    ["^" [[_ _ _ _ _ _]
-          [_ _ M M _ _]
-          [_ M M M M _]
-          [M M _ _ M M]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]]]
-    ["_" [[_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [M M M M M M]]]
-    ["`" [[_ _]
-          [M _]
-          [_ M]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]
-          [_ _]]]
+    ["[" [[M M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M M]]]
+    ["\\"[[M M _ _ _] [M M] [_ M M] [_ M M] [_ M M] [_ _ M M] [_ _ M M] [_ _ M M] [_ _ _ M M] [_ _ _ M M]]]
+    ["]" [[M M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [M M M]]]
+    ["^" [[_ _ _ _ _ _] [_ _ M M] [_ M M M M] [M M _ _ M M]]]
+    ["_" [[_ _ _ _ _ _] [] [] [] [] [] [] [] [] [M M M M M M]]]
+    ["`" [[_ _] [M] [_ M]]]
     ["a" [[_ _ _ _ _ _]
           [_ _ _ _ _ _]
           [_ _ _ _ _ _]
@@ -818,16 +600,7 @@ font = {
           [M M _ _ M M]
           [M M _ _ M M]
           [M M M M M _]]]
-    ["c" [[_ _ _ _ _]
-          [_ _ _ _ _]
-          [_ _ _ _ _]
-          [_ M M M _]
-          [M M _ _ M]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ M]
-          [_ M M M _]]]
+    ["c" [[_ _ _ _ _] [] [] [_ M M M] [M M _ _ M] [M M] [M M] [M M] [M M _ _ M] [_ M M M]]]
     ["d" [[_ _ _ _ _ _]
           [_ _ _ _ M M]
           [_ _ _ _ M M]
@@ -848,16 +621,7 @@ font = {
           [M M _ _ _ _]
           [M M _ _ _ M]
           [_ M M M M _]]]
-    ["f" [[_ _ _ _ _]
-          [_ _ M M M]
-          [_ M M _ _]
-          [M M M M _]
-          [_ M M _ _]
-          [_ M M _ _]
-          [_ M M _ _]
-          [_ M M _ _]
-          [_ M M _ _]
-          [_ M M _ _]]]
+    ["f" [[_ _ _ _ _] [_ _ M M M] [_ M M] [M M M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M]]]
     ["g" [[_ _ _ _ _ _]
           [_ _ _ _ _ _]
           [_ _ _ _ _ _]
@@ -881,16 +645,7 @@ font = {
           [M M _ _ M M]
           [M M _ _ M M]
           [M M _ _ M M]]]
-    ["i" [[_ _]
-          [M M]
-          [_ _]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]]]
+    ["i" [[_ _] [M M] [] [M M] [M M] [M M] [M M] [M M] [M M] [M M]]]
     ["j" [[_ _ _ _ _]
           [_ _ _ M M]
           [_ _ _ _ _]
@@ -913,16 +668,7 @@ font = {
           [M M M M _ _]
           [M M _ M M _]
           [M M _ _ M M]]]
-    ["l" [[_ _ _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M _]
-          [M M M]
-          [_ M M]]]
+    ["l" [[_ _ _] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M M] [_ M M]]]
     ["m" [[_ _ _ _ _ _ _ _ _ _]
           [_ _ _ _ _ _ _ _ _ _]
           [_ _ _ _ _ _ _ _ _ _]
@@ -977,16 +723,7 @@ font = {
           [_ M M M M M]
           [_ _ _ _ M M]
           [_ _ _ _ M M]]]
-    ["r" [[_ _ _ _ _]
-          [_ _ _ _ _]
-          [_ _ _ _ _]
-          [M M _ M M]
-          [M M M M M]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]
-          [M M _ _ _]]]
+    ["r" [[_ _ _ _ _] [] [] [M M _ M M] [M M M M M] [M M] [M M] [M M] [M M] [M M]]]
     ["s" [[_ _ _ _ _]
           [_ _ _ _ _]
           [_ _ _ _ _]
@@ -997,16 +734,7 @@ font = {
           [_ _ M M M]
           [M _ _ M M]
           [_ M M M _]]]
-    ["t" [[_ _ _ _]
-          [_ M M _]
-          [_ M M _]
-          [M M M M]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [_ _ M M]]]
+    ["t" [[_ _ _ _] [_ M M] [_ M M] [M M M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ _ M M]]]
     ["u" [[_ _ _ _ _ _]
           [_ _ _ _ _ _]
           [_ _ _ _ _ _]
@@ -1060,57 +788,11 @@ font = {
           [_ _ _ _ M M]
           [M _ _ _ M M]
           [_ M M M M _]]]
-    ["z" [[_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [M M M M M M]
-          [_ _ _ _ M _]
-          [_ _ _ M _ _]
-          [_ _ M _ _ _]
-          [_ M _ _ _ _]
-          [M M _ _ _ _]
-          [M M M M M M]]]
-    ["{" [[_ _ M M]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [M M _ _]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [_ _ M M]]]
-    ["|" [[M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]
-          [M M]]]
-    ["}" [[M M _ _]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [_ _ M M]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [_ M M _]
-          [M M _ _]]]
-    ["~" [[_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ _ _ _ _ _]
-          [_ M M _ _ M]
-          [M _ _ M M _]]]
+    ["z" [[_ _ _ _ _ _] [] [] [M M M M M M] [_ _ _ _ M M] [_ _ _ M M] [_ _ M M] [_ M M] [M M] [M M M M M M]]]
+    ["{" [[_ _ M M] [_ M M] [_ M M] [_ M M] [_ M M] [M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ _ M M]]]
+    ["|" [[M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M] [M M]]]
+    ["}" [[M M] [_ M M] [_ M M] [_ M M] [_ M M] [_ _ M M] [_ M M] [_ M M] [_ M M] [_ M M] [M M]]]
+    ["~" [[_ _ _ _ _ _] [] [] [] [] [_ M M _ _ M] [M _ _ M M _]]]
   ]
 }
 kerning = [
@@ -1119,138 +801,86 @@ kerning = [
   ["c" "j" 3]
   ["d" "j" 3]
   ["e" "j" 3]
-  ["f" "a" 1]
-  ["f" "c" 1]
-  ["f" "d" 1]
-  ["f" "e" 1]
-  ["f" "f" 1]
-  ["f" "g" 1]
-  ["f" "i" 1]
-  ["f" "j" 3]
-  ["f" "m" 1]
-  ["f" "n" 1]
-  ["f" "o" 1]
-  ["f" "p" 1]
-  ["f" "q" 1]
-  ["f" "r" 1]
-  ["f" "s" 1]
-  ["f" "t" 1]
-  ["f" "u" 1]
-  ["f" "v" 1]
-  ["f" "w" 1]
-  ["f" "x" 1]
-  ["f" "y" 1]
-  ["f" "z" 1]
+  ["f" "a" 1] ["f" "c" 1] ["f" "d" 1] ["f" "e" 1] ["f" "f" 1] ["f" "g" 1] ["f" "i" 1] ["f" "j" 3] ["f" "m" 1] ["f" "n" 1]
+  ["f" "o" 1] ["f" "p" 1] ["f" "q" 1] ["f" "r" 1] ["f" "s" 1] ["f" "t" 1] ["f" "u" 1] ["f" "v" 1] ["f" "w" 1] ["f" "x" 1]
+  ["f" "y" 1] ["f" "z" 1] ["f" "_" 2] ["f" "." 2]
   ["h" "j" 3]
   ["i" "j" 3]
   ["k" "j" 3]
-  ["l" "f" 1]
-  ["l" "j" 3]
-  ["l" "t" 1]
+  ["l" "f" 1] ["l" "j" 3] ["l" "t" 1]
   ["m" "j" 3]
   ["n" "j" 3]
   ["o" "j" 3]
   ["p" "j" 3]
   ["r" "j" 3]
   ["s" "j" 3]
-  ["t" "j" 3]
-  ["t" "t" 1]
+  ["t" "j" 3] ["t" "t" 1]
   ["u" "j" 3]
   ["v" "j" 3]
   ["w" "j" 3]
   ["x" "j" 3]
   ["z" "j" 3]
+  ["a" "T" 2]
+  ["b" "T" 2]
+  ["c" "T" 2]
+  ["e" "T" 2]
+  ["g" "T" 2]
+  ["h" "T" 2]
+  ["k" "T" 2]
+  ["l" "T" 1]
+  ["m" "T" 2]
+  ["n" "T" 2]
+  ["o" "T" 2]
+  ["p" "T" 2]
+  ["q" "T" 2]
+  ["r" "T" 2] ["r" "_" 3] ["r" "." 2]
+  ["s" "T" 2]
+  ["t" "T" 1]
+  ["u" "T" 2]
+  ["v" "T" 2] ["v" "_" 1]
+  ["w" "T" 2] ["w" "_" 1]
+  ["x" "T" 2]
+  ["y" "T" 2]
+  ["z" "T" 2]
   ["A" "j" 3]
   ["B" "j" 3]
   ["C" "j" 3]
   ["D" "j" 3]
-  ["E" "f" 1]
-  ["E" "j" 3]
-  ["F" "a" 1]
-  ["F" "c" 1]
-  ["F" "d" 1]
-  ["F" "e" 1]
-  ["F" "f" 1]
-  ["F" "g" 1]
-  ["F" "j" 3]
-  ["F" "m" 1]
-  ["F" "n" 1]
-  ["F" "o" 1]
-  ["F" "p" 1]
-  ["F" "q" 1]
-  ["F" "r" 1]
-  ["F" "s" 1]
-  ["F" "t" 1]
-  ["F" "u" 1]
-  ["F" "v" 1]
-  ["F" "w" 1]
-  ["F" "x" 1]
-  ["F" "y" 1]
-  ["F" "z" 1]
+  ["E" "f" 1] ["E" "j" 3]
+  ["F" "a" 1] ["F" "c" 1] ["F" "d" 1] ["F" "e" 1] ["F" "f" 1] ["F" "g" 1] ["F" "j" 3] ["F" "m" 1] ["F" "n" 1] ["F" "o" 1]
+  ["F" "p" 1] ["F" "q" 1] ["F" "r" 1] ["F" "s" 1] ["F" "t" 1] ["F" "u" 1] ["F" "v" 1] ["F" "w" 1] ["F" "x" 1]
+  ["F" "y" 1] ["F" "z" 1] ["F" "J" 1] ["F" "_" 3] ["F" "." 1]
   ["G" "j" 3]
   ["H" "j" 3]
   ["I" "j" 3]
   ["J" "j" 3]
-  ["K" "f" 1]
-  ["K" "j" 3]
-  ["L" "f" 1]
-  ["L" "j" 3]
-  ["L" "t" 1]
+  ["K" "f" 1] ["K" "j" 3]
+  ["L" "f" 1] ["L" "j" 3] ["L" "t" 1] ["L" "T" 2] ["L" "Y" 2]
   ["M" "j" 3]
   ["N" "j" 3]
   ["O" "j" 3]
-  ["P" "j" 3]
-  ["Q" "a" 1]
-  ["Q" "c" 1]
-  ["Q" "d" 1]
-  ["Q" "e" 1]
-  ["Q" "f" 1]
-  ["Q" "l" 1]
-  ["Q" "o" 1]
-  ["Q" "q" 1]
-  ["Q" "s" 1]
-  ["Q" "t" 1]
-  ["Q" "u" 1]
+  ["P" "j" 3] ["P" "J" 1] ["P" "_" 4] ["P" "." 1]
+  ["Q" "a" 2] ["Q" "b" 2] ["Q" "c" 2] ["Q" "d" 2] ["Q" "e" 2] ["Q" "f" 2] ["Q" "h" 2] ["Q" "i" 2] ["Q" "k" 2]
+  ["Q" "l" 2] ["Q" "m" 2] ["Q" "n" 2] ["Q" "o" 2] ["Q" "q" 2] ["Q" "r" 2] ["Q" "s" 2] ["Q" "t" 2] ["Q" "u" 2]
+  ["Q" "v" 2] ["Q" "w" 2] ["Q" "x" 2] ["Q" "z" 2] ["Q" "A" 2] ["Q" "B" 2] ["Q" "C" 2] ["Q" "D" 2] ["Q" "E" 2]
+  ["Q" "F" 2] ["Q" "G" 2] ["Q" "H" 2] ["Q" "I" 2] ["Q" "J" 2] ["Q" "K" 2] ["Q" "L" 2] ["Q" "M" 2] ["Q" "N" 2]
+  ["Q" "O" 2] ["Q" "P" 2] ["Q" "Q" 2] ["Q" "R" 2] ["Q" "S" 2] ["Q" "T" 2] ["Q" "U" 2] ["Q" "V" 2] ["Q" "W" 2]
+  ["Q" "X" 2] ["Q" "Y" 2] ["Q" "Z" 2]
   ["R" "j" 3]
   ["S" "j" 3]
-  ["T" "a" 2]
-  ["T" "c" 2]
-  ["T" "d" 2]
-  ["T" "e" 2]
-  ["T" "f" 1]
-  ["T" "g" 2]
-  ["T" "j" 3]
-  ["T" "m" 2]
-  ["T" "n" 2]
-  ["T" "o" 2]
-  ["T" "p" 2]
-  ["T" "q" 2]
-  ["T" "r" 2]
-  ["T" "s" 2]
-  ["T" "t" 1]
-  ["T" "u" 2]
-  ["T" "v" 2]
-  ["T" "w" 2]
-  ["T" "x" 2]
-  ["T" "y" 2]
-  ["T" "z" 2]
+  ["T" "a" 2] ["T" "c" 2] ["T" "d" 2] ["T" "e" 2] ["T" "f" 1] ["T" "g" 2] ["T" "j" 3] ["T" "m" 2] ["T" "n" 2]
+  ["T" "o" 2] ["T" "p" 2] ["T" "q" 2] ["T" "r" 2] ["T" "s" 2] ["T" "t" 1] ["T" "u" 2] ["T" "v" 2] ["T" "w" 2]
+  ["T" "x" 2] ["T" "y" 2] ["T" "z" 2] ["T" "J" 2]
   ["U" "j" 3]
-  ["V" "j" 3]
+  ["V" "j" 3] ["V" "J" 1] ["V" "_" 2] ["V" "." 1]
   ["W" "j" 3]
   ["X" "j" 3]
   ["Y" "j" 3]
   ["Z" "j" 3]
+  ["_" "f" 1] ["_" "j" 3] ["_" "t" 1] ["_" "V" 2]
+  ["." "f" 1] ["." "j" 2] ["." "t" 1] ["." "V" 1]
 ]
-tofu =
-  [[1 0 1 0 1]
-   [0 1 0 1 0]
-   [1 0 1 0 1]
-   [0 1 0 1 0]
-   [1 0 1 0 1]
-   [0 1 0 1 0]
-   [1 0 1 0 1]
-   [0 1 0 1 0]
-   [1 0 1 0 1]]
+tofu = [[1 0 1 0 1] [0 1 0 1 0] [1 0 1 0 1] [0 1 0 1 0] [1 0 1 0 1] [0 1 0 1 0] [1 0 1 0 1] [0 1 0 1 0] [1 0 1 0 1]]
 
 render_glyph_row_rec = |rec, row, x, y, scale, i, color| {
   if i.==(@num_words(row)) then
@@ -1293,41 +923,117 @@ find_kerning_rec = |rec, a, b, i| {
 }
 find_kerning = |a, b| find_kerning_rec(find_kerning_rec, a, b, 0)
 
-render_text_rec = |rec, text, base_x, base_y, curr_x, curr_y, scale, color| {
+# Turns a text into a linked list of [x y char glyph scale cursor_after_x cursor_after_y] values.
+# The cursor_after coordinates are the position of a cursor placed after the character.
+layout_text_rec = |rec, text, base_x, base_y, x, y, scale| {
   if is_nil(text) then
     nil
   else {
     char = text:0
     rest = text:1
-    if char.==(10) then {
-      # newline
-      rec(rec, rest, base_x, base_y, base_x, curr_y.+(14.*(scale)), scale, color)
+    glyph = get_glyph(char)
+    pos_after = if char.==(10) then { # newline
+      new_x = base_x
+      new_y = y.+(14.*(scale))
+      [new_x new_y new_x new_y]
     } else {
-      glyph = get_glyph(char)
       width = @num_words(glyph:0)
       kern = if rest.is_nil() then 0 else find_kerning(char, rest.head())
-      draw_both(
-        render_glyph(glyph, curr_x, curr_y, scale, color),
-        rec(rec, rest, base_x, base_y, curr_x.+(width.+(1).-(kern).*(scale)), curr_y, scale, color),
-      )
+      new_x = x.+(width.+(1).-(kern).*(scale))
+      new_y = y
+      new_cursor_x = x.+(width.+(1).-(kern./(2)).*(scale)) # cursor uses half the kerning
+      [new_x new_y new_cursor_x new_y]
     }
+    cons(
+      [x y char glyph scale pos_after:2 pos_after:3],
+      rec(rec, rest, base_x, base_y, pos_after:0, pos_after:1, scale),
+    )
   }
 }
-render_text = |text, x, y, scale, color| render_text_rec(render_text_rec, text, x, y, x, y, scale, color)
+layout_text = |text, x, y, scale| layout_text_rec(layout_text_rec, text, x, y, x, y, scale)
 
-initial_state = nil
+render_layouted_text_rec = |rec, layouted, color| {
+  if layouted.is_nil() then
+    nil
+  else {
+    layouted_glyph = layouted:0
+    rest = layouted:1
+    x = layouted_glyph:0
+    y = layouted_glyph:1
+    glyph = layouted_glyph:3
+    scale = layouted_glyph:4
+    draw_both(render_glyph(glyph, x, y, scale, color), rec(rec, rest, color))
+  }
+}
+render_layouted_text = |layouted, color| {
+  render_layouted_text_rec(render_layouted_text_rec, layouted, color)
+}
+render_text = |text, x, y, scale, color| render_layouted_text(layout_text(text, x, y, scale), color)
+
+render_cursor = |x, y, scale, color| {
+  fill_rectangle([x y], [10.*(scale) 10.*(scale)], color)
+}
+
+initial_state = cons(0, nil)
+insert_char = |state, char| {
+  cursor = state:0
+  text = state:1
+  [cursor.+(1) text.insert(cursor, char)]
+}
+backspace = |state| {
+  cursor = state:0
+  text = state:1
+  if cursor.==(0) then state else cons(cursor.-(1), text.remove(cursor.-(1)))
+}
+cursor_left = |state| {
+  cursor = state:0
+  text = state:1
+  if cursor.==(0) then state else cons(cursor.-(1), text)
+}
+cursor_right = |state| {
+  cursor = state:0
+  text = state:1
+  if cursor.==(text.len()) then state else cons(cursor.+(1), text)
+}
+update = |state, key| {
+  if key.==(259) then
+    state.backspace()
+  else if key.==(10).or(key.>=(32).and(key.<=(126))) then
+    state.insert_char(key)
+  else if key.==(262) then
+    state.cursor_right()
+  else if key.==(263) then
+    state.cursor_left()
+  else
+    state
+}
 render = |state, width, height| {
+  cursor = state:0
+  text = state:1
+  base_x = 10
+  base_y = 10
+  text_scale = 1
+  layouted_text = layout_text(text, base_x, base_y, text_scale)
   draw_both(
     fill_path(start_path([20 200]).line_to([300 30]).line_to([400 400]), yellow),
-    render_text(state, 10, 40, 2, black),
+    draw_both(
+      draw_both(
+        if cursor.==(0) then
+          render_cursor(base_x, base_y, text_scale, red)
+        else {
+          layouted_glyph_at_cursor = layouted_text.get(cursor.-(1))
+          #render_cursor(base_x, base_y, text_scale, red)
+          render_cursor(layouted_glyph_at_cursor:5, layouted_glyph_at_cursor:6, text_scale, red)
+        },
+        render_layouted_text(layouted_text, black),
+      ),
+      render_text(cursor.int_to_str(), 10, 60, 1, red),
+    ),
   )
 }
+
 update_rec = |update_rec, state, key| {
-  new_state =
-    if key.==(259) then {
-      if state.is_nil() then state else state.pop()
-    } else if key.==(10).or(key.>=(32).and(key.<=(126))) then state.push(key)
-    else state
+  new_state = update(state, key)
   [
     |width, height| render(new_state, width, height)
     |key| update_rec(update_rec, new_state, key)

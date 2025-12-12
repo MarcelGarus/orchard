@@ -1767,6 +1767,7 @@ const Builtins = struct {
     @"@subtract": Address,
     @"@multiply": Address,
     @"@divide": Address,
+    @"@modulo": Address,
     @"@compare": Address,
     @"@num_words": Address,
 };
@@ -1901,6 +1902,20 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
         break :ir builder.finish(body_);
     });
 
+    const int_modulo = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const a = try builder.param();
+        const b = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const a_val = try body.get_int_value(a);
+        const b_val = try body.get_int_value(b);
+        const res_val = try body.modulo(a_val, b_val);
+        const res = try body.new_int(res_val);
+        const body_ = body.finish(res);
+        break :ir builder.finish(body_);
+    });
+
     const int_compare_to_num = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const a = try builder.param();
@@ -1933,6 +1948,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
         .@"@subtract" = int_subtract,
         .@"@multiply" = int_multiply,
         .@"@divide" = int_divide,
+        .@"@modulo" = int_modulo,
         .@"@compare" = int_compare_to_num,
         .@"@num_words" = get_num_words,
     };
