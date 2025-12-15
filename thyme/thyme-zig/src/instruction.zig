@@ -102,14 +102,14 @@ pub const Instruction = union(enum) {
     pub fn new_instructions(heap: *Heap, instructions: []const Instruction) !Address {
         if (instructions.len == 0) {
             var builder = try heap.object_builder(2);
-            return try builder.finish();
+            return builder.finish();
         } else {
             const head = try new_instruction(heap, instructions[0]);
             const tail = try new_instructions(heap, instructions[1..]);
             var builder = try heap.object_builder(0);
             try builder.emit_pointer(head);
             try builder.emit_pointer(tail);
-            return try builder.finish();
+            return builder.finish();
         }
     }
 

@@ -97,7 +97,7 @@ pub const ObjectBuilder = struct {
         try builder.emit(word);
         builder.num_literals += 1;
     }
-    pub fn finish(builder: *ObjectBuilder) !Address {
+    pub fn finish(builder: *ObjectBuilder) Address {
         const header: *Header = @ptrCast(&builder.heap.memory[builder.start]);
         const num_words = builder.num_pointers + builder.num_literals;
         header.meta.has_pointers = if (builder.num_pointers > 0) 1 else 0;
@@ -114,7 +114,7 @@ pub fn new(heap: *Heap, allocation: Allocation) !Address {
     } else {
         for (allocation.words) |word| try builder.emit_literal(word);
     }
-    return try builder.finish();
+    return builder.finish();
 }
 
 pub fn get(heap: Heap, address: Address) Allocation {

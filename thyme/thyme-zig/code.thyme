@@ -941,7 +941,7 @@ layout_text_rec = |rec, text, base_x, base_y, x, y, scale| {
       kern = if rest.is_nil() then 0 else find_kerning(char, rest.head())
       new_x = x.+(width.+(1).-(kern).*(scale))
       new_y = y
-      new_cursor_x = x.+(width.+(1).-(kern./(2)).*(scale)) # cursor uses half the kerning
+      new_cursor_x = x.+(width.-(kern./(2)).*(scale)) # cursor uses half the kerning
       [new_x new_y new_cursor_x new_y]
     }
     cons(
@@ -971,46 +971,78 @@ render_layouted_text = |layouted, color| {
 render_text = |text, x, y, scale, color| render_layouted_text(layout_text(text, x, y, scale), color)
 
 render_cursor = |x, y, scale, color| {
-  fill_rectangle([x y], [10.*(scale) 10.*(scale)], color)
+  fill_rectangle([x y.-(scale)], [2.*(scale) 13.*(scale)], color)
 }
 
-initial_state = cons(0, nil)
+# The state contains:
+# - the text as a linked list of characters
+# - the cursor position
+initial_state = [nil 0]
 insert_char = |state, char| {
-  cursor = state:0
-  text = state:1
-  [cursor.+(1) text.insert(cursor, char)]
+  text = state:0
+  cursor = state:1
+  [text.insert(cursor, char) cursor.+(1)]
 }
+enter = |state| state.insert_char(10)
 backspace = |state| {
-  cursor = state:0
-  text = state:1
-  if cursor.==(0) then state else cons(cursor.-(1), text.remove(cursor.-(1)))
+  text = state:0
+  cursor = state:1
+  if cursor.==(0) then state else [text.remove(cursor.-(1)) cursor.-(1)]
 }
-cursor_left = |state| {
-  cursor = state:0
-  text = state:1
-  if cursor.==(0) then state else cons(cursor.-(1), text)
+control_backspace = |state| { state.backspace() }
+move_left = |state| {
+  text = state:0
+  cursor = state:1
+  if cursor.==(0) then state else [text cursor.-(1)]
 }
-cursor_right = |state| {
-  cursor = state:0
-  text = state:1
-  if cursor.==(text.len()) then state else cons(cursor.+(1), text)
+move_right = |state| {
+  text = state:0
+  cursor = state:1
+  if cursor.==(text.len()) then state else [text cursor.+(1)]
 }
-update = |state, key| {
-  if key.==(259) then
-    state.backspace()
-  else if key.==(10).or(key.>=(32).and(key.<=(126))) then
-    state.insert_char(key)
-  else if key.==(262) then
-    state.cursor_right()
-  else if key.==(263) then
-    state.cursor_left()
-  else
-    state
+move_start = |state| {
+  text = state:0
+  cursor = state:1
+  find_line_start = |rec, candidate| {
+    if candidate.==(0) then 0
+    else if text.get(candidate.-(1)).==(10) then candidate
+    else rec(rec, candidate.-(1))
+  }
+  [text find_line_start(find_line_start, cursor)]
+}
+move_end = |state| {
+  text = state:0
+  cursor = state:1
+  len = text.len()
+  find_line_end = |rec, candidate| {
+    if candidate.==(len) then len
+    else if text.get(candidate).==(10) then candidate
+    else rec(rec, candidate.+(1))
+  }
+  [text find_line_end(find_line_end, cursor)]
+}
+update = |state, event| {
+  event_kind = event:0
+  if event_kind.==("char") then {
+    char = event:1
+    if char.==(10).or(char.>=(32).and(char.<=(126))) then state.insert_char(char) else state
+  } else if event_kind.==("key") then {
+    key = event:1
+    control_pressed = event:2
+    if key.==(257) then state.enter()
+    else if key.==(259) then {
+      if control_pressed then state.control_backspace() else state.backspace()
+    } else if key.==(262) then state.move_right()
+    else if key.==(263) then state.move_left()
+    else if key.==(268) then state.move_start()
+    else if key.==(269) then state.move_end()
+    else state
+  } else crash("unknown event")
 }
 render = |state, width, height| {
-  cursor = state:0
-  text = state:1
-  base_x = 10
+  text = state:0
+  cursor = state:1
+  base_x = 100
   base_y = 10
   text_scale = 1
   layouted_text = layout_text(text, base_x, base_y, text_scale)
@@ -1019,10 +1051,9 @@ render = |state, width, height| {
     draw_both(
       draw_both(
         if cursor.==(0) then
-          render_cursor(base_x, base_y, text_scale, red)
+          render_cursor(base_x.-(text_scale), base_y, text_scale, red)
         else {
           layouted_glyph_at_cursor = layouted_text.get(cursor.-(1))
-          #render_cursor(base_x, base_y, text_scale, red)
           render_cursor(layouted_glyph_at_cursor:5, layouted_glyph_at_cursor:6, text_scale, red)
         },
         render_layouted_text(layouted_text, black),
@@ -1032,17 +1063,17 @@ render = |state, width, height| {
   )
 }
 
-update_rec = |update_rec, state, key| {
-  new_state = update(state, key)
+update_rec = |update_rec, state, event| {
+  new_state = update(state, event)
   [
     |width, height| render(new_state, width, height)
-    |key| update_rec(update_rec, new_state, key)
+    |event| update_rec(update_rec, new_state, event)
     new_state
   ]
 }
 app = [
   |width, height| render(initial_state, width, height)
-  |key| update_rec(update_rec, initial_state, key)
+  |event| update_rec(update_rec, initial_state, event)
   initial_state
 ]
 app

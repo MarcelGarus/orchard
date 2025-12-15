@@ -717,7 +717,7 @@ const AstToIr = struct {
             .int => |int| {
                 var builder = try self.heap.object_builder(@intFromEnum(object_mod.Tag.int));
                 try builder.emit_literal(@bitCast(int));
-                return body.object(try builder.finish());
+                return body.object(builder.finish());
             },
             .string => |string| {
                 var builder = try self.heap.object_builder(@intFromEnum(object_mod.Tag.symbol));
@@ -728,7 +728,7 @@ const AstToIr = struct {
                         w |= @as(Word, string[i * 8 + j]) << @intCast(j * 8);
                     try builder.emit_literal(w);
                 }
-                return body.object(try builder.finish());
+                return body.object(builder.finish());
             },
             .compound => |parts| {
                 const compiled = try self.ally.alloc(Id, parts.len);
@@ -886,7 +886,7 @@ pub fn optimize_object(ally: Ally, heap: *Heap, object: Address) !Address {
             for (0.., heap.get(object).words) |i, word| parts[i] = try optimize_object(ally, heap, word);
             var builder = try heap.object_builder(@intFromEnum(object_mod.Tag.composite));
             for (parts) |part| try builder.emit_pointer(part);
-            return try builder.finish();
+            return builder.finish();
         },
         .fun => return object,
         .lambda => {
@@ -1993,7 +1993,7 @@ pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) !Address {
     var builder = try heap.object_builder(@intFromEnum(object_mod.Tag.lambda));
     try builder.emit_pointer(fun);
     try builder.emit_pointer(nil);
-    return try builder.finish();
+    return builder.finish();
 }
 
 pub fn code_to_fun(ally: Ally, heap: *Heap, env: anytype, code: Str) !Address {

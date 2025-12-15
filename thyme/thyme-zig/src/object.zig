@@ -40,7 +40,7 @@ pub const Tag = enum(u8) {
 pub fn new_int(heap: *Heap, val: i64) !Address {
     var builder = try heap.object_builder(@intFromEnum(Tag.int));
     try builder.emit_literal(@bitCast(val));
-    return try builder.finish();
+    return builder.finish();
 }
 pub fn assert_int(heap: *Heap, obj: Address) !void {
     if (heap.get(obj).tag != @intFromEnum(Tag.int)) return error.NotInt;
@@ -58,7 +58,7 @@ pub fn new_symbol(heap: *Heap, val: []const u8) !Address {
             w |= @as(Word, val[i * 8 + j]) << @intCast(j * 8);
         try builder.emit_literal(w);
     }
-    return try builder.finish();
+    return builder.finish();
 }
 pub fn assert_symbol(heap: *Heap, obj: Address) !void {
     if (heap.get(obj).tag != @intFromEnum(Tag.symbol)) return error.NotSymbol;
@@ -83,7 +83,7 @@ pub fn get_symbol(heap: Heap, symbol: Address) []const u8 {
 
 pub fn new_nil(heap: *Heap) !Address {
     var builder = try heap.object_builder(@intFromEnum(Tag.composite));
-    return try builder.finish();
+    return builder.finish();
 }
 
 pub const Fun = struct { num_params: Address, ir_: Address, instructions_: Address };
@@ -92,17 +92,13 @@ pub fn new_fun(heap: *Heap, num_params_: Address, ir_: Address, instructions_: A
     try builder.emit_pointer(ir_);
     try builder.emit_pointer(instructions_);
     try builder.emit_pointer(num_params_);
-    return try builder.finish();
+    return builder.finish();
 }
 pub fn assert_fun(heap: *Heap, obj: Address) !void {
     if (heap.get(obj).tag != @intFromEnum(Tag.lambda)) return error.NotFun;
 }
 pub fn get_fun(heap: *Heap, fun: Address) Fun {
-    return .{
-        .ir_ = heap.load(fun, 0),
-        .instructions_ = heap.load(fun, 1),
-        .num_params = heap.load(fun, 2),
-    };
+    return .{ .ir_ = heap.load(fun, 0), .instructions_ = heap.load(fun, 1), .num_params = heap.load(fun, 2) };
 }
 
 pub const Lambda = struct { fun: Address, closure: Address };
@@ -110,14 +106,11 @@ pub fn new_lambda(heap: *Heap, lambda: Lambda) !Address {
     var builder = try heap.object_builder(@intFromEnum(Tag.lambda));
     try builder.emit_pointer(lambda.fun);
     try builder.emit_pointer(lambda.closure);
-    return try builder.finish();
+    return builder.finish();
 }
 pub fn assert_lambda(heap: *Heap, obj: Address) !void {
     if (heap.get(obj).tag != @intFromEnum(Tag.lambda)) return error.NotLambda;
 }
 pub fn get_lambda(heap: *Heap, lambda: Address) Lambda {
-    return .{
-        .fun = heap.load(lambda, 0),
-        .closure = heap.load(lambda, 1),
-    };
+    return .{ .fun = heap.load(lambda, 0), .closure = heap.load(lambda, 1) };
 }

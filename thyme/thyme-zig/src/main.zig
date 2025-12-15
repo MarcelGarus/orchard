@@ -54,18 +54,28 @@ pub fn main() !void {
             try object_mod.assert_lambda(&heap, update_lambda);
             for (gfx.event_queue.items) |event| {
                 // TODO: do the decision of handling in thyme
-                const thyme_event = switch (event) {
-                    .entered_char => |char| try object_mod.new_int(&heap, @intCast(char.codepoint)),
-                    .pressed_key => |key| if (key.control_pressed or key.keycode == 257 or key.keycode == 259)
-                        try object_mod.new_int(&heap, if (key.keycode == 257) 10 else @intCast(key.keycode))
-                    else if (key.keycode >= 262 or key.keycode <= 265)
-                        try object_mod.new_int(&heap, @intCast(key.keycode))
-                    else {
-                        std.debug.print("Ignoring key: {d}\n", .{key.keycode});
-                        continue;
+                const thyme_event = event: switch (event) {
+                    .entered_char => |char| {
+                        std.debug.print("Char: {d}\n", .{char.codepoint});
+                        const kind = try object_mod.new_symbol(&heap, "char");
+                        const codepoint = try object_mod.new_int(&heap, @intCast(char.codepoint));
+                        var b = try heap.object_builder(0);
+                        try b.emit_pointer(kind);
+                        try b.emit_pointer(codepoint);
+                        break :event b.finish();
+                    },
+                    .pressed_key => |key| {
+                        std.debug.print("Key: {d}\n", .{key.keycode});
+                        const kind = try object_mod.new_symbol(&heap, "key");
+                        const keycode = try object_mod.new_int(&heap, @intCast(key.keycode));
+                        const control_pressed = try object_mod.new_int(&heap, if (key.control_pressed) 1 else 0);
+                        var b = try heap.object_builder(0);
+                        try b.emit_pointer(kind);
+                        try b.emit_pointer(keycode);
+                        try b.emit_pointer(control_pressed);
+                        break :event b.finish();
                     },
                 };
-                std.debug.print("Event: {d}\n", .{thyme_event});
                 app = try vm.call(heap.load(update_lambda, 0), &[_]Address{ thyme_event, heap.load(update_lambda, 1) });
 
                 // {
