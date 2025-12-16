@@ -81,6 +81,9 @@ assert(==(/(8, 2), 4))
 assert(10.mod(10).==(0))
 assert(12.mod(10).==(2))
 
+min = |a, b| if a.<(b) then a else b
+max = |a, b| if a.>(b) then a else b
+
 is_nil = |obj| ==(@num_words(obj), 0)
 
 # Bool Operations
@@ -133,6 +136,16 @@ insert_rec = |rec, list, index, item| {
 insert = |list, index, item| insert_rec(insert_rec, list, index, item)
 remove_rec = |rec, list, index| if index.==(0) then list:1 else cons(list:0, rec(rec, list:1, index.-(1)))
 remove = |list, index| remove_rec(remove_rec, list, index)
+skip_rec = |rec, list, n| if n.==(0) then list else rec(rec, list:1, n.-(1))
+skip = |list, n| skip_rec(skip_rec, list, n)
+remove_range_rec = |rec, list, start, end| {
+  if start.==(0) then list.skip(end) else cons(list:0, rec(rec, list:1, start.-(1), end.-(1)))
+}
+remove_range = |list, range| remove_range_rec(remove_range_rec, list, range:0, range:1)
+replace_range_rec = |rec, list, start, end, item| {
+  if start.==(0) then cons(item, list.skip(end)) else cons(list:0, rec(rec, list:1, start.-(1), end.-(1), item))
+}
+replace_range = |list, range, item| replace_range_rec(replace_range_rec, list, range:0, range:1, item)
 concat_rec = |rec, a, b| if is_nil(a) then b else cons(head(a), rec(rec, tail(a), b))
 concat = |a, b| concat_rec(concat_rec, a, b)
 pop_rec = |rec, list| if list.tail().is_nil() then nil else cons(list.head(), rec(rec, list.tail()))
@@ -970,40 +983,78 @@ render_layouted_text = |layouted, color| {
 }
 render_text = |text, x, y, scale, color| render_layouted_text(layout_text(text, x, y, scale), color)
 
-render_cursor = |x, y, scale, color| {
-  fill_rectangle([x y.-(scale)], [2.*(scale) 13.*(scale)], color)
-}
-
 # The state contains:
 # - the text as a linked list of characters
-# - the cursor position
-initial_state = [nil 0]
+# - the cursor, which again contains some state
+#  - the anchor position (where a selection started)
+#  - the active position (where the part controlled by the arrow keys is)
+#  - TODO: the desired x position
+initial_state = [nil [0 0]]
+start_of_cursor = |cursor| min(cursor:0, cursor:1)
+end_of_cursor = |cursor| max(cursor:0, cursor:1)
+has_selection = |cursor| cursor:0.!=(cursor:1)
+selection = |cursor| [start_of_cursor(cursor) end_of_cursor(cursor)]
 insert_char = |state, char| {
   text = state:0
   cursor = state:1
-  [text.insert(cursor, char) cursor.+(1)]
+  new_cursor_offset = start_of_cursor(cursor).+(1)
+  [text.replace_range(cursor.selection(), char) [new_cursor_offset new_cursor_offset]]
 }
 enter = |state| state.insert_char(10)
 backspace = |state| {
   text = state:0
   cursor = state:1
-  if cursor.==(0) then state else [text.remove(cursor.-(1)) cursor.-(1)]
+  if cursor.has_selection() then {
+    offset = start_of_cursor(cursor)
+    [text.remove_range(cursor.selection()) [offset offset]]
+  } else {
+    offset = cursor:0
+    if offset.==(0) then state else [text.remove(offset.-(1)) [offset.-(1) offset.-(1)]]
+  }
 }
 control_backspace = |state| { state.backspace() }
 delete = |state| {
   text = state:0
   cursor = state:1
-  if cursor.==(text.len()) then state else [text.remove(cursor) cursor]
+  if cursor.has_selection() then {
+    offset = start_of_cursor(cursor)
+    [text.remove_range(cursor.selection()) [offset offset]]
+  } else {
+    offset = cursor:0
+    if offset.==(text.len()) then state else [text.remove(offset) cursor]
+  }
 }
 move_left = |state| {
   text = state:0
   cursor = state:1
-  if cursor.==(0) then state else [text cursor.-(1)]
+  if cursor.has_selection() then
+    [text [start_of_cursor(cursor) start_of_cursor(cursor)]]
+  else {
+    offset = cursor:0
+    if offset.==(0) then state else [text [offset.-(1) offset.-(1)]]
+  }
 }
 move_right = |state| {
   text = state:0
   cursor = state:1
-  if cursor.==(text.len()) then state else [text cursor.+(1)]
+  if cursor.has_selection() then
+    [text [end_of_cursor(cursor) end_of_cursor(cursor)]]
+  else {
+    offset = cursor:0
+    if offset.==(text.len()) then state else [text [offset.+(1) offset.+(1)]]
+  }
+}
+shift_move_left = |state| {
+  text = state:0
+  cursor = state:1
+  offset = cursor:1
+  if offset.==(0) then state else [text [cursor:0 offset.-(1)]]
+}
+shift_move_right = |state| {
+  text = state:0
+  cursor = state:1
+  offset = cursor:1
+  if offset.==(text.len()) then state else [text [cursor:0 offset.+(1)]]
 }
 move_start = |state| {
   text = state:0
@@ -1013,7 +1064,8 @@ move_start = |state| {
     else if text.get(candidate.-(1)).==(10) then candidate
     else rec(rec, candidate.-(1))
   }
-  [text find_line_start(find_line_start, cursor)]
+  line_start = find_line_start(find_line_start, cursor:1)
+  [text [line_start line_start]]
 }
 move_end = |state| {
   text = state:0
@@ -1024,8 +1076,66 @@ move_end = |state| {
     else if text.get(candidate).==(10) then candidate
     else rec(rec, candidate.+(1))
   }
-  [text find_line_end(find_line_end, cursor)]
+  line_end = find_line_end(find_line_end, cursor:1)
+  [text [line_end line_end]]
 }
+# Control + arrow keys move one word.
+# Concretely:
+# 1. Skip spaces
+# 2. How many characters of punctuation follow?
+#    0: Skip all letters
+#    1: Skip the punctuation, then all letters after it
+#    2: Skip all punctutation
+is_word = |char| {
+  char.==("_")
+    .or(char.>=("a").and(char.<=("z")))
+    .or(char.>=("A").and(char.<=("Z")))
+    .or(char.>=("0").and(char.<=("9")))
+}
+#fun is_punctuation(char: Char): Bool { {char != space} & not(char.is_word()) }
+#fun find_word_boundary[I](iter: &Iter[Char, I]): U64 {
+#  var consumed = 0
+#  var char = loop {
+#    var char = iter.next() orelse return consumed
+#    if char != space then break(char)
+#    consumed = consumed + 1
+#  }
+#  consumed = consumed + 1
+#  if char.is_punctuation()
+#  then {
+#    var char = iter.next() orelse return consumed
+#    if char == space then return consumed
+#    consumed = consumed + 1
+#    if char.is_word()
+#    then loop {
+#      if {iter.next() orelse return consumed}.is_word().not()
+#      then return consumed
+#      consumed = consumed + 1
+#    }
+#    else loop {
+#      if {iter.next() orelse return consumed}.is_punctuation().not()
+#      then return consumed
+#      consumed = consumed + 1
+#    }
+#  }
+#  else loop {
+#    if {iter.next() orelse return consumed}.is_word().not()
+#    then return consumed
+#    consumed = consumed + 1
+#  }
+#}
+#fun move_ctrl_left(whirling: &Whirling) {
+#  var amount_to_move = whirling.text.to_slice()
+#    .subslice(0..whirling.cursor).rev_iter().&.find_word_boundary()
+#  whirling.cursor = whirling.cursor - amount_to_move
+#  whirling.scroll_cursor_into_view()
+#}
+#fun move_ctrl_right(whirling: &Whirling) {
+#  var amount_to_move = whirling.text.to_slice()
+#    .subslice(whirling.cursor..whirling.text.len).iter().&.find_word_boundary()
+#  whirling.cursor = whirling.cursor + amount_to_move
+#  whirling.scroll_cursor_into_view()
+#}
 update = |state, event| {
   event_kind = event:0
   if event_kind.==("char") then {
@@ -1034,16 +1144,41 @@ update = |state, event| {
   } else if event_kind.==("key") then {
     key = event:1
     control_pressed = event:2
+    shift_pressed = event:3
     if key.==(257) then state.enter()
-    else if key.==(259) then {
-      if control_pressed then state.control_backspace() else state.backspace()
-    } else if key.==(261) then state.delete()
-    else if key.==(262) then state.move_right()
-    else if key.==(263) then state.move_left()
+    else if key.==(259) then { if control_pressed then state.control_backspace() else state.backspace() }
+    else if key.==(261) then state.delete()
+    else if key.==(262) then { if shift_pressed then state.shift_move_right() else state.move_right() }
+    else if key.==(263) then { if shift_pressed then state.shift_move_left() else  state.move_left() }
     else if key.==(268) then state.move_start()
     else if key.==(269) then state.move_end()
     else state
   } else crash("unknown event")
+}
+
+render_cursor = |cursor, layouted_text, base_x, base_y, scale, color| {
+  if cursor.has_selection() then {
+    start = start_of_cursor(cursor)
+    end = end_of_cursor(cursor)
+    start_position =
+      if start.==(0) then [base_x base_y] else { layout = layouted_text.get(start.-(1)) [layout:5 layout:6] }
+    end_position = { layout = layouted_text.get(end.-(1)) [layout:5 layout:6] }
+    if start_position:1.==(end_position:1) then
+      fill_rectangle([start_position:0 start_position:1], [end_position:0.-(start_position:0) 13.*(scale)], blue)
+    else
+      fill_rectangle([start_position:0 start_position:1], [20.*(scale) 13.*(scale)], blue)
+    # render_cursor(position:0, position:1, scale, blue)
+  } else {
+    offset = cursor:0
+    position =
+      if offset.==(0) then
+        [base_x.-(scale) base_y]
+      else {
+        layout = layouted_text.get(offset.-(1))
+        [layout:5 layout:6]
+      }
+    fill_rectangle([position:0 position:1.-(scale)], [2.*(scale) 13.*(scale)], color)
+  }
 }
 render = |state, width, height| {
   text = state:0
@@ -1056,15 +1191,10 @@ render = |state, width, height| {
     fill_path(start_path([20 200]).line_to([300 30]).line_to([400 400]), yellow),
     draw_both(
       draw_both(
-        if cursor.==(0) then
-          render_cursor(base_x.-(text_scale), base_y, text_scale, red)
-        else {
-          layouted_glyph_at_cursor = layouted_text.get(cursor.-(1))
-          render_cursor(layouted_glyph_at_cursor:5, layouted_glyph_at_cursor:6, text_scale, red)
-        },
+        render_cursor(cursor, layouted_text, base_x, base_y, text_scale, red),
         render_layouted_text(layouted_text, black),
       ),
-      render_text(cursor.int_to_str(), 10, 60, 1, red),
+      render_text(cursor:1.int_to_str(), 10, 60, 1, red),
     ),
   )
 }
@@ -1083,163 +1213,3 @@ app = [
   initial_state
 ]
 app
-
-# More advanced int stuff
-
-#round_up_to_power_of = |number, base| {
-#  recursive(number, base, 1, |number, base, candidate| {
-#    if >=(candidate, number) then
-#      candidate
-#    else
-#      recurse(number, base, *(candidate, base))
-#  })
-#}
-#
-#assert(==(round_up_to_power_of(0, 2), 1), "round up to power of is bad")
-#assert(==(round_up_to_power_of(1, 2), 1), "round up to power of is bad")
-#assert(==(round_up_to_power_of(2, 2), 2), "round up to power of is bad")
-#assert(==(round_up_to_power_of(3, 2), 4), "round up to power of is bad")
-#assert(==(round_up_to_power_of(9, 2), 16), "round up to power of is bad")
-#
-## log_2 returns the floored result
-#log_2 = |number| {
-#  assert(>(number, 0), [log_arg_must_be_positive])
-#  rec2(0, 1, |candidate, two_pow_candidate, rec| {
-#    next_candidate = +(candidate, 1)
-#    next_two_pow_candidate = *(two_pow_candidate, 2)
-#    >(next_two_pow_candidate, number) % {
-#      true -> candidate
-#      false -> rec(next_candidate, next_two_pow_candidate)
-#    }
-#  })
-#}
-##assert(==(log_2(1), 0), [log_2_is_bad])
-##assert(==(log_2(2), 1), [log_2_is_bad])
-##assert(==(log_2(3), 1), [log_2_is_bad])
-##assert(==(log_2(4), 2), [log_2_is_bad])
-##assert(==(log_2(5), 2), [log_2_is_bad])
-##assert(==(log_2(7), 2), [log_2_is_bad])
-##assert(==(log_2(8), 3), [log_2_is_bad])
-#
-## Collect garbage
-#
-#collect_garbage = |lambda| @collect_garbage(lambda)
-#
-## Lists
-##
-## Lists are stored as a binary tree of minimal height, where nodes are
-## filled from the left. The length tells us exactly the layout of this
-## tree. For example, a list of 1, 2, 3, 4, 5 is the following tree:
-##
-## [[[[0, 1], [2, 3]], [[4 0], [0, 0]]]; 5]
-#
-#list_empty = [nil; 0]
-#
-#list_push = {
-#  create_empty_tree = |depth| {
-#    rec1(depth, |depth, rec| {
-#      ==(depth, 0) % {
-#        true -> nil
-#        false -> {
-#          child = rec(-(depth, 1))
-#          [left: child right: child]
-#        }
-#      }
-#    })
-#  }
-#  create_tree_with_single_item = |depth, item| {
-#    rec2(depth, item, |depth, item, rec| {
-#      ==(depth, 0) % {
-#        true -> item
-#        false -> [
-#          left: rec(-(depth, 1), item)
-#          right: create_empty_tree(-(depth, 1))
-#        ]
-#      }
-#    })
-#  }
-#  set_in_tree = |items, length, index, item| {
-#    rec4(items, length, index, item, |items, length, index, item, rec| {
-#      ==(length, 1) % {
-#        true -> item
-#        false -> {
-#          num_child = /(length, 2)  # TODO: shift
-#          <(index, num_child) % {
-#            true -> [
-#              left: rec(items:left, num_child, index, item) right: items:right
-#            ]
-#            false -> [
-#              left: items:left
-#              right: rec(items:right, num_child, -(index, num_child), item)
-#            ]
-#          }
-#        }
-#      }
-#    })
-#  }
-#  |list, item| {
-#    length = list:length
-#    ==(length, 0) % {
-#      true -> [length: 1 items: item]
-#      false -> [
-#        length: +(length, 1)
-#        items: ==(length, round_up_to_power_of(length, 2)) % {
-#          true -> [
-#            left: list:items
-#            right: create_tree_with_single_item(log_2(length), item)
-#          ]
-#          false -> set_in_tree(
-#            list:items, round_up_to_power_of(length, 2), length, item
-#          )
-#        }
-#      ]
-#    }
-#  }
-#}
-#
-#list_get = |list, index| {
-#  >=(index, list:length) % {
-#    true -> crash([out_of_bounds])
-#    false -> rec3(
-#      list:items,
-#      round_up_to_power_of(list:length, 2),
-#      index,
-#      |items, cap, index, rec| {
-#        cap_child = /(cap, 2)  # TODO: shift
-#        <(index, cap_child) % {
-#          true -> rec(items:left, cap_child, index)
-#          false -> rec(items:right, cap_child, -(index, cap_child))
-#        }
-#      },
-#    )
-#  }
-#}
-#
-#core = [
-#  crash: crash
-#  collect_garbage: collect_garbage
-#  unreachable
-#  todo
-#  assert
-#  rec1
-#  rec2
-#  rec3
-#  rec4
-#  loop
-#  bool: [true false not and or xor]
-#  int: [+ - * / mod == != < > <= >= round_up_to_power_of log_2]
-#  list: [empty: list_empty push: list_push get: list_get]
-#]
-#
-#collect_garbage = core:collect_garbage
-#empty = core:list:empty
-#push = core:list:push
-#
-#foo = collect_garbage(|| push(empty, 2))
-#
-#push(foo, 3)
-#
-#push
-#
-##push(push(push(push(push(empty, 1), 2), 3), 4), 5)
-#
