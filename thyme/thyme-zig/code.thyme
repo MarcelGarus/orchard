@@ -936,8 +936,13 @@ find_kerning_rec = |rec, a, b, i| {
 }
 find_kerning = |a, b| find_kerning_rec(find_kerning_rec, a, b, 0)
 
-# Turns a text into a linked list of [x y char glyph scale cursor_after_x cursor_after_y] values.
-# The cursor_after coordinates are the position of a cursor placed after the character.
+# Turns a text into an object containing:
+# - a linked list of [x y char glyph scale cursor_after_x cursor_after_y] values.
+#   The cursor_after coordinates are the position of a cursor placed after the character.
+# - the base_x
+# - the base_y
+# - the scale
+# - the limit
 layout_text_rec = |rec, text, base_x, base_y, x, y, scale| {
   if is_nil(text) then
     nil
@@ -963,14 +968,16 @@ layout_text_rec = |rec, text, base_x, base_y, x, y, scale| {
     )
   }
 }
-layout_text = |text, x, y, scale| layout_text_rec(layout_text_rec, text, x, y, x, y, scale)
+layout_text = |text, x, y, scale, width| {
+  [layout_text_rec(layout_text_rec, text, x, y, x, y, scale) x y scale width]
+}
 
-render_layouted_text_rec = |rec, layouted, color| {
-  if layouted.is_nil() then
+render_layouted_text_rec = |rec, layouted_glyphs, color| {
+  if layouted_glyphs.is_nil() then
     nil
   else {
-    layouted_glyph = layouted:0
-    rest = layouted:1
+    layouted_glyph = layouted_glyphs:0
+    rest = layouted_glyphs:1
     x = layouted_glyph:0
     y = layouted_glyph:1
     glyph = layouted_glyph:3
@@ -978,10 +985,10 @@ render_layouted_text_rec = |rec, layouted, color| {
     draw_both(render_glyph(glyph, x, y, scale, color), rec(rec, rest, color))
   }
 }
-render_layouted_text = |layouted, color| {
-  render_layouted_text_rec(render_layouted_text_rec, layouted, color)
+render_layouted_text = |layouted_text, color| {
+  render_layouted_text_rec(render_layouted_text_rec, layouted_text:0, color)
 }
-render_text = |text, x, y, scale, color| render_layouted_text(layout_text(text, x, y, scale), color)
+render_text = |text, x, y, scale, width, color| render_layouted_text(layout_text(text, x, y, scale, width), color)
 
 # The state contains:
 # - the text as a linked list of characters
@@ -1156,25 +1163,43 @@ update = |state, event| {
   } else crash("unknown event")
 }
 
-render_cursor = |cursor, layouted_text, base_x, base_y, scale, color| {
+render_cursor = |cursor, layouted_text, color| {
+  layouted_glyphs = layouted_text:0
+  base_x = layouted_text:1
+  base_y = layouted_text:2
+  scale = layouted_text:3
+  width = layouted_text:4
   if cursor.has_selection() then {
     start = start_of_cursor(cursor)
     end = end_of_cursor(cursor)
     start_position =
-      if start.==(0) then [base_x base_y] else { layout = layouted_text.get(start.-(1)) [layout:5 layout:6] }
-    end_position = { layout = layouted_text.get(end.-(1)) [layout:5 layout:6] }
+      if start.==(0) then [base_x base_y] else { layout = layouted_glyphs.get(start.-(1)) [layout:5 layout:6] }
+    end_position = { layout = layouted_glyphs.get(end.-(1)) [layout:5 layout:6] }
     if start_position:1.==(end_position:1) then
-      fill_rectangle([start_position:0 start_position:1], [end_position:0.-(start_position:0) 13.*(scale)], blue)
-    else
-      fill_rectangle([start_position:0 start_position:1], [20.*(scale) 13.*(scale)], blue)
-    # render_cursor(position:0, position:1, scale, blue)
+      # The selection is on a single line.
+      fill_rectangle([start_position:0 start_position:1], [end_position:0.-(start_position:0) 13.*(scale)], color)
+    else {
+      # The selection is on multiple lines.
+      draw_both(
+        fill_rectangle([start_position:0 start_position:1], [width.-(start_position:0.-(base_x)) 13.*(scale)], color),
+        draw_both(
+          fill_rectangle(
+            [base_x start_position:1.+(13.*(scale))],
+            [width end_position:1.-(start_position:1).-(14.*(scale))],
+            color,
+          ),
+          fill_rectangle([base_x end_position:1.-(1)], [end_position:0.-(base_x) 14.*(scale)], color),
+        ),
+      )
+    }
+    # render_cursor(position:0, position:1, scale, color)
   } else {
     offset = cursor:0
     position =
       if offset.==(0) then
         [base_x.-(scale) base_y]
       else {
-        layout = layouted_text.get(offset.-(1))
+        layout = layouted_glyphs.get(offset.-(1))
         [layout:5 layout:6]
       }
     fill_rectangle([position:0 position:1.-(scale)], [2.*(scale) 13.*(scale)], color)
@@ -1186,15 +1211,12 @@ render = |state, width, height| {
   base_x = 100
   base_y = 10
   text_scale = 1
-  layouted_text = layout_text(text, base_x, base_y, text_scale)
+  layouted_text = layout_text(text, base_x, base_y, text_scale, 400)
   draw_both(
     fill_path(start_path([20 200]).line_to([300 30]).line_to([400 400]), yellow),
     draw_both(
-      draw_both(
-        render_cursor(cursor, layouted_text, base_x, base_y, text_scale, red),
-        render_layouted_text(layouted_text, black),
-      ),
-      render_text(cursor:1.int_to_str(), 10, 60, 1, red),
+      draw_both(render_cursor(cursor, layouted_text, red), render_layouted_text(layouted_text, black)),
+      render_text(cursor:1.int_to_str(), 10, 60, 1, 1000, red),
     ),
   )
 }
