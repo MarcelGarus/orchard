@@ -19,7 +19,7 @@ pub fn main() !void {
     var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
     const ally = debug_ally.allocator();
 
-    var heap = try Heap.init(ally, 1000000);
+    var heap = try Heap.init(ally, 10000000);
     const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
@@ -28,13 +28,13 @@ pub fn main() !void {
     const code = try file.readToEndAlloc(ally, 1000000);
     var app = try vm.eval(ally, builtins, code);
 
-    {
-        var buffer: [64]u8 = undefined;
-        const bw = std.debug.lockStderrWriter(&buffer);
-        defer std.debug.unlockStderrWriter();
-        try heap.format(app, bw);
-        try bw.print("\n", .{});
-    }
+    // {
+    //     var buffer: [64]u8 = undefined;
+    //     const bw = std.debug.lockStderrWriter(&buffer);
+    //     defer std.debug.unlockStderrWriter();
+    //     try heap.format(app, bw);
+    //     try bw.print("\n", .{});
+    // }
 
     //if (true) return;
 
