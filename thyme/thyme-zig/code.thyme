@@ -1090,6 +1090,54 @@ find_offset_below = |x, y, glyphs| {
   result = find_offset_below_rec(find_offset_below_rec, 1, x, y, glyphs)
   if result.is_nil() then nil else result:0
 }
+
+# Move one word =
+# 1. Skip spaces
+# 2. How many characters of punctuation follow?
+#    0: Skip all letters
+#    1: Skip the punctuation, then all letters after it
+#    2: Skip all punctuation
+is_word_char = |char| {
+  char.==("_")
+    .or(char.>=("a").and(char.<=("z")))
+    .or(char.>=("A").and(char.<=("Z")))
+    .or(char.>=("0").and(char.<=("9")))
+}
+is_punctuation = |char| char.!=(" ").and(not(char.is_word_char()))
+num_word_chars_rec = |rec, text| {
+  if text.is_nil() then 0 else if text:0.is_word_char() then 1.+(rec(rec, text:1)) else 0
+}
+num_word_chars = |text| num_word_chars_rec(num_word_chars_rec, text)
+num_punctuation_rec = |rec, text| {
+  if text.is_nil() then 0 else if text:0.is_punctuation() then 1.+(rec(rec, text:1)) else 0
+}
+num_punctuation = |text| num_punctuation_rec(num_punctuation_rec, text)
+find_word_boundary_after_rec = |rec, text| {
+  if text.is_nil() then 0 else {
+    char = text:0
+    if char.==(" ") then rec(rec, text:1).+(1) else {
+      if char.is_word_char() then text.num_word_chars() else {
+        if text:1.is_nil() then 1
+        else if text:1:0.is_punctuation() then text.num_punctuation()
+        else text:1.num_word_chars().+(1)
+      }
+    }
+  }
+}
+find_word_boundary_after = |offset, text| {
+  num_advance = find_word_boundary_after_rec(find_word_boundary_after_rec, text.skip(offset))
+  offset.+(num_advance)
+}
+take_and_reverse_rec = |rec, list, n, so_far| {
+  if list.is_nil().or(n.==(0)) then so_far else rec(rec, list:1, n.-(1), cons(list:0, so_far))
+}
+take_and_reverse = |list, n| take_and_reverse_rec(take_and_reverse_rec, list, n, nil)
+find_word_boundary_before = |offset, text| {
+  before_cursor_reversed = text.take_and_reverse(offset)
+  num_advance = find_word_boundary_after_rec(find_word_boundary_after_rec, before_cursor_reversed)
+  offset.-(num_advance)
+}
+
 move_left = |state, width| {
   text = state:0
   cursor = state:1
@@ -1155,7 +1203,10 @@ shift_move_right = |state, width| {
   text = state:0
   cursor = state:1
   offset = cursor:1
-  if offset.==(text.len()) then state else [text [cursor:0 offset.+(1) x_of_offset_in_text(text, offset.+(1), width)]]
+  if offset.==(text.len()) then
+    state
+  else
+    [text [cursor:0 offset.+(1) x_of_offset_in_text(text, offset.+(1), width)]]
 }
 shift_move_up = |state, width| {
   text = state:0
@@ -1179,64 +1230,30 @@ shift_move_down = |state, width| {
 }
 shift_move_start = |state, width| { state.move_start(width) }
 shift_move_end = |state, width| { state.move_start(width) }
-
-# Control + arrow keys move one word.
-# Concretely:
-# 1. Skip spaces
-# 2. How many characters of punctuation follow?
-#    0: Skip all letters
-#    1: Skip the punctuation, then all letters after it
-#    2: Skip all punctutation
-is_word = |char| {
-  char.==("_")
-    .or(char.>=("a").and(char.<=("z")))
-    .or(char.>=("A").and(char.<=("Z")))
-    .or(char.>=("0").and(char.<=("9")))
+ctrl_move_left = |state, width| {
+  text = state:0
+  cursor = state:1
+  new_offset = find_word_boundary_before(cursor:1, text)
+  [text [new_offset new_offset x_of_offset_in_text(text, new_offset, width)]]
 }
-#fun is_punctuation(char: Char): Bool { {char != space} & not(char.is_word()) }
-#fun find_word_boundary[I](iter: &Iter[Char, I]): U64 {
-#  var consumed = 0
-#  var char = loop {
-#    var char = iter.next() orelse return consumed
-#    if char != space then break(char)
-#    consumed = consumed + 1
-#  }
-#  consumed = consumed + 1
-#  if char.is_punctuation()
-#  then {
-#    var char = iter.next() orelse return consumed
-#    if char == space then return consumed
-#    consumed = consumed + 1
-#    if char.is_word()
-#    then loop {
-#      if {iter.next() orelse return consumed}.is_word().not()
-#      then return consumed
-#      consumed = consumed + 1
-#    }
-#    else loop {
-#      if {iter.next() orelse return consumed}.is_punctuation().not()
-#      then return consumed
-#      consumed = consumed + 1
-#    }
-#  }
-#  else loop {
-#    if {iter.next() orelse return consumed}.is_word().not()
-#    then return consumed
-#    consumed = consumed + 1
-#  }
-#}
-#fun move_ctrl_left(whirling: &Whirling) {
-#  var amount_to_move = whirling.text.to_slice()
-#    .subslice(0..whirling.cursor).rev_iter().&.find_word_boundary()
-#  whirling.cursor = whirling.cursor - amount_to_move
-#  whirling.scroll_cursor_into_view()
-#}
-#fun move_ctrl_right(whirling: &Whirling) {
-#  var amount_to_move = whirling.text.to_slice()
-#    .subslice(whirling.cursor..whirling.text.len).iter().&.find_word_boundary()
-#  whirling.cursor = whirling.cursor + amount_to_move
-#  whirling.scroll_cursor_into_view()
-#}
+ctrl_move_right = |state, width| {
+  text = state:0
+  cursor = state:1
+  new_offset = find_word_boundary_after(cursor:1, text)
+  [text [new_offset new_offset x_of_offset_in_text(text, new_offset, width)]]
+}
+ctrl_shift_move_left = |state, width| {
+  text = state:0
+  cursor = state:1
+  new_offset = find_word_boundary_before(cursor:1, text)
+  [text [cursor:0 new_offset x_of_offset_in_text(text, new_offset, width)]]
+}
+ctrl_shift_move_right = |state, width| {
+  text = state:0
+  cursor = state:1
+  new_offset = find_word_boundary_after(cursor:1, text)
+  [text [cursor:0 new_offset x_of_offset_in_text(text, new_offset, width)]]
+}
 
 text_width = 400
 
@@ -1253,10 +1270,18 @@ update = |state, event| {
     else if key.==(259) then { if control_pressed then state.control_backspace() else state.backspace() }
     else if key.==(261) then state.delete()
     else if key.==(262) then {
-      if shift_pressed then state.shift_move_right(text_width) else state.move_right(text_width)
+      if control_pressed then {
+        if shift_pressed then state.ctrl_shift_move_right(text_width) else state.ctrl_move_right(text_width)
+      } else {
+        if shift_pressed then state.shift_move_right(text_width) else state.move_right(text_width)
+      }
     }
     else if key.==(263) then {
-      if shift_pressed then state.shift_move_left(text_width) else  state.move_left(text_width)
+      if control_pressed then {
+        if shift_pressed then state.ctrl_shift_move_left(text_width) else state.ctrl_move_left(text_width)
+      } else {
+        if shift_pressed then state.shift_move_left(text_width) else state.move_left(text_width)
+      }
     }
     else if key.==(264) then {
       if shift_pressed then state.shift_move_down(text_width) else  state.move_down(text_width)
