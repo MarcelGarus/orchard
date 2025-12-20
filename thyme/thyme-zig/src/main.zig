@@ -70,11 +70,13 @@ pub fn main() !void {
                         const keycode = try object_mod.new_int(&heap, @intCast(key.keycode));
                         const control_pressed = try object_mod.new_int(&heap, if (key.control_pressed) 1 else 0);
                         const shift_pressed = try object_mod.new_int(&heap, if (key.shift_pressed) 1 else 0);
+                        const alt_pressed = try object_mod.new_int(&heap, if (key.alt_pressed) 1 else 0);
                         var b = try heap.object_builder(0);
                         try b.emit_pointer(kind);
                         try b.emit_pointer(keycode);
                         try b.emit_pointer(control_pressed);
                         try b.emit_pointer(shift_pressed);
+                        try b.emit_pointer(alt_pressed);
                         break :event b.finish();
                     },
                 };
