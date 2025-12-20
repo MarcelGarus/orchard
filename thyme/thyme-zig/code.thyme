@@ -139,6 +139,8 @@ remove_rec = |rec, list, index| if index.==(0) then list:1 else cons(list:0, rec
 remove = |list, index| remove_rec(remove_rec, list, index)
 skip_rec = |rec, list, n| if n.==(0) then list else rec(rec, list:1, n.-(1))
 skip = |list, n| skip_rec(skip_rec, list, n)
+take_rec = |rec, list, n| if n.==(0) then nil else cons(list:0, rec(rec, list:1, n.-(1)))
+take = |list, n| take_rec(take_rec, list, n)
 remove_range_rec = |rec, list, start, end| {
   if start.==(0) then list.skip(end) else cons(list:0, rec(rec, list:1, start.-(1), end.-(1)))
 }
@@ -153,6 +155,11 @@ pop_rec = |rec, list| if list.tail().is_nil() then nil else cons(list.head(), re
 pop = |list| pop_rec(pop_rec, list)
 len_rec = |rec, list| if list.is_nil() then 0 else rec(rec, list.tail()).+(1)
 len = |list| len_rec(len_rec, list)
+take_and_reverse_rec = |rec, list, n, so_far| {
+  if list.is_nil().or(n.==(0)) then so_far else rec(rec, list:1, n.-(1), cons(list:0, so_far))
+}
+take_and_reverse = |list, n| take_and_reverse_rec(take_and_reverse_rec, list, n, nil)
+slice = |list, range| list.skip(range:0).take(range:1.-(range:0))
 
 # Turning ints into strings
 
@@ -1103,10 +1110,6 @@ find_word_boundary_after = |offset, text| {
   num_advance = find_word_boundary_after_rec(find_word_boundary_after_rec, text.skip(offset))
   offset.+(num_advance)
 }
-take_and_reverse_rec = |rec, list, n, so_far| {
-  if list.is_nil().or(n.==(0)) then so_far else rec(rec, list:1, n.-(1), cons(list:0, so_far))
-}
-take_and_reverse = |list, n| take_and_reverse_rec(take_and_reverse_rec, list, n, nil)
 find_word_boundary_before = |offset, text| {
   before_cursor_reversed = text.take_and_reverse(offset)
   num_advance = find_word_boundary_after_rec(find_word_boundary_after_rec, before_cursor_reversed)
@@ -1163,6 +1166,40 @@ move_end = |state, width| {
   cursor = state:1
   line_end = find_line_end(text, cursor:1)
   [text [line_end line_end x_of_offset_in_text(text, line_end, width)]]
+}
+alt_move_up = |state, width| {
+  text = state:0
+  cursor = state:1
+  start = find_line_start(text, start_of_cursor(cursor))
+  end = find_line_end(text, end_of_cursor(cursor))
+  if start.==(0) then state else {
+    previous_line_start = find_line_start(text, start.-(1))
+    a = text.slice([0 previous_line_start])
+    b = text.slice([previous_line_start start.-(1)])
+    c = text.slice([start end])
+    d = text.skip(end)
+    [
+      concat(a, concat(c, concat(cons(10, nil), concat(b, d))))
+      [cursor:0.-(b.len()).-(1) cursor:1.-(b.len()).-(1) cursor:2]
+    ]
+  }
+}
+alt_move_down = |state, width| {
+  text = state:0
+  cursor = state:1
+  start = find_line_start(text, start_of_cursor(cursor))
+  end = find_line_end(text, end_of_cursor(cursor))
+  if end.==(text.len()) then state else {
+    next_line_end = find_line_end(text, end.+(1))
+    a = text.slice([0 start])
+    b = text.slice([start end])
+    c = text.slice([end.+(1) next_line_end])
+    d = text.skip(next_line_end)
+    [
+      concat(a, concat(c, concat(cons(10, nil), concat(b, d))))
+      [cursor:0.+(c.len()).+(1) cursor:1.+(c.len()).+(1) cursor:2]
+    ]
+  }
 }
 shift_move_left = |state, width| {
   text = state:0
@@ -1326,11 +1363,13 @@ update = |state, event| {
     }
     else if key.==(264) then {
       if modifiers.==(mods_none) then state.move_down(text_width)
+      else if modifiers.==(mods_alt) then state.alt_move_down(text_width)
       else if modifiers.==(mods_shift) then state.shift_move_down(text_width)
       else state
     }
     else if key.==(265) then {
       if modifiers.==(mods_none) then state.move_up(text_width)
+      else if modifiers.==(mods_alt) then state.alt_move_up(text_width)
       else if modifiers.==(mods_shift) then state.shift_move_up(text_width)
       else state
     }
