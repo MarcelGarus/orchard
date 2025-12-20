@@ -1008,44 +1008,6 @@ x_of_offset_in_text = |text, offset, width| {
   if offset.==(0) then 0 else layout_text(text, 0, 0, 1, width):0.get(offset.-(1)):5
 }
 
-insert_char = |state, char| {
-  text = state:0
-  cursor = state:1
-  new_text = text.replace_range(cursor.selection(), char)
-  new_offset = start_of_cursor(cursor).+(1)
-  [
-    new_text
-    [new_offset new_offset x_of_offset_in_text(new_text, new_offset, 100)]
-  ]
-}
-enter = |state| state.insert_char(10)
-backspace = |state| {
-  text = state:0
-  cursor = state:1
-  if cursor.has_selection() then {
-    offset = start_of_cursor(cursor)
-    [text.remove_range(cursor.selection()) [offset offset x_of_offset_in_text(text, offset, 100)]]
-  } else {
-    offset = cursor:0
-    if offset.==(0) then
-      state
-    else
-      [text.remove(offset.-(1)) [offset.-(1) offset.-(1) x_of_offset_in_text(text, offset.-(1), 100)]]
-  }
-}
-control_backspace = |state| { state.backspace() }
-delete = |state| {
-  text = state:0
-  cursor = state:1
-  if cursor.has_selection() then {
-    offset = start_of_cursor(cursor)
-    [text.remove_range(cursor.selection()) [offset offset x_of_offset_in_text(text, offset, 100)]]
-  } else {
-    offset = cursor:0
-    if offset.==(text.len()) then state else [text.remove(offset) cursor]
-  }
-}
-
 find_offset_above_rec = |rec, i, x, y, glyphs| {
   # returns [offset x y] or nil
   if glyphs.is_nil() then nil else {
@@ -1090,6 +1052,19 @@ find_offset_below = |x, y, glyphs| {
   result = find_offset_below_rec(find_offset_below_rec, 1, x, y, glyphs)
   if result.is_nil() then nil else result:0
 }
+
+find_line_start_rec = |rec, text, candidate| {
+  if candidate.==(0) then 0
+  else if text.get(candidate.-(1)).==(10) then candidate
+  else rec(rec, text, candidate.-(1))
+}
+find_line_start = |text, offset| find_line_start_rec(find_line_start_rec, text, offset)
+find_line_end_rec = |rec, text, len, candidate| {
+  if candidate.==(len) then len
+  else if text.get(candidate).==(10) then candidate
+  else rec(rec, text, len, candidate.+(1))
+}
+find_line_end = |text, offset| find_line_end_rec(find_line_end_rec, text, text.len(), offset)
 
 # Move one word =
 # 1. Skip spaces
@@ -1138,6 +1113,13 @@ find_word_boundary_before = |offset, text| {
   offset.-(num_advance)
 }
 
+insert_char = |state, char| {
+  text = state:0
+  cursor = state:1
+  new_text = text.replace_range(cursor.selection(), char)
+  new_offset = start_of_cursor(cursor).+(1)
+  [new_text [new_offset new_offset x_of_offset_in_text(new_text, new_offset, 100)]]
+}
 move_left = |state, width| {
   text = state:0
   cursor = state:1
@@ -1173,24 +1155,13 @@ move_down = |state, width| {
 move_start = |state, width| {
   text = state:0
   cursor = state:1
-  find_line_start = |rec, candidate| {
-    if candidate.==(0) then 0
-    else if text.get(candidate.-(1)).==(10) then candidate
-    else rec(rec, candidate.-(1))
-  }
-  line_start = find_line_start(find_line_start, cursor:1)
+  line_start = find_line_start(text, cursor:1)
   [text [line_start line_start x_of_offset_in_text(text, line_start, width)]]
 }
 move_end = |state, width| {
   text = state:0
   cursor = state:1
-  len = text.len()
-  find_line_end = |rec, candidate| {
-    if candidate.==(len) then len
-    else if text.get(candidate).==(10) then candidate
-    else rec(rec, candidate.+(1))
-  }
-  line_end = find_line_end(find_line_end, cursor:1)
+  line_end = find_line_end(text, cursor:1)
   [text [line_end line_end x_of_offset_in_text(text, line_end, width)]]
 }
 shift_move_left = |state, width| {
@@ -1228,8 +1199,18 @@ shift_move_down = |state, width| {
   new_offset = if new_offset.is_nil() then text.len() else new_offset
   [text [cursor:0 new_offset cursor_desired_x]]
 }
-shift_move_start = |state, width| { state.move_start(width) }
-shift_move_end = |state, width| { state.move_start(width) }
+shift_move_start = |state, width| {
+  text = state:0
+  cursor = state:1
+  line_start = find_line_start(text, cursor:1)
+  [text [cursor:0 line_start x_of_offset_in_text(text, line_start, width)]]
+}
+shift_move_end = |state, width| {
+  text = state:0
+  cursor = state:1
+  line_end = find_line_end(text, cursor:1)
+  [text [cursor:0 line_end x_of_offset_in_text(text, line_end, width)]]
+}
 ctrl_move_left = |state, width| {
   text = state:0
   cursor = state:1
@@ -1253,6 +1234,33 @@ ctrl_shift_move_right = |state, width| {
   cursor = state:1
   new_offset = find_word_boundary_after(cursor:1, text)
   [text [cursor:0 new_offset x_of_offset_in_text(text, new_offset, width)]]
+}
+enter = |state| state.insert_char(10)
+backspace = |state| {
+  text = state:0
+  cursor = state:1
+  if cursor.has_selection() then {
+    offset = start_of_cursor(cursor)
+    [text.remove_range(cursor.selection()) [offset offset x_of_offset_in_text(text, offset, 100)]]
+  } else {
+    offset = cursor:0
+    if offset.==(0) then
+      state
+    else
+      [text.remove(offset.-(1)) [offset.-(1) offset.-(1) x_of_offset_in_text(text, offset.-(1), 100)]]
+  }
+}
+control_backspace = |state| { state.backspace() }
+delete = |state| {
+  text = state:0
+  cursor = state:1
+  if cursor.has_selection() then {
+    offset = start_of_cursor(cursor)
+    [text.remove_range(cursor.selection()) [offset offset x_of_offset_in_text(text, offset, 100)]]
+  } else {
+    offset = cursor:0
+    if offset.==(text.len()) then state else [text.remove(offset) cursor]
+  }
 }
 
 text_width = 400
@@ -1289,8 +1297,12 @@ update = |state, event| {
     else if key.==(265) then {
       if shift_pressed then state.shift_move_up(text_width) else  state.move_up(text_width)
     }
-    else if key.==(268) then state.move_start(text_width)
-    else if key.==(269) then state.move_end(text_width)
+    else if key.==(268) then {
+      if shift_pressed then state.shift_move_start(text_width) else state.move_start(text_width)
+    }
+    else if key.==(269) then {
+      if shift_pressed then state.shift_move_end(text_width) else state.move_end(text_width)
+    }
     else state
   } else crash("unknown event")
 }
