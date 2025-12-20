@@ -1237,27 +1237,38 @@ ctrl_shift_move_right = |state, width| {
 }
 enter = |state, width| state.insert_char(10, width)
 ctrl_enter = |state, width| state.move_end(width).enter(width)
-backspace = |state| {
+backspace = |state, width| {
   text = state:0
   cursor = state:1
   if cursor.has_selection() then {
     offset = start_of_cursor(cursor)
-    [text.remove_range(cursor.selection()) [offset offset x_of_offset_in_text(text, offset, 100)]]
+    [text.remove_range(cursor.selection()) [offset offset x_of_offset_in_text(text, offset, width)]]
   } else {
     offset = cursor:0
     if offset.==(0) then
       state
     else
-      [text.remove(offset.-(1)) [offset.-(1) offset.-(1) x_of_offset_in_text(text, offset.-(1), 100)]]
+      [text.remove(offset.-(1)) [offset.-(1) offset.-(1) x_of_offset_in_text(text, offset.-(1), width)]]
   }
 }
-control_backspace = |state| { state.backspace() }
-delete = |state| {
+control_backspace = |state, width| {
+  text = state:0
+  cursor = state:1
+  if cursor.has_selection() then state.backspace(width) else {
+    offset = cursor:0
+    new_offset = find_word_boundary_before(offset, text)
+    [
+      text.remove_range([new_offset offset])
+      [new_offset new_offset x_of_offset_in_text(text, new_offset, width)]
+    ]
+  }
+}
+delete = |state, width| {
   text = state:0
   cursor = state:1
   if cursor.has_selection() then {
     offset = start_of_cursor(cursor)
-    [text.remove_range(cursor.selection()) [offset offset x_of_offset_in_text(text, offset, 100)]]
+    [text.remove_range(cursor.selection()) [offset offset x_of_offset_in_text(text, offset, width)]]
   } else {
     offset = cursor:0
     if offset.==(text.len()) then state else [text.remove(offset) cursor]
@@ -1276,8 +1287,10 @@ update = |state, event| {
     control_pressed = event:2
     shift_pressed = event:3
     if key.==(257) then { if control_pressed then state.ctrl_enter(text_width) else state.enter(text_width) }
-    else if key.==(259) then { if control_pressed then state.control_backspace() else state.backspace() }
-    else if key.==(261) then state.delete()
+    else if key.==(259) then {
+      if control_pressed then state.control_backspace(text_width) else state.backspace(text_width)
+    }
+    else if key.==(261) then state.delete(text_width)
     else if key.==(262) then {
       if control_pressed then {
         if shift_pressed then state.ctrl_shift_move_right(text_width) else state.ctrl_move_right(text_width)
