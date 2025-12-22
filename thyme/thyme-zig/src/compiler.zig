@@ -1968,7 +1968,7 @@ pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address {
     //    defer std.debug.unlockStderrWriter();
     //    ir.format(heap.*, bw) catch unreachable;
     //}
-    const optimized_ir = try optimize_ir(ally, heap, ir);
+    const optimized_ir = ir; // try optimize_ir(ally, heap, ir);
     //std.debug.print("Optimized IR:\n", .{});
     //{
     //    var buffer: [64]u8 = undefined;
