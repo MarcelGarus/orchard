@@ -86,17 +86,17 @@ pub fn main() !void {
                 app = try vm.call(heap.load(update_lambda, 0), &[_]Address{ thyme_event, heap.load(update_lambda, 1) });
                 app = try handle_tasks(ally, &vm, app);
 
-                // {
-                //     var buffer: [64]u8 = undefined;
-                //     const bw = std.debug.lockStderrWriter(&buffer);
-                //     defer std.debug.unlockStderrWriter();
-                //     try heap.format(app, bw);
-                //     try bw.print("\n", .{});
-                // }
+                {
+                    var buffer: [64]u8 = undefined;
+                    const bw = std.debug.lockStderrWriter(&buffer);
+                    defer std.debug.unlockStderrWriter();
+                    try heap.format(heap.load(app, 3), bw);
+                    try bw.print("\n", .{});
+                }
             }
             gfx.event_queue.items.len = 0;
-            // app = try vm.garbage_collect(start_of_heap, app);
-            _ = start_of_heap;
+            app = try vm.garbage_collect(start_of_heap, app);
+            // _ = start_of_heap;
         }
 
         const size = gfx.get_size();

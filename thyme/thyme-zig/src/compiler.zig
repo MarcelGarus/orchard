@@ -1770,6 +1770,7 @@ const Builtins = struct {
     @"@modulo": Address,
     @"@compare": Address,
     @"@num_words": Address,
+    @"@load": Address,
 };
 
 pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
@@ -1941,6 +1942,20 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
         break :ir builder.finish(body_);
     });
 
+    const load = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const obj = try builder.param();
+        const index = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const zero = try body.word(0);
+        const index_value = try body.load(index, zero);
+        const value = try body.load(obj, index_value);
+        const boxed = try body.new_int(value);
+        const body_ = body.finish(boxed);
+        break :ir builder.finish(body_);
+    });
+
     return .{
         .@"@collect_garbage" = collect_garbage,
         .@"@crash" = crash,
@@ -1951,6 +1966,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
         .@"@modulo" = int_modulo,
         .@"@compare" = int_compare_to_num,
         .@"@num_words" = get_num_words,
+        .@"@load" = load,
     };
 }
 

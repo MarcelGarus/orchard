@@ -216,9 +216,11 @@ fn sweep(heap: *Heap, ally: Ally, boundary: Address, keep: Address) !Address {
         if (header.meta.marked == 1) {
             header.meta.marked = 0;
             if (read != write) {
-                for (0..header.num_words) |i| {
-                    const pointer = heap.memory[read + 1 + i];
-                    if (mapping.get(pointer)) |to| heap.memory[read + 1 + i] = to;
+                if (header.meta.has_pointers == 1) {
+                    for (0..header.num_words) |i| {
+                        const pointer = heap.memory[read + 1 + i];
+                        if (mapping.get(pointer)) |to| heap.memory[read + 1 + i] = to;
+                    }
                 }
                 for (0..size) |i| heap.memory[write + i] = heap.memory[read + i];
                 try mapping.put(read, write);
