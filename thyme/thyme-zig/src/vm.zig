@@ -96,14 +96,14 @@ pub fn get_jitted(vm: *Vm, instructions: Address) !Jit.Jitted {
 pub fn eval(vm: *Vm, ally: Ally, env: anytype, code: []const u8) !Address {
     if (!vm.data_stack.is_empty()) @panic("eval in eval");
     const fun = try compiler.code_to_fun(ally, vm.heap, env, code);
-    {
-        var buffer: [64]u8 = undefined;
-        const bw = std.debug.lockStderrWriter(&buffer);
-        defer std.debug.unlockStderrWriter();
-        try bw.print("evaling ", .{});
-        try vm.heap.format(fun, bw);
-        try bw.print("\n", .{});
-    }
+    // {
+    //     var buffer: [64]u8 = undefined;
+    //     const bw = std.debug.lockStderrWriter(&buffer);
+    //     defer std.debug.unlockStderrWriter();
+    //     try bw.print("evaling ", .{});
+    //     try vm.heap.format(fun, bw);
+    //     try bw.print("\n", .{});
+    // }
     const result = try vm.call(fun, &[_]Address{});
     if (!vm.data_stack.is_empty()) @panic("bad stack");
     return result;

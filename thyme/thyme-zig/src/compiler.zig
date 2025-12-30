@@ -17,7 +17,6 @@ const Str = []const u8;
 
 fn box(ally: Ally, value: anytype) !*@TypeOf(value) {
     const ptr = try ally.create(@TypeOf(value));
-    std.debug.print("boxing {any}\n", .{value});
     ptr.* = value;
     return ptr;
 }
@@ -131,7 +130,6 @@ pub fn str_to_ast(ally: Ally, input: Str) !Ast.Expr {
     } orelse return error.ExpectedExpr;
     parser.consume_whitespace();
     if (parser.cursor < parser.input.len) std.debug.print("Unparsed input at {}.\n", .{parser.cursor});
-    std.debug.print("proto: {any}\n", .{expr});
     return try add_semantics(ally, expr);
 }
 const Parser = struct {
@@ -270,14 +268,12 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
                             };
                             if (std.mem.eql(u8, let_name, "#")) continue;
                             const value = try add_semantics(ally, group[group.len - 2 * i - 2]);
-                            std.debug.print("wrapping {any}\n", .{expr});
                             const new = Ast.Expr{ .let = .{
                                 .name = let_name,
                                 .value = try box(ally, value),
                                 .expr = try box(ally, expr),
                             } };
                             expr = new;
-                            std.debug.print("wrapped: {any}\n", .{expr});
                         }
                         return expr;
                     }
@@ -2193,9 +2189,16 @@ pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address {
 pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) !Address {
     const fun = try ir_to_fun(ally, heap, ir);
     const lambda_symbol = try object_mod.new_symbol(heap, "lambda");
+    const num_params_obj = try object_mod.new_int(heap, @intCast(ir.params.len - 1));
+    const type_ = blk: {
+        var b = try heap.object_builder(@intFromEnum(object_mod.Tag.composite));
+        try b.emit_pointer(lambda_symbol);
+        try b.emit_pointer(num_params_obj);
+        break :blk b.finish();
+    };
     const nil = try object_mod.new_nil(heap);
     var builder = try heap.object_builder(@intFromEnum(object_mod.Tag.lambda));
-    try builder.emit_pointer(lambda_symbol);
+    try builder.emit_pointer(type_);
     try builder.emit_pointer(fun);
     try builder.emit_pointer(nil);
     return builder.finish();
@@ -2204,13 +2207,6 @@ pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) !Address {
 pub fn code_to_fun(ally: Ally, heap: *Heap, env: anytype, code: Str) !Address {
     std.debug.print("parsing\n", .{});
     const ast = try str_to_ast(ally, code);
-    {
-        var buffer: [64]u8 = undefined;
-        const bw = std.debug.lockStderrWriter(&buffer);
-        defer std.debug.unlockStderrWriter();
-        try Ast.format(ast, bw);
-        try bw.print("\n", .{});
-    }
     const ir = try ast_to_ir(ally, heap, env, ast);
     return try ir_to_fun(ally, heap, ir);
 }
