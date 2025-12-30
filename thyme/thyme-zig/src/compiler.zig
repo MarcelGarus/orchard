@@ -304,12 +304,15 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
                         return .{ .member = .{ .of = try box(ally, of), .name = member } };
                     }
                     if (std.mem.eql(u8, name, "|")) {
-                        if (group.len != 3) return error.BadEnum;
+                        if (group.len < 2 or group.len > 3) return error.BadEnum;
                         const variant = switch (group[1]) {
                             .name => |n| n,
                             else => return error.BadEnum,
                         };
-                        const payload = try add_semantics(ally, group[2]);
+                        const payload = if (group.len == 3)
+                            try add_semantics(ally, group[2])
+                        else
+                            Ast.Expr{ .struct_ = .{ .fields = &.{} } }; // Directly create an empty Ast.Struct
                         return .{ .enum_ = .{ .variant = variant, .payload = try box(ally, payload) } };
                     }
                     if (std.mem.eql(u8, name, "%")) {
