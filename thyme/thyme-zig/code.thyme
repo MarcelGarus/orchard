@@ -1,71 +1,61 @@
-# Thyme
+(:
+  intro (:
+    # (There are 64-bit, signed integer number literals.)
+    _ 1
+    # (There are Unicode strings.)
+    _ "Hello, world!"
+    # (There are structs and you can access their members.)
+    _ (& foo 1 bar 2)
+    _ (. (& x 1 y 2) x)
+    # (There are enums and you can switch on them.)
+    _ (| foo (&))
+    _ (% (| foo 1) foo 2 bar 4)
+    # (You can define new variables.)
+    _ (: a 4 a)
+    _ (: a 4 b (& x a y a) (. b x))
+    0
+  )
 
-# Thyme is a functional language that works on a heap of immutable objects. Thyme's operations are
-# low-level and unsafe. Similar to assembly, it's dynamically typed and you can cause segfaults if you're
-# not careful. This is quite unusual for a functional programming language (I think).
-#
-# Thyme operates on a heap of immutable objects, or values. Every object contains a couple of words
-# (64-bit values). Either, all of the words are literals (just data), or they are pointers to other objects.
-# Because the heap tracks this (as well as the size of objects), it knows how objects are connected and
-# can deduplicate and garbage collect them.
+  nil (&)
 
-# Language Features
+  true (| true nil)
+  false (| false nil)
 
-# Thyme supports number literals, like this:
-3
-# This just created an object containing a single word on the heap.
+  crash (\ (message) ((. @ crash) message))
+  unreachable (\ () (crash "unreachable"))
+  ... (\ () (crash "todo"))
+  assert (\ (check) (% check true nil false (crash "assert failed")))
 
-# It also supports strings, like this:
-"Hello"
-# This created an object containing a single word. Of those 8 bytes, 5 are filled with the UTF-8 encoding
-# of "Hello", the other 3 are zero. Longer strings will result in bigger objects with multiple words.
+  _ (assert true)
 
-# Number and string literals create objects on the heap and the expressions themselves evaluate to a
-# pointer to that object. Generally, every expression in Thyme evaluates to a pointer to an object. You can
-# use composites (using brackets) to create objects that contain other objects:
-[1 "hi"]
-# Using a colon, you can index into composites:
-[1 "hi"]:0
+  + (\ (a b) ((. @ add) a b))
+  - (\ (a b) ((. @ subtract) a b))
+  * (\ (a b) ((. @ multiply) a b))
+  / (\ (a b) ((. @ divide) a b))
+  mod (\ (a b) ((. @ modulo) a b))
 
-# You can bind expressions to names and reference them later:
-foo = 1
-bar = foo
+  rec (\ (state fun) (: rec (\ (rec state) (fun (\ (state) (rec rec state)) state)) (rec rec state)))
 
-# Now comes the cool part: The entire program itself is part of the heap! This source code you are reading
-# is compiled into a linked list of instructions for a stack-based VM. These instructions live on the heap.
-# Because there is no separation between data and code (computers are van Neumann-style), we can
-# create new instructions on the fly and run them.
+  # (Linked Lists)
+  empty_list (| empty nil)
+  cons (\ (head tail) (| more (& head head tail tail)))
+  # (push (\ (list item)
+    (rec list (\ (list) (% list empty (cons item empty_list) more (cons (. m head) (rec (. m tail)))))))
+    )
 
-# TODO: do that and remove builtins
 
-# Nil
-#
-# Nil is a value that is used when we don't really need a value. If you have an
-# empty body, it implicitly evaluates to nil.
+  # (% (| bar nil) foo 2 bar 4)
+  # ((\ (a) (& x 2 y a)) 5)
+  foo (\ (a b) (& x a y b))
+  (+ 1 2)
+)
 
-nil = []
 
-# Crashing
 
-crash = |message| @crash(message)
-unreachable = || crash("unreachable")
-todo = || crash("todo")
-assert = |check| if check then nil else crash("assert failed")
 
-# Basic Bool Definitions
 
-true  = 1
-false = 0
 
-assert(true)
 
-# Basic Int Operations
-
-+   = |a, b| @add(a, b)
--   = |a, b| @subtract(a, b)
-*   = |a, b| @multiply(a, b)
-/   = |a, b| @divide(a, b)
-mod = |a, b| @modulo(a, b)
 
 == = |a, b| if -(a, b) then false else true
 != = |a, b| if -(a, b) then true else false
@@ -120,6 +110,9 @@ assert(not(xor(false, false)))
 get_char = |string, index| @load(string, index./(8))./(2.pow(index.mod(8).*(8))).mod(256)
 
 # Linked Lists
+
+
+
 
 cons = |head, tail| [head tail]
 head = |list| list:0

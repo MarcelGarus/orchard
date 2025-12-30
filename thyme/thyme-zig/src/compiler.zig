@@ -15,106 +15,109 @@ const Vm = @import("vm.zig");
 
 const Str = []const u8;
 
+fn box(ally: Ally, value: anytype) !*@TypeOf(value) {
+    const ptr = try ally.create(@TypeOf(value));
+    std.debug.print("boxing {any}\n", .{value});
+    ptr.* = value;
+    return ptr;
+}
+
 // The abstract syntax tree represents the syntax of the program, omitting stuff
 // that's irrelevant for the semantics such as comments and whitespace.
+
+const ProtoAst = union(enum) { name: Str, int: i64, string: Str, group: []const ProtoAst };
 
 const Ast = struct {
     expr: Expr,
 
     pub const Expr = union(enum) {
-        nil,
         name: Str,
-        body: []Expr,
+        let: Let,
         int: i64,
         string: Str,
-        compound: []Expr,
+        struct_: Struct,
+        enum_: Enum,
         member: Member,
-        if_: If,
+        switch_: Switch,
         lambda: Lambda,
         call: Call,
-        var_: Var,
     };
-    pub const Member = struct { of: *Expr, index: *Expr };
-    pub const If = struct { condition: *Expr, then: *Expr, else_: *Expr };
-    pub const Lambda = struct { params: []Str, body: *Expr };
-    pub const Call = struct { callee: *Expr, args: []Expr };
-    pub const Var = struct { name: Str, value: *Expr };
+    pub const Let = struct { name: Str, value: *const Expr, expr: *const Expr };
+    pub const Struct = struct { fields: []const Field };
+    pub const Field = struct { name: Str, value: Expr };
+    pub const Enum = struct { variant: []const u8, payload: *const Expr };
+    pub const Member = struct { of: *const Expr, name: Str };
+    pub const Switch = struct { condition: *const Expr, cases: []const Case };
+    pub const Case = struct { variant: []const u8, body: *const Expr };
+    pub const Lambda = struct { params: []Str, body: *const Expr };
+    pub const Call = struct { callee: *const Expr, args: []const Expr };
 
     pub fn format(expr: Expr, writer: *Writer) !void {
         try format_expr(expr, writer, 0);
     }
     pub fn format_expr(expr: Expr, writer: *Writer, indentation: usize) !void {
+        for (0..indentation) |_| try writer.print("  ", .{});
         switch (expr) {
-            .nil => {
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("nil\n", .{});
-            },
-            .name => |name| {
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("{s}\n", .{name});
-            },
-            .body => |body| {
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("{{\n", .{});
-                for (body) |child| try format_expr(child, writer, indentation + 1);
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("}}\n", .{});
-            },
-            .int => |int| {
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("{}\n", .{int});
-            },
-            .string => |string| {
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("\"{s}\"\n", .{string});
+            .name => |name| try writer.print("{s}", .{name}),
+            .int => |int| try writer.print("{}", .{int}),
+            .string => |string| try writer.print("\"{s}\"", .{string}),
+            .let => |let| {
+                try writer.print("(: {s}\n", .{let.name});
+                try format_expr(let.value.*, writer, indentation + 1);
+                try writer.print("\n", .{});
+                try format_expr(let.expr.*, writer, indentation + 1);
+                try writer.print(")", .{});
             },
             .struct_ => |struct_| {
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("&\n", .{});
-                for (struct_) |field| {
+                try writer.print("(&\n", .{});
+                for (struct_.fields) |field| {
                     for (0..indentation + 1) |_| try writer.print("  ", .{});
-                    try writer.print("{s}:\n", .{field.name});
-                    try format_expr(field.value, writer, indentation + 2);
+                    try writer.print("{s}\n", .{field.name});
+                    try format_expr(field.value, writer, indentation + 1);
+                    try writer.print("\n", .{});
                 }
             },
             .member => |member| {
+                try writer.print("(.\n", .{});
                 try format_expr(member.of.*, writer, indentation);
+                try writer.print("\n", .{});
                 for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print(".{s}\n", .{member.name});
+                try writer.print("{s})\n", .{member.name});
             },
-            .if_ => |if_| {
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("if\n", .{});
-                try format_expr(if_.condition.*, writer, indentation + 1);
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("then\n", .{});
-                try format_expr(if_.then.*, writer, indentation + 1);
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("else\n", .{});
-                try format_expr(if_.else_.*, writer, indentation + 1);
+            .enum_ => |enum_| {
+                try writer.print("(| {s}\n", .{enum_.variant});
+                try format_expr(enum_.payload.*, writer, indentation + 2);
+                try writer.print(")", .{});
+            },
+            .switch_ => |switch_| {
+                try writer.print("(%\n", .{});
+                try format_expr(switch_.condition.*, writer, indentation + 1);
+                for (switch_.cases) |case| {
+                    for (0..indentation) |_| try writer.print("  ", .{});
+                    try writer.print("{s}\n", .{case.variant});
+                    try format_expr(case.body.*, writer, indentation + 1);
+                }
+                try writer.print(")", .{});
             },
             .lambda => |lambda| {
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("|", .{});
+                try writer.print("(\\ (", .{});
                 for (0.., lambda.params) |i, param| {
                     if (i > 0) try writer.print(" ", .{});
                     try writer.print("{s}", .{param});
                 }
-                try writer.print("|\n", .{});
+                try writer.print(")\n", .{});
                 try format_expr(lambda.body.*, writer, indentation + 1);
+                try writer.print(")", .{});
             },
             .call => |call| {
-                try format_expr(call.callee.*, writer, indentation);
-                for (0..indentation + 1) |_| try writer.print("  ", .{});
                 try writer.print("(\n", .{});
-                for (call.args) |arg| try format_expr(arg, writer, indentation + 2);
+                try format_expr(call.callee.*, writer, indentation);
+                for (call.args) |arg| {
+                    try writer.print("\n", .{});
+                    try format_expr(arg, writer, indentation + 2);
+                }
                 for (0..indentation + 1) |_| try writer.print("  ", .{});
-                try writer.print(")\n", .{});
-            },
-            .var_ => |var_| {
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("{s} =\n", .{var_.name});
-                try format_expr(var_.value.*, writer, indentation + 1);
+                try writer.print(")", .{});
             },
         }
     }
@@ -122,16 +125,14 @@ const Ast = struct {
 
 pub fn str_to_ast(ally: Ally, input: Str) !Ast.Expr {
     var parser = Parser{ .ally = ally, .input = input, .cursor = 0 };
-    const exprs = parser.parse_exprs() catch |e| {
+    const expr = parser.parse_expr() catch |e| {
         std.debug.print("Error at {}: {}\n", .{ parser.cursor, e });
-        @panic("bad");
-    };
+        @panic("bad input");
+    } orelse return error.ExpectedExpr;
     parser.consume_whitespace();
-    if (parser.cursor < parser.input.len) {
-        std.debug.print("Unparsed input at {}.\n", .{parser.cursor});
-        @panic("bad");
-    }
-    return .{ .body = exprs };
+    if (parser.cursor < parser.input.len) std.debug.print("Unparsed input at {}.\n", .{parser.cursor});
+    std.debug.print("proto: {any}\n", .{expr});
+    return try add_semantics(ally, expr);
 }
 const Parser = struct {
     ally: Ally,
@@ -151,10 +152,6 @@ const Parser = struct {
         while (true) : (parser.advance()) {
             if (parser.current() == ' ') continue;
             if (parser.current() == '\n') continue;
-            if (parser.current() == '#') {
-                while (!parser.is_at_end() and parser.current() != '\n') parser.advance();
-                continue;
-            }
             break;
         }
     }
@@ -181,23 +178,12 @@ const Parser = struct {
         const start = parser.cursor;
         while (true) {
             const char = parser.current();
-            const is_letter = std.mem.containsAtLeastScalar(
-                u8,
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_+-*/<>!=@",
-                1,
-                char,
-            );
-            const is_digit = std.mem.containsAtLeastScalar(u8, "0123456789", 1, char);
-            if (is_letter or (parser.cursor > start and is_digit)) parser.advance() else break;
+            const is_letter = char != ' ' and char != '\n' and char != '(' and char != ')';
+            if (is_letter) parser.advance() else break;
         }
         const end = parser.cursor;
         if (start == end) return null;
-        const name = parser.input[start..end];
-        if (std.mem.eql(u8, name, "->") or std.mem.eql(u8, name, "=")) {
-            parser.cursor = start;
-            return null;
-        }
-        return name;
+        return parser.input[start..end];
     }
 
     fn parse_int(parser: *Parser) ?i64 {
@@ -242,70 +228,12 @@ const Parser = struct {
         return error.UnknownEscapeSequence;
     }
 
-    fn parse_compound(parser: *Parser) !?Ast.Expr {
-        if (!parser.consume("[")) return null;
-        var parts = ArrayList(Ast.Expr).empty;
+    fn parse_group(parser: *Parser) !?[]const ProtoAst {
+        if (!parser.consume("(")) return null;
+        var parts = ArrayList(ProtoAst).empty;
         while (try parser.parse_expr()) |expr| try parts.append(parser.ally, expr);
-        if (!parser.consume("]")) return error.ExpectedClosingBracket;
-        return .{ .compound = parts.items };
-    }
-
-    fn parse_lambda(parser: *Parser) !?Ast.Expr {
-        if (!parser.consume("|")) return null;
-        var params = ArrayList(Str).empty;
-        while (true) {
-            try params.append(parser.ally, parser.parse_name() orelse break);
-            if (!parser.consume(",")) break;
-        }
-        if (!parser.consume("|")) return error.ExpectedClosingPipe;
-        const body = try parser.parse_expr() orelse return error.ExpectedLambdaBody;
-        const boxed_body = try parser.ally.create(Ast.Expr);
-        boxed_body.* = body;
-        return .{ .lambda = .{ .params = params.items, .body = boxed_body } };
-    }
-
-    fn parse_if(parser: *Parser) !?Ast.Expr {
-        if (!parser.consume("if")) return null;
-        const condition = try parser.parse_expr() orelse return error.ExpectedCondition;
-        if (!parser.consume("then")) return error.ExpectedThen;
-        const then = try parser.parse_expr() orelse return error.ExpectedThenExpr;
-        if (!parser.consume("else")) return error.ExpectedElse;
-        const else_ = try parser.parse_expr() orelse return error.ExpectedElseExpr;
-
-        const boxed_condition = try parser.ally.create(Ast.Expr);
-        const boxed_then = try parser.ally.create(Ast.Expr);
-        const boxed_else = try parser.ally.create(Ast.Expr);
-        boxed_condition.* = condition;
-        boxed_then.* = then;
-        boxed_else.* = else_;
-
-        return .{ .if_ = .{ .condition = boxed_condition, .then = boxed_then, .else_ = boxed_else } };
-    }
-
-    fn parse_block(parser: *Parser) !?Ast.Expr {
-        if (!parser.consume("{")) return null;
-        const exprs = try parser.parse_exprs();
-        if (!parser.consume("}")) return error.ExpectedClosingBrace;
-        return .{ .body = exprs };
-    }
-
-    fn parse_expr_without_suffix(parser: *Parser) !?Ast.Expr {
-        return if (parser.parse_int()) |int|
-            .{ .int = int }
-        else if (try parser.parse_string()) |string|
-            .{ .string = string }
-        else if (try parser.parse_compound()) |struct_|
-            struct_
-        else if (try parser.parse_lambda()) |lambda|
-            lambda
-        else if (try parser.parse_block()) |expr|
-            expr
-        else if (try parser.parse_if()) |if_|
-            if_
-        else if (parser.parse_name()) |name|
-            .{ .name = name }
-        else
-            null;
+        if (!parser.consume(")")) return error.ExpectedClosingBracket;
+        return parts.items;
     }
 
     fn parse_expr(parser: *Parser) error{
@@ -313,84 +241,119 @@ const Parser = struct {
         StringDoesNotEnd,
         NoEscapeSequence,
         UnknownEscapeSequence,
-        ExpectedArrow,
-        ExpectedIndex,
-        ExpectedValue,
-        ExpectedVariant,
-        ExpectedPayload,
-        ExpectedName,
-        ExpectedLambdaBody,
-        ExpectedOpeningBrace,
-        ExpectedOpeningParen,
-        ExpectedClosingPipe,
-        ExpectedClosingBrace,
-        ExpectedClosingParen,
+        ExpectedExpr,
         ExpectedClosingBracket,
-        ExpectedCondition,
-        ExpectedThen,
-        ExpectedThenExpr,
-        ExpectedElse,
-        ExpectedElseExpr,
-        ExpectedVarValue,
-        VarNeedsName,
-    }!?Ast.Expr {
-        var expr: Ast.Expr = try parser.parse_expr_without_suffix() orelse return null;
-
-        while (true) {
-            if (parser.consume(":")) {
-                const index = try parser.parse_expr_without_suffix() orelse return error.ExpectedIndex;
-                const boxed_index = try parser.ally.create(Ast.Expr);
-                boxed_index.* = index;
-                const boxed_of = try parser.ally.create(Ast.Expr);
-                boxed_of.* = expr;
-                expr = .{ .member = .{ .of = boxed_of, .index = boxed_index } };
-            } else if (parser.consume("(")) {
-                var args = ArrayList(Ast.Expr).empty;
-                while (try parser.parse_expr()) |arg| {
-                    try args.append(parser.ally, arg);
-                    _ = parser.consume(",");
-                }
-                if (!parser.consume(")")) return error.ExpectedClosingParen;
-                const boxed_callee = try parser.ally.create(Ast.Expr);
-                boxed_callee.* = expr;
-                expr = .{ .call = .{ .callee = boxed_callee, .args = args.items } };
-            } else if (parser.consume(".")) {
-                const name = parser.parse_name() orelse return error.ExpectedName;
-                if (!parser.consume("(")) return error.ExpectedOpeningParen;
-                var args = ArrayList(Ast.Expr).empty;
-                try args.append(parser.ally, expr);
-                while (try parser.parse_expr()) |arg| {
-                    try args.append(parser.ally, arg);
-                    _ = parser.consume(",");
-                }
-                if (!parser.consume(")")) return error.ExpectedClosingParen;
-                const boxed_callee = try parser.ally.create(Ast.Expr);
-                boxed_callee.* = .{ .name = name };
-                expr = .{ .call = .{ .callee = boxed_callee, .args = args.items } };
-            } else if (parser.consume("= ") or parser.consume("=\n")) {
-                const name = switch (expr) {
-                    .name => |n| n,
-                    else => {
-                        std.debug.print("not name: {any}\n", .{expr});
-                        return error.VarNeedsName;
-                    },
-                };
-                const right = try parser.parse_expr() orelse return error.ExpectedVarValue;
-                const boxed_right = try parser.ally.create(Ast.Expr);
-                boxed_right.* = right;
-                expr = .{ .var_ = .{ .name = name, .value = boxed_right } };
-            } else break;
-        }
-
-        return expr;
-    }
-
-    fn parse_exprs(parser: *Parser) ![]Ast.Expr {
-        var exprs = ArrayList(Ast.Expr).empty;
-        while (true) try exprs.append(parser.ally, try parser.parse_expr() orelse break);
-        return exprs.items;
+    }!?ProtoAst {
+        if (parser.parse_int()) |int| return .{ .int = int };
+        if (try parser.parse_string()) |string| return .{ .string = string };
+        if (parser.parse_name()) |name| return .{ .name = name };
+        if (try parser.parse_group()) |exprs| return .{ .group = exprs };
+        return null;
     }
 };
+fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
+    switch (ast) {
+        .name => |n| return .{ .name = n },
+        .int => |i| return .{ .int = i },
+        .string => |s| return .{ .string = s },
+        .group => |group| {
+            if (group.len == 0) return error.ExpectedExpr;
+            switch (group[0]) {
+                .name => |name| {
+                    if (std.mem.eql(u8, name, ":")) {
+                        if (group.len % 2 == 1) return error.BadLet;
+                        var expr = try add_semantics(ally, group[group.len - 1]);
+                        for (0..group.len / 2 - 1) |i| {
+                            const let_name = switch (group[group.len - 2 * i - 3]) {
+                                .name => |n| n,
+                                else => return error.BadLet,
+                            };
+                            if (std.mem.eql(u8, let_name, "#")) continue;
+                            const value = try add_semantics(ally, group[group.len - 2 * i - 2]);
+                            std.debug.print("wrapping {any}\n", .{expr});
+                            const new = Ast.Expr{ .let = .{
+                                .name = let_name,
+                                .value = try box(ally, value),
+                                .expr = try box(ally, expr),
+                            } };
+                            expr = new;
+                            std.debug.print("wrapped: {any}\n", .{expr});
+                        }
+                        return expr;
+                    }
+                    if (std.mem.eql(u8, name, "&")) {
+                        if (group.len % 2 != 1) return error.BadStruct;
+                        var fields = try ally.alloc(Ast.Field, group.len / 2);
+                        for (0..group.len / 2) |i|
+                            fields[i] = .{
+                                .name = switch (group[2 * i + 1]) {
+                                    .name => |n| n,
+                                    else => return error.BadStruct,
+                                },
+                                .value = try add_semantics(ally, group[2 * i + 2]),
+                            };
+                        return .{ .struct_ = .{ .fields = fields } };
+                    }
+                    if (std.mem.eql(u8, name, ".")) {
+                        if (group.len != 3) return error.BadMember;
+                        const of = try add_semantics(ally, group[1]);
+                        const member = switch (group[2]) {
+                            .name => |n| n,
+                            else => return error.BadMember,
+                        };
+                        return .{ .member = .{ .of = try box(ally, of), .name = member } };
+                    }
+                    if (std.mem.eql(u8, name, "|")) {
+                        if (group.len != 3) return error.BadEnum;
+                        const variant = switch (group[1]) {
+                            .name => |n| n,
+                            else => return error.BadEnum,
+                        };
+                        const payload = try add_semantics(ally, group[2]);
+                        return .{ .enum_ = .{ .variant = variant, .payload = try box(ally, payload) } };
+                    }
+                    if (std.mem.eql(u8, name, "%")) {
+                        if (group.len % 2 == 1) return error.BadSwitch;
+                        const condition = try add_semantics(ally, group[1]);
+                        var cases = ArrayList(Ast.Case).empty;
+                        for (0..group.len / 2 - 1) |i| {
+                            try cases.append(ally, .{
+                                .variant = switch (group[2 * i + 2]) {
+                                    .name => |n| n,
+                                    else => return error.BadSwitch,
+                                },
+                                .body = try box(ally, try add_semantics(ally, group[2 * i + 3])),
+                            });
+                        }
+                        return .{ .switch_ = .{ .condition = try box(ally, condition), .cases = cases.items } };
+                    }
+                    if (std.mem.eql(u8, name, "\\")) {
+                        if (group.len != 3) return error.BadLambda;
+                        var params = ArrayList(Str).empty;
+                        for (switch (group[1]) {
+                            .group => |g| g,
+                            else => return error.BadLambda,
+                        }) |param| {
+                            switch (param) {
+                                .name => |n| try params.append(ally, n),
+                                else => return error.BadLambda,
+                            }
+                        }
+                        return .{ .lambda = .{
+                            .params = params.items,
+                            .body = try box(ally, try add_semantics(ally, group[2])),
+                        } };
+                    }
+                },
+                else => {},
+            }
+            const callee = try add_semantics(ally, group[0]);
+            var args = ArrayList(Ast.Expr).empty;
+            for (group[1..]) |arg| try args.append(ally, try add_semantics(ally, arg));
+            return .{ .call = .{ .callee = try box(ally, callee), .args = args.items } };
+        },
+    }
+}
 
 // The Intermediate Representation is a semantic representation of code.
 // Variable names have been removed, nested expressions been flattened, and
@@ -634,12 +597,6 @@ pub const Ir = struct {
             return try body.load(closure, body.word(index));
         }
 
-        pub fn new_lambda(body: *BodyBuilder, fun: Id, closure: Id) !Id {
-            const pointers = try body.parent.ally.alloc(Id, 2);
-            pointers[0] = fun;
-            pointers[1] = closure;
-            return try body.new(@intFromEnum(object_mod.Tag.lambda), true, pointers);
-        }
         pub fn get_lambda_fun(body: *BodyBuilder, lambda: Id) !Id {
             const zero = try body.word(0);
             return try body.load(lambda, zero);
@@ -694,9 +651,131 @@ const AstToIr = struct {
     ally: Ally,
     heap: *Heap,
     nil: Address,
+    compare_symbols_fun: Address,
+    lookup_field_fun: Address,
 
     pub fn compile(ally: Ally, env: anytype, expr: Ast.Expr, heap: *Heap) !Ir {
-        var compiler = AstToIr{ .ally = ally, .heap = heap, .nil = try object_mod.new_nil(heap) };
+        // TODO: introduce loops to the IR
+        const compare_symbols_fun_rec = try ir_to_fun(ally, heap, fun: {
+            var builder = Builder.init(ally);
+            const rec = try builder.param();
+            const a = try builder.param();
+            const b = try builder.param();
+            const index = try builder.param();
+            const num_words = try builder.param();
+            var body = builder.body();
+            const more_stuff = try body.compare(index, num_words);
+            const result = try body.if_not_zero(more_stuff, then: {
+                var inner = builder.body();
+                const a_word = try inner.load(a, index);
+                const b_word = try inner.load(b, index);
+                const result = try inner.if_not_zero(try inner.compare(a_word, b_word), inner_then: {
+                    var innerer = builder.body();
+                    const result = try innerer.word(0);
+                    break :inner_then innerer.finish(result);
+                }, inner_else: {
+                    var innerer = builder.body();
+                    var args = try ally.alloc(Id, 5);
+                    args[0] = rec;
+                    args[1] = a;
+                    args[2] = b;
+                    args[3] = try innerer.add(index, try innerer.word(1));
+                    args[4] = num_words;
+                    const result = try innerer.call(rec, args);
+                    break :inner_else innerer.finish(result);
+                });
+                break :then inner.finish(result);
+            }, else_: {
+                var inner = builder.body();
+                const result = try inner.word(1);
+                break :else_ inner.finish(result);
+            });
+            const bod = body.finish(result);
+            break :fun builder.finish(bod);
+        });
+        const compare_symbols_fun = try ir_to_fun(ally, heap, fun: {
+            var builder = Builder.init(ally);
+            const a = try builder.param();
+            const b = try builder.param();
+            var body = builder.body();
+            const result = try body.if_not_zero(try body.subtract(try body.num_words(a), try body.num_words(b)), then: {
+                var inner = builder.body();
+                const result = try inner.word(0);
+                break :then inner.finish(result);
+            }, else_: {
+                var inner = builder.body();
+                const num_words = try inner.num_words(a);
+                const rec = try inner.object(compare_symbols_fun_rec);
+                var args = try ally.alloc(Id, 5);
+                args[0] = rec;
+                args[1] = a;
+                args[2] = b;
+                args[3] = try inner.word(0);
+                args[4] = num_words;
+                const result = try inner.call(rec, args);
+                break :else_ inner.finish(result);
+            });
+            const bod = body.finish(result);
+            break :fun builder.finish(bod);
+        });
+        const lookup_field_fun_rec = try ir_to_fun(ally, heap, fun: {
+            var builder = Builder.init(ally);
+            const rec = try builder.param();
+            const type_obj = try builder.param();
+            const symbol = try builder.param();
+            const index = try builder.param();
+            var body = builder.body();
+            const type_has_more_fields = try body.compare(index, try body.num_words(type_obj));
+            const result = try body.if_not_zero(type_has_more_fields, then: {
+                var inner = builder.body();
+                var cmp_args = try ally.alloc(Id, 2);
+                cmp_args[0] = try inner.load(type_obj, index);
+                cmp_args[1] = symbol;
+                const match = try inner.call(try inner.object(compare_symbols_fun), cmp_args);
+                const result = try inner.if_not_zero(match, inner_then: {
+                    var innerer = builder.body();
+                    break :inner_then innerer.finish(index);
+                }, inner_else: {
+                    var innerer = builder.body();
+                    var args = try ally.alloc(Id, 4);
+                    args[0] = rec;
+                    args[1] = type_obj;
+                    args[2] = symbol;
+                    args[3] = try innerer.add(index, try innerer.word(1));
+                    const result = try innerer.call(rec, args);
+                    break :inner_else innerer.finish(result);
+                });
+                break :then inner.finish(result);
+            }, else_: {
+                var inner = builder.body();
+                const result = try inner.crash(try inner.object(try object_mod.new_symbol(heap, "no such field")));
+                break :else_ inner.finish(result);
+            });
+            const bod = body.finish(result);
+            break :fun builder.finish(bod);
+        });
+        const lookup_field_fun = try ir_to_fun(ally, heap, fun: {
+            var builder = Builder.init(ally);
+            const type_obj = try builder.param();
+            const symbol = try builder.param();
+            var body = builder.body();
+            const rec = try body.object(lookup_field_fun_rec);
+            var args = try ally.alloc(Id, 4);
+            args[0] = rec;
+            args[1] = type_obj;
+            args[2] = symbol;
+            args[3] = try body.word(1);
+            const result = try body.call(rec, args);
+            const bod = body.finish(result);
+            break :fun builder.finish(bod);
+        });
+        var compiler = AstToIr{
+            .ally = ally,
+            .heap = heap,
+            .nil = try object_mod.new_nil(heap),
+            .compare_symbols_fun = compare_symbols_fun,
+            .lookup_field_fun = lookup_field_fun,
+        };
         var bindings = Bindings.init();
         var builder = Builder.init(ally);
         var body = builder.body();
@@ -711,9 +790,7 @@ const AstToIr = struct {
 
     fn compile_expr(self: *AstToIr, expr: Ast.Expr, body: *Ir.BodyBuilder, bindings: *Bindings) error{OutOfMemory}!Id {
         switch (expr) {
-            .nil => return try body.object(self.nil),
             .name => |name| return bindings.get(name),
-            .body => |bod| return self.compile_body(bod, body, bindings),
             .int => |int| {
                 var builder = try self.heap.object_builder(@intFromEnum(object_mod.Tag.int));
                 try builder.emit_literal(@bitCast(int));
@@ -730,41 +807,93 @@ const AstToIr = struct {
                 }
                 return body.object(builder.finish());
             },
-            .compound => |parts| {
-                const compiled = try self.ally.alloc(Id, parts.len);
-                for (0.., parts) |i, part| compiled[i] = try self.compile_expr(part, body, bindings);
-                return body.new(@intFromEnum(object_mod.Tag.composite), true, compiled);
+            .let => |let| {
+                const id = try self.compile_expr(let.value.*, body, bindings);
+                const len = bindings.bindings.items.len;
+                try bindings.bind(self.ally, let.name, id);
+                const result = try self.compile_expr(let.expr.*, body, bindings);
+                bindings.bindings.items.len = len;
+                return result;
+            },
+            .struct_ => |struct_| {
+                const struct_symbol = try object_mod.new_symbol(self.heap, "struct");
+                const field_names = try self.ally.alloc(Address, struct_.fields.len);
+                for (0.., struct_.fields) |i, field|
+                    field_names[i] = try object_mod.new_symbol(self.heap, field.name);
+                var b = try self.heap.object_builder(0);
+                try b.emit_pointer(struct_symbol);
+                for (field_names) |field_name| try b.emit_pointer(field_name);
+                const type_ = b.finish();
+                const compiled = try self.ally.alloc(Id, 1 + struct_.fields.len);
+                compiled[0] = try body.object(type_);
+                for (1.., struct_.fields) |i, field| compiled[i] = try self.compile_expr(field.value, body, bindings);
+                return body.new(0, true, compiled);
             },
             .member => |member| {
-                const of_obj = try self.compile_expr(member.of.*, body, bindings);
-                const index_obj = try self.compile_expr(member.index.*, body, bindings);
+                const of = try self.compile_expr(member.of.*, body, bindings);
                 const zero = try body.word(0);
-                const index = try body.load(index_obj, zero);
-                return try body.load(of_obj, index);
+                const type_ = try body.load(of, zero);
+                const type_type = try body.load(type_, zero);
+                const struct_symbol = try body.object(try object_mod.new_symbol(self.heap, "struct"));
+                const is_not_struct = try body.subtract(try body.load(type_type, zero), try body.load(struct_symbol, zero));
+                return try body.if_not_zero(is_not_struct, then: {
+                    var inner = body.child_body();
+                    const message = try inner.object(
+                        try object_mod.new_symbol(self.heap, "you can only get members of structs"),
+                    );
+                    const then = try inner.crash(message);
+                    break :then inner.finish(then);
+                }, else_: {
+                    var inner = body.child_body();
+                    const fun = try inner.object(self.lookup_field_fun);
+                    var args = try self.ally.alloc(Id, 2);
+                    args[0] = type_;
+                    args[1] = try inner.object(try object_mod.new_symbol(self.heap, member.name));
+                    const index = try inner.call(fun, args);
+                    const result = try inner.load(of, index);
+                    break :else_ inner.finish(result);
+                });
             },
-            .if_ => |if_| {
-                const condition = try self.compile_expr(if_.condition.*, body, bindings);
+            .enum_ => |enum_| {
+                const enum_symbol = try object_mod.new_symbol(self.heap, "enum");
+                const variant_name = try object_mod.new_symbol(self.heap, enum_.variant);
+                var b = try self.heap.object_builder(0);
+                try b.emit_pointer(enum_symbol);
+                try b.emit_pointer(variant_name);
+                const type_ = b.finish();
+                const payload = try self.compile_expr(enum_.payload.*, body, bindings);
+                const compiled = try self.ally.alloc(Id, 2);
+                compiled[0] = try body.object(type_);
+                compiled[1] = payload;
+                return body.new(0, true, compiled);
+            },
+            .switch_ => |switch_| {
+                const condition = try self.compile_expr(switch_.condition.*, body, bindings);
                 const zero = try body.word(0);
-                const condition_value = try body.load(condition, zero);
-                return try body.if_not_zero(
-                    condition_value,
-                    then: {
-                        const snapshot = bindings.bindings.items.len;
-                        var inner = body.child_body();
-                        const then = try self.compile_expr(if_.then.*, &inner, bindings);
-                        bindings.bindings.items.len = snapshot;
-                        break :then inner.finish(then);
-                    },
-                    else_: {
-                        const snapshot = bindings.bindings.items.len;
-                        var inner = body.child_body();
-                        const else_ = try self.compile_expr(if_.else_.*, &inner, bindings);
-                        bindings.bindings.items.len = snapshot;
-                        break :else_ inner.finish(else_);
-                    },
-                );
+                const type_ = try body.load(condition, zero);
+                const type_type = try body.load(type_, zero);
+                const enum_symbol = try body.object(try object_mod.new_symbol(self.heap, "enum"));
+                const is_not_enum = try body.subtract(try body.load(type_type, zero), try body.load(enum_symbol, zero));
+                return try body.if_not_zero(is_not_enum, then: {
+                    var inner = body.child_body();
+                    const message = try inner.object(try object_mod.new_symbol(self.heap, "you can only switch on enums"));
+                    const then = try inner.crash(message);
+                    break :then inner.finish(then);
+                }, else_: {
+                    var inner = body.child_body();
+                    const one = try inner.word(1);
+                    const variant = try inner.load(type_, one);
+                    const result = try self.handle_switch_cases(&inner, condition, variant, switch_.cases, bindings);
+                    break :else_ inner.finish(result);
+                });
             },
             .lambda => |lambda| {
+                const lambda_symbol = try object_mod.new_symbol(self.heap, "lambda");
+                const num_args_obj = try object_mod.new_int(self.heap, @intCast(lambda.params.len));
+                var b = try self.heap.object_builder(0);
+                try b.emit_pointer(lambda_symbol);
+                try b.emit_pointer(num_args_obj);
+                const type_ = b.finish();
                 const captured = try get_captured(self.ally, lambda);
                 const lambda_ir = ir: {
                     var lambda_bindings = Bindings.init();
@@ -788,26 +917,86 @@ const AstToIr = struct {
                     for (captured.items) |name| try captured_values.append(self.ally, try bindings.get(name));
                     break :closure try body.new_closure(captured_values.items);
                 };
-                return body.new_lambda(lambda_fun, closure);
+                const pointers = try body.parent.ally.alloc(Id, 3);
+                pointers[0] = try body.object(type_);
+                pointers[1] = lambda_fun;
+                pointers[2] = closure;
+                return try body.new(@intFromEnum(object_mod.Tag.lambda), true, pointers);
             },
             .call => |call| {
                 const callee = try self.compile_expr(call.callee.*, body, bindings);
                 const zero = try body.word(0);
                 const one = try body.word(1);
-                const fun = try body.load(callee, zero);
-                const closure = try body.load(callee, one);
-
-                var args = ArrayList(Id).empty;
-                for (call.args) |arg| try args.append(self.ally, try self.compile_expr(arg, body, bindings));
-                try args.append(self.ally, closure);
-
-                return try body.call(fun, args.items);
+                const two = try body.word(2);
+                const type_ = try body.load(callee, zero);
+                const type_type = try body.load(type_, zero);
+                const lambda_symbol = try object_mod.new_symbol(self.heap, "lambda");
+                const is_not_lambda = try body.compare(
+                    try body.load(type_type, zero),
+                    try body.load(try body.object(lambda_symbol), zero),
+                );
+                return try body.if_not_zero(is_not_lambda, then: {
+                    var inner = body.child_body();
+                    const message = try inner.object(
+                        try object_mod.new_symbol(self.heap, "you can only call lambdas"),
+                    );
+                    const result = try inner.crash(message);
+                    break :then inner.finish(result);
+                }, else_: {
+                    var inner = body.child_body();
+                    const num_params = try inner.load(try inner.load(type_, one), zero);
+                    const num_args = try inner.word(call.args.len);
+                    const result = try inner.if_not_zero(try inner.compare(num_params, num_args), then: {
+                        var innerer = body.child_body();
+                        const message = try innerer.object(
+                            try object_mod.new_symbol(self.heap, "wrong number of arguments"),
+                        );
+                        const result = try innerer.crash(message);
+                        break :then innerer.finish(result);
+                    }, else__: {
+                        var innerer = body.child_body();
+                        const fun = try innerer.load(callee, one);
+                        const closure = try innerer.load(callee, two);
+                        var args = ArrayList(Id).empty;
+                        for (call.args) |arg| try args.append(self.ally, try self.compile_expr(arg, &innerer, bindings));
+                        try args.append(self.ally, closure);
+                        const result = try innerer.call(fun, args.items);
+                        break :else__ innerer.finish(result);
+                    });
+                    break :else_ inner.finish(result);
+                });
             },
-            .var_ => |var_| {
-                const id = try self.compile_expr(var_.value.*, body, bindings);
-                try bindings.bind(self.ally, var_.name, id);
-                return body.object(self.nil);
-            },
+        }
+    }
+
+    fn handle_switch_cases(
+        self: *AstToIr,
+        body: *BodyBuilder,
+        condition: Id,
+        variant: Id,
+        cases: []const Ast.Case,
+        bindings: *Bindings,
+    ) !Id {
+        if (cases.len == 0) {
+            // TODO: name the variant in the error message
+            const message = try body.object(try object_mod.new_symbol(self.heap, "unknown variant"));
+            return try body.crash(message);
+        } else {
+            const case = cases[0];
+            const fun = try body.object(self.compare_symbols_fun);
+            var args = try self.ally.alloc(Id, 2);
+            args[0] = variant;
+            args[1] = try body.object(try object_mod.new_symbol(self.heap, case.variant));
+            const match = try body.call(fun, args);
+            return try body.if_not_zero(match, then: {
+                var inner = body.child_body();
+                const result = try self.compile_expr(case.body.*, &inner, bindings);
+                break :then inner.finish(result);
+            }, else_: {
+                var inner = body.child_body();
+                const result = try self.handle_switch_cases(&inner, condition, variant, cases[1..], bindings);
+                break :else_ inner.finish(result);
+            });
         }
     }
 
@@ -824,16 +1013,6 @@ const AstToIr = struct {
         try collect_captured(ally, lambda.body.*, &ignore, &captured);
         return captured;
     }
-    fn collect_captured_in_new_scope(
-        ally: Ally,
-        expr: Ast.Expr,
-        ignore: *ArrayList(Str),
-        out: *ArrayList(Str),
-    ) error{OutOfMemory}!void {
-        const num_ignored = ignore.items.len;
-        try collect_captured(ally, expr, ignore, out);
-        ignore.items.len = num_ignored;
-    }
     fn collect_captured(
         ally: Ally,
         expr: Ast.Expr,
@@ -841,37 +1020,37 @@ const AstToIr = struct {
         out: *ArrayList(Str),
     ) error{OutOfMemory}!void {
         switch (expr) {
-            .nil => {},
             .name => |name| {
                 for (ignore.items) |ig| if (std.mem.eql(u8, ig, name)) return;
                 for (out.items) |o| if (std.mem.eql(u8, o, name)) return;
                 try out.append(ally, name);
             },
-            .body => |bod| for (bod) |child| try collect_captured(ally, child, ignore, out),
+            .let => |let| {
+                try collect_captured(ally, let.value.*, ignore, out);
+                const len = ignore.items.len;
+                try ignore.append(ally, let.name);
+                try collect_captured(ally, let.expr.*, ignore, out);
+                ignore.items.len = len;
+            },
             .int => {},
             .string => {},
-            .compound => |parts| for (parts) |part| try collect_captured_in_new_scope(ally, part, ignore, out),
-            .member => |member| try collect_captured_in_new_scope(ally, member.of.*, ignore, out),
-            .if_ => |if_| {
-                try collect_captured_in_new_scope(ally, if_.condition.*, ignore, out);
-                try collect_captured_in_new_scope(ally, if_.then.*, ignore, out);
-                try collect_captured_in_new_scope(ally, if_.else_.*, ignore, out);
+            .struct_ => |struct_| for (struct_.fields) |field| try collect_captured(ally, field.value, ignore, out),
+            .enum_ => |enum_| try collect_captured(ally, enum_.payload.*, ignore, out),
+            .member => |member| try collect_captured(ally, member.of.*, ignore, out),
+            .switch_ => |switch_| {
+                try collect_captured(ally, switch_.condition.*, ignore, out);
+                for (switch_.cases) |case|
+                    try collect_captured(ally, case.body.*, ignore, out);
             },
             .lambda => |lambda| {
-                const num_ignored = ignore.items.len;
+                const len = ignore.items.len;
                 for (lambda.params) |param| try ignore.append(ally, param);
                 try collect_captured(ally, lambda.body.*, ignore, out);
-                ignore.items.len = num_ignored;
+                ignore.items.len = len;
             },
             .call => |call| {
-                try collect_captured_in_new_scope(ally, call.callee.*, ignore, out);
-                for (call.args) |arg| try collect_captured_in_new_scope(ally, arg, ignore, out);
-            },
-            .var_ => |var_| {
-                const num_ignored = ignore.items.len;
-                try collect_captured_in_new_scope(ally, var_.value.*, ignore, out);
-                ignore.items.len = num_ignored;
-                try ignore.append(ally, var_.name);
+                try collect_captured(ally, call.callee.*, ignore, out);
+                for (call.args) |arg| try collect_captured(ally, arg, ignore, out);
             },
         }
     }
@@ -1760,20 +1939,7 @@ const WaffleToInstructions = struct {
     }
 };
 
-const Builtins = struct {
-    @"@collect_garbage": Address,
-    @"@crash": Address,
-    @"@add": Address,
-    @"@subtract": Address,
-    @"@multiply": Address,
-    @"@divide": Address,
-    @"@modulo": Address,
-    @"@compare": Address,
-    @"@num_words": Address,
-    @"@load": Address,
-};
-
-pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
+pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
     // "collect_garbage" accepts a lambda that takes zero arguments. It makes a
     // heap checkpoint, calls the lambda, and does a garbage collection, freeing
     // everything that the lambda allocated except the return value.
@@ -1956,18 +2122,39 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Builtins {
         break :ir builder.finish(body_);
     });
 
-    return .{
-        .@"@collect_garbage" = collect_garbage,
-        .@"@crash" = crash,
-        .@"@add" = int_add,
-        .@"@subtract" = int_subtract,
-        .@"@multiply" = int_multiply,
-        .@"@divide" = int_divide,
-        .@"@modulo" = int_modulo,
-        .@"@compare" = int_compare_to_num,
-        .@"@num_words" = get_num_words,
-        .@"@load" = load,
+    const builtins = .{
+        .collect_garbage = collect_garbage,
+        .crash = crash,
+        .add = int_add,
+        .subtract = int_subtract,
+        .multiply = int_multiply,
+        .divide = int_divide,
+        .modulo = int_modulo,
+        .compare = int_compare_to_num,
+        .num_words = get_num_words,
+        .load = load,
     };
+
+    var symbols = [_]Address{undefined} ** @typeInfo(@TypeOf(builtins)).@"struct".fields.len;
+    inline for (0.., @typeInfo(@TypeOf(builtins)).@"struct".fields) |i, field| {
+        symbols[i] = try object_mod.new_symbol(heap, field.name);
+    }
+    const struct_symbol = try object_mod.new_symbol(heap, "struct");
+    const builtins_type = build: {
+        var b = try heap.object_builder(0);
+        try b.emit_pointer(struct_symbol);
+        for (symbols) |symbol| try b.emit_pointer(symbol);
+        break :build b.finish();
+    };
+    const builtins_struct = build: {
+        var b = try heap.object_builder(0);
+        try b.emit_pointer(builtins_type);
+        inline for (@typeInfo(@TypeOf(builtins)).@"struct".fields) |field|
+            try b.emit_pointer(@field(builtins, field.name));
+        break :build b.finish();
+    };
+
+    return builtins_struct;
 }
 
 pub fn instructions_to_fun(heap: *Heap, num_params_: usize, instructions: []const Instruction) !Address {
@@ -2005,15 +2192,25 @@ pub fn ir_to_fun(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address {
 
 pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) !Address {
     const fun = try ir_to_fun(ally, heap, ir);
+    const lambda_symbol = try object_mod.new_symbol(heap, "lambda");
     const nil = try object_mod.new_nil(heap);
     var builder = try heap.object_builder(@intFromEnum(object_mod.Tag.lambda));
+    try builder.emit_pointer(lambda_symbol);
     try builder.emit_pointer(fun);
     try builder.emit_pointer(nil);
     return builder.finish();
 }
 
 pub fn code_to_fun(ally: Ally, heap: *Heap, env: anytype, code: Str) !Address {
+    std.debug.print("parsing\n", .{});
     const ast = try str_to_ast(ally, code);
+    {
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        try Ast.format(ast, bw);
+        try bw.print("\n", .{});
+    }
     const ir = try ast_to_ir(ally, heap, env, ast);
     return try ir_to_fun(ally, heap, ir);
 }

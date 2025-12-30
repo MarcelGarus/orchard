@@ -28,18 +28,16 @@ pub fn main() !void {
     const builtins = try compiler.create_builtins(ally, &heap);
     const file = try std.fs.cwd().openFile("code.thyme", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
-    var app = try vm.eval(ally, builtins, code);
+    var app = try vm.eval(ally, .{ .@"@" = builtins }, code);
+    {
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        try heap.format(app, bw);
+        try bw.print("\n", .{});
+    }
+    if (true) return;
     app = try handle_tasks(ally, &vm, app);
-
-    // {
-    //     var buffer: [64]u8 = undefined;
-    //     const bw = std.debug.lockStderrWriter(&buffer);
-    //     defer std.debug.unlockStderrWriter();
-    //     try heap.format(app, bw);
-    //     try bw.print("\n", .{});
-    // }
-
-    //if (true) return;
 
     var gfx = try Graphics.init(ally);
     defer gfx.deinit();

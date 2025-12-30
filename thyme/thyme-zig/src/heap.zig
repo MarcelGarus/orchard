@@ -283,7 +283,7 @@ pub fn format(heap: Heap, object: Address, writer: *Writer) !void {
     try heap.format_indented(object, writer, 0);
 }
 pub fn format_indented(heap: Heap, object: Address, writer: *Writer, indentation: usize) error{WriteFailed}!void {
-    if (indentation > 200) @panic("we're in too deep");
+    if (indentation > 500) @panic("we're in too deep");
     try writer.print("{x}: {}*{}", .{ object, heap.get(object).words.len, heap.get(object).tag });
     try writer.print("[\n", .{});
     if (heap.get(object).words.len > 100) {
@@ -291,39 +291,22 @@ pub fn format_indented(heap: Heap, object: Address, writer: *Writer, indentation
         return;
     }
     const allocation = heap.get(object);
-    const object_mod = @import("object.zig");
-    const compiler_mod = @import("compiler.zig");
-    if (allocation.tag == @intFromEnum(object_mod.Tag.fun)) {
-        for (0..(indentation + 1)) |_| try writer.print("  ", .{});
-        const ir_ptr = allocation.words[0];
-        switch (@as(object_mod.Tag, @enumFromInt(heap.get(ir_ptr).tag))) {
-            .int => {
-                const ir: *compiler_mod.Ir = @ptrFromInt(@as(usize, @bitCast(
-                    object_mod.get_int(heap, allocation.words[0]),
-                )));
-                try ir.format_indented(heap, writer, indentation + 1);
-            },
-            .composite => try writer.print("function without IR\n", .{}),
-            else => unreachable,
+    if (allocation.has_pointers) {
+        for (allocation.words) |pointer| {
+            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            try heap.format_indented(pointer, writer, indentation + 1);
+            try writer.print("\n", .{});
         }
     } else {
-        if (allocation.has_pointers) {
-            for (allocation.words) |pointer| {
-                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
-                try heap.format_indented(pointer, writer, indentation + 1);
-                try writer.print("\n", .{});
+        for (allocation.words) |literal| {
+            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+            try writer.print("{:<19} | {x:<16} | ", .{ literal, literal });
+            for (0..8) |i| {
+                const c: u8 = @truncate(literal >> @intCast(i * 8));
+                if (c == 0) break;
+                try writer.print("{c}", .{if (c >= 32 and c <= 126) c else '.'});
             }
-        } else {
-            for (allocation.words) |literal| {
-                for (0..(indentation + 1)) |_| try writer.print("  ", .{});
-                try writer.print("{:<19} | {x:<16} | ", .{ literal, literal });
-                for (0..8) |i| {
-                    const c: u8 = @truncate(literal >> @intCast(i * 8));
-                    if (c == 0) break;
-                    try writer.print("{c}", .{if (c >= 32 and c <= 126) c else '.'});
-                }
-                try writer.print("\n", .{});
-            }
+            try writer.print("\n", .{});
         }
     }
     for (0..indentation) |_| try writer.print("  ", .{});
