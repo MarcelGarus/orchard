@@ -47,7 +47,7 @@ const Ast = struct {
     pub const Enum = struct { variant: []const u8, payload: *const Expr };
     pub const Member = struct { of: *const Expr, name: Str };
     pub const Switch = struct { condition: *const Expr, cases: []const Case };
-    pub const Case = struct { variant: []const u8, body: *const Expr };
+    pub const Case = struct { variant: []const u8, payload_name: ?Str, body: *const Expr };
     pub const Lambda = struct { params: []Str, body: *const Expr };
     pub const Call = struct { callee: *const Expr, args: []const Expr };
 
@@ -93,7 +93,11 @@ const Ast = struct {
                 try format_expr(switch_.condition.*, writer, indentation + 1);
                 for (switch_.cases) |case| {
                     for (0..indentation) |_| try writer.print("  ", .{});
-                    try writer.print("{s}\n", .{case.variant});
+                    try writer.print("{s}", .{case.variant});
+                    if (case.payload_name) |payload_name| {
+                        try writer.print(" {s}", .{payload_name});
+                    }
+                    try writer.print("\n", .{});
                     try format_expr(case.body.*, writer, indentation + 1);
                 }
                 try writer.print(")", .{});
@@ -313,11 +317,26 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
                         const condition = try add_semantics(ally, group[1]);
                         var cases = ArrayList(Ast.Case).empty;
                         for (0..group.len / 2 - 1) |i| {
-                            try cases.append(ally, .{
-                                .variant = switch (group[2 * i + 2]) {
-                                    .name => |n| n,
-                                    else => return error.BadSwitch,
+                            var case_variant: Str = undefined;
+                            var case_payload_name: ?Str = null;
+                            switch (group[2 * i + 2]) {
+                                .name => |n| case_variant = n,
+                                .group => |g| {
+                                    if (g.len != 2) return error.BadSwitch;
+                                    case_variant = switch (g[0]) {
+                                        .name => |n| n,
+                                        else => return error.BadSwitch,
+                                    };
+                                    case_payload_name = switch (g[1]) {
+                                        .name => |n| n,
+                                        else => return error.BadSwitch,
+                                    };
                                 },
+                                else => return error.BadSwitch,
+                            }
+                            try cases.append(ally, .{
+                                .variant = case_variant,
+                                .payload_name = case_payload_name,
                                 .body = try box(ally, try add_semantics(ally, group[2 * i + 3])),
                             });
                         }
@@ -986,7 +1005,14 @@ const AstToIr = struct {
             const match = try body.call(fun, args);
             return try body.if_not_zero(match, then: {
                 var inner = body.child_body();
+                const len = bindings.bindings.items.len;
+                if (case.payload_name) |payload_name| {
+                    const one = try inner.word(1);
+                    const payload_value = try inner.load(condition, one);
+                    try bindings.bind(self.ally, payload_name, payload_value);
+                }
                 const result = try self.compile_expr(case.body.*, &inner, bindings);
+                bindings.bindings.items.len = len;
                 break :then inner.finish(result);
             }, else_: {
                 var inner = body.child_body();
@@ -1035,8 +1061,12 @@ const AstToIr = struct {
             .member => |member| try collect_captured(ally, member.of.*, ignore, out),
             .switch_ => |switch_| {
                 try collect_captured(ally, switch_.condition.*, ignore, out);
-                for (switch_.cases) |case|
+                for (switch_.cases) |case| {
+                    const len = ignore.items.len;
+                    if (case.payload_name) |payload_name| try ignore.append(ally, payload_name);
                     try collect_captured(ally, case.body.*, ignore, out);
+                    ignore.items.len = len;
+                }
             },
             .lambda => |lambda| {
                 const len = ignore.items.len;
