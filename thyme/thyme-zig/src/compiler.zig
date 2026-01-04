@@ -2118,8 +2118,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         break :ir builder.finish(body_);
     });
 
-    // TODO: fix
-    const int_compare_to_num = try ir_to_lambda(ally, heap, ir: {
+    const int_compare = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const a = try builder.param();
         const b = try builder.param();
@@ -2127,12 +2126,48 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         var body = builder.body();
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
-        const diff = try body.compare(a_val, b_val);
-        const res = try body.new_int(heap, diff);
-        const body_ = body.finish(res);
+        const compared = try body.compare(a_val, b_val);
+        const variant = try body.if_not_zero(compared, not_equal: {
+            var inner = body.child_body();
+            const variant = try inner.if_eq(compared, try body.word(1), greater: {
+                var innerer = body.child_body();
+                const variant = try innerer.word(try object_mod.new_symbol(heap, "greater"));
+                break :greater innerer.finish(variant);
+            }, less: {
+                var innerer = body.child_body();
+                break :less innerer.finish(try innerer.word(try object_mod.new_symbol(heap, "less")));
+            });
+            break :not_equal inner.finish(variant);
+        }, equal: {
+            var inner = body.child_body();
+            break :equal inner.finish(try inner.word(try object_mod.new_symbol(heap, "equal")));
+        });
+        const type_ = obj: {
+            const words = try ally.alloc(Ir.Id, 2);
+            words[0] = try body.word(try object_mod.new_symbol(heap, "enum"));
+            words[1] = variant;
+            break :obj try body.new(true, words);
+        };
+        const empty_struct = try body.object(
+            try heap.new(.{
+                .has_pointers = true,
+                .words = &[_]Word{
+                    try heap.new(.{
+                        .has_pointers = true,
+                        .words = &[_]Word{object_mod.new_symbol(heap, "struct")},
+                    }),
+                },
+            }),
+        );
+        const result = obj: {
+            const words = try ally.alloc(Ir.Id, 2);
+            words[0] = type_;
+            words[1] = empty_struct;
+            break :obj try body.new(true, words);
+        };
+        const body_ = body.finish(result);
         break :ir builder.finish(body_);
     });
-    _ = int_compare_to_num;
 
     const string_get = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
