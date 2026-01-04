@@ -39,7 +39,6 @@ pub fn is_full(heap: Heap) bool {
 // has separate lists of pointers and literals, you have no low-level control of
 // the memory layout and can't mix pointers and literals.
 pub const Allocation = struct {
-    tag: u8,
     has_pointers: bool,
     words: []const Word,
 };
@@ -50,21 +49,17 @@ pub const Allocation = struct {
 
 const Header = packed struct {
     num_words: u48, // 6 bytes, max 281474976710655 words, ca. 2 PiB
-    tag: u8, // gratis extra payload of allocation
-    meta: packed struct {
-        // meta stuff used by the heap itself
-        marked: u1 = 0, // marking for mark-sweep garbage collection
-        has_pointers: u1 = 0,
-        padding: u6 = 0,
-    },
+    padding1: u8 = 0,
+    padding2: u6 = 0,
+    marked: u1 = 0, // marking for mark-sweep garbage collection
+    has_pointers: u1 = 0,
 };
 comptime {
-    if (@sizeOf(Header) != @sizeOf(Word))
-        @compileError("bad header layout");
+    if (@sizeOf(Header) != @sizeOf(Word)) @compileError("bad header layout");
 }
 
-pub fn object_builder(heap: *Heap, tag: u8) !ObjectBuilder {
-    return try ObjectBuilder.init(heap, tag);
+pub fn object_builder(heap: *Heap) !ObjectBuilder {
+    return try ObjectBuilder.init(heap);
 }
 pub const ObjectBuilder = struct {
     heap: *Heap,
@@ -72,14 +67,10 @@ pub const ObjectBuilder = struct {
     num_pointers: usize = 0,
     num_literals: usize = 0,
 
-    pub fn init(heap: *Heap, tag: u8) !ObjectBuilder {
+    pub fn init(heap: *Heap) !ObjectBuilder {
         const start = heap.used;
         if (heap.is_full()) return error.OutOfMemory;
-        heap.memory[start] = @bitCast(Header{
-            .tag = tag,
-            .num_words = 0,
-            .meta = .{},
-        });
+        heap.memory[start] = @bitCast(Header{ .num_words = 0 });
         return .{ .heap = heap, .start = start };
     }
     fn emit(builder: *ObjectBuilder, word: Word) !void {
@@ -100,7 +91,7 @@ pub const ObjectBuilder = struct {
     pub fn finish(builder: *ObjectBuilder) Address {
         const header: *Header = @ptrCast(&builder.heap.memory[builder.start]);
         const num_words = builder.num_pointers + builder.num_literals;
-        header.meta.has_pointers = if (builder.num_pointers > 0) 1 else 0;
+        header.has_pointers = if (builder.num_pointers > 0) 1 else 0;
         header.num_words = @intCast(num_words);
         builder.heap.used += 1 + num_words;
         return builder.start;
@@ -108,12 +99,22 @@ pub const ObjectBuilder = struct {
 };
 
 pub fn new(heap: *Heap, allocation: Allocation) !Address {
-    var builder = try heap.object_builder(allocation.tag);
+    var builder = try heap.object_builder();
     if (allocation.has_pointers) {
         for (allocation.words) |word| try builder.emit_pointer(word);
     } else {
         for (allocation.words) |word| try builder.emit_literal(word);
     }
+    return builder.finish();
+}
+pub fn new_literals(heap: *Heap, literals: []const Word) !Address {
+    var builder = try heap.object_builder();
+    for (literals) |literal| try builder.emit_literal(literal);
+    return builder.finish();
+}
+pub fn new_pointers(heap: *Heap, pointers: []const Word) !Address {
+    var builder = try heap.object_builder();
+    for (pointers) |pointer| try builder.emit_pointer(pointer);
     return builder.finish();
 }
 
@@ -122,11 +123,7 @@ pub fn get(heap: Heap, address: Address) Allocation {
     const words: []const Address = @ptrCast(
         heap.memory[address + 1 ..][0..@intCast(header.num_words)],
     );
-    return .{
-        .tag = header.tag,
-        .has_pointers = header.meta.has_pointers == 1,
-        .words = words,
-    };
+    return .{ .has_pointers = header.has_pointers == 1, .words = words };
 }
 pub fn load(heap: Heap, base: Address, word_index: usize) Word {
     return heap.memory[base + 1 + word_index];
@@ -149,7 +146,7 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Address, Addr
     while (read < heap.used) {
         // Adjust the pointers using the mapping so far.
         const header: Header = @bitCast(heap.memory[read]);
-        if (header.meta.has_pointers == 1) {
+        if (header.has_pointers == 1) {
             for (0..header.num_words) |i| {
                 const pointer = heap.memory[read + 1 + i];
                 if (map.get(pointer)) |to| heap.memory[read + 1 + i] = to;
@@ -199,9 +196,9 @@ pub fn garbage_collect(
 fn mark(heap: *Heap, boundary: Address, address: Address) void {
     if (address < boundary) return;
     const header: *Header = @ptrCast(&heap.memory[address]);
-    if (header.meta.marked == 1) return;
-    header.meta.marked = 1;
-    if (header.meta.has_pointers == 1)
+    if (header.marked == 1) return;
+    header.marked = 1;
+    if (header.has_pointers == 1)
         for (0..header.num_words) |i|
             heap.mark(boundary, @intCast(heap.memory[address + 1 + i]));
 }
@@ -213,10 +210,10 @@ fn sweep(heap: *Heap, ally: Ally, boundary: Address, keep: Address) !Address {
     while (read < heap.used) {
         const header: *Header = @ptrCast(&heap.memory[read]);
         const size = 1 + header.num_words;
-        if (header.meta.marked == 1) {
-            header.meta.marked = 0;
+        if (header.marked == 1) {
+            header.marked = 0;
             if (read != write) {
-                if (header.meta.has_pointers == 1) {
+                if (header.has_pointers == 1) {
                     for (0..header.num_words) |i| {
                         const pointer = heap.memory[read + 1 + i];
                         if (mapping.get(pointer)) |to| heap.memory[read + 1 + i] = to;
@@ -235,6 +232,31 @@ fn sweep(heap: *Heap, ally: Ally, boundary: Address, keep: Address) !Address {
     return mapping.get(keep) orelse keep;
 }
 
+pub fn copy_to_other(heap: *Heap, ally: Ally, other: *Heap, address: Address) Address {
+    heap.mark(0, address);
+    var cursor = 0;
+    var mapping = Map(Address, Address).init(ally);
+    defer mapping.deinit();
+    while (cursor < heap.used) {
+        const header: *Header = @ptrCast(&heap.memory[cursor]);
+        const size = 1 + header.num_words;
+        if (header.marked == 1) {
+            header.marked = 0;
+            var b = other.object_builder();
+            for (0..header.num_words) |i| {
+                const word = heap.load(cursor, i);
+                if (header.has_pointers)
+                    b.emit_pointer(mapping.get(word) orelse unreachable)
+                else
+                    b.emit_literal(word);
+            }
+            try mapping.put(cursor, b.finish());
+        }
+        cursor += size;
+    }
+    return mapping.get(address);
+}
+
 pub fn dump_raw(heap: Heap) void {
     for (0.., heap.memory[0..heap.used]) |i, w| {
         std.debug.print("{x:3} |", .{i});
@@ -248,7 +270,7 @@ pub fn dump(heap: Heap) void {
     while (i < heap.used) {
         std.debug.print("{x:3} | ", .{i});
         const header: Header = @bitCast(heap.memory[i]);
-        std.debug.print("[{x}] ({} words)", .{ header.tag, header.num_words });
+        std.debug.print("({} words)", .{header.num_words});
         for (0..header.num_words) |j|
             std.debug.print(" {x}", .{heap.memory[i + 1 + j]});
         std.debug.print("\n", .{});
@@ -279,36 +301,84 @@ pub fn dump_stats(heap: Heap) void {
     std.debug.print(", {} objects\n", .{num_objects});
 }
 
+const max_nesting = 30;
 pub fn format(heap: Heap, object: Address, writer: *Writer) !void {
-    try heap.format_indented(object, writer, 0);
+    var nesting = [_]Parent{.{ .first = false, .color = -1 }} ** max_nesting;
+    try heap.format_indented(object, writer, &nesting, 0);
 }
-pub fn format_indented(heap: Heap, object: Address, writer: *Writer, indentation: usize) error{WriteFailed}!void {
-    if (indentation > 500) @panic("we're in too deep");
-    try writer.print("{x}: {}*{}", .{ object, heap.get(object).words.len, heap.get(object).tag });
-    try writer.print("[\n", .{});
-    if (heap.get(object).words.len > 100) {
-        try writer.print("...]", .{});
+const Parent = struct { first: bool, color: i8 };
+fn print_indentation(writer: *Writer, parents: *[max_nesting]Parent, indentation: usize) !void {
+    for (parents[0..indentation]) |p| {
+        try writer.print("{c}[{d}m", .{ 27, @as(usize, switch (p.color) {
+            0 => 93,
+            1 => 91,
+            2 => 94,
+            3 => 92,
+            else => unreachable,
+        }) });
+        try if (p.first) writer.print("𜸖", .{}) else writer.print("│", .{});
+        try writer.print("{c}[0m", .{27});
+    }
+    for (0..indentation) |j| parents[j].first = false;
+    for (indentation..max_nesting + 1) |_| try writer.print(" ", .{});
+    for (indentation..max_nesting) |j| parents[j].color = -1;
+}
+pub fn format_indented(
+    heap: Heap,
+    object: Address,
+    writer: *Writer,
+    parents: *[max_nesting]Parent,
+    indentation: usize,
+) error{WriteFailed}!void {
+    const allocation = heap.get(object);
+
+    parents[indentation] = .{
+        .first = true,
+        .color = find_color: {
+            if (indentation == 0) break :find_color 0;
+            const top = parents[indentation].color;
+            const left = parents[indentation - 1].color;
+            break :find_color if (top != left and parents[indentation - 1].first) left else @mod(top + 1, 4);
+        },
+    };
+    const indent = indentation + 1;
+
+    if (indent == max_nesting) {
+        try print_indentation(writer, parents, indent);
+        try writer.print("...", .{});
         return;
     }
-    const allocation = heap.get(object);
+
+    if (allocation.words.len == 0) {
+        try print_indentation(writer, parents, indent);
+        try writer.print("nothing", .{});
+        return;
+    }
+
     if (allocation.has_pointers) {
-        for (allocation.words) |pointer| {
-            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
-            try heap.format_indented(pointer, writer, indentation + 1);
-            try writer.print("\n", .{});
+        for (0.., allocation.words) |i, pointer| {
+            if (i > 0) try writer.print("\n", .{});
+            // for (nesting[0..indent]) |c| try writer.print("{c}", .{c});
+            try heap.format_indented(pointer, writer, parents, indent);
         }
     } else {
-        for (allocation.words) |literal| {
-            for (0..(indentation + 1)) |_| try writer.print("  ", .{});
+        for (0.., allocation.words) |i, literal| {
+            if (i > 0) try writer.print("\n", .{});
+            try print_indentation(writer, parents, indent);
             try writer.print("{:<19} | {x:<16} | ", .{ literal, literal });
-            for (0..8) |i| {
-                const c: u8 = @truncate(literal >> @intCast(i * 8));
+            for (0..8) |j| {
+                const c: u8 = @truncate(literal >> @intCast(j * 8));
                 if (c == 0) break;
                 try writer.print("{c}", .{if (c >= 32 and c <= 126) c else '.'});
             }
-            try writer.print("\n", .{});
         }
     }
-    for (0..indentation) |_| try writer.print("  ", .{});
-    try writer.print("]", .{});
+}
+
+pub fn dump_obj(heap: Heap, address: Address) void {
+    var buffer: [64]u8 = undefined;
+    const bw = std.debug.lockStderrWriter(&buffer);
+    defer std.debug.unlockStderrWriter();
+    heap.format(address, bw) catch return;
+    bw.print("\n", .{}) catch return;
 }

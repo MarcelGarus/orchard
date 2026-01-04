@@ -30,11 +30,11 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
         //std.debug.print("Running {f}", .{instruction});
 
         switch (instruction) {
-            .push_word => |word| try vm.data_stack.push(word),
-            .push_address => |object| try vm.data_stack.push(object.address),
-            .push_from_stack => |offset| try vm.data_stack.push(vm.data_stack.get(offset)),
+            .word => |word| try vm.data_stack.push(word),
+            .address => |object| try vm.data_stack.push(object.address),
+            .stack => |offset| try vm.data_stack.push(vm.data_stack.get(offset)),
             .pop => |amount| vm.data_stack.pop_n(amount),
-            .pop_below_top => |amount| {
+            .popover => |amount| {
                 const top = vm.data_stack.pop();
                 vm.data_stack.pop_n(amount);
                 try vm.data_stack.push(top);
@@ -64,13 +64,25 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                 const a: i64 = @bitCast(vm.data_stack.pop());
                 try vm.data_stack.push(@bitCast(@mod(a, b)));
             },
+            .shl => {
+                const b: i64 = @bitCast(vm.data_stack.pop());
+                const a: i64 = @bitCast(vm.data_stack.pop());
+                // std.debug.print("{} << {} is {}\n", .{ a, b, a >> @intCast(b) });
+                try vm.data_stack.push(@bitCast(a << @intCast(b)));
+            },
+            .shr => {
+                const b: i64 = @bitCast(vm.data_stack.pop());
+                const a: i64 = @bitCast(vm.data_stack.pop());
+                // std.debug.print("{} >> {} is {}\n", .{ a, b, a >> @intCast(b) });
+                try vm.data_stack.push(@bitCast(a >> @intCast(b)));
+            },
             .compare => {
                 const b: i64 = @bitCast(vm.data_stack.pop());
                 const a: i64 = @bitCast(vm.data_stack.pop());
                 const result: Word = if (a == b) 0 else if (a > b) 1 else 2;
                 try vm.data_stack.push(result);
             },
-            .if_not_zero => |if_| {
+            .@"if" => |if_| {
                 const condition = vm.data_stack.pop();
                 const body_to_run = if (condition != 0) if_.then else if_.else_;
                 try run(vm, body_to_run);
@@ -78,24 +90,15 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
             .new => |new| {
                 const stack = vm.data_stack.memory[0..vm.data_stack.used];
                 const words = stack[stack.len - new.num_words ..];
-                const address = try vm.heap.new(.{
-                    .tag = new.tag,
-                    .has_pointers = new.has_pointers,
-                    .words = words,
-                });
+                const address = try vm.heap.new(.{ .has_pointers = new.has_pointers, .words = words });
                 vm.data_stack.pop_n(new.num_words);
                 try vm.data_stack.push(address);
             },
-            .tag => {
-                const address = vm.data_stack.pop();
-                const tag = vm.heap.get(address).tag;
-                try vm.data_stack.push(@intCast(tag));
-            },
-            .has_pointers => {
+            .points => {
                 const address = vm.data_stack.pop();
                 try vm.data_stack.push(if (vm.heap.get(address).has_pointers) 1 else 0);
             },
-            .num_words => {
+            .size => {
                 const address = vm.data_stack.pop();
                 const num_words = vm.heap.get(address).words.len;
                 try vm.data_stack.push(@intCast(num_words));
@@ -106,11 +109,11 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                 const word = vm.heap.load(base, offset);
                 try vm.data_stack.push(word);
             },
-            .heap_checkpoint => {
+            .heapchek => {
                 const checkpoint = vm.heap.checkpoint();
                 try vm.data_stack.push(@intCast(checkpoint.used));
             },
-            .collect_garbage => {
+            .gc => {
                 const keep = vm.data_stack.pop();
                 const checkpoint = vm.data_stack.pop();
                 vm.heap.dump_stats();

@@ -84,8 +84,7 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
 }
 
 pub fn get_jitted(vm: *Vm, instructions: Address) !Jit.Jitted {
-    for (vm.jitted.items) |entry|
-        if (entry.address == instructions) return entry.jitted;
+    for (vm.jitted.items) |entry| if (entry.address == instructions) return entry.jitted;
     const parsed = try Instruction.parse_instructions(vm.ally, vm.heap.*, instructions);
     std.debug.print("jitting\n", .{});
     const jitted = try Jit.compile(vm.jit_ally, parsed);
@@ -95,33 +94,45 @@ pub fn get_jitted(vm: *Vm, instructions: Address) !Jit.Jitted {
 
 pub fn eval(vm: *Vm, ally: Ally, env: anytype, code: []const u8) !Address {
     if (!vm.data_stack.is_empty()) @panic("eval in eval");
-    const fun = try compiler.code_to_fun(ally, vm.heap, env, code);
+    const check = vm.heap.checkpoint();
+    const fun = try compiler.code_to_lambda(ally, vm.heap, env, code);
+    const fun_ = (try vm.heap.deduplicate(ally, check)).get(fun).?;
     // {
     //     var buffer: [64]u8 = undefined;
     //     const bw = std.debug.lockStderrWriter(&buffer);
     //     defer std.debug.unlockStderrWriter();
     //     try bw.print("evaling ", .{});
-    //     try vm.heap.format(fun, bw);
+    //     try vm.heap.format(fun_, bw);
     //     try bw.print("\n", .{});
     // }
-    const result = try vm.call(fun, &[_]Address{});
+    const result = try vm.call(fun_, &[_]Address{});
     if (!vm.data_stack.is_empty()) @panic("bad stack");
     return result;
 }
 
-pub fn call(vm: *Vm, fun: Address, args: []const Address) !Address {
+pub fn call(vm: *Vm, lambda: Address, args: []const Address) !Address {
     //std.debug.print("calling function {}\n", .{fun});
+    vm.heap.dump_stats();
 
-    if (object_mod.get_int(vm.heap.*, vm.heap.load(fun, 2)) != args.len)
-        @panic("called function with wrong number of params");
+    const type_ = vm.heap.load(lambda, 0);
+    const kind = vm.heap.load(type_, 0);
+    if (!std.mem.eql(u8, object_mod.get_symbol(vm.heap.*, kind), "lambda")) @panic("called non-fun");
 
+    const num_params = vm.heap.load(vm.heap.load(type_, 1), 0);
+    if (num_params != args.len) @panic("called function with wrong number of params");
+
+    const instructions = vm.heap.load(lambda, 1);
+    const closure = vm.heap.load(lambda, 2);
     for (args) |arg| try vm.data_stack.push(@intCast(arg));
-    try vm.run(vm.heap.load(fun, 1));
+    try vm.data_stack.push(closure);
+    try vm.run(instructions);
     return vm.data_stack.pop();
 }
 
 pub fn run(vm: *Vm, instructions: Address) error{ OutOfMemory, ParseError, BadEval }!void {
     //std.debug.print("running instructions at {x}\n", .{instructions});
+    //vm.heap.dump_obj(instructions);
+    // vm.heap.dump_stats();
     const jitted = try vm.get_jitted(instructions);
     try Jit.run(vm, jitted);
 }
