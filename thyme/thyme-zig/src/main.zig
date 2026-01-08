@@ -16,7 +16,7 @@ const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
 pub fn main() !void {
-    std.debug.print("Welcome to Thyme.\n", .{});
+    std.debug.print("Time to Thyme.\n", .{});
 
     var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
     const ally = debug_ally.allocator();
