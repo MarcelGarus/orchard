@@ -73,42 +73,50 @@
   cons (\ (head tail) (| more (& head head tail tail)))
   push (\ (list item)
     (rec list (\ (rec list) (% list empty (cons item empty_list) (more m) (cons (. m head) (rec (. m tail)))))))
+  list_map (\ (list mapper)
+    (rec list (\ (rec list) (% list empty empty_list (more m) (cons (mapper (. m head)) (rec (. m tail)))))))
 
   # (String stuff.)
   get_char (. @ string_get)
-  substr (\ (str start end) (:
-    rec (\ (rec i) (% (== i end) true empty_list false (cons (get_char str i) (rec rec (+ i 1)))))
-    (rec rec start)
-  ))
+  substr (\ (str start end)
+    (rec start (\ (rec i) (% (== i end) true empty_list false (cons (get_char str i) (rec (+ i 1)))))))
   ascii_0 (get_char "0" 0)
   ascii_9 (get_char "9" 0)
   ascii_space (get_char " " 0)
   ascii_newline (get_char "\n" 0)
   ascii_opening_paren (get_char "(" 0)
   ascii_closing_paren (get_char ")" 0)
+  ascii_quote (get_char "\"" 0)
+  ascii_backslash (get_char "\\" 0)
 
   # (Parsing)
   parse (\ (text) (:
     is_digit (\ (char) (and (>= char ascii_0) (<= char ascii_9)))
     _ (assert (is_digit 50))
     is_whitespace (\ (char) (or (== char ascii_space) (== char ascii_newline)))
-    consume_whitespace (\ (i) (:
-      rec (\ (rec i) (% (is_whitespace (get_char text i)) true (rec rec (+ i 1)) false i))
-      (rec rec i)))
+    consume_whitespace (\ (i) (rec i (\ (rec i) (% (is_whitespace (get_char text i)) true (rec (+ i 1)) false i))))
     # (The parsers take an index into the text and return (& index Int result ...).)
     parse_number (\ (i) (:
       rec (\ (rec so_far i) (:
         char (get_char text i)
         (% (is_digit char) true (rec rec (+ (* so_far 10) (- char ascii_0)) (+ i 1)) false (& index i result so_far))))
       (rec rec 0 i)))
-    parse_string (\ (i) (crash "parse string"))
-    parse_word (\ (start) (:
+    parse_string (\ (i) (:
       rec (\ (rec i) (:
+        char (get_char text i)
+        (% (== char ascii_backslash)
+          true (crash "escape")
+          false (% (== char ascii_quote)
+            true (& index (+ i 1) result empty_list)
+            false (: result (rec rec (+ i 1)) (& index (. result index) result (cons char (. result result))))))))
+      (rec rec (+ i 1))
+    ))
+    parse_word (\ (start) (:
+      (rec start (\ (rec i) (:
         char (get_char text i)
         (% (or (is_whitespace char) (or (== char ascii_opening_paren) (== char ascii_closing_paren)))
           true (& index i result (substr text start i))
-          false (rec rec (+ i 1)))))
-      (rec rec start)))
+          false (rec (+ i 1))))))))
     parse_expr (\ (parse_exprs i) (:
       i (consume_whitespace i)
       char (get_char text i)
@@ -121,7 +129,9 @@
             false (crash "expected closing paren to end group")))
         false (% (is_digit char)
           true (: result (parse_number i) (& index (. result index) result (| number (. result result))))
-          false (: result (parse_word i) (& index (. result index) result (| word (. result result))))))))
+          false (% (== char ascii_quote)
+            true (: result (parse_string i) (& index (. result index) result (| string (. result result))))
+            false (: result (parse_word i) (& index (. result index) result (| word (. result result)))))))))
     parse_exprs (\ (rec i) (:
       i (consume_whitespace i)
       char (get_char text i)
@@ -131,14 +141,26 @@
           first (parse_expr rec i)
           rest (rec rec (. first index))
           (& index (. rest index) result (cons (. first result) (. rest result)))))))
-    specialize (\ (tree) (crash "specialize"))
-    # (specialize (. (parse_expr (& exprs parse_exprs expr parse_expr) 0) result))
-    (parse_expr parse_exprs 0)
-  ))
+    add_semantics (\ (tree)
+      (rec tree (\ (rec tree)
+        (% tree
+          number tree
+          string tree
+          (word w) (| name w)
+          (group g) (% g
+            empty (crash "empty group")
+            (more node)
+              (% (. node head)
+                number (| call (& callee (. node head) args (list_map (. node tail) (\ (t) (rec t)))))
+                string (| call (& callee (. node head) args (list_map (. node tail) (\ (t) (rec t)))))
+                (word w) (| call (& callee (. node head) args (list_map (. node tail) (\ (t) (rec t)))))
+                group (| call (& callee (rec (. node head)) args (list_map (. node tail) (\ (t) (rec t)))))))))))
+    (add_semantics (. (parse_expr parse_exprs 0) result))))
 
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
-  # (parse "(foo 2 3))")
-  (substr "hello world" 2 7)
+  # (substr "hello world" 2 7)
+
+  (parse "(+ 2 3)")
 )
 
 parse = |text| {

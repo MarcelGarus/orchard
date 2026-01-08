@@ -2228,12 +2228,18 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         break :ir builder.finish(body_);
     });
 
+    // const string_from_chars_rec = try ir_to_instructions(ally, heap, ir: {
+    //   var builder = Ir.Builder.init(ally);
+    //   const rec = try builder.param();
+    //   var body = builder.body();
+    //   _ = try body.assert_is
+    // });
     const string_from_chars = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const chars = try builder.param();
         _ = try builder.param(); // closure
         var body = builder.body();
-        _ = try body.assert_is_enum(chars, heap, "you can only slice a string");
+        _ = try body.assert_is_enum(chars, heap, "bad string_from_chars");
         const one = try body.word(1);
         const variant = try body.load(chars, one);
         const result = try body.if_eq_symbol(heap, variant, "empty", empty: {
@@ -2244,11 +2250,13 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
             var inner = body.child_body();
             const result = try inner.if_eq_symbol(heap, variant, "more", more: {
                 var innerer = body.child_body();
-                const result = try innerer.crash_with_symbol(heap, "todo: string from chars");
+                // innerer.load(, offset: Id)
+                // _ = try body.assert_is_struct(payload, heap, "bad string_from_chars");
+                const result = try innerer.crash_with_symbol(heap, "todo: string_from_chars");
                 break :more innerer.finish(result);
             }, bad: {
                 var innerer = inner.child_body();
-                const result = try innerer.crash_with_symbol(heap, "bad variant");
+                const result = try innerer.crash_with_symbol(heap, "bad string_from_chars");
                 break :bad innerer.finish(result);
             });
             break :not_empty inner.finish(result);
