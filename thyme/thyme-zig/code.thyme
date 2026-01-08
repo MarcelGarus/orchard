@@ -1,41 +1,71 @@
 (:
   # (
-  intro (:
-    # (There are 64-bit, signed integer number literals.)
-    _ 1
-    # (There are Unicode strings.)
-    _ "Hello, world!"
-    # (There are structs and you can access their members.)
-    _ (& foo 1 bar 2)
-    _ (. (& x 1 y 2) x)
-    # (There are enums and you can switch on them.)
-    _ (| foo)
-    _ (% (| foo 1) foo 2 bar 4)
-    # (You can define new variables.)
-    _ (: a 4 a)
-    _ (: a 4 b (& x a y a) (. b x))
-    0
-  )
+    Welcome to Thyme. This is a tiny programming language with Lisp-like syntax that is closely modeled
+    after the untyped lambda calculus. As values, only has ints, strings, structs, enums, and lambdas.
+    For ints and strings, operations are available via builtin functions (available in the @ struct that is
+    magically in scope). For structs, enums, and lambdas, there are language-level operations for accessing
+    struct members, switching on enums, and calling lambdas.
   )
 
+  # (Nil is used whenever we don't actually want to provide a useful value. Functions that only have
+    side-effects (aka they may crash but that's all they do) return nil. See the assert function for an
+    example.)
   nil (&)
 
-  true (| true)
-  false (| false)
-
+  # (Functions related to crashing.)
   crash (\ (message) ((. @ crash) message))
   unreachable (\ () (crash "unreachable"))
   ... (\ () (crash "todo"))
   assert (\ (check) (% check true nil false (crash "assert failed")))
 
+  # (Your typical boolean values are just enums.)
+  true (| true)
+  false (| false)
+  not (\ (a) (% a true false false true))
+  and (\ (a b) (% a true b false false))
+  or (\ (a b) (% a true true false b))
+  xor (\ (a b) (% a true (not b) false b))
   _ (assert true)
+  _ (assert (not false))
+  _ (assert (not (not true)))
+  _ (assert (and true true))
+  _ (assert (not (and true false)))
+  _ (assert (not (and false true)))
+  _ (assert (not (and false false)))
+  _ (assert (or true true))
+  _ (assert (or true false))
+  _ (assert (or false true))
+  _ (assert (not (or false false)))
+  _ (assert (not (xor true true)))
+  _ (assert (xor true false))
+  _ (assert (xor false true))
+  _ (assert (not (xor false false)))
 
+  # (Int stuff)
   + (\ (a b) ((. @ add) a b))
   - (\ (a b) ((. @ subtract) a b))
   * (\ (a b) ((. @ multiply) a b))
   / (\ (a b) ((. @ divide) a b))
   mod (\ (a b) ((. @ modulo) a b))
+  compare (\ (a b) ((. @ compare) a b))
+  == (\ (a b) (% (compare a b) equal true greater false less false))
+  != (\ (a b) (% (compare a b) equal false greater true less true))
+  < (\ (a b) (% (compare a b) equal false greater false less true))
+  > (\ (a b) (% (compare a b) equal false greater true less false))
+  <= (\ (a b) (% (compare a b) equal true greater false less true))
+  >= (\ (a b) (% (compare a b) equal true greater true less false))
+  _ (assert (== (+ 1 1) 2))
+  _ (assert (== (- 10 1) 9))
+  _ (assert (== (* 3 5) 15))
+  _ (assert (== (/ 8 2) 4))
+  _ (assert (== (mod 10 10) 0))
+  _ (assert (== (mod 12 10) 2))
+  _ (assert (>= 5 4))
+  min (\ (a b) (% (< a b) true a false b))
+  max (\ (a b) (% (> a b) true a false b))
+  abs (\ (a) (% (>= a 0) true a false (- 0 a)))
 
+  # (A function for making recursive stuff easier.)
   rec (\ (state fun) (: rec (\ (rec state) (fun (\ (state) (rec rec state)) state)) (rec rec state)))
 
   # (Linked Lists)
@@ -44,75 +74,74 @@
   push (\ (list item)
     (rec list (\ (rec list) (% list empty (cons item empty_list) (more m) (cons (. m head) (rec (. m tail)))))))
 
-  # (Strings)
-  # (Sort of built into the language.)
-  string_get (. @ string_get)
+  # (String stuff.)
+  get_char (. @ string_get)
+  substr (\ (str start end) (:
+    rec (\ (rec i) (% (== i end) true empty_list false (cons (get_char str i) (rec rec (+ i 1)))))
+    (rec rec start)
+  ))
+  ascii_0 (get_char "0" 0)
+  ascii_9 (get_char "9" 0)
+  ascii_space (get_char " " 0)
+  ascii_newline (get_char "\n" 0)
+  ascii_opening_paren (get_char "(" 0)
+  ascii_closing_paren (get_char ")" 0)
 
   # (Parsing)
   parse (\ (text) (:
-    # (The parsers take an index into the text and return (& index: Int result: ...))
+    is_digit (\ (char) (and (>= char ascii_0) (<= char ascii_9)))
+    _ (assert (is_digit 50))
+    is_whitespace (\ (char) (or (== char ascii_space) (== char ascii_newline)))
+    consume_whitespace (\ (i) (:
+      rec (\ (rec i) (% (is_whitespace (get_char text i)) true (rec rec (+ i 1)) false i))
+      (rec rec i)))
+    # (The parsers take an index into the text and return (& index Int result ...).)
     parse_number (\ (i) (:
-      rec (\ (rec so_far i) (...))
+      rec (\ (rec so_far i) (:
+        char (get_char text i)
+        (% (is_digit char) true (rec rec (+ (* so_far 10) (- char ascii_0)) (+ i 1)) false (& index i result so_far))))
       (rec rec 0 i)))
-    parse_string (...)
-    parse_word (...)
-    parse_exprs (...)
-    parse_expr (...)
-    specialize (...)
-    (specialize (. (parse_expr (& exprs parse_exprs expr parse_expr) 0) result))
+    parse_string (\ (i) (crash "parse string"))
+    parse_word (\ (start) (:
+      rec (\ (rec i) (:
+        char (get_char text i)
+        (% (or (is_whitespace char) (or (== char ascii_opening_paren) (== char ascii_closing_paren)))
+          true (& index i result (substr text start i))
+          false (rec rec (+ i 1)))))
+      (rec rec start)))
+    parse_expr (\ (parse_exprs i) (:
+      i (consume_whitespace i)
+      char (get_char text i)
+      (% (== char ascii_opening_paren)
+        true (:
+          result (parse_exprs parse_exprs (+ i 1))
+          i (consume_whitespace (. result index))
+          (% (== (get_char text i) ascii_closing_paren)
+            true (& index (+ i 1) result (| group (. result result)))
+            false (crash "expected closing paren to end group")))
+        false (% (is_digit char)
+          true (: result (parse_number i) (& index (. result index) result (| number (. result result))))
+          false (: result (parse_word i) (& index (. result index) result (| word (. result result))))))))
+    parse_exprs (\ (rec i) (:
+      i (consume_whitespace i)
+      char (get_char text i)
+      (% (== char ascii_closing_paren)
+        true (& index i result empty_list)
+        false (:
+          first (parse_expr rec i)
+          rest (rec rec (. first index))
+          (& index (. rest index) result (cons (. first result) (. rest result)))))))
+    specialize (\ (tree) (crash "specialize"))
+    # (specialize (. (parse_expr (& exprs parse_exprs expr parse_expr) 0) result))
+    (parse_expr parse_exprs 0)
   ))
 
-  # (push (push empty_list 1) 2)
-  ((. @ compare) 1 2)
+  # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
+  # (parse "(foo 2 3))")
+  (substr "hello world" 2 7)
 )
 
-
 parse = |text| {
-  parse_number_rec = |rec, so_far, i| {
-    char = text.get_char(i)
-    if char.>=("0").and(char.<=("9")) then
-      rec(rec, so_far.*(10).+(char.-("0")), i.+(1))
-    else
-      [so_far i]
-  }
-  parse_number = |i| parse_number_rec(parse_number_rec, 0, i)
-  parse_string = |i| {}
-  parse_word_rec = |rec, i| {
-    char = text.get_char(i)
-    if char.==(" ").or(char.==(10)).or(char.==("(")).or(char.==(")")) then [nil i] else {
-      rest = rec(rec, i.+(1))
-      [cons(char, rest:0) rest:1]
-    }
-  }
-  parse_word = |i| parse_word_rec(parse_word_rec, i)
-  # parsers will contain parsers for [exprs expr]
-  parse_exprs = |parsers, i| {
-    char = text.get_char(i)
-    if char.==(" ").or(char.==(10)) then parsers:0(parsers, i.+(1))
-    else if char.==(")") then [nil i]
-    else {
-      parsed = parsers:1(parsers, i)
-      expr = parsed:0
-      new_i = parsed:1
-      rest = parsers:0(parsers, new_i)
-      [cons(expr, rest:0) rest:1]
-    }
-  }
-  parse_expr = |parsers, i| {
-    char = text.get_char(i)
-    if char.>=("0").and(char.<=("9")) then {
-      parsed = parse_number(i)
-      [["number" parsed:0] parsed:1]
-    }
-    #else if char.==(""") then parse_string(i)
-    else if char.==("(") then {
-      parsed = parsers:0(parsers, i.+(1))
-      [["group" parsed:0] parsed:1.+(1)]
-    } else {
-      parsed = parse_word(i)
-      [["word" parsed:0] parsed:1]
-    }
-  }
   specialize_rec = |rec, tree| {
     if tree:0.!=("group") then tree else {
       first_node = tree:1:0
@@ -129,59 +158,12 @@ parse = |text| {
   parse_expr([parse_exprs parse_expr], 0):0.specialize()
 }
 
-foo = parse("(foo 1 42)")
-
-
-== = |a, b| if -(a, b) then false else true
-!= = |a, b| if -(a, b) then true else false
-<  = |a, b| ==(@compare(a, b), 2)
->  = |a, b| ==(@compare(a, b), 1)
-<= = |a, b| !=(@compare(a, b), 1)
->= = |a, b| !=(@compare(a, b), 2)
-
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))
 pow = |base, i| pow_rec(pow_rec, base, 1, i)
 
-assert(==(+(1, 1), 2))
-assert(==(-(10, 1), 9))
-assert(==(*(3, 5), 15))
-assert(==(/(8, 2), 4))
-assert(10.mod(10).==(0))
-assert(12.mod(10).==(2))
-
-min = |a, b| if a.<(b) then a else b
-max = |a, b| if a.>(b) then a else b
-abs = |a| if a.>=(0) then a else 0.-(a)
-
 is_nil = |obj| ==(@num_words(obj), 0)
 
-# Bool Operations
-
-not = |a| if a then false else true
-and = |a, b| if a then b else false
-or  = |a, b| if a then true else b
-xor = |a, b| if a then not(b) else b
-
-assert(not(false))
-assert(not(not(true)))
-
-assert(and(true, true))
-assert(not(and(true, false)))
-assert(not(and(false, true)))
-assert(not(and(false, false)))
-
-assert(or(true, true))
-assert(or(true, false))
-assert(or(false, true))
-assert(not(or(false, false)))
-
-assert(not(xor(true, true)))
-assert(xor(true, false))
-assert(xor(false, true))
-assert(not(xor(false, false)))
-
 # Linked Lists
-cons = |head, tail| [head tail]
 head = |list| list:0
 tail = |list| list:1
 push_rec = |rec, list, item| if is_nil(list) then cons(item, nil) else cons(head(list), rec(rec, tail(list), item))
