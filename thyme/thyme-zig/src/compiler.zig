@@ -1976,7 +1976,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
     // everything that the lambda allocated except the return value.
     const unchecked_collect_garbage = try Instruction.new_instructions(ally, heap, &[_]Instruction{
         // stack: (fun closure)
-        .heapchek, // (fun closure checkpoint)
+        .heapsize, // (fun closure checkpoint)
         .{ .stack = 1 }, // (fun closure checkpoint closure)
         .{ .stack = 3 }, // (fun closure checkpoint closure fun)
         .{ .word = 1 }, // (fun closure checkpoint closure fun 1)

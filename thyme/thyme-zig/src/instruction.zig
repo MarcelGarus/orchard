@@ -51,7 +51,7 @@ pub const Instruction = union(enum) {
 
     load,
 
-    heapchek,
+    heapsize,
 
     // Pops a word, the object to keep. Pops another word, a heap checkpoint.
     // Collects garbage in the heap starting at the checkpoint, only keeping

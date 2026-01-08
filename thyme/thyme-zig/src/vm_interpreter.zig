@@ -109,7 +109,7 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                 const word = vm.heap.load(base, offset);
                 try vm.data_stack.push(word);
             },
-            .heapchek => {
+            .heapsize => {
                 const checkpoint = vm.heap.checkpoint();
                 try vm.data_stack.push(@intCast(checkpoint.used));
             },
