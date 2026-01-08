@@ -9,59 +9,30 @@ const Address = Heap.Address;
 const object_mod = @import("object.zig");
 
 pub const Instruction = union(enum) {
-    // Pushes a word to the stack.
-    word: Word,
-
-    // Pushes an address to the stack.
-    address: Object,
-
-    // Pushes a word that is somewhere on the stack to the top of the stack. The
-    // offset is relative to the top of the stack: 0 duplicates the top element,
-    // 1 pushes the element below that, etc.
-    stack: usize,
-
-    // Pops the given number of words from the stack.
-    pop: usize,
-
-    // Keeps the top element on the stack, but pops the given number of words below that.
-    popover: usize,
-
-    add,
-    subtract,
-    multiply,
-    divide,
-    modulo,
-    shl, // shift left
-    shr, // shift right
-
-    // Pops two words. Stack before: a b. If a == b, pushes 1. If a > b, pushes 1. If a < b, pushes 2.
-    compare,
-
-    // Pops a word. If the word is not zero, evaluates the then instructions.
-    // Otherwise, the else instructions.
-    @"if": If,
-
-    // New.
-    new: New,
-
-
-    points,
-
-    size,
-
-    load,
-
-    heapsize,
-
-    // Pops a word, the object to keep. Pops another word, a heap checkpoint.
-    // Collects garbage in the heap starting at the checkpoint, only keeping
-    // objects that are needed.
-    // (checkpoint object -> object)
-    gc,
-
-    eval,
-
-    crash,
+    word: Word, // Pushes the word to the stack.
+    address: Object, // Pushes the address to the stack.
+    stack: usize, // Pushes a word from the stack to the stack. Offset 0 = top element, 1 = below top, etc.
+    pop: usize, // Pops the given number of words from the stack.
+    popover: usize, // Keeps the top element on the stack, but pops the given number of words below that.
+    add, // a b -> (a+b)
+    subtract, // a b -> (a-b)
+    multiply, // a b -> (a*b)
+    divide, // a b -> (a/b)
+    modulo, // a b -> (a%b)
+    shl, // a b -> (a<<b). Stands for shift left.
+    shr, // a b -> (a>>b). Stands for shift right.
+    compare, // Pops two words. Stack before: a b. If a == b, pushes 1. If a > b, pushes 1. If a < b, pushes 2.
+    @"if": If, // Pops a word. If not 0, runs then instructions. Otherwise, else instructions.
+    new: New, // Creates a new heap object.
+    flatptro, // Pops an address. An object of the form [a [b [c []]]] becomes [a b c].
+    flatlito, // Pops an address. An object of the form [[a] [[b] [[c] []]]] becomes [a b c].
+    points, // Pops an address. Returns 1 or 0, depending on whether the object contains pointers.
+    size, // Pops an address. Returns the size of the object.
+    load, // addr offset -> ... Loads a word at the offset from the object.
+    heapsize, // Pushes the size of the heap onto the stack. Can be used as a checkpoint for gc.
+    gc, // heapsize obj -> obj. Collects garbage starting at the heapsize, only keeping dependencies of obj.
+    eval, // Pops an address, which should point to an object containing instructions. Runs those.
+    crash, // Pops a message. Crashes with the message.
 
     const Object = struct { address: Address };
     const If = struct { then: []const Instruction, else_: []const Instruction };

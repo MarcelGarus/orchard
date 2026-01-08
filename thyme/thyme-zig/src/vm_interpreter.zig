@@ -94,6 +94,40 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                 vm.data_stack.pop_n(new.num_words);
                 try vm.data_stack.push(address);
             },
+            .flatptro => {
+                var obj = vm.data_stack.pop();
+                var b = try vm.heap.object_builder();
+                while (true) {
+                    const words = vm.heap.get(obj).words;
+                    switch (words.len) {
+                        0 => break,
+                        2 => {
+                            try b.emit_pointer(words[0]);
+                            obj = words[1];
+                        },
+                        else => unreachable,
+                    }
+                }
+                const flattened = b.finish();
+                try vm.data_stack.push(flattened);
+            },
+            .flatlito => {
+                var obj = vm.data_stack.pop();
+                var b = try vm.heap.object_builder();
+                while (true) {
+                    const words = vm.heap.get(obj).words;
+                    switch (words.len) {
+                        0 => break,
+                        2 => {
+                            try b.emit_literal(vm.heap.load(words[0], 0));
+                            obj = words[1];
+                        },
+                        else => unreachable,
+                    }
+                }
+                const flattened = b.finish();
+                try vm.data_stack.push(flattened);
+            },
             .points => {
                 const address = vm.data_stack.pop();
                 try vm.data_stack.push(if (vm.heap.get(address).has_pointers) 1 else 0);

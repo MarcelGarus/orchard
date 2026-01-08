@@ -582,8 +582,51 @@ pub const Ir = struct {
 
         // Higher-level convenience functions
 
+        pub fn type_of(body: *BodyBuilder, obj: Id) !Id {
+            const zero = try body.word(0);
+            return try body.load(obj, zero);
+        }
+        pub fn kind_of(body: *BodyBuilder, type_: Id) !Id {
+            const zero = try body.word(0);
+            return try body.load(type_, zero);
+        }
+
         pub fn if_eq(body: *BodyBuilder, a: Id, b: Id, then: Body, else_: Body) !Id {
             return try body.if_not_zero(try body.subtract(a, b), else_, then);
+        }
+        pub fn if_eq_symbol(body: *BodyBuilder, heap: *Heap, a: Id, symbol: []const u8, then: Body, else_: Body) !Id {
+            const comptime_symbol = try object_mod.new_symbol(heap, symbol);
+            const words = heap.get(comptime_symbol).words;
+            const matches = try body.if_eq(try body.num_words(a), try body.word(words.len), good: {
+                var inner = body.child_body();
+                const result = try inner.if_eq_symbol_rec(a, 0, words);
+                break :good inner.finish(result);
+            }, bad: {
+                var inner = body.child_body();
+                const result = try inner.word(0);
+                break :bad inner.finish(result);
+            });
+            return try body.if_not_zero(matches, then, else_);
+        }
+        fn if_eq_symbol_rec(body: *BodyBuilder, symbol: Id, i: usize, expected: []const u64) !Id {
+            if (i < expected.len) {
+                return try body.word(1);
+            } else {
+                return try body.if_eq(
+                    try body.load(symbol, try body.word(i)),
+                    try body.word(expected[i]),
+                    the_same: {
+                        var inner = body.child_body();
+                        const result = try body.if_eq_symbol_rec(symbol, i + 1, expected);
+                        break :the_same inner.finish(result);
+                    },
+                    not_the_same: {
+                        var inner = body.child_body();
+                        const result = try inner.word(0);
+                        break :not_the_same inner.finish(result);
+                    },
+                );
+            }
         }
 
         pub fn crash_with_symbol(body: *BodyBuilder, heap: *Heap, message: []const u8) !Id {
@@ -608,17 +651,15 @@ pub const Ir = struct {
             return int_obj;
         }
         pub fn assert_is_int(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
-            const zero = try body.word(0);
-            const kind = try body.load(try body.load(value, zero), zero);
-            const int_word = try body.word(heap.load(try object_mod.new_symbol(heap, "int"), 0));
-            return try body.if_not_zero(try body.compare(try body.load(kind, zero), int_word), bad: {
-                var inner = body.child_body();
-                const result = try inner.crash_with_symbol(heap, message);
-                break :bad inner.finish(result);
-            }, good: {
+            const kind = try body.kind_of(try body.type_of(value));
+            return try body.if_eq_symbol(heap, kind, "int", good: {
                 var inner = body.child_body();
                 const result = try inner.word(0);
                 break :good inner.finish(result);
+            }, bad: {
+                var inner = body.child_body();
+                const result = try inner.crash_with_symbol(heap, message);
+                break :bad inner.finish(result);
             });
         }
         pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
@@ -628,17 +669,15 @@ pub const Ir = struct {
         }
 
         pub fn assert_is_string(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
-            const zero = try body.word(0);
-            const kind = try body.load(try body.load(value, zero), zero);
-            const string_word = try body.word(heap.load(try object_mod.new_symbol(heap, "string"), 0));
-            return try body.if_not_zero(try body.compare(try body.load(kind, zero), string_word), bad: {
-                var inner = body.child_body();
-                const result = try inner.crash_with_symbol(heap, message);
-                break :bad inner.finish(result);
-            }, good: {
+            const kind = try body.kind_of(try body.type_of(value));
+            return try body.if_eq_symbol(heap, kind, "string", good: {
                 var inner = body.child_body();
                 const result = try inner.word(0);
                 break :good inner.finish(result);
+            }, bad: {
+                var inner = body.child_body();
+                const result = try inner.crash_with_symbol(heap, message);
+                break :bad inner.finish(result);
             });
         }
         pub fn get_string_value(body: *BodyBuilder, string: Id) !Id {
@@ -646,20 +685,37 @@ pub const Ir = struct {
             return try body.load(string, one);
         }
 
+        pub fn assert_is_struct(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
+            const kind = try body.kind_of(try body.type_of(value));
+            return try body.if_eq_symbol(heap, kind, "struct", good: {
+                var inner = body.child_body();
+                const result = try inner.word(0);
+                break :good inner.finish(result);
+            }, bad: {
+                var inner = body.child_body();
+                const result = try inner.crash_with_symbol(heap, message);
+                break :bad inner.finish(result);
+            });
+        }
+
+        pub fn assert_is_enum(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
+            const kind = try body.kind_of(try body.type_of(value));
+            return try body.if_eq_symbol(heap, kind, "enum", good: {
+                var inner = body.child_body();
+                const result = try inner.word(0);
+                break :good inner.finish(result);
+            }, bad: {
+                var inner = body.child_body();
+                const result = try inner.crash_with_symbol(heap, message);
+                break :bad inner.finish(result);
+            });
+        }
+
         pub fn new_closure(body: *BodyBuilder, captured: []Id) !Id {
             return try body.new(true, captured);
         }
         pub fn get_closure_var(body: *BodyBuilder, closure: Id, index: i64) !Id {
             return try body.load(closure, body.word(index));
-        }
-
-        pub fn get_lambda_fun(body: *BodyBuilder, lambda: Id) !Id {
-            const zero = try body.word(0);
-            return try body.load(lambda, zero);
-        }
-        pub fn get_lambda_closure(body: *BodyBuilder, lambda: Id) !Id {
-            const one = try body.word(1);
-            return try body.load(lambda, one);
         }
 
         pub fn finish_with_zero(body: *BodyBuilder) !Body {
@@ -903,28 +959,16 @@ const AstToIr = struct {
             },
             .member => |member| {
                 const of = try self.compile_expr(member.of.*, body, bindings);
+                _ = try body.assert_is_struct(of, self.heap, "you can only get members of structs");
                 const zero = try body.word(0);
                 const type_ = try body.load(of, zero);
-                const kind = try body.load(type_, zero);
-                return try body.if_eq(
-                    try body.load(kind, zero),
-                    try body.word(self.heap.load(self.struct_symbol, 0)),
-                    is_struct: {
-                        var inner = body.child_body();
-                        const fun = try inner.object(self.lookup_field_fun);
-                        var args = try self.ally.alloc(Id, 2);
-                        args[0] = type_;
-                        args[1] = try inner.object(try object_mod.new_symbol(self.heap, member.name));
-                        const index = try inner.call(fun, args);
-                        const result = try inner.load(of, index);
-                        break :is_struct inner.finish(result);
-                    },
-                    not_struct: {
-                        var inner = body.child_body();
-                        const result = try inner.crash_with_symbol(self.heap, "you can only get members of structs");
-                        break :not_struct inner.finish(result);
-                    },
-                );
+                const fun = try body.object(self.lookup_field_fun);
+                var args = try self.ally.alloc(Id, 2);
+                args[0] = type_;
+                args[1] = try body.object(try object_mod.new_symbol(self.heap, member.name));
+                const index = try body.call(fun, args);
+                const result = try body.load(of, index);
+                return result;
             },
             .enum_ => |enum_| {
                 const variant_name = try object_mod.new_symbol(self.heap, enum_.variant);
@@ -942,25 +986,13 @@ const AstToIr = struct {
             },
             .switch_ => |switch_| {
                 const condition = try self.compile_expr(switch_.condition.*, body, bindings);
+                _ = try body.assert_is_enum(condition, self.heap, "you can only switch on enums");
                 const zero = try body.word(0);
+                const one = try body.word(1);
                 const type_ = try body.load(condition, zero);
-                const kind = try body.load(type_, zero);
-                return try body.if_eq(
-                    try body.load(kind, zero),
-                    try body.word(self.heap.load(self.enum_symbol, 0)),
-                    is_enum: {
-                        var inner = body.child_body();
-                        const one = try inner.word(1);
-                        const variant = try inner.load(type_, one);
-                        const result = try self.handle_switch_cases(&inner, condition, variant, switch_.cases, bindings);
-                        break :is_enum inner.finish(result);
-                    },
-                    not_enum: {
-                        var inner = body.child_body();
-                        const result = try inner.crash_with_symbol(self.heap, "you canc only switch on enums");
-                        break :not_enum inner.finish(result);
-                    },
-                );
+                const variant = try body.load(type_, one);
+                const result = try self.handle_switch_cases(body, condition, variant, switch_.cases, bindings);
+                return result;
             },
             .lambda => |lambda| {
                 const num_args_obj = obj: {
@@ -2196,6 +2228,35 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         break :ir builder.finish(body_);
     });
 
+    const string_from_chars = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const chars = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        _ = try body.assert_is_enum(chars, heap, "you can only slice a string");
+        const one = try body.word(1);
+        const variant = try body.load(chars, one);
+        const result = try body.if_eq_symbol(heap, variant, "empty", empty: {
+            var inner = body.child_body();
+            const result = try inner.object(try object_mod.empty_obj(heap));
+            break :empty inner.finish(result);
+        }, not_empty: {
+            var inner = body.child_body();
+            const result = try inner.if_eq_symbol(heap, variant, "more", more: {
+                var innerer = body.child_body();
+                const result = try innerer.crash_with_symbol(heap, "todo: string from chars");
+                break :more innerer.finish(result);
+            }, bad: {
+                var innerer = inner.child_body();
+                const result = try innerer.crash_with_symbol(heap, "bad variant");
+                break :bad innerer.finish(result);
+            });
+            break :not_empty inner.finish(result);
+        });
+        const body_ = body.finish(result);
+        break :ir builder.finish(body_);
+    });
+
     // TODO: fix
     const get_num_words = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
@@ -2219,6 +2280,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         .modulo = int_modulo,
         .compare = int_compare,
         .string_get = string_get,
+        .string_from_chars = string_from_chars,
         // .num_words = get_num_words,
     };
 
