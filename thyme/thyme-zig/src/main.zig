@@ -35,6 +35,8 @@ pub fn main() !void {
         defer std.debug.unlockStderrWriter();
         try heap.format(app, bw);
         try bw.print("\n", .{});
+        try object_mod.format(heap, app, bw, 0);
+        try bw.print("\n", .{});
     }
     if (true) return;
     app = try handle_tasks(ally, &vm, app);

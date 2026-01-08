@@ -83,58 +83,31 @@ pub fn get_lambda(heap: *Heap, lambda: Address) Lambda {
     };
 }
 
-// pub fn format_value(heap: Heap, value: Address, writer: *std.io.Writer, indentation: usize) !void {
-//     for (0..indentation) |_| try writer.writeAll("  ");
-//     const obj = heap.get(value);
-//     const type_ = heap.get(obj.words[0]);
-//     const kind = type_.get(0);
-//     if (std.mem.eql(u8, kind, "int")) {
-//         try writer.print("{d}", .{obj.words[1]});
-//     } else if (std.mem.eql(u8, kind, "string")) {
-//         try writer.print("{s}", .{get_symbol(heap, obj.words[1])});
-//     } else if (std.mem.eql(u8, kind, "struct")) {
-//         try writer.print("(&", .{});
-//         if (obj.words.len == 1) { // Empty struct (only contains type_object_address)
-//             try writer.print(")", .{});
-//             return;
-//         }
-//         try writer.print("\n", .{});
-//         // Iterate through fields (field name, field value)
-//         // Field names are in the type object (starting from index 1)
-//         // Field values are in the object itself (starting from index 1)
-//         for (1..obj.words.len) |i| {
-//             const field_name_address = heap.load(type_object_address, i);
-//             for (0..indentation + 1) |_| { // Inlined indent
-//                 try writer.writeAll("  ");
-//             }
-//             try writer.print("{s} ", .{get_symbol(heap, field_name_address)});
-//             try format_value(heap, heap.load(value, i), writer, indentation + 1); // Recursively format value with increased indentation
-//             try writer.print("\n", .{});
-//         }
-//         for (0..indentation) |_| { // Inlined indent
-//             try writer.writeAll("  ");
-//         }
-//         try writer.print(")", .{});
-//         return;
-//     } else if (std.mem.eql(u8, kind, "enum")) {
-//         try writer.print("(| {s}", .{get_symbol(heap, heap.load(type_object_address, 1))});
-//         if (obj.words.len > 1) { // Check if there's a payload
-//             const payload_address = heap.load(value, 1); // Payload is at index 1
-//             if (is_nil(heap, payload_address)) {
-//                 // If payload is nil (empty struct), don't print it.
-//                 // This matches the `(| empty)` style rather than `(| empty nil)`
-//             } else {
-//                 try writer.print("\n", .{});
-//                 try format_value(heap, payload_address, writer, indentation + 1); // Indent payload
-//                 try writer.print("\n", .{});
-//                 for (0..indentation) |_| { // Inlined indent
-//                     try writer.writeAll("  ");
-//                 }
-//             }
-//         }
-//         try writer.print(")", .{});
-//         return;
-//     } else if (std.mem.eql(u8, kind, "lambda")) {
-//         try writer.print("lambda", .{});
-//     } else @panic("unknown type");
-// }
+pub fn format(heap: Heap, value: Address, writer: *std.io.Writer, indentation: usize) !void {
+    const type_ = heap.load(value, 0);
+    const kind = heap.load(type_, 0);
+    const kind_str = get_symbol(heap, kind);
+    if (std.mem.eql(u8, kind_str, "int")) {
+        try writer.print("{d}", .{heap.load(heap.load(value, 1), 0)});
+    } else if (std.mem.eql(u8, kind_str, "string")) {
+        try writer.print("{s}", .{get_symbol(heap, heap.load(value, 1))});
+    } else if (std.mem.eql(u8, kind_str, "struct")) {
+        try writer.print("(&", .{});
+        for (heap.get(type_).words[1..], heap.get(value).words[1..]) |field_name, field| {
+            try writer.print("\n", .{});
+            for (0..indentation + 1) |_| try writer.writeAll("  ");
+            try writer.print("{s} ", .{get_symbol(heap, field_name)});
+            try format(heap, field, writer, indentation + 1);
+        }
+        try writer.print(")", .{});
+    } else if (std.mem.eql(u8, kind_str, "enum")) {
+        try writer.print("(| {s}", .{get_symbol(heap, heap.load(type_, 1))});
+        const payload = heap.load(value, 1);
+        try writer.print("\n", .{});
+        for (0..indentation + 1) |_| try writer.writeAll("  ");
+        try format(heap, payload, writer, indentation + 1);
+        try writer.print(")", .{});
+    } else if (std.mem.eql(u8, kind_str, "lambda")) {
+        try writer.print("lambda", .{});
+    } else @panic("unknown type");
+}
