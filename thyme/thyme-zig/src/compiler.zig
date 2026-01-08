@@ -2124,6 +2124,8 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         const b = try builder.param();
         _ = try builder.param(); // closure
         var body = builder.body();
+        _ = try body.assert_is_int(a, heap, "you can only compare ints");
+        _ = try body.assert_is_int(b, heap, "you can only compare ints");
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const compared = try body.compare(a_val, b_val);
@@ -2131,20 +2133,22 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
             var inner = body.child_body();
             const variant = try inner.if_eq(compared, try body.word(1), greater: {
                 var innerer = body.child_body();
-                const variant = try innerer.word(try object_mod.new_symbol(heap, "greater"));
+                const variant = try innerer.object(try object_mod.new_symbol(heap, "greater"));
                 break :greater innerer.finish(variant);
             }, less: {
                 var innerer = body.child_body();
-                break :less innerer.finish(try innerer.word(try object_mod.new_symbol(heap, "less")));
+                const variant = try innerer.object(try object_mod.new_symbol(heap, "less"));
+                break :less innerer.finish(variant);
             });
             break :not_equal inner.finish(variant);
         }, equal: {
             var inner = body.child_body();
-            break :equal inner.finish(try inner.word(try object_mod.new_symbol(heap, "equal")));
+            const variant = try inner.object(try object_mod.new_symbol(heap, "equal"));
+            break :equal inner.finish(variant);
         });
         const type_ = obj: {
             const words = try ally.alloc(Ir.Id, 2);
-            words[0] = try body.word(try object_mod.new_symbol(heap, "enum"));
+            words[0] = try body.object(try object_mod.new_symbol(heap, "enum"));
             words[1] = variant;
             break :obj try body.new(true, words);
         };
@@ -2154,7 +2158,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
                 .words = &[_]Word{
                     try heap.new(.{
                         .has_pointers = true,
-                        .words = &[_]Word{object_mod.new_symbol(heap, "struct")},
+                        .words = &[_]Word{try object_mod.new_symbol(heap, "struct")},
                     }),
                 },
             }),
@@ -2213,7 +2217,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         .multiply = int_multiply,
         .divide = int_divide,
         .modulo = int_modulo,
-        // .compare = int_compare_to_num,
+        .compare = int_compare,
         .string_get = string_get,
         // .num_words = get_num_words,
     };

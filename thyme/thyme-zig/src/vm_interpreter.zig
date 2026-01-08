@@ -139,7 +139,6 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                 }
                 @panic("crashed");
             },
-            else => @panic("todo"),
         }
     }
 }

@@ -20,25 +20,21 @@ pub const Instruction = union(enum) {
     // 1 pushes the element below that, etc.
     stack: usize,
 
+    // Pops the given number of words from the stack.
     pop: usize,
 
+    // Keeps the top element on the stack, but pops the given number of words below that.
     popover: usize,
 
-    // Pops two words. Pushes their sum.
     add,
-
     subtract,
-
     multiply,
-
     divide,
-
     modulo,
+    shl, // shift left
+    shr, // shift right
 
-    shl,
-
-    shr,
-
+    // Pops two words. Stack before: a b. If a == b, pushes 1. If a > b, pushes 1. If a < b, pushes 2.
     compare,
 
     // Pops a word. If the word is not zero, evaluates the then instructions.
@@ -48,7 +44,6 @@ pub const Instruction = union(enum) {
     // New.
     new: New,
 
-    tag,
 
     points,
 
@@ -192,8 +187,8 @@ pub const Instruction = union(enum) {
                     try instruction.format_indented(writer, indentation + 1);
             },
             .new => |new| try writer.print(
-                "new [{}] with {} {s}\n",
-                .{ new.tag, new.num_words, if (new.has_pointers) "pointers" else "literals" },
+                "new with {} {s}\n",
+                .{ new.num_words, if (new.has_pointers) "pointers" else "literals" },
             ),
             inline else => try writer.print("{s}\n", .{@tagName(instr)}),
         }

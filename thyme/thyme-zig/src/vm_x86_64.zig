@@ -229,7 +229,6 @@ fn compile_single(emitter: *Emitter, instruction: Instruction) error{OutOfMemory
         .compare => @panic("JIT compare"), // equal: 0, greater: 1, less: 2
         .if_not_zero => @panic("JIT if_not_zero"),
         .new => @panic("JIT new"),
-        .tag => @panic("JIT tag"),
         .num_pointers => @panic("JIT num_pointers"),
         .num_literals => @panic("JIT num_literals"),
         .load => @panic("JIT load"),
