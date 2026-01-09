@@ -75,6 +75,7 @@
     (rec list (\ (rec list) (% list empty (cons item empty_list) (more m) (cons (. m head) (rec (. m tail)))))))
   list_map (\ (list mapper)
     (rec list (\ (rec list) (% list empty empty_list (more m) (cons (mapper (. m head)) (rec (. m tail)))))))
+  array_from_linked_list (\ (list) ((. @ array_from_linked_list) list))
 
   # (String stuff.)
   get_char (. @ string_get)
@@ -141,6 +142,10 @@
           first (parse_expr rec i)
           rest (rec rec (. first index))
           (& index (. rest index) result (cons (. first result) (. rest result)))))))
+    # (The above parsers are enough to parse a string into a tree of words (such as foo, bar), numbers
+      (such as 1, 2, or 3), strings (such as "hi" or "blub"), and groups (such as (hi there)). Thyme has some
+      specific semantics attached to some constellations of these. For example, if a group starts with the
+      word "&", then it's actually a struct. This semantic transformation is what we do next.)
     add_semantics (\ (tree)
       (rec tree (\ (rec tree)
         (% tree
@@ -151,10 +156,10 @@
             empty (crash "empty group")
             (more node)
               (% (. node head)
-                number (| call (& callee (. node head) args (list_map (. node tail) (\ (t) (rec t)))))
-                string (| call (& callee (. node head) args (list_map (. node tail) (\ (t) (rec t)))))
-                (word w) (| call (& callee (. node head) args (list_map (. node tail) (\ (t) (rec t)))))
-                group (| call (& callee (rec (. node head)) args (list_map (. node tail) (\ (t) (rec t)))))))))))
+                number (| call (& callee (. node head) args (array_from_linked_list (list_map (. node tail) (\ (t) (rec t))))))
+                string (| call (& callee (. node head) args (array_from_linked_list (list_map (. node tail) (\ (t) (rec t))))))
+                (word w) (| call (& callee (. node head) args (array_from_linked_list (list_map (. node tail) (\ (t) (rec t))))))
+                group (| call (& callee (rec (. node head)) args (array_from_linked_list (list_map (. node tail) (\ (t) (rec t))))))))))))
     (add_semantics (. (parse_expr parse_exprs 0) result))))
 
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)

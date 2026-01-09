@@ -92,10 +92,10 @@ pub fn get_jitted(vm: *Vm, instructions: Address) !Jit.Jitted {
     return jitted;
 }
 
-pub fn eval(vm: *Vm, ally: Ally, env: anytype, code: []const u8) !Address {
+pub fn eval(vm: *Vm, ally: Ally, common: compiler.CommonObjects, env: anytype, code: []const u8) !Address {
     if (!vm.data_stack.is_empty()) @panic("eval in eval");
     const check = vm.heap.checkpoint();
-    const fun = try compiler.code_to_lambda(ally, vm.heap, env, code);
+    const fun = try compiler.code_to_lambda(ally, vm.heap, common, env, code);
     const fun_ = (try vm.heap.deduplicate(ally, check)).get(fun).?;
     // {
     //     var buffer: [64]u8 = undefined;

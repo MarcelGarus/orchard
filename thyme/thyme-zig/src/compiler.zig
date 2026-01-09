@@ -395,6 +395,7 @@ pub const Ir = struct {
         word: Word,
         object: Address,
         new: New, // creates a new object, results in address
+        flatten_to_pointer_object: Id,
         has_pointers: Id, // takes address, returns 1 or 0
         num_words: Id, // takes address, returns number of words
         load: Load, // loads a field of an object
@@ -537,6 +538,9 @@ pub const Ir = struct {
         pub fn new(body: *BodyBuilder, has_pointers_: bool, words: []const Id) !Id {
             return try body.create_and_push(.{ .new = .{ .has_pointers = has_pointers_, .words = words } });
         }
+        pub fn flatten_to_pointer_object(body: *BodyBuilder, list: Id) !Id {
+            return try body.create_and_push(.{ .flatten_to_pointer_object = list });
+        }
         pub fn has_pointers(body: *BodyBuilder, address: Id) !Id {
             return body.create_and_push(.{ .has_pointers = address });
         }
@@ -609,7 +613,7 @@ pub const Ir = struct {
             return try body.if_not_zero(matches, then, else_);
         }
         fn if_eq_symbol_rec(body: *BodyBuilder, symbol: Id, i: usize, expected: []const u64) !Id {
-            if (i < expected.len) {
+            if (i == expected.len) {
                 return try body.word(1);
             } else {
                 return try body.if_eq(
@@ -634,9 +638,7 @@ pub const Ir = struct {
             return body.crash(try body.object(message_obj));
         }
 
-        pub fn new_int(body: *BodyBuilder, heap: *Heap, value: Id) !Id {
-            const int_symbol = try object_mod.new_symbol(heap, "int");
-            const int_type = try heap.new(.{ .has_pointers = true, .words = &[_]Word{int_symbol} });
+        pub fn new_int(body: *BodyBuilder, common: CommonObjects, value: Id) !Id {
             const value_obj = obj: {
                 const words = try body.parent.ally.alloc(Id, 1);
                 words[0] = value;
@@ -644,7 +646,7 @@ pub const Ir = struct {
             };
             const int_obj = {
                 const words = try body.parent.ally.alloc(Id, 2);
-                words[0] = try body.object(int_type);
+                words[0] = try body.object(common.int_type);
                 words[1] = value_obj;
                 return try body.new(true, words);
             };
@@ -663,9 +665,7 @@ pub const Ir = struct {
             });
         }
         pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
-            const zero = try body.word(0);
-            const one = try body.word(1);
-            return try body.load(try body.load(int, one), zero);
+            return try body.load(try body.load(int, try body.word(1)), try body.word(0));
         }
 
         pub fn assert_is_string(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
@@ -729,39 +729,7 @@ pub const Ir = struct {
     };
 };
 
-pub fn ast_to_ir(ally: Ally, heap: *Heap, env: anytype, ast: Ast.Expr) !Ir {
-    return try AstToIr.compile(ally, env, ast, heap);
-}
-
-const AstToIr = struct {
-    const Node = Ir.Node;
-    const Id = Ir.Id;
-    const Body = Ir.Body;
-    const Builder = Ir.Builder;
-    const BodyBuilder = Ir.BodyBuilder;
-
-    const Bindings = struct {
-        bindings: ArrayList(Binding),
-
-        fn init() Bindings {
-            return .{ .bindings = .empty };
-        }
-        fn bind(bindings: *Bindings, ally: Ally, name: Str, id: Id) !void {
-            try bindings.bindings.append(ally, .{ .name = name, .id = id });
-        }
-        fn get(bindings: Bindings, name: Str) !Id {
-            for (0..bindings.bindings.items.len) |i| {
-                const binding = bindings.bindings.items[bindings.bindings.items.len - 1 - i];
-                if (std.mem.eql(u8, binding.name, name)) return binding.id;
-            }
-            std.debug.print("name {s}\n", .{name});
-            @panic("name not in scope");
-        }
-    };
-    const Binding = struct { name: Str, id: Id };
-
-    ally: Ally,
-    heap: *Heap,
+pub const CommonObjects = struct {
     empty_obj: Address,
     int_symbol: Address,
     string_symbol: Address,
@@ -770,18 +738,23 @@ const AstToIr = struct {
     lambda_symbol: Address,
     int_type: Address,
     string_type: Address,
+    array_type: Address,
     compare_symbols_fun: Address,
     lookup_field_fun: Address,
 
-    pub fn compile(ally: Ally, env: anytype, expr: Ast.Expr, heap: *Heap) !Ir {
+    pub fn create(ally: Ally, heap: *Heap) !CommonObjects {
+        const Builder = Ir.Builder;
+        const Id = Ir.Id;
         const empty_obj = try object_mod.empty_obj(heap);
         const int_symbol = try object_mod.new_symbol(heap, "int");
         const string_symbol = try object_mod.new_symbol(heap, "string");
         const struct_symbol = try object_mod.new_symbol(heap, "struct");
         const enum_symbol = try object_mod.new_symbol(heap, "enum");
+        const array_symbol = try object_mod.new_symbol(heap, "array");
         const lambda_symbol = try object_mod.new_symbol(heap, "lambda");
         const int_type = try heap.new(.{ .has_pointers = true, .words = &[_]Word{int_symbol} });
         const string_type = try heap.new(.{ .has_pointers = true, .words = &[_]Word{string_symbol} });
+        const array_type = try heap.new(.{ .has_pointers = true, .words = &[_]Word{array_symbol} });
         // TODO: introduce loops to the IR
         const compare_symbols_fun_rec = try ir_to_instructions(ally, heap, fun: {
             var builder = Builder.init(ally);
@@ -894,9 +867,8 @@ const AstToIr = struct {
             const bod = body.finish(result);
             break :fun builder.finish(bod);
         });
-        var compiler = AstToIr{
-            .ally = ally,
-            .heap = heap,
+
+        return .{
             .empty_obj = empty_obj,
             .int_symbol = int_symbol,
             .string_symbol = string_symbol,
@@ -905,9 +877,50 @@ const AstToIr = struct {
             .lambda_symbol = lambda_symbol,
             .int_type = int_type,
             .string_type = string_type,
+            .array_type = array_type,
             .compare_symbols_fun = compare_symbols_fun,
             .lookup_field_fun = lookup_field_fun,
         };
+    }
+};
+
+pub fn ast_to_ir(ally: Ally, heap: *Heap, common: CommonObjects, env: anytype, ast: Ast.Expr) !Ir {
+    return try AstToIr.compile(ally, common, env, ast, heap);
+}
+
+const AstToIr = struct {
+    const Node = Ir.Node;
+    const Id = Ir.Id;
+    const Body = Ir.Body;
+    const Builder = Ir.Builder;
+    const BodyBuilder = Ir.BodyBuilder;
+
+    const Bindings = struct {
+        bindings: ArrayList(Binding),
+
+        fn init() Bindings {
+            return .{ .bindings = .empty };
+        }
+        fn bind(bindings: *Bindings, ally: Ally, name: Str, id: Id) !void {
+            try bindings.bindings.append(ally, .{ .name = name, .id = id });
+        }
+        fn get(bindings: Bindings, name: Str) !Id {
+            for (0..bindings.bindings.items.len) |i| {
+                const binding = bindings.bindings.items[bindings.bindings.items.len - 1 - i];
+                if (std.mem.eql(u8, binding.name, name)) return binding.id;
+            }
+            std.debug.print("name {s}\n", .{name});
+            @panic("name not in scope");
+        }
+    };
+    const Binding = struct { name: Str, id: Id };
+
+    ally: Ally,
+    heap: *Heap,
+    common: CommonObjects,
+
+    pub fn compile(ally: Ally, common: CommonObjects, env: anytype, expr: Ast.Expr, heap: *Heap) !Ir {
+        var compiler = AstToIr{ .ally = ally, .heap = heap, .common = common };
         var bindings = Bindings.init();
         var builder = Builder.init(ally);
         _ = try builder.param();
@@ -924,14 +937,10 @@ const AstToIr = struct {
     fn compile_expr(self: *AstToIr, expr: Ast.Expr, body: *Ir.BodyBuilder, bindings: *Bindings) error{OutOfMemory}!Id {
         switch (expr) {
             .name => |name| return bindings.get(name),
-            .int => |value| {
-                const value_obj = try self.heap.new_literals(&[_]Word{@bitCast(value)});
-                const int_obj = try self.heap.new_pointers(&[_]Word{ self.int_type, value_obj });
-                return body.object(int_obj);
-            },
+            .int => |value| return try body.object(try object_mod.new_int(self.heap, value)),
             .string => |string| {
                 const symbol_obj = try object_mod.new_symbol(self.heap, string);
-                const string_obj = try self.heap.new_pointers(&[_]Word{ self.string_type, symbol_obj });
+                const string_obj = try self.heap.new_pointers(&[_]Word{ self.common.string_type, symbol_obj });
                 return body.object(string_obj);
             },
             .let => |let| {
@@ -948,7 +957,7 @@ const AstToIr = struct {
                     field_names[i] = try object_mod.new_symbol(self.heap, field.name);
                 const type_ = obj: {
                     var b = try self.heap.object_builder();
-                    try b.emit_pointer(self.struct_symbol);
+                    try b.emit_pointer(self.common.struct_symbol);
                     for (field_names) |field_name| try b.emit_pointer(field_name);
                     break :obj b.finish();
                 };
@@ -962,7 +971,7 @@ const AstToIr = struct {
                 _ = try body.assert_is_struct(of, self.heap, "you can only get members of structs");
                 const zero = try body.word(0);
                 const type_ = try body.load(of, zero);
-                const fun = try body.object(self.lookup_field_fun);
+                const fun = try body.object(self.common.lookup_field_fun);
                 var args = try self.ally.alloc(Id, 2);
                 args[0] = type_;
                 args[1] = try body.object(try object_mod.new_symbol(self.heap, member.name));
@@ -974,7 +983,7 @@ const AstToIr = struct {
                 const variant_name = try object_mod.new_symbol(self.heap, enum_.variant);
                 const type_ = obj: {
                     var b = try self.heap.object_builder();
-                    try b.emit_pointer(self.enum_symbol);
+                    try b.emit_pointer(self.common.enum_symbol);
                     try b.emit_pointer(variant_name);
                     break :obj b.finish();
                 };
@@ -1002,7 +1011,7 @@ const AstToIr = struct {
                 };
                 const type_ = obj: {
                     var b = try self.heap.object_builder();
-                    try b.emit_pointer(self.lambda_symbol);
+                    try b.emit_pointer(self.common.lambda_symbol);
                     try b.emit_pointer(num_args_obj);
                     break :obj b.finish();
                 };
@@ -1044,7 +1053,7 @@ const AstToIr = struct {
                 const kind = try body.load(type_, zero);
                 return try body.if_eq(
                     try body.load(kind, zero),
-                    try body.word(self.heap.load(self.lambda_symbol, 0)),
+                    try body.word(self.heap.load(self.common.lambda_symbol, 0)),
                     is_lambda: {
                         var inner = body.child_body();
                         const num_params = try inner.load(try inner.load(type_, one), zero);
@@ -1088,7 +1097,7 @@ const AstToIr = struct {
             return try body.crash_with_symbol(self.heap, "unknown variant");
         } else {
             const case = cases[0];
-            const fun = try body.object(self.compare_symbols_fun);
+            const fun = try body.object(self.common.compare_symbols_fun);
             // TODO: can we use the box fun for arrays?
             var args = try self.ally.alloc(Id, 2);
             args[0] = variant;
@@ -1573,6 +1582,7 @@ pub const Waffle = struct {
         word: Word, // -
         object: Address, // -
         new: New, // pointers, literals
+        flatten_to_pointer_object,
         has_pointers, // object
         num_words, // object
         load, // base, offset
@@ -1664,6 +1674,11 @@ const IrToWaffle = struct {
                     .op = .{ .new = .{ .has_pointers = new.has_pointers } },
                     .children = children,
                 };
+            },
+            .flatten_to_pointer_object => |id| {
+                const children = try self.ally.alloc(Waffle, 1);
+                children[0] = self.ref(id);
+                return .{ .op = .flatten_to_pointer_object, .children = children };
             },
             .has_pointers => |obj| {
                 const children = try self.ally.alloc(Waffle, 1);
@@ -1893,6 +1908,12 @@ const WaffleToInstructions = struct {
                 self.stack_size -= waffle.children.len;
                 self.stack_size += 1;
             },
+            .flatten_to_pointer_object => {
+                try self.compile(waffle.children[0]);
+                try self.emit(.flatptro);
+                self.stack_size -= 1;
+                self.stack_size += 1;
+            },
             .has_pointers => {
                 try self.compile(waffle.children[0]);
                 try self.emit(.points);
@@ -2002,7 +2023,7 @@ const WaffleToInstructions = struct {
     }
 };
 
-pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
+pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address {
     // "collect_garbage" accepts a lambda that takes zero arguments. It makes a
     // heap checkpoint, calls the lambda, and does a garbage collection, freeing
     // everything that the lambda allocated except the return value.
@@ -2081,7 +2102,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const res_val = try body.add(a_val, b_val);
-        const result = try body.new_int(heap, res_val);
+        const result = try body.new_int(common, res_val);
         const body_ = body.finish(result);
         break :ir builder.finish(body_);
     });
@@ -2097,7 +2118,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const res_val = try body.subtract(a_val, b_val);
-        const result = try body.new_int(heap, res_val);
+        const result = try body.new_int(common, res_val);
         const body_ = body.finish(result);
         break :ir builder.finish(body_);
     });
@@ -2113,7 +2134,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const res_val = try body.multiply(a_val, b_val);
-        const result = try body.new_int(heap, res_val);
+        const result = try body.new_int(common, res_val);
         const body_ = body.finish(result);
         break :ir builder.finish(body_);
     });
@@ -2129,7 +2150,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const res_val = try body.divide(a_val, b_val);
-        const result = try body.new_int(heap, res_val);
+        const result = try body.new_int(common, res_val);
         const body_ = body.finish(result);
         break :ir builder.finish(body_);
     });
@@ -2145,7 +2166,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         const a_val = try body.get_int_value(a);
         const b_val = try body.get_int_value(b);
         const res_val = try body.modulo(a_val, b_val);
-        const result = try body.new_int(heap, res_val);
+        const result = try body.new_int(common, res_val);
         const body_ = body.finish(result);
         break :ir builder.finish(body_);
     });
@@ -2223,7 +2244,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
             try body.shift_right(try body.load(string_val, word_index), try body.multiply(byte_index, eight)),
             try body.word(256),
         );
-        const result = try body.new_int(heap, byte);
+        const result = try body.new_int(common, byte);
         const body_ = body.finish(result);
         break :ir builder.finish(body_);
     });
@@ -2265,6 +2286,87 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         break :ir builder.finish(body_);
     });
 
+    const array_from_linked_list_rec = try ir_to_instructions(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const rec = try builder.param();
+        const list = try builder.param();
+        var body = builder.body();
+        _ = try body.assert_is_enum(list, heap, "bad array_from_linked_list");
+        const one = try body.word(1);
+        const type_ = try body.type_of(list);
+        const variant = try body.load(type_, one);
+        const result = try body.if_eq_symbol(heap, variant, "empty", empty: {
+            var inner = body.child_body();
+            const result = try inner.object(common.empty_obj);
+            break :empty inner.finish(result);
+        }, not_empty: {
+            var inner = body.child_body();
+            const result = try inner.if_eq_symbol(heap, variant, "more", more: {
+                var innerer = body.child_body();
+                const payload = try innerer.load(list, one);
+                _ = try innerer.assert_is_struct(payload, heap, "bad array_from_linked_list");
+                const payload_type = try innerer.type_of(payload);
+                const lookup_field = try innerer.object(common.lookup_field_fun);
+                const head = head: {
+                    var args = try ally.alloc(Ir.Id, 2);
+                    args[0] = payload_type;
+                    args[1] = try innerer.object(try object_mod.new_symbol(heap, "head"));
+                    const index = try innerer.call(lookup_field, args);
+                    break :head try innerer.load(payload, index);
+                };
+                const tail = tail: {
+                    var args = try ally.alloc(Ir.Id, 2);
+                    args[0] = payload_type;
+                    args[1] = try innerer.object(try object_mod.new_symbol(heap, "tail"));
+                    const index = try innerer.call(lookup_field, args);
+                    break :tail try innerer.load(payload, index);
+                };
+                const mapped_tail = mapped: {
+                    var args = try ally.alloc(Ir.Id, 2);
+                    args[0] = rec;
+                    args[1] = tail;
+                    break :mapped try innerer.call(rec, args);
+                };
+                const result = obj: {
+                    var words = try ally.alloc(Ir.Id, 2);
+                    words[0] = head;
+                    words[1] = mapped_tail;
+                    break :obj try innerer.new(true, words);
+                };
+                break :more innerer.finish(result);
+            }, bad: {
+                var innerer = inner.child_body();
+                const result = try innerer.crash_with_symbol(heap, "bad array_from_linked_list");
+                break :bad innerer.finish(result);
+            });
+            break :not_empty inner.finish(result);
+        });
+        const body_ = body.finish(result);
+        break :ir builder.finish(body_);
+    });
+    const array_from_linked_list = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const list = try builder.param();
+        _ = try builder.param(); // closure
+        var body = builder.body();
+        const rec = try body.object(array_from_linked_list_rec);
+        const mapped = mapped: {
+            var args = try ally.alloc(Ir.Id, 2);
+            args[0] = rec;
+            args[1] = list;
+            break :mapped try body.call(rec, args);
+        };
+        const extra_node = node: {
+            var words = try ally.alloc(Ir.Id, 2);
+            words[0] = try body.object(common.array_type);
+            words[1] = mapped;
+            break :node try body.new(true, words);
+        };
+        const result = try body.flatten_to_pointer_object(extra_node);
+        const body_ = body.finish(result);
+        break :ir builder.finish(body_);
+    });
+
     // TODO: fix
     const get_num_words = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
@@ -2272,7 +2374,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         _ = try builder.param(); // closure
         var body = builder.body();
         const num_words = try body.num_words(obj);
-        const boxed = try body.new_int(heap, num_words);
+        const boxed = try body.new_int(common, num_words);
         const body_ = body.finish(boxed);
         break :ir builder.finish(body_);
     });
@@ -2290,6 +2392,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap) !Address {
         .string_get = string_get,
         .string_from_chars = string_from_chars,
         // .num_words = get_num_words,
+        .array_from_linked_list = array_from_linked_list,
     };
 
     var symbols = [_]Address{undefined} ** @typeInfo(@TypeOf(builtins)).@"struct".fields.len;
@@ -2377,9 +2480,9 @@ pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address 
     // return builder.finish();
 }
 
-pub fn code_to_lambda(ally: Ally, heap: *Heap, env: anytype, code: Str) !Address {
+pub fn code_to_lambda(ally: Ally, heap: *Heap, common: CommonObjects, env: anytype, code: Str) !Address {
     std.debug.print("parsing\n", .{});
     const ast = try str_to_ast(ally, code);
-    const ir = try ast_to_ir(ally, heap, env, ast);
+    const ir = try ast_to_ir(ally, heap, common, env, ast);
     return try ir_to_lambda(ally, heap, ir);
 }

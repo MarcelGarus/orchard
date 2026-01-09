@@ -97,7 +97,9 @@ pub fn format(heap: Heap, value: Address, writer: *std.io.Writer, indentation: u
             try writer.print("\n", .{});
             for (0..indentation + 1) |_| try writer.writeAll("  ");
             try writer.print("{s} ", .{get_symbol(heap, field_name)});
-            try format(heap, field, writer, indentation + 1);
+            try writer.print("\n", .{});
+            for (0..indentation + 2) |_| try writer.writeAll("  ");
+            try format(heap, field, writer, indentation + 2);
         }
         try writer.print(")", .{});
     } else if (std.mem.eql(u8, kind_str, "enum")) {
@@ -106,6 +108,14 @@ pub fn format(heap: Heap, value: Address, writer: *std.io.Writer, indentation: u
         try writer.print("\n", .{});
         for (0..indentation + 1) |_| try writer.writeAll("  ");
         try format(heap, payload, writer, indentation + 1);
+        try writer.print(")", .{});
+    } else if (std.mem.eql(u8, kind_str, "array")) {
+        try writer.print("(array", .{});
+        for (heap.get(value).words[1..]) |item| {
+            try writer.print("\n", .{});
+            for (0..indentation + 1) |_| try writer.writeAll("  ");
+            try format(heap, item, writer, indentation + 1);
+        }
         try writer.print(")", .{});
     } else if (std.mem.eql(u8, kind_str, "lambda")) {
         try writer.print("lambda", .{});

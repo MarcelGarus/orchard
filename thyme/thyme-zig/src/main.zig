@@ -25,10 +25,11 @@ pub fn main() !void {
     const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    const builtins = try compiler.create_builtins(ally, &heap);
+    const common = try compiler.CommonObjects.create(ally, &heap);
+    const builtins = try compiler.create_builtins(ally, &heap, common);
     const file = try std.fs.cwd().openFile("code.thyme", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
-    var app = try vm.eval(ally, .{ .@"@" = builtins }, code);
+    var app = try vm.eval(ally, common, .{ .@"@" = builtins }, code);
     {
         var buffer: [64]u8 = undefined;
         const bw = std.debug.lockStderrWriter(&buffer);
