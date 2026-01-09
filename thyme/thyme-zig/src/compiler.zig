@@ -395,7 +395,8 @@ pub const Ir = struct {
         word: Word,
         object: Address,
         new: New, // creates a new object, results in address
-        flatten_to_pointer_object: Id,
+        flatten_to_pointers_object: Id,
+        flatten_to_literals_object: Id,
         has_pointers: Id, // takes address, returns 1 or 0
         num_words: Id, // takes address, returns number of words
         load: Load, // loads a field of an object
@@ -538,8 +539,11 @@ pub const Ir = struct {
         pub fn new(b: *BodyBuilder, has_pointers_: bool, words: []const Id) !Id {
             return try b.create_and_push(.{ .new = .{ .has_pointers = has_pointers_, .words = words } });
         }
-        pub fn flatten_to_pointer_object(b: *BodyBuilder, list: Id) !Id {
-            return try b.create_and_push(.{ .flatten_to_pointer_object = list });
+        pub fn flatten_to_pointers_object(b: *BodyBuilder, list: Id) !Id {
+            return try b.create_and_push(.{ .flatten_to_pointers_object = list });
+        }
+        pub fn flatten_to_literals_object(b: *BodyBuilder, list: Id) !Id {
+            return try b.create_and_push(.{ .flatten_to_literals_object = list });
         }
         pub fn has_pointers(b: *BodyBuilder, address: Id) !Id {
             return b.create_and_push(.{ .has_pointers = address });
@@ -702,12 +706,21 @@ pub const Ir = struct {
             const kind = try body.kind_of(try body.type_of(value));
             return try body.if_eq_symbol(heap, kind, "enum", good: {
                 var bb = body.child_body();
-                const result = try bb.word(0);
-                break :good bb.finish(result);
+                break :good try bb.finish_with_zero();
             }, bad: {
                 var bb = body.child_body();
-                const result = try bb.crash_with_symbol(heap, message);
-                break :bad bb.finish(result);
+                break :bad try bb.finish_with_symbol_crash(heap, message);
+            });
+        }
+
+        pub fn assert_is_array(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
+            const kind = try body.kind_of(try body.type_of(value));
+            return try body.if_eq_symbol(heap, kind, "array", good: {
+                var bb = body.child_body();
+                break :good try bb.finish_with_zero();
+            }, bad: {
+                var bb = body.child_body();
+                break :bad try bb.finish_with_symbol_crash(heap, message);
             });
         }
 
@@ -1572,7 +1585,8 @@ pub const Waffle = struct {
         word: Word, // -
         object: Address, // -
         new: New, // pointers, literals
-        flatten_to_pointer_object,
+        flatten_to_pointers_object, // object
+        flatten_to_literals_object, // object
         has_pointers, // object
         num_words, // object
         load, // base, offset
@@ -1665,10 +1679,15 @@ const IrToWaffle = struct {
                     .children = children,
                 };
             },
-            .flatten_to_pointer_object => |id| {
+            .flatten_to_pointers_object => |id| {
                 const children = try self.ally.alloc(Waffle, 1);
                 children[0] = self.ref(id);
-                return .{ .op = .flatten_to_pointer_object, .children = children };
+                return .{ .op = .flatten_to_pointers_object, .children = children };
+            },
+            .flatten_to_literals_object => |id| {
+                const children = try self.ally.alloc(Waffle, 1);
+                children[0] = self.ref(id);
+                return .{ .op = .flatten_to_literals_object, .children = children };
             },
             .has_pointers => |obj| {
                 const children = try self.ally.alloc(Waffle, 1);
@@ -1898,9 +1917,15 @@ const WaffleToInstructions = struct {
                 self.stack_size -= waffle.children.len;
                 self.stack_size += 1;
             },
-            .flatten_to_pointer_object => {
+            .flatten_to_pointers_object => {
                 try self.compile(waffle.children[0]);
                 try self.emit(.flatptro);
+                self.stack_size -= 1;
+                self.stack_size += 1;
+            },
+            .flatten_to_literals_object => {
+                try self.compile(waffle.children[0]);
+                try self.emit(.flatlito);
                 self.stack_size -= 1;
                 self.stack_size += 1;
             },
@@ -2227,41 +2252,116 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         break :ir builder.finish(body);
     });
 
-    // const string_from_chars_rec = try ir_to_instructions(ally, heap, ir: {
-    //   var builder = Ir.Builder.init(ally);
-    //   const rec = try builder.param();
-    //   var body = builder.body();
-    //   _ = try body.assert_is
-    // });
+    const string_from_chars_rec_rec = try ir_to_instructions(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const rec = try builder.param();
+        const chars = try builder.param();
+        const i = try builder.param();
+        const j = try builder.param();
+        var b = builder.body();
+        const one = try b.word(1);
+        const eight = try b.word(8);
+        const result = try b.if_eq(j, eight, done: {
+            var bb = b.child_body();
+            break :done try bb.finish_with_zero();
+        }, more_stuff: {
+            var bb = b.child_body();
+            const len = try bb.subtract(try bb.num_words(chars), one);
+            const index = try bb.add(i, j);
+            const result = try bb.if_eq(index, len, done: {
+                var bbb = bb.child_body();
+                break :done try bbb.finish_with_zero();
+            }, not_done: {
+                var bbb = bb.child_body();
+                const the_int = try bbb.load(chars, try bbb.add(index, one));
+                _ = try bbb.assert_is_int(the_int, heap, "bad string_from_chars");
+                const char = try bbb.get_int_value(the_int);
+                const shifted = try bbb.shift_left(char, try bbb.multiply(j, eight));
+                const rest = rest: {
+                    var args = try ally.alloc(Ir.Id, 4);
+                    args[0] = rec;
+                    args[1] = chars;
+                    args[2] = i;
+                    args[3] = try bbb.add(j, one);
+                    break :rest try bbb.call(rec, args);
+                };
+                const result = try bbb.add(shifted, rest);
+                break :not_done bbb.finish(result);
+            });
+            break :more_stuff bb.finish(result);
+        });
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+    const string_from_chars_rec = try ir_to_instructions(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const rec = try builder.param();
+        const chars = try builder.param();
+        const i = try builder.param();
+        var b = builder.body();
+        const one = try b.word(1);
+        const two = try b.word(2);
+        const eight = try b.word(8);
+        const raw_len = try b.num_words(chars);
+        const len = try b.subtract(raw_len, one);
+        const i_compared_to_len = try b.compare(i, len);
+        const result = try b.if_eq(i_compared_to_len, two, more_to_do: {
+            var bb = b.child_body();
+            const word = word: {
+                const rec_rec = try bb.object(string_from_chars_rec_rec);
+                var args = try ally.alloc(Ir.Id, 4);
+                args[0] = rec_rec;
+                args[1] = chars;
+                args[2] = i;
+                args[3] = try bb.word(0);
+                break :word try bb.call(rec_rec, args);
+            };
+            const boxed_word = try bb.new(false, try box(ally, .{word}));
+            const rest = rest: {
+                var args = try ally.alloc(Ir.Id, 3);
+                args[0] = rec;
+                args[1] = chars;
+                args[2] = try bb.add(i, eight);
+                break :rest try bb.call(rec, args);
+            };
+            const result = node: {
+                var words = try ally.alloc(Ir.Id, 2);
+                words[0] = boxed_word;
+                words[1] = rest;
+                break :node try bb.new(true, words);
+            };
+            break :more_to_do bb.finish(result);
+        }, done: {
+            var bb = b.child_body();
+            const result = try bb.new(true, &[_]Ir.Id{});
+            break :done bb.finish(result);
+        });
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
     const string_from_chars = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const chars = try builder.param();
         _ = try builder.param(); // closure
         var b = builder.body();
-        _ = try b.assert_is_enum(chars, heap, "bad string_from_chars");
+        _ = try b.assert_is_array(chars, heap, "bad string_from_chars");
         const one = try b.word(1);
-        const variant = try b.load(chars, one);
-        const result = try b.if_eq_symbol(heap, variant, "empty", empty: {
-            var bb = b.child_body();
-            const result = try bb.object(try object_mod.empty_obj(heap));
-            break :empty bb.finish(result);
-        }, not_empty: {
-            var bb = b.child_body();
-            const result = try bb.if_eq_symbol(heap, variant, "more", more: {
-                var bbb = b.child_body();
-                // bbb.load(, offset: Id)
-                // _ = try b.assert_is_struct(payload, heap, "bad string_from_chars");
-                const result = try bbb.crash_with_symbol(heap, "todo: string_from_chars");
-                break :more bbb.finish(result);
-            }, bad: {
-                var bbb = bb.child_body();
-                const result = try bbb.crash_with_symbol(heap, "bad string_from_chars");
-                break :bad bbb.finish(result);
-            });
-            break :not_empty bb.finish(result);
-        });
-        const body_ = b.finish(result);
-        break :ir builder.finish(body_);
+        const seven = try b.word(7);
+        const eight = try b.word(8);
+        const raw_len = try b.num_words(chars);
+        const len = try b.subtract(raw_len, one);
+        const num_words = try b.divide(try b.add(len, seven), eight);
+        _ = num_words;
+        const rec = try b.object(string_from_chars_rec);
+        var args = try ally.alloc(Ir.Id, 3);
+        args[0] = rec;
+        args[1] = chars;
+        args[2] = try b.word(0);
+        const words = try b.call(rec, args);
+        const bytes = try b.flatten_to_literals_object(words);
+        const result = try b.new(true, try box(ally, .{ try b.object(common.string_type), bytes }));
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     const array_from_linked_list_rec = try ir_to_instructions(ally, heap, ir: {
@@ -2340,7 +2440,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
             words[1] = mapped;
             break :node try b.new(true, words);
         };
-        const result = try b.flatten_to_pointer_object(extra_node);
+        const result = try b.flatten_to_pointers_object(extra_node);
         const body = b.finish(result);
         break :ir builder.finish(body);
     });

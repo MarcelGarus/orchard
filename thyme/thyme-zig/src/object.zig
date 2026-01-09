@@ -90,7 +90,7 @@ pub fn format(heap: Heap, value: Address, writer: *std.io.Writer, indentation: u
     if (std.mem.eql(u8, kind_str, "int")) {
         try writer.print("{d}", .{heap.load(heap.load(value, 1), 0)});
     } else if (std.mem.eql(u8, kind_str, "string")) {
-        try writer.print("{s}", .{get_symbol(heap, heap.load(value, 1))});
+        try writer.print("\"{s}\"", .{get_symbol(heap, heap.load(value, 1))});
     } else if (std.mem.eql(u8, kind_str, "struct")) {
         try writer.print("(&", .{});
         for (heap.get(type_).words[1..], heap.get(value).words[1..]) |field_name, field| {
