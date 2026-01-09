@@ -511,157 +511,157 @@ pub const Ir = struct {
         parent: *Builder,
         ids: ArrayList(Id),
 
-        fn create_and_push(body: *BodyBuilder, node: Node) !Id {
-            const id = try body.parent.create(node);
-            try body.ids.append(body.parent.ally, id);
+        fn create_and_push(b: *BodyBuilder, node: Node) !Id {
+            const id = try b.parent.create(node);
+            try b.ids.append(b.parent.ally, id);
             return id;
         }
 
-        pub fn child_body(body: BodyBuilder) BodyBuilder {
-            return .{ .parent = body.parent, .ids = .empty };
+        pub fn child_body(b: BodyBuilder) BodyBuilder {
+            return .{ .parent = b.parent, .ids = .empty };
         }
 
-        pub fn get(body: BodyBuilder, id: Id) Node {
-            return body.parent.nodes.items[id.index];
+        pub fn get(b: BodyBuilder, id: Id) Node {
+            return b.parent.nodes.items[id.index];
         }
 
-        pub fn finish(body: BodyBuilder, returns: Id) Body {
-            return .{ .ids = body.ids.items, .returns = returns };
+        pub fn finish(b: BodyBuilder, returns: Id) Body {
+            return .{ .ids = b.ids.items, .returns = returns };
         }
 
-        pub fn word(body: *BodyBuilder, word_: Word) !Id {
-            return body.create_and_push(.{ .word = word_ });
+        pub fn word(b: *BodyBuilder, word_: Word) !Id {
+            return b.create_and_push(.{ .word = word_ });
         }
-        pub fn object(body: *BodyBuilder, obj: Address) !Id {
-            return body.create_and_push(.{ .object = obj });
+        pub fn object(b: *BodyBuilder, obj: Address) !Id {
+            return b.create_and_push(.{ .object = obj });
         }
-        pub fn new(body: *BodyBuilder, has_pointers_: bool, words: []const Id) !Id {
-            return try body.create_and_push(.{ .new = .{ .has_pointers = has_pointers_, .words = words } });
+        pub fn new(b: *BodyBuilder, has_pointers_: bool, words: []const Id) !Id {
+            return try b.create_and_push(.{ .new = .{ .has_pointers = has_pointers_, .words = words } });
         }
-        pub fn flatten_to_pointer_object(body: *BodyBuilder, list: Id) !Id {
-            return try body.create_and_push(.{ .flatten_to_pointer_object = list });
+        pub fn flatten_to_pointer_object(b: *BodyBuilder, list: Id) !Id {
+            return try b.create_and_push(.{ .flatten_to_pointer_object = list });
         }
-        pub fn has_pointers(body: *BodyBuilder, address: Id) !Id {
-            return body.create_and_push(.{ .has_pointers = address });
+        pub fn has_pointers(b: *BodyBuilder, address: Id) !Id {
+            return b.create_and_push(.{ .has_pointers = address });
         }
-        pub fn num_words(body: *BodyBuilder, address: Id) !Id {
-            return body.create_and_push(.{ .num_words = address });
+        pub fn num_words(b: *BodyBuilder, address: Id) !Id {
+            return b.create_and_push(.{ .num_words = address });
         }
-        pub fn load(body: *BodyBuilder, address: Id, offset: Id) !Id {
-            return body.create_and_push(.{ .load = .{ .base = address, .offset = offset } });
+        pub fn load(b: *BodyBuilder, address: Id, offset: Id) !Id {
+            return b.create_and_push(.{ .load = .{ .base = address, .offset = offset } });
         }
-        pub fn add(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .add = .{ .left = left, .right = right } });
+        pub fn add(b: *BodyBuilder, left: Id, right: Id) !Id {
+            return b.create_and_push(.{ .add = .{ .left = left, .right = right } });
         }
-        pub fn subtract(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .subtract = .{ .left = left, .right = right } });
+        pub fn subtract(b: *BodyBuilder, left: Id, right: Id) !Id {
+            return b.create_and_push(.{ .subtract = .{ .left = left, .right = right } });
         }
-        pub fn multiply(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .multiply = .{ .left = left, .right = right } });
+        pub fn multiply(b: *BodyBuilder, left: Id, right: Id) !Id {
+            return b.create_and_push(.{ .multiply = .{ .left = left, .right = right } });
         }
-        pub fn divide(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .divide = .{ .left = left, .right = right } });
+        pub fn divide(b: *BodyBuilder, left: Id, right: Id) !Id {
+            return b.create_and_push(.{ .divide = .{ .left = left, .right = right } });
         }
-        pub fn modulo(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .modulo = .{ .left = left, .right = right } });
+        pub fn modulo(b: *BodyBuilder, left: Id, right: Id) !Id {
+            return b.create_and_push(.{ .modulo = .{ .left = left, .right = right } });
         }
-        pub fn shift_left(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .shift_left = .{ .left = left, .right = right } });
+        pub fn shift_left(b: *BodyBuilder, left: Id, right: Id) !Id {
+            return b.create_and_push(.{ .shift_left = .{ .left = left, .right = right } });
         }
-        pub fn shift_right(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .shift_right = .{ .left = left, .right = right } });
+        pub fn shift_right(b: *BodyBuilder, left: Id, right: Id) !Id {
+            return b.create_and_push(.{ .shift_right = .{ .left = left, .right = right } });
         }
-        pub fn compare(body: *BodyBuilder, left: Id, right: Id) !Id {
-            return body.create_and_push(.{ .compare = .{ .left = left, .right = right } });
+        pub fn compare(b: *BodyBuilder, left: Id, right: Id) !Id {
+            return b.create_and_push(.{ .compare = .{ .left = left, .right = right } });
         }
-        pub fn call(body: *BodyBuilder, instructions: Id, args: []const Id) !Id {
-            return body.create_and_push(.{ .call = .{ .instructions = instructions, .args = args } });
+        pub fn call(b: *BodyBuilder, instructions: Id, args: []const Id) !Id {
+            return b.create_and_push(.{ .call = .{ .instructions = instructions, .args = args } });
         }
-        pub fn if_not_zero(body: *BodyBuilder, condition: Id, then: Body, else_: Body) !Id {
-            return body.create_and_push(.{ .if_not_zero = .{ .condition = condition, .then = then, .else_ = else_ } });
+        pub fn if_not_zero(b: *BodyBuilder, condition: Id, then: Body, else_: Body) !Id {
+            return b.create_and_push(.{ .if_not_zero = .{ .condition = condition, .then = then, .else_ = else_ } });
         }
-        pub fn crash(body: *BodyBuilder, message: Id) !Id {
-            return body.create_and_push(.{ .crash = message });
+        pub fn crash(b: *BodyBuilder, message: Id) !Id {
+            return b.create_and_push(.{ .crash = message });
         }
 
         // Higher-level convenience functions
 
-        pub fn type_of(body: *BodyBuilder, obj: Id) !Id {
-            const zero = try body.word(0);
-            return try body.load(obj, zero);
+        pub fn loadi(b: *BodyBuilder, obj: Id, index: usize) !Id {
+            const i = try b.word(index);
+            return try b.load(obj, i);
         }
-        pub fn kind_of(body: *BodyBuilder, type_: Id) !Id {
-            const zero = try body.word(0);
-            return try body.load(type_, zero);
+        pub fn type_of(b: *BodyBuilder, obj: Id) !Id {
+            return try b.loadi(obj, 0);
+        }
+        pub fn kind_of(b: *BodyBuilder, type_: Id) !Id {
+            return try b.loadi(type_, 0);
         }
 
-        pub fn if_eq(body: *BodyBuilder, a: Id, b: Id, then: Body, else_: Body) !Id {
-            return try body.if_not_zero(try body.subtract(a, b), else_, then);
+        pub fn if_eq(b: *BodyBuilder, left: Id, right: Id, then: Body, else_: Body) !Id {
+            return try b.if_not_zero(try b.subtract(left, right), else_, then);
         }
-        pub fn if_eq_symbol(body: *BodyBuilder, heap: *Heap, a: Id, symbol: []const u8, then: Body, else_: Body) !Id {
-            const comptime_symbol = try object_mod.new_symbol(heap, symbol);
+        pub fn if_eq_symbol(b: *BodyBuilder, heap: *Heap, symbol: Id, expected: []const u8, then: Body, else_: Body) !Id {
+            const comptime_symbol = try object_mod.new_symbol(heap, expected);
             const words = heap.get(comptime_symbol).words;
-            const matches = try body.if_eq(try body.num_words(a), try body.word(words.len), good: {
-                var inner = body.child_body();
-                const result = try inner.if_eq_symbol_rec(a, 0, words);
-                break :good inner.finish(result);
+            const matches = try b.if_eq(try b.num_words(symbol), try b.word(words.len), good: {
+                var bb = b.child_body();
+                const result = try bb.if_eq_symbol_rec(symbol, 0, words);
+                break :good bb.finish(result);
             }, bad: {
-                var inner = body.child_body();
-                const result = try inner.word(0);
-                break :bad inner.finish(result);
+                var bb = b.child_body();
+                break :bad try bb.finish_with_zero();
             });
-            return try body.if_not_zero(matches, then, else_);
+            return try b.if_not_zero(matches, then, else_);
         }
-        fn if_eq_symbol_rec(body: *BodyBuilder, symbol: Id, i: usize, expected: []const u64) !Id {
+        fn if_eq_symbol_rec(b: *BodyBuilder, symbol: Id, i: usize, expected: []const u64) !Id {
             if (i == expected.len) {
-                return try body.word(1);
+                return try b.word(1);
             } else {
-                return try body.if_eq(
-                    try body.load(symbol, try body.word(i)),
-                    try body.word(expected[i]),
+                return try b.if_eq(
+                    try b.load(symbol, try b.word(i)),
+                    try b.word(expected[i]),
                     the_same: {
-                        var inner = body.child_body();
-                        const result = try body.if_eq_symbol_rec(symbol, i + 1, expected);
-                        break :the_same inner.finish(result);
+                        var bb = b.child_body();
+                        const result = try bb.if_eq_symbol_rec(symbol, i + 1, expected);
+                        break :the_same bb.finish(result);
                     },
                     not_the_same: {
-                        var inner = body.child_body();
-                        const result = try inner.word(0);
-                        break :not_the_same inner.finish(result);
+                        var bb = b.child_body();
+                        break :not_the_same try bb.finish_with_zero();
                     },
                 );
             }
         }
 
-        pub fn crash_with_symbol(body: *BodyBuilder, heap: *Heap, message: []const u8) !Id {
+        pub fn crash_with_symbol(b: *BodyBuilder, heap: *Heap, message: []const u8) !Id {
             const message_obj = try object_mod.new_symbol(heap, message);
-            return body.crash(try body.object(message_obj));
+            return b.crash(try b.object(message_obj));
         }
 
-        pub fn new_int(body: *BodyBuilder, common: CommonObjects, value: Id) !Id {
+        pub fn new_int(b: *BodyBuilder, common: CommonObjects, value: Id) !Id {
             const value_obj = obj: {
-                const words = try body.parent.ally.alloc(Id, 1);
+                const words = try b.parent.ally.alloc(Id, 1);
                 words[0] = value;
-                break :obj try body.new(false, words);
+                break :obj try b.new(false, words);
             };
             const int_obj = {
-                const words = try body.parent.ally.alloc(Id, 2);
-                words[0] = try body.object(common.int_type);
+                const words = try b.parent.ally.alloc(Id, 2);
+                words[0] = try b.object(common.int_type);
                 words[1] = value_obj;
-                return try body.new(true, words);
+                return try b.new(true, words);
             };
             return int_obj;
         }
         pub fn assert_is_int(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
             const kind = try body.kind_of(try body.type_of(value));
             return try body.if_eq_symbol(heap, kind, "int", good: {
-                var inner = body.child_body();
-                const result = try inner.word(0);
-                break :good inner.finish(result);
+                var bb = body.child_body();
+                const result = try bb.word(0);
+                break :good bb.finish(result);
             }, bad: {
-                var inner = body.child_body();
-                const result = try inner.crash_with_symbol(heap, message);
-                break :bad inner.finish(result);
+                var bb = body.child_body();
+                const result = try bb.crash_with_symbol(heap, message);
+                break :bad bb.finish(result);
             });
         }
         pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
@@ -671,13 +671,13 @@ pub const Ir = struct {
         pub fn assert_is_string(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
             const kind = try body.kind_of(try body.type_of(value));
             return try body.if_eq_symbol(heap, kind, "string", good: {
-                var inner = body.child_body();
-                const result = try inner.word(0);
-                break :good inner.finish(result);
+                var bb = body.child_body();
+                const result = try bb.word(0);
+                break :good bb.finish(result);
             }, bad: {
-                var inner = body.child_body();
-                const result = try inner.crash_with_symbol(heap, message);
-                break :bad inner.finish(result);
+                var bb = body.child_body();
+                const result = try bb.crash_with_symbol(heap, message);
+                break :bad bb.finish(result);
             });
         }
         pub fn get_string_value(body: *BodyBuilder, string: Id) !Id {
@@ -688,26 +688,26 @@ pub const Ir = struct {
         pub fn assert_is_struct(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
             const kind = try body.kind_of(try body.type_of(value));
             return try body.if_eq_symbol(heap, kind, "struct", good: {
-                var inner = body.child_body();
-                const result = try inner.word(0);
-                break :good inner.finish(result);
+                var bb = body.child_body();
+                const result = try bb.word(0);
+                break :good bb.finish(result);
             }, bad: {
-                var inner = body.child_body();
-                const result = try inner.crash_with_symbol(heap, message);
-                break :bad inner.finish(result);
+                var bb = body.child_body();
+                const result = try bb.crash_with_symbol(heap, message);
+                break :bad bb.finish(result);
             });
         }
 
         pub fn assert_is_enum(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
             const kind = try body.kind_of(try body.type_of(value));
             return try body.if_eq_symbol(heap, kind, "enum", good: {
-                var inner = body.child_body();
-                const result = try inner.word(0);
-                break :good inner.finish(result);
+                var bb = body.child_body();
+                const result = try bb.word(0);
+                break :good bb.finish(result);
             }, bad: {
-                var inner = body.child_body();
-                const result = try inner.crash_with_symbol(heap, message);
-                break :bad inner.finish(result);
+                var bb = body.child_body();
+                const result = try bb.crash_with_symbol(heap, message);
+                break :bad bb.finish(result);
             });
         }
 
@@ -718,13 +718,21 @@ pub const Ir = struct {
             return try body.load(closure, body.word(index));
         }
 
-        pub fn finish_with_zero(body: *BodyBuilder) !Body {
-            const zero = try body.word(0);
-            return body.finish(zero);
+        pub fn finish_with_zero(b: *BodyBuilder) !Body {
+            const zero = try b.word(0);
+            return b.finish(zero);
         }
-        pub fn finish_with_crash(body: *BodyBuilder, message: Id) !Body {
-            const never = try body.crash(message);
-            return body.finish(never);
+        pub fn finish_with_one(b: *BodyBuilder) !Body {
+            const zero = try b.word(1);
+            return b.finish(zero);
+        }
+        pub fn finish_with_crash(b: *BodyBuilder, message: Id) !Body {
+            const never = try b.crash(message);
+            return b.finish(never);
+        }
+        pub fn finish_with_symbol_crash(b: *BodyBuilder, heap: *Heap, message: []const u8) !Body {
+            const never = try b.crash_with_symbol(heap, message);
+            return b.finish(never);
         }
     };
 };
@@ -759,63 +767,65 @@ pub const CommonObjects = struct {
         const compare_symbols_fun_rec = try ir_to_instructions(ally, heap, fun: {
             var builder = Builder.init(ally);
             const rec = try builder.param();
-            const a = try builder.param();
-            const b = try builder.param();
+            const left = try builder.param();
+            const right = try builder.param();
             const index = try builder.param();
             const num_words = try builder.param();
-            var body = builder.body();
-            const result = try body.if_eq(index, num_words, then: {
-                var inner = builder.body();
-                const result = try inner.word(1);
-                break :then inner.finish(result);
-            }, else_: {
-                var inner = builder.body();
-                const a_word = try inner.load(a, index);
-                const b_word = try inner.load(b, index);
-                const result = try inner.if_eq(a_word, b_word, inner_then: {
-                    var innerer = builder.body();
-                    var args = try ally.alloc(Id, 5);
-                    args[0] = rec;
-                    args[1] = a;
-                    args[2] = b;
-                    args[3] = try innerer.add(index, try innerer.word(1));
-                    args[4] = num_words;
-                    const result = try innerer.call(rec, args);
-                    break :inner_then innerer.finish(result);
-                }, inner_else: {
-                    var innerer = builder.body();
-                    const result = try innerer.word(0);
-                    break :inner_else innerer.finish(result);
-                });
-                break :else_ inner.finish(result);
-            });
-            const bod = body.finish(result);
-            break :fun builder.finish(bod);
+            var b = builder.body();
+            const result = try b.if_eq(
+                index,
+                num_words,
+                done: {
+                    var bb = builder.body();
+                    break :done try bb.finish_with_one();
+                },
+                not_done: {
+                    var bb = builder.body();
+                    const left_word = try bb.load(left, index);
+                    const right_word = try bb.load(right, index);
+                    const result = try bb.if_eq(left_word, right_word, inner_then: {
+                        var bbb = builder.body();
+                        var args = try ally.alloc(Id, 5);
+                        args[0] = rec;
+                        args[1] = left;
+                        args[2] = right;
+                        args[3] = try bbb.add(index, try bbb.word(1));
+                        args[4] = num_words;
+                        const result = try bbb.call(rec, args);
+                        break :inner_then bbb.finish(result);
+                    }, inner_else: {
+                        var bbb = builder.body();
+                        break :inner_else try bbb.finish_with_zero();
+                    });
+                    break :not_done bb.finish(result);
+                },
+            );
+            const body = b.finish(result);
+            break :fun builder.finish(body);
         });
         const compare_symbols_fun = try ir_to_instructions(ally, heap, fun: {
             var builder = Builder.init(ally);
-            const a = try builder.param();
-            const b = try builder.param();
-            var body = builder.body();
-            const result = try body.if_eq(try body.num_words(a), try body.num_words(b), then: {
-                var inner = builder.body();
-                const num_words = try inner.num_words(a);
-                const rec = try inner.object(compare_symbols_fun_rec);
+            const left = try builder.param();
+            const right = try builder.param();
+            var b = builder.body();
+            const result = try b.if_eq(try b.num_words(left), try b.num_words(right), same_len: {
+                var bb = builder.body();
+                const num_words = try bb.num_words(left);
+                const rec = try bb.object(compare_symbols_fun_rec);
                 var args = try ally.alloc(Id, 5);
                 args[0] = rec;
-                args[1] = a;
-                args[2] = b;
-                args[3] = try inner.word(0);
+                args[1] = left;
+                args[2] = right;
+                args[3] = try bb.word(0);
                 args[4] = num_words;
-                const result = try inner.call(rec, args);
-                break :then inner.finish(result);
-            }, else_: {
-                var inner = builder.body();
-                const result = try inner.word(0);
-                break :else_ inner.finish(result);
+                const result = try bb.call(rec, args);
+                break :same_len bb.finish(result);
+            }, different_lens: {
+                var bb = builder.body();
+                break :different_lens try bb.finish_with_zero();
             });
-            const bod = body.finish(result);
-            break :fun builder.finish(bod);
+            const body = b.finish(result);
+            break :fun builder.finish(body);
         });
         const lookup_field_fun_rec = try ir_to_instructions(ally, heap, fun: {
             var builder = Builder.init(ally);
@@ -823,49 +833,49 @@ pub const CommonObjects = struct {
             const type_obj = try builder.param();
             const symbol = try builder.param();
             const index = try builder.param();
-            var body = builder.body();
-            const result = try body.if_eq(index, try body.num_words(type_obj), then: {
-                var inner = builder.body();
-                const result = try inner.crash(try inner.object(try object_mod.new_symbol(heap, "no such field")));
-                break :then inner.finish(result);
-            }, else_: {
-                var inner = builder.body();
+            var b = builder.body();
+            const result = try b.if_eq(index, try b.num_words(type_obj), no_match: {
+                var bb = builder.body();
+                const result = try bb.crash(try bb.object(try object_mod.new_symbol(heap, "no such field")));
+                break :no_match bb.finish(result);
+            }, check: {
+                var bb = builder.body();
                 var cmp_args = try ally.alloc(Id, 2);
-                cmp_args[0] = try inner.load(type_obj, index);
+                cmp_args[0] = try bb.load(type_obj, index);
                 cmp_args[1] = symbol;
-                const match = try inner.call(try inner.object(compare_symbols_fun), cmp_args);
-                const result = try inner.if_not_zero(match, inner_then: {
-                    var innerer = builder.body();
-                    break :inner_then innerer.finish(index);
-                }, inner_else: {
-                    var innerer = builder.body();
+                const match = try bb.call(try bb.object(compare_symbols_fun), cmp_args);
+                const result = try bb.if_not_zero(match, match: {
+                    var bbb = builder.body();
+                    break :match bbb.finish(index);
+                }, no_match: {
+                    var bbb = builder.body();
                     var args = try ally.alloc(Id, 4);
                     args[0] = rec;
                     args[1] = type_obj;
                     args[2] = symbol;
-                    args[3] = try innerer.add(index, try innerer.word(1));
-                    const result = try innerer.call(rec, args);
-                    break :inner_else innerer.finish(result);
+                    args[3] = try bbb.add(index, try bbb.word(1));
+                    const result = try bbb.call(rec, args);
+                    break :no_match bbb.finish(result);
                 });
-                break :else_ inner.finish(result);
+                break :check bb.finish(result);
             });
-            const bod = body.finish(result);
-            break :fun builder.finish(bod);
+            const body = b.finish(result);
+            break :fun builder.finish(body);
         });
         const lookup_field_fun = try ir_to_instructions(ally, heap, fun: {
             var builder = Builder.init(ally);
             const type_obj = try builder.param();
             const symbol = try builder.param();
-            var body = builder.body();
-            const rec = try body.object(lookup_field_fun_rec);
+            var b = builder.body();
+            const rec = try b.object(lookup_field_fun_rec);
             var args = try ally.alloc(Id, 4);
             args[0] = rec;
             args[1] = type_obj;
             args[2] = symbol;
-            args[3] = try body.word(1);
-            const result = try body.call(rec, args);
-            const bod = body.finish(result);
-            break :fun builder.finish(bod);
+            args[3] = try b.word(1);
+            const result = try b.call(rec, args);
+            const body = b.finish(result);
+            break :fun builder.finish(body);
         });
 
         return .{
@@ -924,30 +934,30 @@ const AstToIr = struct {
         var bindings = Bindings.init();
         var builder = Builder.init(ally);
         _ = try builder.param();
-        var body = builder.body();
+        var b = builder.body();
         inline for (@typeInfo(@TypeOf(env)).@"struct".fields) |field| {
-            const ref = try body.object(@field(env, field.name));
+            const ref = try b.object(@field(env, field.name));
             try bindings.bind(ally, field.name, ref);
         }
-        const result = try compiler.compile_expr(expr, &body, &bindings);
-        const body_result = body.finish(result);
+        const result = try compiler.compile_expr(expr, &b, &bindings);
+        const body_result = b.finish(result);
         return builder.finish(body_result);
     }
 
-    fn compile_expr(self: *AstToIr, expr: Ast.Expr, body: *Ir.BodyBuilder, bindings: *Bindings) error{OutOfMemory}!Id {
+    fn compile_expr(self: *AstToIr, expr: Ast.Expr, b: *Ir.BodyBuilder, bindings: *Bindings) error{OutOfMemory}!Id {
         switch (expr) {
             .name => |name| return bindings.get(name),
-            .int => |value| return try body.object(try object_mod.new_int(self.heap, value)),
+            .int => |value| return try b.object(try object_mod.new_int(self.heap, value)),
             .string => |string| {
                 const symbol_obj = try object_mod.new_symbol(self.heap, string);
                 const string_obj = try self.heap.new_pointers(&[_]Word{ self.common.string_type, symbol_obj });
-                return body.object(string_obj);
+                return b.object(string_obj);
             },
             .let => |let| {
-                const id = try self.compile_expr(let.value.*, body, bindings);
+                const id = try self.compile_expr(let.value.*, b, bindings);
                 const len = bindings.bindings.items.len;
                 try bindings.bind(self.ally, let.name, id);
-                const result = try self.compile_expr(let.expr.*, body, bindings);
+                const result = try self.compile_expr(let.expr.*, b, bindings);
                 bindings.bindings.items.len = len;
                 return result;
             },
@@ -956,64 +966,61 @@ const AstToIr = struct {
                 for (0.., struct_.fields) |i, field|
                     field_names[i] = try object_mod.new_symbol(self.heap, field.name);
                 const type_ = obj: {
-                    var b = try self.heap.object_builder();
-                    try b.emit_pointer(self.common.struct_symbol);
-                    for (field_names) |field_name| try b.emit_pointer(field_name);
-                    break :obj b.finish();
+                    var o = try self.heap.object_builder();
+                    try o.emit_pointer(self.common.struct_symbol);
+                    for (field_names) |field_name| try o.emit_pointer(field_name);
+                    break :obj o.finish();
                 };
-                const compiled = try self.ally.alloc(Id, 1 + struct_.fields.len);
-                compiled[0] = try body.object(type_);
-                for (1.., struct_.fields) |i, field| compiled[i] = try self.compile_expr(field.value, body, bindings);
-                return body.new(true, compiled);
+                const fields = try self.ally.alloc(Id, 1 + struct_.fields.len);
+                fields[0] = try b.object(type_);
+                for (1.., struct_.fields) |i, field| fields[i] = try self.compile_expr(field.value, b, bindings);
+                return b.new(true, fields);
             },
             .member => |member| {
-                const of = try self.compile_expr(member.of.*, body, bindings);
-                _ = try body.assert_is_struct(of, self.heap, "you can only get members of structs");
-                const zero = try body.word(0);
-                const type_ = try body.load(of, zero);
-                const fun = try body.object(self.common.lookup_field_fun);
+                const of = try self.compile_expr(member.of.*, b, bindings);
+                _ = try b.assert_is_struct(of, self.heap, "you can only get members of structs");
+                const type_ = try b.type_of(of);
+                const fun = try b.object(self.common.lookup_field_fun);
                 var args = try self.ally.alloc(Id, 2);
                 args[0] = type_;
-                args[1] = try body.object(try object_mod.new_symbol(self.heap, member.name));
-                const index = try body.call(fun, args);
-                const result = try body.load(of, index);
+                args[1] = try b.object(try object_mod.new_symbol(self.heap, member.name));
+                const index = try b.call(fun, args);
+                const result = try b.load(of, index);
                 return result;
             },
             .enum_ => |enum_| {
                 const variant_name = try object_mod.new_symbol(self.heap, enum_.variant);
                 const type_ = obj: {
-                    var b = try self.heap.object_builder();
-                    try b.emit_pointer(self.common.enum_symbol);
-                    try b.emit_pointer(variant_name);
-                    break :obj b.finish();
+                    var o = try self.heap.object_builder();
+                    try o.emit_pointer(self.common.enum_symbol);
+                    try o.emit_pointer(variant_name);
+                    break :obj o.finish();
                 };
-                const payload = try self.compile_expr(enum_.payload.*, body, bindings);
+                const payload = try self.compile_expr(enum_.payload.*, b, bindings);
                 const compiled = try self.ally.alloc(Id, 2);
-                compiled[0] = try body.object(type_);
+                compiled[0] = try b.object(type_);
                 compiled[1] = payload;
-                return body.new(true, compiled);
+                return b.new(true, compiled);
             },
             .switch_ => |switch_| {
-                const condition = try self.compile_expr(switch_.condition.*, body, bindings);
-                _ = try body.assert_is_enum(condition, self.heap, "you can only switch on enums");
-                const zero = try body.word(0);
-                const one = try body.word(1);
-                const type_ = try body.load(condition, zero);
-                const variant = try body.load(type_, one);
-                const result = try self.handle_switch_cases(body, condition, variant, switch_.cases, bindings);
+                const condition = try self.compile_expr(switch_.condition.*, b, bindings);
+                _ = try b.assert_is_enum(condition, self.heap, "you can only switch on enums");
+                const type_ = try b.type_of(condition);
+                const variant = try b.loadi(type_, 1);
+                const result = try self.handle_switch_cases(b, condition, variant, switch_.cases, bindings);
                 return result;
             },
             .lambda => |lambda| {
                 const num_args_obj = obj: {
-                    var b = try self.heap.object_builder();
-                    try b.emit_literal(@intCast(lambda.params.len));
-                    break :obj b.finish();
+                    var o = try self.heap.object_builder();
+                    try o.emit_literal(@intCast(lambda.params.len));
+                    break :obj o.finish();
                 };
                 const type_ = obj: {
-                    var b = try self.heap.object_builder();
-                    try b.emit_pointer(self.common.lambda_symbol);
-                    try b.emit_pointer(num_args_obj);
-                    break :obj b.finish();
+                    var o = try self.heap.object_builder();
+                    try o.emit_pointer(self.common.lambda_symbol);
+                    try o.emit_pointer(num_args_obj);
+                    break :obj o.finish();
                 };
                 const captured = try get_captured(self.ally, lambda);
                 const ir = ir: {
@@ -1032,61 +1039,54 @@ const AstToIr = struct {
                     break :ir lambda_builder.finish(body_result);
                 };
                 const better_ir = try optimize_ir(self.ally, self.heap, ir);
-                const instructions = try body.object(try ir_to_instructions(self.ally, self.heap, better_ir));
+                const instructions = try b.object(try ir_to_instructions(self.ally, self.heap, better_ir));
                 const closure = closure: {
                     var captured_values = ArrayList(Id).empty;
                     for (captured.items) |name| try captured_values.append(self.ally, try bindings.get(name));
-                    break :closure try body.new_closure(captured_values.items);
+                    break :closure try b.new_closure(captured_values.items);
                 };
-                const pointers = try body.parent.ally.alloc(Id, 3);
-                pointers[0] = try body.object(type_);
+                const pointers = try b.parent.ally.alloc(Id, 3);
+                pointers[0] = try b.object(type_);
                 pointers[1] = instructions;
                 pointers[2] = closure;
-                return try body.new(true, pointers);
+                return try b.new(true, pointers);
             },
             .call => |call| {
-                const callee = try self.compile_expr(call.callee.*, body, bindings);
-                const zero = try body.word(0);
-                const one = try body.word(1);
-                const two = try body.word(2);
-                const type_ = try body.load(callee, zero);
-                const kind = try body.load(type_, zero);
-                return try body.if_eq(
-                    try body.load(kind, zero),
-                    try body.word(self.heap.load(self.common.lambda_symbol, 0)),
-                    is_lambda: {
-                        var inner = body.child_body();
-                        const num_params = try inner.load(try inner.load(type_, one), zero);
-                        const num_args = try inner.word(call.args.len);
-                        const result = try inner.if_eq(num_params, num_args, args_fit: {
-                            var innerer = body.child_body();
-                            const instructions = try innerer.load(callee, one);
-                            const closure = try innerer.load(callee, two);
-                            var args = ArrayList(Id).empty;
-                            for (call.args) |arg| try args.append(self.ally, try self.compile_expr(arg, &innerer, bindings));
-                            try args.append(self.ally, closure);
-                            const result = try innerer.call(instructions, args.items);
-                            break :args_fit innerer.finish(result);
-                        }, args_dont_fit: {
-                            var innerer = body.child_body();
-                            const result = try innerer.crash_with_symbol(self.heap, "wrong number of arguments");
-                            break :args_dont_fit innerer.finish(result);
-                        });
-                        break :is_lambda inner.finish(result);
-                    },
-                    not_lambda: {
-                        var inner = body.child_body();
-                        const result = try inner.crash_with_symbol(self.heap, "you can only call lambdas");
-                        break :not_lambda inner.finish(result);
-                    },
-                );
+                const callee = try self.compile_expr(call.callee.*, b, bindings);
+                const zero = try b.word(0);
+                const one = try b.word(1);
+                const two = try b.word(2);
+                const type_ = try b.type_of(callee);
+                const kind = try b.kind_of(type_);
+                return try b.if_eq_symbol(self.heap, kind, "lambda", is_lambda: {
+                    var bb = b.child_body();
+                    const num_params = try bb.load(try bb.load(type_, one), zero);
+                    const num_args = try bb.word(call.args.len);
+                    const result = try bb.if_eq(num_params, num_args, args_fit: {
+                        var bbb = bb.child_body();
+                        const instructions = try bbb.load(callee, one);
+                        const closure = try bbb.load(callee, two);
+                        var args = ArrayList(Id).empty;
+                        for (call.args) |arg| try args.append(self.ally, try self.compile_expr(arg, &bbb, bindings));
+                        try args.append(self.ally, closure);
+                        const result = try bbb.call(instructions, args.items);
+                        break :args_fit bbb.finish(result);
+                    }, args_dont_fit: {
+                        var bbb = bb.child_body();
+                        break :args_dont_fit try bbb.finish_with_symbol_crash(self.heap, "wrong number of arguments");
+                    });
+                    break :is_lambda bb.finish(result);
+                }, not_lambda: {
+                    var bb = b.child_body();
+                    break :not_lambda try bb.finish_with_symbol_crash(self.heap, "you can only call lambdas");
+                });
             },
         }
     }
 
     fn handle_switch_cases(
         self: *AstToIr,
-        body: *BodyBuilder,
+        b: *BodyBuilder,
         condition: Id,
         variant: Id,
         cases: []const Ast.Case,
@@ -1094,41 +1094,31 @@ const AstToIr = struct {
     ) !Id {
         if (cases.len == 0) {
             // TODO: name the variant in the error message
-            return try body.crash_with_symbol(self.heap, "unknown variant");
+            return try b.crash_with_symbol(self.heap, "unknown variant");
         } else {
             const case = cases[0];
-            const fun = try body.object(self.common.compare_symbols_fun);
-            // TODO: can we use the box fun for arrays?
-            var args = try self.ally.alloc(Id, 2);
-            args[0] = variant;
-            args[1] = try body.object(try object_mod.new_symbol(self.heap, case.variant));
-            return try body.if_not_zero(
-                try body.call(fun, args),
-                found_it: {
-                    var inner = body.child_body();
-                    const len = bindings.bindings.items.len;
-                    if (case.payload_name) |payload_name| {
-                        const one = try inner.word(1);
-                        const payload_value = try inner.load(condition, one);
-                        try bindings.bind(self.ally, payload_name, payload_value);
-                    }
-                    const result = try self.compile_expr(case.body.*, &inner, bindings);
-                    bindings.bindings.items.len = len;
-                    break :found_it inner.finish(result);
-                },
-                not_found_yet: {
-                    var inner = body.child_body();
-                    const result = try self.handle_switch_cases(&inner, condition, variant, cases[1..], bindings);
-                    break :not_found_yet inner.finish(result);
-                },
-            );
+            return try b.if_eq_symbol(self.heap, variant, case.variant, found_it: {
+                var bb = b.child_body();
+                const len = bindings.bindings.items.len;
+                if (case.payload_name) |payload_name| {
+                    const payload_value = try bb.loadi(condition, 1);
+                    try bindings.bind(self.ally, payload_name, payload_value);
+                }
+                const result = try self.compile_expr(case.body.*, &bb, bindings);
+                bindings.bindings.items.len = len;
+                break :found_it bb.finish(result);
+            }, not_found_yet: {
+                var bb = b.child_body();
+                const result = try self.handle_switch_cases(&bb, condition, variant, cases[1..], bindings);
+                break :not_found_yet bb.finish(result);
+            });
         }
     }
 
-    fn compile_body(self: *AstToIr, exprs: []Ast.Expr, body: *BodyBuilder, bindings: *Bindings) !Id {
+    fn compile_body(self: *AstToIr, exprs: []Ast.Expr, b: *BodyBuilder, bindings: *Bindings) !Id {
         var last: ?Id = null;
-        for (exprs) |expr| last = try self.compile_expr(expr, body, bindings);
-        return last orelse body.object(self.nil);
+        for (exprs) |expr| last = try self.compile_expr(expr, b, bindings);
+        return last orelse b.object(self.nil);
     }
 
     fn get_captured(ally: Ally, lambda: Ast.Lambda) !ArrayList(Str) {
@@ -1451,12 +1441,12 @@ const OptimizeIr = struct {
     const IdSet = std.AutoArrayHashMap(Id, void);
 
     fn optimize_body(self: *OptimizeIr, old_body: Ir.Body, builder: *Ir.Builder) !Ir.Body {
-        var body = builder.body();
+        var b = builder.body();
         for (old_body.ids) |old_id| {
-            const id = try self.optimize_expr(old_id, &body);
+            const id = try self.optimize_expr(old_id, &b);
             try self.mapping.put(old_id, id);
         }
-        const better_body = body.finish(self.mapping.get(old_body.returns).?);
+        const better_body = b.finish(self.mapping.get(old_body.returns).?);
 
         // Tree shaking
         //
@@ -2042,177 +2032,165 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         var builder = Ir.Builder.init(ally);
         const lambda = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        const zero = try body.word(0);
-        const one = try body.word(1);
-        const two = try body.word(2);
-        const type_ = try body.load(lambda, zero);
-        const kind = try body.load(type_, zero);
-        const result = try body.if_eq(
-            try body.load(kind, zero),
-            try body.word(heap.load(try object_mod.new_symbol(heap, "lambda"), 0)),
-            is_lambda: {
-                var inner = body.child_body();
-                const num_params = try body.load(try body.load(type_, one), zero);
-                const result = try body.if_eq(num_params, zero, has_no_args: {
-                    var innerer = body.child_body();
-                    const fun = try innerer.load(lambda, one);
-                    const closure = try innerer.load(lambda, two);
-                    const unchecked = try innerer.object(unchecked_collect_garbage);
-                    const args = try ally.alloc(Ir.Id, 2);
-                    args[0] = fun;
-                    args[1] = closure;
-                    const result = try innerer.call(unchecked, args);
-                    break :has_no_args innerer.finish(result);
-                }, has_args: {
-                    var innerer = body.child_body();
-                    const result = try innerer.crash_with_symbol(heap, "expected lambda with zero arguments");
-                    break :has_args innerer.finish(result);
-                });
-                break :is_lambda inner.finish(result);
-            },
-            not_lambda: {
-                var inner = body.child_body();
-                const result = try body.crash_with_symbol(heap, "expected lambda");
-                break :not_lambda inner.finish(result);
-            },
-        );
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        var b = builder.body();
+        const zero = try b.word(0);
+        const type_ = try b.type_of(lambda);
+        const kind = try b.kind_of(type_);
+        const result = try b.if_eq_symbol(heap, kind, "lambda", is_lambda: {
+            var bb = b.child_body();
+            const num_params = try bb.loadi(try bb.loadi(type_, 1), 0);
+            const result = try bb.if_eq(num_params, zero, has_no_args: {
+                var bbb = bb.child_body();
+                const fun = try bbb.loadi(lambda, 1);
+                const closure = try bbb.loadi(lambda, 2);
+                const unchecked = try bbb.object(unchecked_collect_garbage);
+                const args = try ally.alloc(Ir.Id, 2);
+                args[0] = fun;
+                args[1] = closure;
+                const result = try bbb.call(unchecked, args);
+                break :has_no_args bbb.finish(result);
+            }, has_args: {
+                var bbb = bb.child_body();
+                break :has_args try bbb.finish_with_symbol_crash(heap, "expected lambda with zero arguments");
+            });
+            break :is_lambda bb.finish(result);
+        }, not_lambda: {
+            var bb = b.child_body();
+            break :not_lambda try bb.finish_with_symbol_crash(heap, "expected lambda");
+        });
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     const crash = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const message = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        const res = try body.crash(message);
-        const body_ = body.finish(res);
-        break :ir builder.finish(body_);
+        var b = builder.body();
+        const result = try b.crash(message);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     const int_add = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
+        const left = try builder.param();
+        const right = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        _ = try body.assert_is_int(a, heap, "you can only add ints");
-        _ = try body.assert_is_int(b, heap, "you can only add ints");
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const res_val = try body.add(a_val, b_val);
-        const result = try body.new_int(common, res_val);
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        var b = builder.body();
+        _ = try b.assert_is_int(left, heap, "you can only add ints");
+        _ = try b.assert_is_int(right, heap, "you can only add ints");
+        const left_val = try b.get_int_value(left);
+        const right_val = try b.get_int_value(right);
+        const res_val = try b.add(left_val, right_val);
+        const result = try b.new_int(common, res_val);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     const int_subtract = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
+        const left = try builder.param();
+        const right = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        _ = try body.assert_is_int(a, heap, "you can only subtract ints");
-        _ = try body.assert_is_int(b, heap, "you can only subtract ints");
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const res_val = try body.subtract(a_val, b_val);
-        const result = try body.new_int(common, res_val);
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        var b = builder.body();
+        _ = try b.assert_is_int(left, heap, "you can only subtract ints");
+        _ = try b.assert_is_int(right, heap, "you can only subtract ints");
+        const left_val = try b.get_int_value(left);
+        const right_val = try b.get_int_value(right);
+        const res_val = try b.subtract(left_val, right_val);
+        const result = try b.new_int(common, res_val);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     const int_multiply = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
+        const left = try builder.param();
+        const right = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        _ = try body.assert_is_int(a, heap, "you can only multiply ints");
-        _ = try body.assert_is_int(b, heap, "you can only multiply ints");
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const res_val = try body.multiply(a_val, b_val);
-        const result = try body.new_int(common, res_val);
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        var b = builder.body();
+        _ = try b.assert_is_int(left, heap, "you can only multiply ints");
+        _ = try b.assert_is_int(right, heap, "you can only multiply ints");
+        const left_val = try b.get_int_value(left);
+        const right_val = try b.get_int_value(right);
+        const res_val = try b.multiply(left_val, right_val);
+        const result = try b.new_int(common, res_val);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     const int_divide = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
+        const left = try builder.param();
+        const right = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        _ = try body.assert_is_int(a, heap, "you can only divide ints");
-        _ = try body.assert_is_int(b, heap, "you can only divide ints");
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const res_val = try body.divide(a_val, b_val);
-        const result = try body.new_int(common, res_val);
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        var b = builder.body();
+        _ = try b.assert_is_int(left, heap, "you can only divide ints");
+        _ = try b.assert_is_int(right, heap, "you can only divide ints");
+        const left_val = try b.get_int_value(left);
+        const right_val = try b.get_int_value(right);
+        const res_val = try b.divide(left_val, right_val);
+        const result = try b.new_int(common, res_val);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     const int_modulo = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
+        const left = try builder.param();
+        const right = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        _ = try body.assert_is_int(a, heap, "you can only modulo ints");
-        _ = try body.assert_is_int(b, heap, "you can only modulo ints");
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const res_val = try body.modulo(a_val, b_val);
-        const result = try body.new_int(common, res_val);
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        var b = builder.body();
+        _ = try b.assert_is_int(left, heap, "you can only modulo ints");
+        _ = try b.assert_is_int(right, heap, "you can only modulo ints");
+        const left_val = try b.get_int_value(left);
+        const right_val = try b.get_int_value(right);
+        const res_val = try b.modulo(left_val, right_val);
+        const result = try b.new_int(common, res_val);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     const int_compare = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
-        const a = try builder.param();
-        const b = try builder.param();
+        const left = try builder.param();
+        const right = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        _ = try body.assert_is_int(a, heap, "you can only compare ints");
-        _ = try body.assert_is_int(b, heap, "you can only compare ints");
-        const a_val = try body.get_int_value(a);
-        const b_val = try body.get_int_value(b);
-        const compared = try body.compare(a_val, b_val);
-        const variant = try body.if_not_zero(compared, not_equal: {
-            var inner = body.child_body();
-            const variant = try inner.if_eq(compared, try body.word(1), greater: {
-                var innerer = body.child_body();
-                const variant = try innerer.object(try object_mod.new_symbol(heap, "greater"));
-                break :greater innerer.finish(variant);
+        var b = builder.body();
+        _ = try b.assert_is_int(left, heap, "you can only compare ints");
+        _ = try b.assert_is_int(right, heap, "you can only compare ints");
+        const left_val = try b.get_int_value(left);
+        const right_val = try b.get_int_value(right);
+        const compared = try b.compare(left_val, right_val);
+        const variant = try b.if_not_zero(compared, not_equal: {
+            var bb = b.child_body();
+            const variant = try bb.if_eq(compared, try b.word(1), greater: {
+                var bbb = bb.child_body();
+                const variant = try bbb.object(try object_mod.new_symbol(heap, "greater"));
+                break :greater bbb.finish(variant);
             }, less: {
-                var innerer = body.child_body();
-                const variant = try innerer.object(try object_mod.new_symbol(heap, "less"));
-                break :less innerer.finish(variant);
+                var bbb = bb.child_body();
+                const variant = try bbb.object(try object_mod.new_symbol(heap, "less"));
+                break :less bbb.finish(variant);
             });
-            break :not_equal inner.finish(variant);
+            break :not_equal bb.finish(variant);
         }, equal: {
-            var inner = body.child_body();
-            const variant = try inner.object(try object_mod.new_symbol(heap, "equal"));
-            break :equal inner.finish(variant);
+            var bb = b.child_body();
+            const variant = try bb.object(try object_mod.new_symbol(heap, "equal"));
+            break :equal bb.finish(variant);
         });
         const type_ = obj: {
             const words = try ally.alloc(Ir.Id, 2);
-            words[0] = try body.object(try object_mod.new_symbol(heap, "enum"));
+            words[0] = try b.object(try object_mod.new_symbol(heap, "enum"));
             words[1] = variant;
-            break :obj try body.new(true, words);
+            break :obj try b.new(true, words);
         };
-        const empty_struct = try body.object(
+        const empty_struct = try b.object(
             try heap.new(.{
                 .has_pointers = true,
                 .words = &[_]Word{
-                    try heap.new(.{
-                        .has_pointers = true,
-                        .words = &[_]Word{try object_mod.new_symbol(heap, "struct")},
-                    }),
+                    try heap.new(.{ .has_pointers = true, .words = &[_]Word{common.struct_symbol} }),
                 },
             }),
         );
@@ -2220,10 +2198,10 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
             const words = try ally.alloc(Ir.Id, 2);
             words[0] = type_;
             words[1] = empty_struct;
-            break :obj try body.new(true, words);
+            break :obj try b.new(true, words);
         };
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     const string_get = try ir_to_lambda(ally, heap, ir: {
@@ -2231,22 +2209,22 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         const string = try builder.param();
         const index = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        _ = try body.assert_is_string(string, heap, "you can only get a char from a string");
-        _ = try body.assert_is_int(index, heap, "index should be an int");
-        const string_val = try body.get_string_value(string);
-        const index_val = try body.get_int_value(index);
-        const eight = try body.word(8);
-        const word_index = try body.divide(index_val, eight);
-        const byte_index = try body.modulo(index_val, eight);
+        var b = builder.body();
+        _ = try b.assert_is_string(string, heap, "you can only get a char from a string");
+        _ = try b.assert_is_int(index, heap, "index should be an int");
+        const string_val = try b.get_string_value(string);
+        const index_val = try b.get_int_value(index);
+        const eight = try b.word(8);
+        const word_index = try b.divide(index_val, eight);
+        const byte_index = try b.modulo(index_val, eight);
         // load(string, index / 8) >> (index % 8 * 8) % 256
-        const byte = try body.modulo(
-            try body.shift_right(try body.load(string_val, word_index), try body.multiply(byte_index, eight)),
-            try body.word(256),
+        const byte = try b.modulo(
+            try b.shift_right(try b.load(string_val, word_index), try b.multiply(byte_index, eight)),
+            try b.word(256),
         );
-        const result = try body.new_int(common, byte);
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        const result = try b.new_int(common, byte);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     // const string_from_chars_rec = try ir_to_instructions(ally, heap, ir: {
@@ -2259,30 +2237,30 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         var builder = Ir.Builder.init(ally);
         const chars = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        _ = try body.assert_is_enum(chars, heap, "bad string_from_chars");
-        const one = try body.word(1);
-        const variant = try body.load(chars, one);
-        const result = try body.if_eq_symbol(heap, variant, "empty", empty: {
-            var inner = body.child_body();
-            const result = try inner.object(try object_mod.empty_obj(heap));
-            break :empty inner.finish(result);
+        var b = builder.body();
+        _ = try b.assert_is_enum(chars, heap, "bad string_from_chars");
+        const one = try b.word(1);
+        const variant = try b.load(chars, one);
+        const result = try b.if_eq_symbol(heap, variant, "empty", empty: {
+            var bb = b.child_body();
+            const result = try bb.object(try object_mod.empty_obj(heap));
+            break :empty bb.finish(result);
         }, not_empty: {
-            var inner = body.child_body();
-            const result = try inner.if_eq_symbol(heap, variant, "more", more: {
-                var innerer = body.child_body();
-                // innerer.load(, offset: Id)
-                // _ = try body.assert_is_struct(payload, heap, "bad string_from_chars");
-                const result = try innerer.crash_with_symbol(heap, "todo: string_from_chars");
-                break :more innerer.finish(result);
+            var bb = b.child_body();
+            const result = try bb.if_eq_symbol(heap, variant, "more", more: {
+                var bbb = b.child_body();
+                // bbb.load(, offset: Id)
+                // _ = try b.assert_is_struct(payload, heap, "bad string_from_chars");
+                const result = try bbb.crash_with_symbol(heap, "todo: string_from_chars");
+                break :more bbb.finish(result);
             }, bad: {
-                var innerer = inner.child_body();
-                const result = try innerer.crash_with_symbol(heap, "bad string_from_chars");
-                break :bad innerer.finish(result);
+                var bbb = bb.child_body();
+                const result = try bbb.crash_with_symbol(heap, "bad string_from_chars");
+                break :bad bbb.finish(result);
             });
-            break :not_empty inner.finish(result);
+            break :not_empty bb.finish(result);
         });
-        const body_ = body.finish(result);
+        const body_ = b.finish(result);
         break :ir builder.finish(body_);
     });
 
@@ -2290,81 +2268,81 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         var builder = Ir.Builder.init(ally);
         const rec = try builder.param();
         const list = try builder.param();
-        var body = builder.body();
-        _ = try body.assert_is_enum(list, heap, "bad array_from_linked_list");
-        const one = try body.word(1);
-        const type_ = try body.type_of(list);
-        const variant = try body.load(type_, one);
-        const result = try body.if_eq_symbol(heap, variant, "empty", empty: {
-            var inner = body.child_body();
-            const result = try inner.object(common.empty_obj);
-            break :empty inner.finish(result);
+        var b = builder.body();
+        const one = try b.word(1);
+        _ = try b.assert_is_enum(list, heap, "array_from_linked_list expects a list");
+        const type_ = try b.type_of(list);
+        const variant = try b.load(type_, one);
+        const result = try b.if_eq_symbol(heap, variant, "empty", empty: {
+            var bb = b.child_body();
+            const result = try bb.object(common.empty_obj);
+            break :empty bb.finish(result);
         }, not_empty: {
-            var inner = body.child_body();
-            const result = try inner.if_eq_symbol(heap, variant, "more", more: {
-                var innerer = body.child_body();
-                const payload = try innerer.load(list, one);
-                _ = try innerer.assert_is_struct(payload, heap, "bad array_from_linked_list");
-                const payload_type = try innerer.type_of(payload);
-                const lookup_field = try innerer.object(common.lookup_field_fun);
+            var bb = b.child_body();
+            const result = try bb.if_eq_symbol(heap, variant, "more", more: {
+                var bbb = b.child_body();
+                const payload = try bbb.load(list, one);
+                _ = try bbb.assert_is_struct(payload, heap, "bad array_from_linked_list");
+                const payload_type = try bbb.type_of(payload);
+                const lookup_field = try bbb.object(common.lookup_field_fun);
                 const head = head: {
                     var args = try ally.alloc(Ir.Id, 2);
                     args[0] = payload_type;
-                    args[1] = try innerer.object(try object_mod.new_symbol(heap, "head"));
-                    const index = try innerer.call(lookup_field, args);
-                    break :head try innerer.load(payload, index);
+                    args[1] = try bbb.object(try object_mod.new_symbol(heap, "head"));
+                    const index = try bbb.call(lookup_field, args);
+                    break :head try bbb.load(payload, index);
                 };
                 const tail = tail: {
                     var args = try ally.alloc(Ir.Id, 2);
                     args[0] = payload_type;
-                    args[1] = try innerer.object(try object_mod.new_symbol(heap, "tail"));
-                    const index = try innerer.call(lookup_field, args);
-                    break :tail try innerer.load(payload, index);
+                    args[1] = try bbb.object(try object_mod.new_symbol(heap, "tail"));
+                    const index = try bbb.call(lookup_field, args);
+                    break :tail try bbb.load(payload, index);
                 };
                 const mapped_tail = mapped: {
                     var args = try ally.alloc(Ir.Id, 2);
                     args[0] = rec;
                     args[1] = tail;
-                    break :mapped try innerer.call(rec, args);
+                    break :mapped try bbb.call(rec, args);
                 };
                 const result = obj: {
                     var words = try ally.alloc(Ir.Id, 2);
                     words[0] = head;
                     words[1] = mapped_tail;
-                    break :obj try innerer.new(true, words);
+                    break :obj try bbb.new(true, words);
                 };
-                break :more innerer.finish(result);
+                break :more bbb.finish(result);
             }, bad: {
-                var innerer = inner.child_body();
-                const result = try innerer.crash_with_symbol(heap, "bad array_from_linked_list");
-                break :bad innerer.finish(result);
+                var bbb = bb.child_body();
+                const result = try bbb.crash_with_symbol(heap, "bad array_from_linked_list");
+                break :bad bbb.finish(result);
             });
-            break :not_empty inner.finish(result);
+            break :not_empty bb.finish(result);
         });
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
     const array_from_linked_list = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const list = try builder.param();
         _ = try builder.param(); // closure
-        var body = builder.body();
-        const rec = try body.object(array_from_linked_list_rec);
+        var b = builder.body();
+        const rec = try b.object(array_from_linked_list_rec);
         const mapped = mapped: {
             var args = try ally.alloc(Ir.Id, 2);
             args[0] = rec;
             args[1] = list;
-            break :mapped try body.call(rec, args);
+            break :mapped try b.call(rec, args);
         };
         const extra_node = node: {
             var words = try ally.alloc(Ir.Id, 2);
-            words[0] = try body.object(common.array_type);
+            words[0] = try b.object(common.array_type);
             words[1] = mapped;
-            break :node try body.new(true, words);
+            break :node try b.new(true, words);
         };
-        const result = try body.flatten_to_pointer_object(extra_node);
-        const body_ = body.finish(result);
-        break :ir builder.finish(body_);
+        const result = try b.flatten_to_pointer_object(extra_node);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
     });
 
     // TODO: fix
