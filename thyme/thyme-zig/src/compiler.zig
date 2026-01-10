@@ -760,6 +760,12 @@ pub const CommonObjects = struct {
     int_type: Address,
     string_type: Address,
     array_type: Address,
+    empty_struct: Address,
+    true_: Address,
+    false_: Address,
+    equal: Address,
+    greater: Address,
+    less: Address,
     compare_symbols_fun: Address,
     lookup_field_fun: Address,
 
@@ -773,9 +779,32 @@ pub const CommonObjects = struct {
         const enum_symbol = try object_mod.new_symbol(heap, "enum");
         const array_symbol = try object_mod.new_symbol(heap, "array");
         const lambda_symbol = try object_mod.new_symbol(heap, "lambda");
-        const int_type = try heap.new(.{ .has_pointers = true, .words = &[_]Word{int_symbol} });
-        const string_type = try heap.new(.{ .has_pointers = true, .words = &[_]Word{string_symbol} });
-        const array_type = try heap.new(.{ .has_pointers = true, .words = &[_]Word{array_symbol} });
+        const int_type = try heap.new_pointers(&[_]Word{int_symbol});
+        const string_type = try heap.new_pointers(&[_]Word{string_symbol});
+        const array_type = try heap.new_pointers(&[_]Word{array_symbol});
+        const empty_struct = try heap.new_pointers(&[_]Word{
+            try heap.new(.{ .has_pointers = true, .words = &[_]Word{struct_symbol} }),
+        });
+        const true_ = try heap.new_pointers(&.{
+            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "true") }),
+            empty_struct,
+        });
+        const false_ = try heap.new_pointers(&.{
+            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "false") }),
+            empty_struct,
+        });
+        const equal = try heap.new_pointers(&.{
+            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "equal") }),
+            empty_struct,
+        });
+        const greater = try heap.new_pointers(&.{
+            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "greater") }),
+            empty_struct,
+        });
+        const less = try heap.new_pointers(&.{
+            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "less") }),
+            empty_struct,
+        });
         // TODO: introduce loops to the IR
         const compare_symbols_fun_rec = try ir_to_instructions(ally, heap, fun: {
             var builder = Builder.init(ally);
@@ -901,6 +930,12 @@ pub const CommonObjects = struct {
             .int_type = int_type,
             .string_type = string_type,
             .array_type = array_type,
+            .empty_struct = empty_struct,
+            .true_ = true_,
+            .false_ = false_,
+            .equal = equal,
+            .greater = greater,
+            .less = less,
             .compare_symbols_fun = compare_symbols_fun,
             .lookup_field_fun = lookup_field_fun,
         };
@@ -2188,43 +2223,23 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         const left_val = try b.get_int_value(left);
         const right_val = try b.get_int_value(right);
         const compared = try b.compare(left_val, right_val);
-        const variant = try b.if_not_zero(compared, not_equal: {
+        const result = try b.if_not_zero(compared, not_equal: {
             var bb = b.child_body();
             const variant = try bb.if_eq(compared, try b.word(1), greater: {
                 var bbb = bb.child_body();
-                const variant = try bbb.object(try object_mod.new_symbol(heap, "greater"));
+                const variant = try bbb.object(common.greater);
                 break :greater bbb.finish(variant);
             }, less: {
                 var bbb = bb.child_body();
-                const variant = try bbb.object(try object_mod.new_symbol(heap, "less"));
+                const variant = try bbb.object(common.less);
                 break :less bbb.finish(variant);
             });
             break :not_equal bb.finish(variant);
         }, equal: {
             var bb = b.child_body();
-            const variant = try bb.object(try object_mod.new_symbol(heap, "equal"));
+            const variant = try bb.object(common.equal);
             break :equal bb.finish(variant);
         });
-        const type_ = obj: {
-            const words = try ally.alloc(Ir.Id, 2);
-            words[0] = try b.object(try object_mod.new_symbol(heap, "enum"));
-            words[1] = variant;
-            break :obj try b.new(true, words);
-        };
-        const empty_struct = try b.object(
-            try heap.new(.{
-                .has_pointers = true,
-                .words = &[_]Word{
-                    try heap.new(.{ .has_pointers = true, .words = &[_]Word{common.struct_symbol} }),
-                },
-            }),
-        );
-        const result = obj: {
-            const words = try ally.alloc(Ir.Id, 2);
-            words[0] = type_;
-            words[1] = empty_struct;
-            break :obj try b.new(true, words);
-        };
         const body = b.finish(result);
         break :ir builder.finish(body);
     });
@@ -2364,6 +2379,28 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         break :ir builder.finish(body);
     });
 
+    const string_equals = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const left = try builder.param();
+        const right = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        _ = try b.assert_is_string(left, heap, "bad string_equals");
+        _ = try b.assert_is_string(right, heap, "bad string_equals");
+        const is_same = try b.call(try b.object(common.compare_symbols_fun), try box(ally, .{ try b.loadi(left, 1), try b.loadi(right, 1) }));
+        const result = try b.if_not_zero(is_same, true_: {
+            var bb = b.child_body();
+            const result = try bb.object(common.true_);
+            break :true_ bb.finish(result);
+        }, false_: {
+            var bb = b.child_body();
+            const result = try bb.object(common.false_);
+            break :false_ bb.finish(result);
+        });
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+
     const array_from_linked_list_rec = try ir_to_instructions(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const rec = try builder.param();
@@ -2469,6 +2506,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         .compare = int_compare,
         .string_get = string_get,
         .string_from_chars = string_from_chars,
+        .string_equals = string_equals,
         // .num_words = get_num_words,
         .array_from_linked_list = array_from_linked_list,
     };
