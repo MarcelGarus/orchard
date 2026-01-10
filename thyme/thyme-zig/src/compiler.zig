@@ -771,7 +771,6 @@ pub const CommonObjects = struct {
 
     pub fn create(ally: Ally, heap: *Heap) !CommonObjects {
         const Builder = Ir.Builder;
-        const Id = Ir.Id;
         const empty_obj = try object_mod.empty_obj(heap);
         const int_symbol = try object_mod.new_symbol(heap, "int");
         const string_symbol = try object_mod.new_symbol(heap, "string");
@@ -827,13 +826,8 @@ pub const CommonObjects = struct {
                     const right_word = try bb.load(right, index);
                     const result = try bb.if_eq(left_word, right_word, inner_then: {
                         var bbb = builder.body();
-                        var args = try ally.alloc(Id, 5);
-                        args[0] = rec;
-                        args[1] = left;
-                        args[2] = right;
-                        args[3] = try bbb.add(index, try bbb.word(1));
-                        args[4] = num_words;
-                        const result = try bbb.call(rec, args);
+                        const next_index = try bbb.add(index, try bbb.word(1));
+                        const result = try bbb.call(rec, try box(ally, .{ rec, left, right, next_index, num_words }));
                         break :inner_then bbb.finish(result);
                     }, inner_else: {
                         var bbb = builder.body();
@@ -854,13 +848,8 @@ pub const CommonObjects = struct {
                 var bb = builder.body();
                 const num_words = try bb.num_words(left);
                 const rec = try bb.object(compare_symbols_fun_rec);
-                var args = try ally.alloc(Id, 5);
-                args[0] = rec;
-                args[1] = left;
-                args[2] = right;
-                args[3] = try bb.word(0);
-                args[4] = num_words;
-                const result = try bb.call(rec, args);
+                const zero = try bb.word(0);
+                const result = try bb.call(rec, try box(ally, .{ rec, left, right, zero, num_words }));
                 break :same_len bb.finish(result);
             }, different_lens: {
                 var bb = builder.body();
@@ -882,21 +871,18 @@ pub const CommonObjects = struct {
                 break :no_match bb.finish(result);
             }, check: {
                 var bb = builder.body();
-                var cmp_args = try ally.alloc(Id, 2);
-                cmp_args[0] = try bb.load(type_obj, index);
-                cmp_args[1] = symbol;
-                const match = try bb.call(try bb.object(compare_symbols_fun), cmp_args);
+                const field_name = try bb.load(type_obj, index);
+                const match = try bb.call(
+                    try bb.object(compare_symbols_fun),
+                    try box(ally, .{ field_name, symbol }),
+                );
                 const result = try bb.if_not_zero(match, match: {
                     var bbb = builder.body();
                     break :match bbb.finish(index);
                 }, no_match: {
                     var bbb = builder.body();
-                    var args = try ally.alloc(Id, 4);
-                    args[0] = rec;
-                    args[1] = type_obj;
-                    args[2] = symbol;
-                    args[3] = try bbb.add(index, try bbb.word(1));
-                    const result = try bbb.call(rec, args);
+                    const next_index = try bbb.add(index, try bbb.word(1));
+                    const result = try bbb.call(rec, try box(ally, .{ rec, type_obj, symbol, next_index }));
                     break :no_match bbb.finish(result);
                 });
                 break :check bb.finish(result);
@@ -909,13 +895,9 @@ pub const CommonObjects = struct {
             const type_obj = try builder.param();
             const symbol = try builder.param();
             var b = builder.body();
+            const one = try b.word(1);
             const rec = try b.object(lookup_field_fun_rec);
-            var args = try ally.alloc(Id, 4);
-            args[0] = rec;
-            args[1] = type_obj;
-            args[2] = symbol;
-            args[3] = try b.word(1);
-            const result = try b.call(rec, args);
+            const result = try b.call(rec, try box(ally, .{ rec, type_obj, symbol, one }));
             const body = b.finish(result);
             break :fun builder.finish(body);
         });
@@ -1029,12 +1011,12 @@ const AstToIr = struct {
                 _ = try b.assert_is_struct(of, self.heap, "you can only get members of structs");
                 const type_ = try b.type_of(of);
                 const fun = try b.object(self.common.lookup_field_fun);
+                const member_name = try b.object(try object_mod.new_symbol(self.heap, member.name));
                 var args = try self.ally.alloc(Id, 2);
                 args[0] = type_;
-                args[1] = try b.object(try object_mod.new_symbol(self.heap, member.name));
+                args[1] = member_name;
                 const index = try b.call(fun, args);
-                const result = try b.load(of, index);
-                return result;
+                return try b.load(of, index);
             },
             .enum_ => |enum_| {
                 const variant_name = try object_mod.new_symbol(self.heap, enum_.variant);
@@ -1086,8 +1068,7 @@ const AstToIr = struct {
                     const body_result = lambda_body.finish(result);
                     break :ir lambda_builder.finish(body_result);
                 };
-                const better_ir = try optimize_ir(self.ally, self.heap, ir);
-                const instructions = try b.object(try ir_to_instructions(self.ally, self.heap, better_ir));
+                const instructions = try b.object(try ir_to_instructions(self.ally, self.heap, ir));
                 const closure = closure: {
                     var captured_values = ArrayList(Id).empty;
                     for (captured.items) |name| try captured_values.append(self.ally, try bindings.get(name));
@@ -1220,390 +1201,6 @@ const AstToIr = struct {
                 for (call.args) |arg| try collect_captured(ally, arg, ignore, out);
             },
         }
-    }
-};
-
-pub fn optimize_ir(ally: Ally, heap: *Heap, ir: Ir) !Ir {
-    _ = ally;
-    _ = heap;
-    return ir;
-    // var optimizer = OptimizeIr{ .ally = ally, .ir = ir, .heap = heap, .mapping = Map(Ir.Id, Ir.Id).init(ally) };
-    // var builder = Ir.Builder.init(ally);
-    // for (ir.params) |old_param| try optimizer.mapping.put(old_param, try builder.param());
-    // const body = try optimizer.optimize_body(ir.body, &builder);
-    // return builder.finish(body);
-}
-const OptimizeIr = struct {
-    const Id = Ir.Id;
-
-    ally: Ally,
-    ir: Ir,
-    heap: *Heap,
-    mapping: Map(Id, Id),
-
-    pub fn optimize_expr(self: *OptimizeIr, old_id: Id, body: *Ir.BodyBuilder) error{OutOfMemory}!Id {
-        switch (self.ir.get(old_id)) {
-            .param => unreachable,
-            .word => |word| return body.word(word),
-            .object => |object| return body.object(object),
-            .new => |new| {
-                const words = try self.ally.alloc(Id, new.words.len);
-                for (0.., new.words) |i, word| words[i] = self.mapping.get(word).?;
-
-                // If all the data of an object is known at compile time, just
-                // create the object once at compile time instead of every time
-                // the code runs.
-                // optimize_all_comptime: {
-                //     if (new.has_pointers) {
-                //         for (words) |word|
-                //             switch (body.get(word)) {
-                //                 .object => {},
-                //                 else => break :optimize_all_comptime,
-                //             };
-                //         var builder = try self.heap.object_builder();
-                //         for (words) |word| try builder.emit_pointer(body.get(word).object);
-                //         const object = try builder.finish();
-                //         const better_object = try optimize_object(self.ally, self.heap, object);
-                //         return body.object(better_object);
-                //     } else {
-                //         for (words) |word|
-                //             switch (body.get(word)) {
-                //                 .word => {},
-                //                 else => break :optimize_all_comptime,
-                //             };
-                //         var builder = try self.heap.object_builder();
-                //         for (words) |word| try builder.emit_literal(body.get(word).word);
-                //         return body.object(try builder.finish());
-                //     }
-                // }
-
-                return body.new(new.has_pointers, words);
-            },
-            .has_pointers => |old_address| {
-                const address = self.mapping.get(old_address).?;
-                switch (body.get(address)) {
-                    // .object => |object| return body.word(
-                    //     @intCast(self.heap.get(object).words.len),
-                    // ),
-                    // .new => |new| return body.word(@intCast(new.pointers.len)),
-                    else => return body.has_pointers(address),
-                }
-            },
-            .num_words => |old_address| {
-                const address = self.mapping.get(old_address).?;
-                switch (body.get(address)) {
-                    .object => |object| return body.word(
-                        @intCast(self.heap.get(object).words.len),
-                    ),
-                    .new => |new| return body.word(@intCast(new.words.len)),
-                    else => return body.num_words(address),
-                }
-            },
-            .load => |load| {
-                const base = self.mapping.get(load.base).?;
-                const offset = self.mapping.get(load.offset).?;
-                switch (body.get(base)) {
-                    .object => |object| switch (body.get(offset)) {
-                        .word => |index| {
-                            const loaded = self.heap.load(object, index);
-                            return if (self.heap.get(object).has_pointers) body.object(loaded) else body.word(loaded);
-                        },
-                        else => {},
-                    },
-                    .new => |new| switch (body.get(offset)) {
-                        .word => |index| {
-                            return new.words[index];
-                        },
-                        else => {},
-                    },
-                    else => {},
-                }
-                return body.load(base, offset);
-            },
-            .add => |args| {
-                const left = self.mapping.get(args.left).?;
-                const right = self.mapping.get(args.right).?;
-                switch (body.get(left)) {
-                    .word => |l| switch (body.get(right)) {
-                        .word => |r| return body.word(l +% r),
-                        else => return if (l == 0) right else body.add(right, left),
-                    },
-                    else => switch (body.get(right)) {
-                        .word => |r| return if (r == 0) left else body.add(left, right),
-                        else => return body.add(left, right),
-                    },
-                }
-            },
-            .subtract => |args| {
-                const left = self.mapping.get(args.left).?;
-                const right = self.mapping.get(args.right).?;
-                switch (body.get(right)) {
-                    .word => |r| switch (body.get(left)) {
-                        .word => |l| return body.word(l -% r),
-                        else => return if (r == 0) left else body.subtract(left, right),
-                    },
-                    else => return body.subtract(left, right),
-                }
-            },
-            .multiply => |args| {
-                const left = self.mapping.get(args.left).?;
-                const right = self.mapping.get(args.right).?;
-                // TODO: turn multiply by power of 2 into shift
-                switch (body.get(left)) {
-                    .word => |l| switch (body.get(right)) {
-                        .word => |r| return body.word(l *% r),
-                        else => return if (l == 1) right else body.multiply(right, left),
-                    },
-                    else => switch (body.get(right)) {
-                        .word => |r| return if (r == 1) left else body.multiply(left, right),
-                        else => return body.multiply(left, right),
-                    },
-                }
-            },
-            .divide => |args| {
-                const left = self.mapping.get(args.left).?;
-                const right = self.mapping.get(args.right).?;
-                switch (body.get(right)) {
-                    .word => |r| {
-                        // TODO: turn divide by power of 2 into shift
-                        if (r == 0) {
-                            // TODO: add body.unreachable
-                            return body.word(0);
-                        } else switch (body.get(left)) {
-                            .word => |l| return body.word(l / r),
-                            else => return if (r == 0) left else body.divide(left, right),
-                        }
-                    },
-                    else => return body.divide(left, right),
-                }
-            },
-            .modulo => |args| {
-                const left = self.mapping.get(args.left).?;
-                const right = self.mapping.get(args.right).?;
-                switch (body.get(right)) {
-                    .word => |r| if (r == 0) {
-                        // TODO: add body.unreachable
-                        return body.word(0);
-                    } else switch (body.get(left)) {
-                        .word => |l| return body.word(@mod(l, r)),
-                        else => return if (r == 0) left else body.modulo(left, right),
-                    },
-                    else => return body.modulo(left, right),
-                }
-            },
-            .compare => |args| {
-                const left = self.mapping.get(args.left).?;
-                const right = self.mapping.get(args.right).?;
-                switch (body.get(left)) {
-                    .word => |l| switch (body.get(right)) {
-                        .word => |r| return body.word(if (l == r) 0 else if (l > r) 1 else 2),
-                        else => return body.compare(left, right),
-                    },
-                    else => return body.compare(left, right),
-                }
-            },
-            .call => |call| {
-                const fun = self.mapping.get(call.fun).?;
-                const args = try self.ally.alloc(Id, call.args.len);
-                for (0.., call.args) |i, arg| args[i] = self.mapping.get(arg).?;
-
-                // We want to inline functions. This can be dangerous though: If
-                // we inline a function that receives itself as an argument and
-                // then calls itself again, the compiler might get stuck in an
-                // infinite loop. That's why we check if the args contain the
-                // function.
-                // TODO: all args comptime-known? try to call at comptime
-                inline_: {
-                    const fun_address = switch (body.get(fun)) {
-                        .object => |address| address,
-                        else => break :inline_,
-                    };
-                    for (args) |arg| if (self.id_contains(arg, fun_address, body.*)) {
-                        std.debug.print("not inlining because fun {x} receives itself as arg in {f}\n", .{ fun_address, arg });
-                        break :inline_;
-                    };
-                    const ir_ptr_ptr = self.heap.load(fun_address, 0);
-                    const ir_ptr: *Ir = @ptrFromInt(@as(usize, @bitCast(
-                        object_mod.get_int(self.heap.*, ir_ptr_ptr),
-                    )));
-                    const ir = ir_ptr.*;
-                    if (ir.params.len != args.len) {
-                        break :inline_;
-                    }
-                    var child_optimizer = OptimizeIr{
-                        .ally = self.ally,
-                        .ir = ir,
-                        .heap = self.heap,
-                        .mapping = Map(Id, Id).init(self.ally),
-                    };
-                    for (ir.params, args) |param, arg|
-                        try child_optimizer.mapping.put(param, arg);
-                    for (ir.body.ids) |child| {
-                        const id = try child_optimizer.optimize_expr(child, body);
-                        try child_optimizer.mapping.put(child, id);
-                    }
-                    return child_optimizer.mapping.get(ir.body.returns).?;
-                }
-
-                return body.call(fun, args);
-            },
-            .if_not_zero => |if_| {
-                const condition = self.mapping.get(if_.condition).?;
-                switch (body.get(condition)) {
-                    .word => |c| {
-                        const run = if (c != 0) if_.then else if_.else_;
-                        for (run.ids) |inner_id| {
-                            const id = try self.optimize_expr(inner_id, body);
-                            try self.mapping.put(inner_id, id);
-                        }
-                        return self.mapping.get(run.returns).?;
-                    },
-                    else => return body.if_not_zero(
-                        self.mapping.get(if_.condition).?,
-                        try self.optimize_body(if_.then, body.parent),
-                        try self.optimize_body(if_.else_, body.parent),
-                    ),
-                }
-            },
-            .crash => |message| return body.crash(self.mapping.get(message).?),
-        }
-    }
-
-    fn id_contains(self: OptimizeIr, id: Id, needle: Address, body: Ir.BodyBuilder) bool {
-        std.debug.print("id {f} contains {x}?\n", .{ id, needle });
-        switch (body.get(id)) {
-            .param => return false,
-            .object => |address| return self.address_contains(address, needle),
-            else => return true,
-        }
-    }
-    fn address_contains(self: OptimizeIr, address: Address, needle: Address) bool {
-        std.debug.print("address {x} contains {x}?\n", .{ address, needle });
-        if (address == needle) return true;
-        if (address < needle) return false;
-        const obj = self.heap.get(address);
-        if (obj.has_pointers) for (obj.words) |word| if (self.address_contains(word, needle)) return true;
-        return false;
-    }
-
-    const IdSet = std.AutoArrayHashMap(Id, void);
-
-    fn optimize_body(self: *OptimizeIr, old_body: Ir.Body, builder: *Ir.Builder) !Ir.Body {
-        var b = builder.body();
-        for (old_body.ids) |old_id| {
-            const id = try self.optimize_expr(old_id, &b);
-            try self.mapping.put(old_id, id);
-        }
-        const better_body = b.finish(self.mapping.get(old_body.returns).?);
-
-        // Tree shaking
-        //
-        // We go through the body from the bottom to the top, tracking which locals are
-        // referenced later in the body. This way, when we encounter an expression, we
-        // know immediately whether we can throw it away.
-        var needed = IdSet.init(self.ally);
-        try needed.put(better_body.returns, {});
-        var rev_ids = std.ArrayList(Ir.Id).empty;
-        for (0..better_body.ids.len) |i| {
-            const id = better_body.ids[better_body.ids.len - 1 - i];
-            if (!needed.contains(id) and is_pure_biased(id, builder.nodes.items)) continue;
-            var ignore = IdSet.init(self.ally);
-            try collect_captured(id, builder.nodes.items, &needed, &ignore);
-            try rev_ids.append(self.ally, id);
-        }
-        std.mem.reverse(Ir.Id, rev_ids.items);
-        return .{ .ids = rev_ids.items, .returns = better_body.returns };
-    }
-
-    fn is_pure_biased(id: Ir.Id, nodes: []Ir.Node) bool {
-        return switch (nodes[id.index]) {
-            .param => unreachable,
-            .word => true,
-            .object => true,
-            .new => true,
-            .has_pointers => true,
-            .num_words => true,
-            .load => true,
-            .add => true,
-            .subtract => true,
-            .multiply => true,
-            .divide => true,
-            .modulo => true,
-            .shift_left => true,
-            .shift_right => true,
-            .compare => true,
-            .call => false,
-            .if_not_zero => false,
-            .crash => false,
-        };
-    }
-    fn collect_captured(id: Ir.Id, nodes: []Ir.Node, out: *IdSet, ignore: *IdSet) !void {
-        return switch (nodes[id.index]) {
-            .param => unreachable,
-            .word => {},
-            .object => {},
-            .new => |new| for (new.words) |word| try found_captured(word, out, ignore),
-            .has_pointers => |of| try found_captured(of, out, ignore),
-            .num_words => |of| try found_captured(of, out, ignore),
-            .load => |load| {
-                try found_captured(load.base, out, ignore);
-                try found_captured(load.offset, out, ignore);
-            },
-            .add => |args| {
-                try found_captured(args.left, out, ignore);
-                try found_captured(args.right, out, ignore);
-            },
-            .subtract => |args| {
-                try found_captured(args.left, out, ignore);
-                try found_captured(args.right, out, ignore);
-            },
-            .multiply => |args| {
-                try found_captured(args.left, out, ignore);
-                try found_captured(args.right, out, ignore);
-            },
-            .divide => |args| {
-                try found_captured(args.left, out, ignore);
-                try found_captured(args.right, out, ignore);
-            },
-            .modulo => |args| {
-                try found_captured(args.left, out, ignore);
-                try found_captured(args.right, out, ignore);
-            },
-            .shift_left => |args| {
-                try found_captured(args.left, out, ignore);
-                try found_captured(args.right, out, ignore);
-            },
-            .shift_right => |args| {
-                try found_captured(args.left, out, ignore);
-                try found_captured(args.right, out, ignore);
-            },
-            .compare => |args| {
-                try found_captured(args.left, out, ignore);
-                try found_captured(args.right, out, ignore);
-            },
-            .call => |call| {
-                try found_captured(call.fun, out, ignore);
-                for (call.args) |arg| try found_captured(arg, out, ignore);
-            },
-            .if_not_zero => |if_| {
-                try found_captured(if_.condition, out, ignore);
-                for (if_.then.ids) |child| {
-                    try collect_captured(child, nodes, out, ignore);
-                    try ignore.put(child, {});
-                }
-                try found_captured(if_.then.returns, out, ignore);
-                for (if_.else_.ids) |child| {
-                    try collect_captured(child, nodes, out, ignore);
-                    try ignore.put(child, {});
-                }
-                try found_captured(if_.else_.returns, out, ignore);
-            },
-            .crash => |message| try found_captured(message, out, ignore),
-        };
-    }
-    fn found_captured(id: Ir.Id, out: *IdSet, ignore: *IdSet) !void {
-        if (ignore.contains(id)) return;
-        try out.put(id, {});
     }
 };
 
@@ -2549,22 +2146,14 @@ pub fn instructions_to_fun(
 }
 
 pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address {
-    //std.debug.print("Original IR:\n", .{});
+    //std.debug.print("IR:\n", .{});
     //{
     //    var buffer: [64]u8 = undefined;
     //    const bw = std.debug.lockStderrWriter(&buffer);
     //    defer std.debug.unlockStderrWriter();
     //    ir.format(heap.*, bw) catch unreachable;
     //}
-    const optimized_ir = ir; // try optimize_ir(ally, heap, ir);
-    //std.debug.print("Optimized IR:\n", .{});
-    //{
-    //    var buffer: [64]u8 = undefined;
-    //    const bw = std.debug.lockStderrWriter(&buffer);
-    //    defer std.debug.unlockStderrWriter();
-    //    optimized_ir.format(heap.*, bw) catch unreachable;
-    //}
-    const waffle = try ir_to_waffle(ally, optimized_ir);
+    const waffle = try ir_to_waffle(ally, ir);
     const optimized_waffle = try optimize_waffle(ally, waffle);
     const instructions = try waffle_to_instructions(ally, optimized_waffle);
     const instructions_obj = try Instruction.new_instructions(ally, heap, instructions);
