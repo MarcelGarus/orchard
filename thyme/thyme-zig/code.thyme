@@ -84,6 +84,12 @@
         empty (crash "index out of bounds")
         (more m) (% (== index 0) true (. m head) false (rec rec (. m tail) (- index 1)))))
     (rec rec list index)))
+  list_skip (\ (list amount) (:
+    rec (\ (rec list amount)
+      (% (== amount 0)
+        true list
+        false (rec rec (% list empty (crash "bad skip") (more m) (. m tail)) (- amount 1))))
+    (rec rec list amount)))
 
   # (String stuff.)
   get_char (. @ string_get)
@@ -273,8 +279,25 @@
                                 body (add_semantics (list_get tail 1))
                                 (| lambda (& args args body body)))
                               false (crash "bad lambda"))
-                            false
-                              (| call (& callee head args (array_from_list (list_map tail (\ (t) (add_semantics t)))))))))))
+                            false (% (str== w ":")
+                              true (:
+                                _ (% (is_odd (list_len tail)) true nil false (crash "bad let"))
+                                extract_bindings_rec (\ (extract_bindings_rec list)
+                                  (% (== (list_len list) 1)
+                                    true (add_semantics (list_get list 0))
+                                    false (| let (&
+                                      name (% (list_get list 0)
+                                        number (crash "bad let")
+                                        string (crash "bad let")
+                                        group (crash "bad let")
+                                        (word name) name)
+                                      def (add_semantics (list_get list 1))
+                                      expr (extract_bindings_rec extract_bindings_rec (list_skip list 2))))
+                                  ))
+                                (extract_bindings_rec extract_bindings_rec tail)
+                              )
+                              false
+                                (| call (& callee head args (array_from_list (list_map tail (\ (t) (add_semantics t))))))))))))
                 group
                   (| call (&
                     callee (add_semantics head)
@@ -286,7 +309,7 @@
 
   # (| more (& head 102 tail (| more (& head 111 tail (| more (& head 111 tail (| empty (&))))))))
   # (string_from_chars (array_from_list chars))
-  (parse "(& f 2)")
+  (parse "(: f 2 g (+ f f) (& x f y g))")
 )
 
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))
