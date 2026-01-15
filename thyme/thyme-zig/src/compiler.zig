@@ -1998,13 +1998,13 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         break :ir builder.finish(body);
     });
 
-    const array_from_linked_list_rec = try ir_to_instructions(ally, heap, ir: {
+    const array_from_list_rec = try ir_to_instructions(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const rec = try builder.param();
         const list = try builder.param();
         var b = builder.body();
         const one = try b.word(1);
-        _ = try b.assert_is_enum(list, heap, "array_from_linked_list expects a list");
+        _ = try b.assert_is_enum(list, heap, "array_from_list expects a list");
         const type_ = try b.type_of(list);
         const variant = try b.load(type_, one);
         const result = try b.if_eq_symbol(heap, variant, "empty", empty: {
@@ -2016,7 +2016,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
             const result = try bb.if_eq_symbol(heap, variant, "more", more: {
                 var bbb = b.child_body();
                 const payload = try bbb.load(list, one);
-                _ = try bbb.assert_is_struct(payload, heap, "bad array_from_linked_list");
+                _ = try bbb.assert_is_struct(payload, heap, "bad array_from_list");
                 const payload_type = try bbb.type_of(payload);
                 const lookup_field = try bbb.object(common.lookup_field_fun);
                 const head = head: {
@@ -2048,7 +2048,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
                 break :more bbb.finish(result);
             }, bad: {
                 var bbb = bb.child_body();
-                const result = try bbb.crash_with_symbol(heap, "bad array_from_linked_list");
+                const result = try bbb.crash_with_symbol(heap, "bad array_from_list");
                 break :bad bbb.finish(result);
             });
             break :not_empty bb.finish(result);
@@ -2056,12 +2056,12 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         const body = b.finish(result);
         break :ir builder.finish(body);
     });
-    const array_from_linked_list = try ir_to_lambda(ally, heap, ir: {
+    const array_from_list = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const list = try builder.param();
         _ = try builder.param(); // closure
         var b = builder.body();
-        const rec = try b.object(array_from_linked_list_rec);
+        const rec = try b.object(array_from_list_rec);
         const mapped = mapped: {
             var args = try ally.alloc(Ir.Id, 2);
             args[0] = rec;
@@ -2105,7 +2105,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         .string_from_chars = string_from_chars,
         .string_equals = string_equals,
         // .num_words = get_num_words,
-        .array_from_linked_list = array_from_linked_list,
+        .array_from_list = array_from_list,
     };
 
     var symbols = [_]Address{undefined} ** @typeInfo(@TypeOf(builtins)).@"struct".fields.len;

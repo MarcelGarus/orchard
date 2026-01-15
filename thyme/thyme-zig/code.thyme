@@ -64,6 +64,8 @@
   min (\ (a b) (% (< a b) true a false b))
   max (\ (a b) (% (> a b) true a false b))
   abs (\ (a) (% (>= a 0) true a false (- 0 a)))
+  is_even (\ (a) (== (mod a 2) 0))
+  is_odd (\ (a) (== (mod a 2) 1))
 
   # (A function for making recursive stuff easier.)
   rec (\ (state fun) (: rec (\ (rec state) (fun (\ (state) (rec rec state)) state)) (rec rec state)))
@@ -75,14 +77,20 @@
     (rec list (\ (rec list) (% list empty (cons item empty_list) (more m) (cons (. m head) (rec (. m tail)))))))
   list_map (\ (list mapper)
     (rec list (\ (rec list) (% list empty empty_list (more m) (cons (mapper (. m head)) (rec (. m tail)))))))
-  array_from_linked_list (\ (list) ((. @ array_from_linked_list) list))
+  array_from_list (\ (list) ((. @ array_from_list) list))
+  list_len (\ (list) (rec list (\ (rec list) (% list empty 0 (more m) (+ (rec (. m tail)) 1)))))
+  list_get (\ (list index) (:
+    rec (\ (rec list index) (% list
+        empty (crash "index out of bounds")
+        (more m) (% (== index 0) true (. m head) false (rec rec (. m tail) (- index 1)))))
+    (rec rec list index)))
 
   # (String stuff.)
   get_char (. @ string_get)
   string_from_chars (\ (chars) ((. @ string_from_chars) chars))
   substr (\ (str start end)
     (string_from_chars
-      (array_from_linked_list
+      (array_from_list
         (rec start (\ (rec i) (% (== i end) true empty_list false (cons (get_char str i) (rec (+ i 1)))))))))
   str== (\ (a b) ((. @ string_equals) a b))
   ascii_0 (get_char "0" 0)
@@ -151,28 +159,134 @@
       specific semantics attached to some constellations of these. For example, if a group starts with the
       word "&", then it's actually a struct. This semantic transformation is what we do next.)
     add_semantics (\ (tree)
-      (rec tree (\ (rec tree)
+      (rec tree (\ (add_semantics tree)
         (% tree
           number tree
           string tree
           (word w) (| name w)
           (group g) (% g
             empty (crash "empty group")
-            (more node)
-              (% (. node head)
-                number (| call (& callee (. node head) args (array_from_linked_list (list_map (. node tail) (\ (t) (rec t))))))
-                string (| call (& callee (. node head) args (array_from_linked_list (list_map (. node tail) (\ (t) (rec t))))))
-                (word w) (| call (& callee (. node head) args (array_from_linked_list (list_map (. node tail) (\ (t) (rec t))))))
-                group (| call (& callee (rec (. node head)) args (array_from_linked_list (list_map (. node tail) (\ (t) (rec t))))))))))))
+            (more m) (:
+              head (. m head)
+              tail (. m tail)
+              (% head
+                number (| call (& callee head args (array_from_list (list_map tail (\ (t) (add_semantics t))))))
+                string (| call (& callee head args (array_from_list (list_map tail (\ (t) (add_semantics t))))))
+                (word w)
+                  (% (str== w "&")
+                    true (% (is_even (list_len tail))
+                      false (crash "bad struct")
+                      true (:
+                        extract_fields_rec (\ (extract_fields_rec list)
+                          (% list
+                            empty empty_list
+                            (more m) (% (. m head)
+                              number (crash "bad struct")
+                              string (crash "bad struct")
+                              group (crash "bad struct")
+                              (word field_name) (% (. m tail)
+                                empty (unreachable)
+                                (more m)
+                                  (cons
+                                    (& name field_name value (add_semantics (. m head)))
+                                    (extract_fields_rec extract_fields_rec (. m tail)))))))
+                        (| struct (array_from_list (extract_fields_rec extract_fields_rec tail)))))
+                    false (% (str== w ".")
+                      true (% (== (list_len tail) 2)
+                        true (% (list_get tail 1)
+                          number (crash "members need to have the form (. of name)")
+                          string (crash "members need to have the form (. of name)")
+                          (word w) (| member (& of (add_semantics (list_get tail 0)) name w))
+                          group (crash "members need to have the form (. of name)"))
+                        false (crash "members need to have the form (. of name)"))
+                      false (% (str== w "|")
+                        true (% tail
+                          empty (crash "bad enum")
+                          (more m) (% (. m head)
+                            number (crash "bad enum")
+                            string (crash "bad enum")
+                            (word variant) (:
+                              payload (% (. m tail)
+                                empty (| struct (array_from_list empty_list))
+                                (more m) (% (. m tail)
+                                  more (crash "bad enum")
+                                  empty (add_semantics (. m head))))
+                              (| enum (& variant variant payload payload)))
+                            group (crash "bad enum")))
+                        false (% (str== w "%")
+                          true (% tail
+                            empty (crash "bad switch")
+                            (more m) (:
+                              condition (add_semantics (. m head))
+                              cases
+                                (% (is_even (list_len (. m tail)))
+                                  false (crash "bad switch")
+                                  true (:
+                                    extract_cases_rec (\ (extract_cases_rec list)
+                                      (% list
+                                        empty empty_list
+                                        (more m) (:
+                                          match (% (. m head)
+                                            number (crash "bad switch")
+                                            string (crash "bad switch")
+                                            (group g) (% (== (list_len g) 2)
+                                              false (crash "bad switch")
+                                              true (&
+                                                variant (% (list_get g 0)
+                                                  number (crash "bad switch")
+                                                  string (crash "bad switch")
+                                                  group (crash "bad switch")
+                                                  (word w) w)
+                                                binding (| some
+                                                  (% (list_get g 1)
+                                                    number (crash "bad switch")
+                                                    string (crash "bad switch")
+                                                    group (crash "bad switch")
+                                                    (word w) w))))
+                                            (word variant) (& variant variant binding (| none)))
+                                          (% (. m tail)
+                                            empty (unreachable)
+                                            (more m)
+                                              (cons
+                                                (&
+                                                  variant (. match variant)
+                                                  binding (. match binding)
+                                                  body (add_semantics (. m head)))
+                                                (extract_cases_rec extract_cases_rec (. m tail)))))))
+                                    (array_from_list (extract_cases_rec extract_cases_rec (. m tail)))))
+                                (| switch (& condition condition cases cases))))
+                          false (% (str== w "\\")
+                            true (% (== (list_len tail) 2)
+                              true (:
+                                args (% (list_get tail 0)
+                                  number (crash "bad lambda")
+                                  string (crash "bad lambda")
+                                  word (crash "bad lambda")
+                                  (group g)
+                                    (array_from_list
+                                      (list_map g (\ (item)
+                                        (% item
+                                          (word w) w
+                                          number (crash "bad lambda")
+                                          string (crash "bad lambda")
+                                          group (crash "bad lambda"))))))
+                                body (add_semantics (list_get tail 1))
+                                (| lambda (& args args body body)))
+                              false (crash "bad lambda"))
+                            false
+                              (| call (& callee head args (array_from_list (list_map tail (\ (t) (add_semantics t)))))))))))
+                group
+                  (| call (&
+                    callee (add_semantics head)
+                    args (array_from_list (list_map tail (\ (t) (add_semantics t)))))))))))))
     (add_semantics (. (parse_expr parse_exprs 0) result))))
 
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
   # (substr "hello world" 2 7)
 
   # (| more (& head 102 tail (| more (& head 111 tail (| more (& head 111 tail (| empty (&))))))))
-  # (string_from_chars (array_from_linked_list chars))
-  # (parse "(+ a 4)")
-  (str== "hello" "hello")
+  # (string_from_chars (array_from_list chars))
+  (parse "(& f 2)")
 )
 
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))

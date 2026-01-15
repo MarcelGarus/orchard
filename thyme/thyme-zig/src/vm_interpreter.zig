@@ -171,7 +171,7 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                     vm.heap.format(message, bw) catch unreachable;
                     bw.print("\n", .{}) catch unreachable;
                 }
-                @panic("crashed");
+                std.process.exit(1);
             },
         }
     }
