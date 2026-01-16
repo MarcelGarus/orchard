@@ -2079,6 +2079,53 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         break :ir builder.finish(body);
     });
 
+    const array_len = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const array = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        const num_words = try b.num_words(array);
+        const one = try b.word(1);
+        const len = try b.subtract(num_words, one);
+        const len_obj = try b.new_int(common, len);
+        const body = b.finish(len_obj);
+        break :ir builder.finish(body);
+    });
+
+    const array_get = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const array = try builder.param();
+        const index_obj = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        const num_words = try b.num_words(array);
+        const zero = try b.word(0);
+        const one = try b.word(1);
+        const two = try b.word(2);
+        const index = try b.get_int_value(index_obj);
+        const len = try b.subtract(num_words, one);
+        _ = try b.if_eq(try b.compare(index, zero), two, bad: {
+          var inner = b.child_body();
+          const result = try inner.crash_with_symbol(heap, "out of bounds");
+          break :bad inner.finish(result);
+        }, good: {
+          var inner = b.child_body();
+          break :good try inner.finish_with_zero();
+        });
+        _ = try b.if_eq(try b.compare(index, len), two, good: {
+          var inner = b.child_body();
+          break :good try inner.finish_with_zero();
+        }, bad: {
+          var inner = b.child_body();
+          const result = try inner.crash_with_symbol(heap, "out of bounds");
+          break :bad inner.finish(result);
+        });
+        const actual_index = try b.add(index, one);
+        const item = try b.load(array, actual_index);
+        const body = b.finish(item);
+        break :ir builder.finish(body);
+    });
+
     // TODO: fix
     const get_num_words = try ir_to_lambda(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
@@ -2106,6 +2153,8 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         .string_equals = string_equals,
         // .num_words = get_num_words,
         .array_from_list = array_from_list,
+        .array_len = array_len,
+        .array_get = array_get,
     };
 
     var symbols = [_]Address{undefined} ** @typeInfo(@TypeOf(builtins)).@"struct".fields.len;

@@ -77,7 +77,6 @@
     (rec list (\ (rec list) (% list empty (cons item empty_list) (more m) (cons (. m head) (rec (. m tail)))))))
   list_map (\ (list mapper)
     (rec list (\ (rec list) (% list empty empty_list (more m) (cons (mapper (. m head)) (rec (. m tail)))))))
-  array_from_list (\ (list) ((. @ array_from_list) list))
   list_len (\ (list) (rec list (\ (rec list) (% list empty 0 (more m) (+ (rec (. m tail)) 1)))))
   list_get (\ (list index) (:
     rec (\ (rec list index) (% list
@@ -90,6 +89,11 @@
         true list
         false (rec rec (% list empty (crash "bad skip") (more m) (. m tail)) (- amount 1))))
     (rec rec list amount)))
+
+  # (Arrays)
+  array_from_list (\ (list) ((. @ array_from_list) list))
+  array_len (\ (array) ((. @ array_len) array))
+  array_get (\ (array index) ((. @ array_get) array index))
 
   # (String stuff.)
   get_char (. @ string_get)
@@ -304,12 +308,81 @@
                     args (array_from_list (list_map tail (\ (t) (add_semantics t)))))))))))))
     (add_semantics (. (parse_expr parse_exprs 0) result))))
 
+  no_bindings empty_list
+  bindings_add (\ (bindings name value) (cons (& name name value value) bindings))
+  bindings_get (\ (bindings name)
+    (rec bindings (\ (rec bindings)
+      (% bindings
+        empty (crash "not defined")
+        (more m) (:
+          current (. m head)
+          (% (str== (. current name) name) true (. current value) false (rec (. m tail))))))))
+  eval (\ (code bindings) (:
+    eval_rec (\ (eval_rec code bindings)
+      (% code
+        (name name) (bindings_get bindings name)
+        (number n) (| number n)
+        (let let)
+          (eval_rec
+            eval_rec
+            (. let expr)
+            (bindings_add bindings (. let name) (eval_rec eval_rec (. let def) bindings)))
+        (struct fields)
+          (| struct
+            (array_from_list
+              (rec 0 (\ (rec i)
+                (% (== i (array_len fields))
+                  true empty_list
+                  false (:
+                    field (array_get fields i)
+                    (cons (& name (. field name) value (eval_rec eval_rec (. field value) bindings)) (rec (+ i 1)))))))))
+        (member member) (:
+          fields (% (eval_rec eval_rec (. member of) bindings)
+            (struct s) s
+            number (crash "member of non-struct")
+            string (crash "member of non-struct")
+            enum (crash "member of non-struct")
+            lambda (crash "member of non-struct"))
+          name (. member name)
+          (rec 0 (\ (find_field i)
+            (% (== i (array_len fields))
+              true (crash "The member doesn't exist.")
+              false (:
+                field (array_get fields i)
+                (% (str== (. field name) name) true (. field value) false (find_field (+ i 1))))))))
+        (enum enum)
+          (| enum (& variant (. enum variant) payload (eval_rec eval_rec (. enum payload) bindings)))
+        (switch switch) (:
+          enum (% (eval_rec eval_rec (. switch condition) bindings)
+            (enum e) e
+            number (crash "switch on non-enum")
+            string (crash "switch on non-enum")
+            struct (crash "switch on non-enum")
+            lambda (crash "switch on non-enum"))
+          variant (. enum variant)
+          cases (. switch cases)
+          (rec 0 (\ (find_case i)
+            (% (== i (array_len cases))
+              true (crash "Unhandled variant.")
+              false (:
+                case (array_get cases i)
+                (% (str== (. case variant) variant)
+                  true (:
+                   new_bindings
+                    (% (. case binding)
+                      (some name) (bindings_add bindings name (. enum payload))
+                      none bindings)
+                    (eval_rec eval_rec (. case body) new_bindings))
+                  false (find_case (+ i 1))))))))
+          (lambda lambda) (| lambda lambda)
+        ))
+    (eval_rec eval_rec code bindings)))
+
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
   # (substr "hello world" 2 7)
 
-  # (| more (& head 102 tail (| more (& head 111 tail (| more (& head 111 tail (| empty (&))))))))
-  # (string_from_chars (array_from_list chars))
-  (parse "(: f 2 g (+ f f) (& x f y g))")
+  # (eval (parse "(% (| bar 5) foo 1 (bar b) b baz 3)") no_bindings)
+  (eval (parse "(\\ (a) (& x a))") no_bindings)
 )
 
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))
