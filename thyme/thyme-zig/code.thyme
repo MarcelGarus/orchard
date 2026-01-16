@@ -216,17 +216,13 @@
                     false (% (str== w ".")
                       true (% (== (list_len tail) 2)
                         true (% (list_get tail 1)
-                          number (crash "members need to have the form (. of name)")
-                          string (crash "members need to have the form (. of name)")
                           (word w) (| member (& of (add_semantics (list_get tail 0)) name w))
-                          group (crash "members need to have the form (. of name)"))
+                          _ (crash "members need to have the form (. of name)"))
                         false (crash "members need to have the form (. of name)"))
                       false (% (str== w "|")
                         true (% tail
                           empty (crash "bad enum")
                           (more m) (% (. m head)
-                            number (crash "bad enum")
-                            string (crash "bad enum")
                             (word variant) (:
                               payload (% (. m tail)
                                 empty (| struct (array_from_list empty_list))
@@ -234,7 +230,7 @@
                                   more (crash "bad enum")
                                   empty (add_semantics (. m head))))
                               (| enum (& variant variant payload payload)))
-                            group (crash "bad enum")))
+                            _ (crash "bad enum")))
                         false (% (str== w "%")
                           true (% tail
                             empty (crash "bad switch")
@@ -249,23 +245,13 @@
                                         empty empty_list
                                         (more m) (:
                                           match (% (. m head)
-                                            number (crash "bad switch")
-                                            string (crash "bad switch")
+                                            (word variant) (& variant variant binding (| none))
                                             (group g) (% (== (list_len g) 2)
                                               false (crash "bad switch")
                                               true (&
-                                                variant (% (list_get g 0)
-                                                  number (crash "bad switch")
-                                                  string (crash "bad switch")
-                                                  group (crash "bad switch")
-                                                  (word w) w)
-                                                binding (| some
-                                                  (% (list_get g 1)
-                                                    number (crash "bad switch")
-                                                    string (crash "bad switch")
-                                                    group (crash "bad switch")
-                                                    (word w) w))))
-                                            (word variant) (& variant variant binding (| none)))
+                                                variant (% (list_get g 0) (word w) w _ (crash "bad switch"))
+                                                binding (| some (% (list_get g 1) (word w) w _ (crash "bad switch")))))
+                                            _ (crash "bad switch"))
                                           (% (. m tail)
                                             empty (unreachable)
                                             (more m)
@@ -281,37 +267,23 @@
                             true (% (== (list_len tail) 2)
                               true (:
                                 args (% (list_get tail 0)
-                                  number (crash "bad lambda")
-                                  string (crash "bad lambda")
-                                  word (crash "bad lambda")
                                   (group g)
-                                    (array_from_list
-                                      (list_map g (\ (item)
-                                        (% item
-                                          (word w) w
-                                          number (crash "bad lambda")
-                                          string (crash "bad lambda")
-                                          group (crash "bad lambda"))))))
+                                    (array_from_list (list_map g (\ (item) (% item (word w) w _ (crash "bad lambda")))))
+                                  _ (crash "bad lambda"))
                                 body (add_semantics (list_get tail 1))
                                 (| lambda (& args args body body)))
                               false (crash "bad lambda"))
                             false (% (str== w ":")
                               true (:
                                 _ (% (is_odd (list_len tail)) true nil false (crash "bad let"))
-                                extract_bindings_rec (\ (extract_bindings_rec list)
+                                (rec tail (\ (extract_bindings list)
                                   (% (== (list_len list) 1)
                                     true (add_semantics (list_get list 0))
-                                    false (| let (&
-                                      name (% (list_get list 0)
-                                        number (crash "bad let")
-                                        string (crash "bad let")
-                                        group (crash "bad let")
-                                        (word name) name)
-                                      def (add_semantics (list_get list 1))
-                                      expr (extract_bindings_rec extract_bindings_rec (list_skip list 2))))
-                                  ))
-                                (extract_bindings_rec extract_bindings_rec tail)
-                              )
+                                    false
+                                      (| let (&
+                                        name (% (list_get list 0) (word name) name _ (crash "bad let"))
+                                        def (add_semantics (list_get list 1))
+                                        expr (extract_bindings (list_skip list 2))))))))
                               false
                                 (| call (& callee head args (array_from_list (list_map tail (\ (t) (add_semantics t))))))))))))
                 group
@@ -335,12 +307,7 @@
         (struct fields)
           (| struct (array_map fields (\ (field) (& name (. field name) value (eval (. field value) bindings)))))
         (member member) (:
-          fields (% (eval (. member of) bindings)
-            (struct s) s
-            number (crash "member of non-struct")
-            string (crash "member of non-struct")
-            enum (crash "member of non-struct")
-            lambda (crash "member of non-struct"))
+          fields (% (eval (. member of) bindings) (struct s) s _ (crash "member of non-struct"))
           name (. member name)
           field (% (array_find fields (\ (field) (str== (. field name) name)))
             none (crash "The member doesn't exist.")
@@ -348,12 +315,7 @@
           (. field value))
         (enum enum) (| enum (& variant (. enum variant) payload (eval (. enum payload) bindings)))
         (switch switch) (:
-          enum (% (eval (. switch condition) bindings)
-            (enum e) e
-            number (crash "switch on non-enum")
-            string (crash "switch on non-enum")
-            struct (crash "switch on non-enum")
-            lambda (crash "switch on non-enum"))
+          enum (% (eval (. switch condition) bindings) (enum e) e _ (crash "switch on non-enum"))
           variant (. enum variant)
           case
             (% (array_find (. switch cases) (\ (case) (str== (. case variant) variant)))
@@ -362,8 +324,8 @@
           new_bindings
             (% (. case binding) none bindings (some name) (bindings_add bindings name (. enum payload)))
           (eval (. case body) new_bindings))
-          (lambda lambda) (| lambda lambda)
-          (call call) (crash "todo call")
+        (lambda lambda) (| lambda lambda)
+        (call call) (crash "todo call")
         ))))
 
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
