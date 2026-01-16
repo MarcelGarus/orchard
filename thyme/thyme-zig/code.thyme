@@ -69,6 +69,7 @@
 
   # (A function for making recursive stuff easier.)
   rec (\ (state fun) (: rec (\ (rec state) (fun (\ (state) (rec rec state)) state)) (rec rec state)))
+  rec_2 (\ (a b fun) (: rec (\ (rec a b) (fun (\ (a b) (rec rec a b)) a b)) (rec rec a b)))
 
   # (Linked Lists)
   empty_list (| empty)
@@ -78,22 +79,35 @@
   list_map (\ (list mapper)
     (rec list (\ (rec list) (% list empty empty_list (more m) (cons (mapper (. m head)) (rec (. m tail)))))))
   list_len (\ (list) (rec list (\ (rec list) (% list empty 0 (more m) (+ (rec (. m tail)) 1)))))
-  list_get (\ (list index) (:
-    rec (\ (rec list index) (% list
-        empty (crash "index out of bounds")
-        (more m) (% (== index 0) true (. m head) false (rec rec (. m tail) (- index 1)))))
-    (rec rec list index)))
-  list_skip (\ (list amount) (:
-    rec (\ (rec list amount)
+  list_get (\ (list index)
+    (rec_2 list index (\ (get list index)
+      (% list
+        empty (crash "The index is out of bounds.")
+        (more m) (% (== index 0) true (. m head) false (get (. m tail) (- index 1)))))))
+  list_skip (\ (list amount)
+    (rec_2 list amount (\ (rec list amount)
       (% (== amount 0)
         true list
-        false (rec rec (% list empty (crash "bad skip") (more m) (. m tail)) (- amount 1))))
-    (rec rec list amount)))
+        false (rec rec (% list empty (crash "bad skip") (more m) (. m tail)) (- amount 1))))))
+  list_find (\ (list check)
+    (rec list (\ (rec list)
+      (% list
+        empty (| none)
+        (more m) (: current (. m head) (% (check current) true (| some current) false (rec (. m tail))))))))
 
   # (Arrays)
   array_from_list (\ (list) ((. @ array_from_list) list))
   array_len (\ (array) ((. @ array_len) array))
   array_get (\ (array index) ((. @ array_get) array index))
+  array_map (\ (array mapper)
+    (array_from_list
+      (rec 0 (\ (rec i)
+        (% (== i (array_len array)) true empty_list false (cons (mapper (array_get array i)) (rec (+ i 1))))))))
+  array_find (\ (array check)
+    (rec 0 (\ (find i)
+      (% (== i (array_len array))
+        true (| none)
+        false (: item (array_get array i) (% (check item) true (| some item) false (find (+ i 1))))))))
 
   # (String stuff.)
   get_char (. @ string_get)
@@ -117,23 +131,21 @@
     is_digit (\ (char) (and (>= char ascii_0) (<= char ascii_9)))
     _ (assert (is_digit 50))
     is_whitespace (\ (char) (or (== char ascii_space) (== char ascii_newline)))
-    consume_whitespace (\ (i) (rec i (\ (rec i) (% (is_whitespace (get_char text i)) true (rec (+ i 1)) false i))))
+    consume_whitespace (\ (i)
+      (rec i (\ (continue i) (% (is_whitespace (get_char text i)) true (continue (+ i 1)) false i))))
     # (The parsers take an index into the text and return (& index Int result ...).)
-    parse_number (\ (i) (:
-      rec (\ (rec so_far i) (:
+    parse_number (\ (i)
+      (rec_2 0 i (\ (rec so_far i) (:
         char (get_char text i)
-        (% (is_digit char) true (rec rec (+ (* so_far 10) (- char ascii_0)) (+ i 1)) false (& index i result so_far))))
-      (rec rec 0 i)))
-    parse_string (\ (i) (:
-      rec (\ (rec i) (:
+        (% (is_digit char) true (rec (+ (* so_far 10) (- char ascii_0)) (+ i 1)) false (& index i result so_far))))))
+    parse_string (\ (i)
+      (rec (+ i 1) (\ (rec i) (:
         char (get_char text i)
         (% (== char ascii_backslash)
           true (crash "escape")
           false (% (== char ascii_quote)
             true (& index (+ i 1) result empty_list)
-            false (: result (rec rec (+ i 1)) (& index (. result index) result (cons char (. result result))))))))
-      (rec rec (+ i 1))
-    ))
+            false (: result (rec (+ i 1)) (& index (. result index) result (cons char (. result result))))))))))
     parse_word (\ (start)
       (rec start (\ (rec i) (:
         char (get_char text i)
@@ -311,78 +323,56 @@
   no_bindings empty_list
   bindings_add (\ (bindings name value) (cons (& name name value value) bindings))
   bindings_get (\ (bindings name)
-    (rec bindings (\ (rec bindings)
-      (% bindings
-        empty (crash "not defined")
-        (more m) (:
-          current (. m head)
-          (% (str== (. current name) name) true (. current value) false (rec (. m tail))))))))
-  eval (\ (code bindings) (:
-    eval_rec (\ (eval_rec code bindings)
+    (% (list_find bindings (\ (binding) (str== (. binding name) name)))
+      none (crash "A name is not defined.")
+      (some binding) (. binding value)))
+  eval (\ (code bindings)
+    (rec_2 code bindings (\ (eval code bindings)
       (% code
         (name name) (bindings_get bindings name)
         (number n) (| number n)
-        (let let)
-          (eval_rec
-            eval_rec
-            (. let expr)
-            (bindings_add bindings (. let name) (eval_rec eval_rec (. let def) bindings)))
+        (let let) (eval (. let expr) (bindings_add bindings (. let name) (eval (. let def) bindings)))
         (struct fields)
-          (| struct
-            (array_from_list
-              (rec 0 (\ (rec i)
-                (% (== i (array_len fields))
-                  true empty_list
-                  false (:
-                    field (array_get fields i)
-                    (cons (& name (. field name) value (eval_rec eval_rec (. field value) bindings)) (rec (+ i 1)))))))))
+          (| struct (array_map fields (\ (field) (& name (. field name) value (eval (. field value) bindings)))))
         (member member) (:
-          fields (% (eval_rec eval_rec (. member of) bindings)
+          fields (% (eval (. member of) bindings)
             (struct s) s
             number (crash "member of non-struct")
             string (crash "member of non-struct")
             enum (crash "member of non-struct")
             lambda (crash "member of non-struct"))
           name (. member name)
-          (rec 0 (\ (find_field i)
-            (% (== i (array_len fields))
-              true (crash "The member doesn't exist.")
-              false (:
-                field (array_get fields i)
-                (% (str== (. field name) name) true (. field value) false (find_field (+ i 1))))))))
-        (enum enum)
-          (| enum (& variant (. enum variant) payload (eval_rec eval_rec (. enum payload) bindings)))
+          field (% (array_find fields (\ (field) (str== (. field name) name)))
+            none (crash "The member doesn't exist.")
+            (some field) field)
+          (. field value))
+        (enum enum) (| enum (& variant (. enum variant) payload (eval (. enum payload) bindings)))
         (switch switch) (:
-          enum (% (eval_rec eval_rec (. switch condition) bindings)
+          enum (% (eval (. switch condition) bindings)
             (enum e) e
             number (crash "switch on non-enum")
             string (crash "switch on non-enum")
             struct (crash "switch on non-enum")
             lambda (crash "switch on non-enum"))
           variant (. enum variant)
-          cases (. switch cases)
-          (rec 0 (\ (find_case i)
-            (% (== i (array_len cases))
-              true (crash "Unhandled variant.")
-              false (:
-                case (array_get cases i)
-                (% (str== (. case variant) variant)
-                  true (:
-                   new_bindings
-                    (% (. case binding)
-                      (some name) (bindings_add bindings name (. enum payload))
-                      none bindings)
-                    (eval_rec eval_rec (. case body) new_bindings))
-                  false (find_case (+ i 1))))))))
+          case
+            (% (array_find (. switch cases) (\ (case) (str== (. case variant) variant)))
+              none (crash "Unhandled variant.")
+              (some case) case)
+          new_bindings
+            (% (. case binding) none bindings (some name) (bindings_add bindings name (. enum payload)))
+          (eval (. case body) new_bindings))
           (lambda lambda) (| lambda lambda)
-        ))
-    (eval_rec eval_rec code bindings)))
+          (call call) (crash "todo call")
+        ))))
 
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
   # (substr "hello world" 2 7)
 
   # (eval (parse "(% (| bar 5) foo 1 (bar b) b baz 3)") no_bindings)
-  (eval (parse "(\\ (a) (& x a))") no_bindings)
+  # (eval (parse "(: a 5 (+ a 1))") no_bindings)
+  (% (| a) b 1 _ 4)
+
 )
 
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))
