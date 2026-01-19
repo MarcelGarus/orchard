@@ -33,6 +33,9 @@ pub const Int = struct {
   pub fn from(obj: Obj) Int {
     return Value.from(obj).kind().int;
   }
+  pub fn as_value(int: Int) Value {
+    return Value.from(int.obj);
+  }
   pub fn new(heap: *Heap, value: i64) !Int {
     const int_symbol = try new_symbol(heap, "int");
     const type_ = try heap.new_inner(&.{ int_symbol });

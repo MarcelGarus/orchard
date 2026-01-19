@@ -10,9 +10,8 @@ const Word = Heap.Word;
 const Instruction = @import("instruction.zig").Instruction;
 const Vm = @import("vm.zig");
 const Graphics = @import("graphics.zig");
-const value_mod = @import("value.zig");
-const Int = value_mod.Int;
-const Address = Heap.Address;
+const Val = @import("value.zig");
+const Obj = Heap.Obj;
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
