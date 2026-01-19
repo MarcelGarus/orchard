@@ -4,7 +4,7 @@ const Map = std.AutoArrayHashMap;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
-const Address = Heap.Address;
+const Obj = Heap.Obj;
 const Instruction = @import("instruction.zig").Instruction;
 const Vm = @import("vm.zig");
 
@@ -90,62 +90,63 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
             .new => |new| {
                 const stack = vm.data_stack.memory[0..vm.data_stack.used];
                 const words = stack[stack.len - new.num_words ..];
-                const address = try vm.heap.new(.{ .has_pointers = new.has_pointers, .words = words });
+                const obj = if (new.has_pointers)
+                  try vm.heap.new_inner(@ptrCast(words))
+                else
+                  try vm.heap.new_leaf(@ptrCast(words));
                 vm.data_stack.pop_n(new.num_words);
-                try vm.data_stack.push(address);
+                try vm.data_stack.push(obj.address);
             },
             .flatptro => {
-                var obj = vm.data_stack.pop();
-                var b = try vm.heap.object_builder();
+                var obj = Obj{ .address = vm.data_stack.pop() };
+                var b = try vm.heap.build_inner();
                 while (true) {
-                    const words = vm.heap.get(obj).words;
-                    switch (words.len) {
+                    switch (obj.size()) {
                         0 => break,
                         2 => {
-                            try b.emit_pointer(words[0]);
-                            obj = words[1];
+                            try b.emit(obj.child(0));
+                            obj = obj.child(1);
                         },
                         else => unreachable,
                     }
                 }
                 const flattened = b.finish();
-                try vm.data_stack.push(flattened);
+                try vm.data_stack.push(flattened.address);
             },
             .flatlito => {
-                var obj = vm.data_stack.pop();
-                var b = try vm.heap.object_builder();
+                var obj = Obj{ .address = vm.data_stack.pop() };
+                var b = try vm.heap.build_leaf();
                 while (true) {
-                    const words = vm.heap.get(obj).words;
-                    switch (words.len) {
+                    switch (obj.size()) {
                         0 => break,
                         2 => {
-                            try b.emit_literal(vm.heap.load(words[0], 0));
-                            obj = words[1];
+                            try b.emit(obj.child(0).word(0));
+                            obj = obj.child(1);
                         },
                         else => unreachable,
                     }
                 }
                 const flattened = b.finish();
-                try vm.data_stack.push(flattened);
+                try vm.data_stack.push(flattened.address);
             },
             .points => {
-                const address = vm.data_stack.pop();
-                try vm.data_stack.push(if (vm.heap.get(address).has_pointers) 1 else 0);
+                const obj = Obj{ .address = vm.data_stack.pop() };
+                try vm.data_stack.push(if (obj.is_inner()) 1 else 0);
             },
             .size => {
-                const address = vm.data_stack.pop();
-                const num_words = vm.heap.get(address).words.len;
-                try vm.data_stack.push(@intCast(num_words));
+                const obj = Obj{ .address = vm.data_stack.pop() };
+                const num_words = obj.size();
+                try vm.data_stack.push(num_words);
             },
             .load => {
-                const offset: usize = @intCast(vm.data_stack.pop());
-                const base = vm.data_stack.pop();
-                const word = vm.heap.load(base, offset);
+                const offset: usize = vm.data_stack.pop();
+                const base = Obj{ .address = vm.data_stack.pop() };
+                const word: usize = if (base.is_inner()) base.child(offset).address else base.word(offset);
                 try vm.data_stack.push(word);
             },
             .heapsize => {
                 const checkpoint = vm.heap.checkpoint();
-                try vm.data_stack.push(@intCast(checkpoint.used));
+                try vm.data_stack.push(checkpoint.address);
             },
             .gc => {
                 const keep = vm.data_stack.pop();
@@ -154,13 +155,13 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                 std.debug.print("garbage collecting...\n", .{});
                 const mapped_keep = try vm.heap.garbage_collect(
                     vm.ally,
-                    .{ .used = checkpoint },
-                    keep,
+                    .{ .address = checkpoint },
+                    Obj{ .address = keep },
                 );
                 vm.heap.dump_stats();
-                try vm.data_stack.push(mapped_keep);
+                try vm.data_stack.push(mapped_keep.address);
             },
-            .eval => try vm.run(vm.data_stack.pop()),
+            .eval => try vm.run(Obj{ .address = vm.data_stack.pop() }),
             .crash => {
                 const message = vm.data_stack.pop();
                 std.debug.print("Crashed:\n", .{});
@@ -168,7 +169,7 @@ pub fn run(vm: *Vm, instructions: Jitted) !void {
                     var buffer: [64]u8 = undefined;
                     const bw = std.debug.lockStderrWriter(&buffer);
                     defer std.debug.unlockStderrWriter();
-                    vm.heap.format(message, bw) catch unreachable;
+                    vm.heap.format(Obj{ .address = message }, bw) catch unreachable;
                     bw.print("\n", .{}) catch unreachable;
                 }
                 std.process.exit(1);

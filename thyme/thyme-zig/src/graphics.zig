@@ -1,7 +1,7 @@
 const std = @import("std");
 const Heap = @import("heap.zig");
-const Address = Heap.Address;
-const object_mod = @import("object.zig");
+const Obj = Heap.Obj;
+const Val = @import("value.zig");
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const builtin = @import("builtin");
@@ -21,12 +21,12 @@ pub const Color = struct {
     g: u8,
     b: u8,
 
-    pub fn parse(obj: Address, heap: Heap) !Color {
+    pub fn parse(obj: Obj, heap: Heap) !Color {
         const words = heap.get(obj).words;
         return .{
-            .r = @intCast(object_mod.get_int(heap, words[0])),
-            .g = @intCast(object_mod.get_int(heap, words[1])),
-            .b = @intCast(object_mod.get_int(heap, words[2])),
+            .r = @intCast(Val.get_int(heap, words[0])),
+            .g = @intCast(Val.get_int(heap, words[1])),
+            .b = @intCast(Val.get_int(heap, words[2])),
         };
     }
 };
@@ -38,18 +38,18 @@ pub const Path = struct {
         move_to: Position,
         line_to: Position,
 
-        pub fn parse(obj: Address, heap: Heap) !Segment {
-            const symbol = object_mod.get_symbol(heap, heap.load(obj, 0));
+        pub fn parse(obj: Obj, heap: Heap) !Segment {
+            const symbol = Val.get_symbol(heap, heap.load(obj, 0));
             if (std.mem.eql(u8, symbol, "move to")) {
                 return .{ .move_to = .{
-                    .x = object_mod.get_int(heap, heap.load(obj, 1)),
-                    .y = object_mod.get_int(heap, heap.load(obj, 2)),
+                    .x = Val.get_int(heap, heap.load(obj, 1)),
+                    .y = Val.get_int(heap, heap.load(obj, 2)),
                 } };
             }
             if (std.mem.eql(u8, symbol, "line to")) {
                 return .{ .line_to = .{
-                    .x = object_mod.get_int(heap, heap.load(obj, 1)),
-                    .y = object_mod.get_int(heap, heap.load(obj, 2)),
+                    .x = Val.get_int(heap, heap.load(obj, 1)),
+                    .y = Val.get_int(heap, heap.load(obj, 2)),
                 } };
             }
             std.debug.print("segment: {s}\n", .{symbol});
@@ -57,7 +57,7 @@ pub const Path = struct {
         }
     };
 
-    pub fn parse(ally: Ally, obj: Address, heap: Heap) !Path {
+    pub fn parse(ally: Ally, obj: Obj, heap: Heap) !Path {
         var segments = ArrayList(Segment).empty;
         var current = obj;
         while (true) {
@@ -76,7 +76,7 @@ pub const DrawingInstruction = union(enum) {
     draw_rectangle: struct { pos: Position, size: Size, color: Color },
     fill_path: struct { path: Path, color: Color },
 
-    pub fn parse_all(ally: Ally, obj: Address, heap: Heap) ![]const DrawingInstruction {
+    pub fn parse_all(ally: Ally, obj: Obj, heap: Heap) ![]const DrawingInstruction {
         //std.debug.print("Parsing: ", .{});
         //{
         //    var buffer: [64]u8 = undefined;
@@ -94,18 +94,18 @@ pub const DrawingInstruction = union(enum) {
         }
         return out.items;
     }
-    pub fn parse(ally: Ally, obj: Address, heap: Heap) error{ OutOfMemory, UnknownPathSegment }!DrawingInstruction {
+    pub fn parse(ally: Ally, obj: Obj, heap: Heap) error{ OutOfMemory, UnknownPathSegment }!DrawingInstruction {
         const symbol_obj = heap.load(obj, 0);
-        const symbol = object_mod.get_symbol(heap, symbol_obj);
+        const symbol = Val.get_symbol(heap, symbol_obj);
 
         if (std.mem.eql(u8, symbol, "also")) {
             return .{ .also = try parse_all(ally, heap.load(obj, 1), heap) };
         }
         if (std.mem.eql(u8, symbol, "draw rectangle")) {
-            const x = object_mod.get_int(heap, heap.load(obj, 1));
-            const y = object_mod.get_int(heap, heap.load(obj, 2));
-            const width = object_mod.get_int(heap, heap.load(obj, 3));
-            const height = object_mod.get_int(heap, heap.load(obj, 4));
+            const x = Val.get_int(heap, heap.load(obj, 1));
+            const y = Val.get_int(heap, heap.load(obj, 2));
+            const width = Val.get_int(heap, heap.load(obj, 3));
+            const height = Val.get_int(heap, heap.load(obj, 4));
             const color = try Color.parse(heap.load(obj, 5), heap);
             return .{ .draw_rectangle = .{
                 .pos = .{ .x = x, .y = y },

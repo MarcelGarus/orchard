@@ -8,9 +8,12 @@ const Map = std.AutoArrayHashMap;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
-const Address = Heap.Address;
+const Obj = Heap.Obj;
 const Instruction = @import("instruction.zig").Instruction;
-const object_mod = @import("object.zig");
+const Val = @import("value.zig");
+const new_empty = Val.new_empty;
+const new_symbol = Val.new_symbol;
+const get_symbol = Val.get_symbol;
 const Vm = @import("vm.zig");
 
 const Str = []const u8;
@@ -46,7 +49,7 @@ const Ast = struct {
     pub const Field = struct { name: Str, value: Expr };
     pub const Enum = struct { variant: []const u8, payload: *const Expr };
     pub const Member = struct { of: *const Expr, name: Str };
-    pub const Switch = struct { condition: *const Expr, cases: []const Case };
+    pub const Switch = struct { condition: *const Expr, cases: []const Case, default: ?*const Expr };
     pub const Case = struct { variant: []const u8, payload_name: ?Str, body: *const Expr };
     pub const Lambda = struct { params: []Str, body: *const Expr };
     pub const Call = struct { callee: *const Expr, args: []const Expr };
@@ -99,6 +102,11 @@ const Ast = struct {
                     }
                     try writer.print("\n", .{});
                     try format_expr(case.body.*, writer, indentation + 1);
+                }
+                if (switch_.default) |d| {
+                    for (0..indentation) |_| try writer.print("  ", .{});
+                    try writer.print("_\n", .{});
+                    try format_expr(d.*, writer, indentation + 1);
                 }
                 try writer.print(")", .{});
             },
@@ -319,6 +327,7 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
                         if (group.len % 2 == 1) return error.BadSwitch;
                         const condition = try add_semantics(ally, group[1]);
                         var cases = ArrayList(Ast.Case).empty;
+                        var default: ?Ast.Expr = null;
                         for (0..group.len / 2 - 1) |i| {
                             var case_variant: Str = undefined;
                             var case_payload_name: ?Str = null;
@@ -337,13 +346,20 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
                                 },
                                 else => return error.BadSwitch,
                             }
-                            try cases.append(ally, .{
-                                .variant = case_variant,
-                                .payload_name = case_payload_name,
-                                .body = try box(ally, try add_semantics(ally, group[2 * i + 3])),
-                            });
+                            const body = try add_semantics(ally, group[2 * i + 3]);
+                            if (std.mem.eql(u8, case_variant, "_")) {
+                              if (default != null) @panic("switch with multiple default variants");
+                              if (case_payload_name != null) @panic("switch default with payload name");
+                              default = body;
+                            } else {
+                              try cases.append(ally, .{
+                                  .variant = case_variant,
+                                  .payload_name = case_payload_name,
+                                  .body = try box(ally, body),
+                              });
+                            }
                         }
-                        return .{ .switch_ = .{ .condition = try box(ally, condition), .cases = cases.items } };
+                        return .{ .switch_ = .{ .condition = try box(ally, condition), .cases = cases.items, .default = if (default) |d| try box(ally, d) else null, } };
                     }
                     if (std.mem.eql(u8, name, "\\")) {
                         if (group.len != 3) return error.BadLambda;
@@ -393,7 +409,7 @@ pub const Ir = struct {
     pub const Node = union(enum) {
         param, // doesn't occur in the function body
         word: Word,
-        object: Address,
+        object: Obj,
         new: New, // creates a new object, results in address
         flatten_to_pointers_object: Id,
         flatten_to_literals_object: Id,
@@ -533,7 +549,7 @@ pub const Ir = struct {
         pub fn word(b: *BodyBuilder, word_: Word) !Id {
             return b.create_and_push(.{ .word = word_ });
         }
-        pub fn object(b: *BodyBuilder, obj: Address) !Id {
+        pub fn object(b: *BodyBuilder, obj: Obj) !Id {
             return b.create_and_push(.{ .object = obj });
         }
         pub fn new(b: *BodyBuilder, has_pointers_: bool, words: []const Id) !Id {
@@ -605,8 +621,8 @@ pub const Ir = struct {
             return try b.if_not_zero(try b.subtract(left, right), else_, then);
         }
         pub fn if_eq_symbol(b: *BodyBuilder, heap: *Heap, symbol: Id, expected: []const u8, then: Body, else_: Body) !Id {
-            const comptime_symbol = try object_mod.new_symbol(heap, expected);
-            const words = heap.get(comptime_symbol).words;
+            const comptime_symbol = try new_symbol(heap, expected);
+            const words = comptime_symbol.words();
             const matches = try b.if_eq(try b.num_words(symbol), try b.word(words.len), good: {
                 var bb = b.child_body();
                 const result = try bb.if_eq_symbol_rec(symbol, 0, words);
@@ -638,7 +654,7 @@ pub const Ir = struct {
         }
 
         pub fn crash_with_symbol(b: *BodyBuilder, heap: *Heap, message: []const u8) !Id {
-            const message_obj = try object_mod.new_symbol(heap, message);
+            const message_obj = try new_symbol(heap, message);
             return b.crash(try b.object(message_obj));
         }
 
@@ -751,57 +767,57 @@ pub const Ir = struct {
 };
 
 pub const CommonObjects = struct {
-    empty_obj: Address,
-    int_symbol: Address,
-    string_symbol: Address,
-    struct_symbol: Address,
-    enum_symbol: Address,
-    lambda_symbol: Address,
-    int_type: Address,
-    string_type: Address,
-    array_type: Address,
-    empty_struct: Address,
-    true_: Address,
-    false_: Address,
-    equal: Address,
-    greater: Address,
-    less: Address,
-    compare_symbols_fun: Address,
-    lookup_field_fun: Address,
+    empty_obj: Obj,
+    int_symbol: Obj,
+    string_symbol: Obj,
+    struct_symbol: Obj,
+    enum_symbol: Obj,
+    lambda_symbol: Obj,
+    int_type: Obj,
+    string_type: Obj,
+    array_type: Obj,
+    empty_struct: Obj,
+    true_: Obj,
+    false_: Obj,
+    equal: Obj,
+    greater: Obj,
+    less: Obj,
+    compare_symbols_fun: Obj,
+    lookup_field_fun: Obj,
 
     pub fn create(ally: Ally, heap: *Heap) !CommonObjects {
         const Builder = Ir.Builder;
-        const empty_obj = try object_mod.empty_obj(heap);
-        const int_symbol = try object_mod.new_symbol(heap, "int");
-        const string_symbol = try object_mod.new_symbol(heap, "string");
-        const struct_symbol = try object_mod.new_symbol(heap, "struct");
-        const enum_symbol = try object_mod.new_symbol(heap, "enum");
-        const array_symbol = try object_mod.new_symbol(heap, "array");
-        const lambda_symbol = try object_mod.new_symbol(heap, "lambda");
-        const int_type = try heap.new_pointers(&[_]Word{int_symbol});
-        const string_type = try heap.new_pointers(&[_]Word{string_symbol});
-        const array_type = try heap.new_pointers(&[_]Word{array_symbol});
-        const empty_struct = try heap.new_pointers(&[_]Word{
-            try heap.new(.{ .has_pointers = true, .words = &[_]Word{struct_symbol} }),
+        const empty_obj = try new_empty(heap);
+        const int_symbol = try new_symbol(heap, "int");
+        const string_symbol = try new_symbol(heap, "string");
+        const struct_symbol = try new_symbol(heap, "struct");
+        const enum_symbol = try new_symbol(heap, "enum");
+        const array_symbol = try new_symbol(heap, "array");
+        const lambda_symbol = try new_symbol(heap, "lambda");
+        const int_type = try heap.new_inner(&.{int_symbol});
+        const string_type = try heap.new_inner(&.{string_symbol});
+        const array_type = try heap.new_inner(&.{array_symbol});
+        const empty_struct = try heap.new_inner(&.{
+            try heap.new_inner(&.{struct_symbol})
         });
-        const true_ = try heap.new_pointers(&.{
-            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "true") }),
+        const true_ = try heap.new_inner(&.{
+            try heap.new_inner(&.{ enum_symbol, try new_symbol(heap, "true") }),
             empty_struct,
         });
-        const false_ = try heap.new_pointers(&.{
-            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "false") }),
+        const false_ = try heap.new_inner(&.{
+            try heap.new_inner(&.{ enum_symbol, try new_symbol(heap, "false") }),
             empty_struct,
         });
-        const equal = try heap.new_pointers(&.{
-            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "equal") }),
+        const equal = try heap.new_inner(&.{
+            try heap.new_inner(&.{ enum_symbol, try new_symbol(heap, "equal") }),
             empty_struct,
         });
-        const greater = try heap.new_pointers(&.{
-            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "greater") }),
+        const greater = try heap.new_inner(&.{
+            try heap.new_inner(&.{ enum_symbol, try new_symbol(heap, "greater") }),
             empty_struct,
         });
-        const less = try heap.new_pointers(&.{
-            try heap.new_pointers(&.{ enum_symbol, try object_mod.new_symbol(heap, "less") }),
+        const less = try heap.new_inner(&.{
+            try heap.new_inner(&.{ enum_symbol, try new_symbol(heap, "less") }),
             empty_struct,
         });
         // TODO: introduce loops to the IR
@@ -867,7 +883,7 @@ pub const CommonObjects = struct {
             var b = builder.body();
             const result = try b.if_eq(index, try b.num_words(type_obj), no_match: {
                 var bb = builder.body();
-                const result = try bb.crash(try bb.object(try object_mod.new_symbol(heap, "no such field")));
+                const result = try bb.crash(try bb.object(try new_symbol(heap, "no such field")));
                 break :no_match bb.finish(result);
             }, check: {
                 var bb = builder.body();
@@ -950,7 +966,10 @@ const AstToIr = struct {
                 if (std.mem.eql(u8, binding.name, name)) return binding.id;
             }
             std.debug.print("name {s}\n", .{name});
-            @panic("name not in scope");
+            std.debug.print("in scope:", .{});
+            for (bindings.bindings.items) |b| std.debug.print(" {s}", .{b.name });
+            std.debug.print("\n", .{});
+            return error.NameNotInScope;
         }
     };
     const Binding = struct { name: Str, id: Id };
@@ -974,13 +993,13 @@ const AstToIr = struct {
         return builder.finish(body_result);
     }
 
-    fn compile_expr(self: *AstToIr, expr: Ast.Expr, b: *Ir.BodyBuilder, bindings: *Bindings) error{OutOfMemory}!Id {
+    fn compile_expr(self: *AstToIr, expr: Ast.Expr, b: *Ir.BodyBuilder, bindings: *Bindings) error{OutOfMemory, NameNotInScope}!Id {
         switch (expr) {
             .name => |name| return bindings.get(name),
-            .int => |value| return try b.object(try object_mod.new_int(self.heap, value)),
+            .int => |value| return try b.object((try Val.Int.new(self.heap, value)).obj),
             .string => |string| {
-                const symbol_obj = try object_mod.new_symbol(self.heap, string);
-                const string_obj = try self.heap.new_pointers(&[_]Word{ self.common.string_type, symbol_obj });
+                const symbol_obj = try new_symbol(self.heap, string);
+                const string_obj = try self.heap.new_inner(&.{ self.common.string_type, symbol_obj });
                 return b.object(string_obj);
             },
             .let => |let| {
@@ -992,13 +1011,13 @@ const AstToIr = struct {
                 return result;
             },
             .struct_ => |struct_| {
-                const field_names = try self.ally.alloc(Address, struct_.fields.len);
+                const field_names = try self.ally.alloc(Obj, struct_.fields.len);
                 for (0.., struct_.fields) |i, field|
-                    field_names[i] = try object_mod.new_symbol(self.heap, field.name);
+                    field_names[i] = try new_symbol(self.heap, field.name);
                 const type_ = obj: {
-                    var o = try self.heap.object_builder();
-                    try o.emit_pointer(self.common.struct_symbol);
-                    for (field_names) |field_name| try o.emit_pointer(field_name);
+                    var o = try self.heap.build_inner();
+                    try o.emit(self.common.struct_symbol);
+                    for (field_names) |field_name| try o.emit(field_name);
                     break :obj o.finish();
                 };
                 const fields = try self.ally.alloc(Id, 1 + struct_.fields.len);
@@ -1011,7 +1030,7 @@ const AstToIr = struct {
                 _ = try b.assert_is_struct(of, self.heap, "you can only get members of structs");
                 const type_ = try b.type_of(of);
                 const fun = try b.object(self.common.lookup_field_fun);
-                const member_name = try b.object(try object_mod.new_symbol(self.heap, member.name));
+                const member_name = try b.object(try new_symbol(self.heap, member.name));
                 var args = try self.ally.alloc(Id, 2);
                 args[0] = type_;
                 args[1] = member_name;
@@ -1019,13 +1038,11 @@ const AstToIr = struct {
                 return try b.load(of, index);
             },
             .enum_ => |enum_| {
-                const variant_name = try object_mod.new_symbol(self.heap, enum_.variant);
-                const type_ = obj: {
-                    var o = try self.heap.object_builder();
-                    try o.emit_pointer(self.common.enum_symbol);
-                    try o.emit_pointer(variant_name);
-                    break :obj o.finish();
-                };
+                const variant_name = try new_symbol(self.heap, enum_.variant);
+                const type_ = try self.heap.new_inner(&.{
+                    self.common.enum_symbol,
+                    variant_name
+                });
                 const payload = try self.compile_expr(enum_.payload.*, b, bindings);
                 const compiled = try self.ally.alloc(Id, 2);
                 compiled[0] = try b.object(type_);
@@ -1037,21 +1054,12 @@ const AstToIr = struct {
                 _ = try b.assert_is_enum(condition, self.heap, "you can only switch on enums");
                 const type_ = try b.type_of(condition);
                 const variant = try b.loadi(type_, 1);
-                const result = try self.handle_switch_cases(b, condition, variant, switch_.cases, bindings);
+                const result = try self.handle_switch_cases(b, condition, variant, switch_.cases, switch_.default, bindings);
                 return result;
             },
             .lambda => |lambda| {
-                const num_args_obj = obj: {
-                    var o = try self.heap.object_builder();
-                    try o.emit_literal(@intCast(lambda.params.len));
-                    break :obj o.finish();
-                };
-                const type_ = obj: {
-                    var o = try self.heap.object_builder();
-                    try o.emit_pointer(self.common.lambda_symbol);
-                    try o.emit_pointer(num_args_obj);
-                    break :obj o.finish();
-                };
+                const num_args_obj = try self.heap.new_leaf(&.{ @intCast(lambda.params.len) });
+                const type_ = try self.heap.new_inner(&.{ self.common.lambda_symbol, num_args_obj });
                 const captured = try get_captured(self.ally, lambda);
                 const ir = ir: {
                     var lambda_bindings = Bindings.init();
@@ -1119,11 +1127,15 @@ const AstToIr = struct {
         condition: Id,
         variant: Id,
         cases: []const Ast.Case,
+        default: ?*const Ast.Expr,
         bindings: *Bindings,
     ) !Id {
         if (cases.len == 0) {
-            // TODO: name the variant in the error message
-            return try b.crash_with_symbol(self.heap, "unknown variant");
+            return if (default) |d|
+              try self.compile_expr(d.*, b, bindings)
+            else
+              // TODO: name the variant in the error message
+              try b.crash_with_symbol(self.heap, "unknown variant");
         } else {
             const case = cases[0];
             return try b.if_eq_symbol(self.heap, variant, case.variant, found_it: {
@@ -1138,7 +1150,7 @@ const AstToIr = struct {
                 break :found_it bb.finish(result);
             }, not_found_yet: {
                 var bb = b.child_body();
-                const result = try self.handle_switch_cases(&bb, condition, variant, cases[1..], bindings);
+                const result = try self.handle_switch_cases(&bb, condition, variant, cases[1..], default, bindings);
                 break :not_found_yet bb.finish(result);
             });
         }
@@ -1189,6 +1201,7 @@ const AstToIr = struct {
                     try collect_captured(ally, case.body.*, ignore, out);
                     ignore.items.len = len;
                 }
+                if (switch_.default) |d| try collect_captured(ally, d.*, ignore, out);
             },
             .lambda => |lambda| {
                 const len = ignore.items.len;
@@ -1215,7 +1228,7 @@ pub const Waffle = struct {
         let: Id, // def, value
         ref: Id, // -
         word: Word, // -
-        object: Address, // -
+        object: Obj, // -
         new: New, // pointers, literals
         flatten_to_pointers_object, // object
         flatten_to_literals_object, // object
@@ -1251,6 +1264,7 @@ pub const Waffle = struct {
                     Id => try writer.print(" %{}", .{payload.id}),
                     Word => try writer.print(" {x}", .{payload}),
                     New => try writer.print("", .{}),
+                    Obj => try writer.print(" *{x}", .{payload.address}),
                     else => @compileError("bad payload " ++ @typeName(@TypeOf(payload))),
                 }
             },
@@ -1539,8 +1553,8 @@ const WaffleToInstructions = struct {
                 try self.emit(.{ .word = word });
                 self.stack_size += 1;
             },
-            .object => |address| {
-                try self.emit(.{ .address = .{ .address = address } });
+            .object => |obj| {
+                try self.emit(.{ .address = obj });
                 self.stack_size += 1;
             },
             .new => |new| {
@@ -1670,7 +1684,7 @@ const WaffleToInstructions = struct {
     }
 };
 
-pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address {
+pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
     // "collect_garbage" accepts a lambda that takes zero arguments. It makes a
     // heap checkpoint, calls the lambda, and does a garbage collection, freeing
     // everything that the lambda allocated except the return value.
@@ -2022,14 +2036,14 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
                 const head = head: {
                     var args = try ally.alloc(Ir.Id, 2);
                     args[0] = payload_type;
-                    args[1] = try bbb.object(try object_mod.new_symbol(heap, "head"));
+                    args[1] = try bbb.object(try new_symbol(heap, "head"));
                     const index = try bbb.call(lookup_field, args);
                     break :head try bbb.load(payload, index);
                 };
                 const tail = tail: {
                     var args = try ally.alloc(Ir.Id, 2);
                     args[0] = payload_type;
-                    args[1] = try bbb.object(try object_mod.new_symbol(heap, "tail"));
+                    args[1] = try bbb.object(try new_symbol(heap, "tail"));
                     const index = try bbb.call(lookup_field, args);
                     break :tail try bbb.load(payload, index);
                 };
@@ -2157,22 +2171,22 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Address 
         .array_get = array_get,
     };
 
-    var symbols = [_]Address{undefined} ** @typeInfo(@TypeOf(builtins)).@"struct".fields.len;
+    var symbols = [_]Obj{undefined} ** @typeInfo(@TypeOf(builtins)).@"struct".fields.len;
     inline for (0.., @typeInfo(@TypeOf(builtins)).@"struct".fields) |i, field| {
-        symbols[i] = try object_mod.new_symbol(heap, field.name);
+        symbols[i] = try new_symbol(heap, field.name);
     }
-    const struct_symbol = try object_mod.new_symbol(heap, "struct");
+    const struct_symbol = try new_symbol(heap, "struct");
     const builtins_type = build: {
-        var b = try heap.object_builder();
-        try b.emit_pointer(struct_symbol);
-        for (symbols) |symbol| try b.emit_pointer(symbol);
+        var b = try heap.build_inner();
+        try b.emit(struct_symbol);
+        for (symbols) |symbol| try b.emit(symbol);
         break :build b.finish();
     };
     const builtins_struct = build: {
-        var b = try heap.object_builder();
-        try b.emit_pointer(builtins_type);
+        var b = try heap.build_inner();
+        try b.emit(builtins_type);
         inline for (@typeInfo(@TypeOf(builtins)).@"struct".fields) |field|
-            try b.emit_pointer(@field(builtins, field.name));
+            try b.emit(@field(builtins, field.name));
         break :build b.finish();
     };
 
@@ -2184,17 +2198,17 @@ pub fn instructions_to_fun(
     heap: *Heap,
     num_params_: usize,
     instructions: []const Instruction,
-) !Address {
+) !Obj {
     const instructions_obj = try Instruction.new_instructions(ally, heap, instructions);
-    return object_mod.new_lambda(heap, .{
+    return Val.Lambda.new(heap, .{
         .num_params = num_params_,
         .instructions = instructions_obj,
-        .closure = try object_mod.empty_obj(heap),
+        .closure = try new_empty(heap),
         .ir = null,
     });
 }
 
-pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address {
+pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Obj {
     //std.debug.print("IR:\n", .{});
     //{
     //    var buffer: [64]u8 = undefined;
@@ -2209,17 +2223,17 @@ pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Ad
     return instructions_obj;
 }
 
-pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address {
+pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Obj {
     const instructions = try ir_to_instructions(ally, heap, ir);
-    return try object_mod.new_lambda(heap, .{
-        .num_params = ir.params.len - 1,
-        .instructions = instructions,
-        .closure = try object_mod.empty_obj(heap),
-        .ir = null,
-    });
+    return (try Val.Lambda.new(heap,
+        instructions,
+        ir.params.len - 1,
+        try new_empty(heap),
+        null,
+    )).obj;
 
-    // const lambda_symbol = try object_mod.new_symbol(heap, "lambda");
-    // const num_params_obj = try object_mod.new_int(heap, @intCast(ir.params.len - 1));
+    // const lambda_symbol = try new_symbol(heap, "lambda");
+    // const num_params_obj = try Val.Int.new(heap, @intCast(ir.params.len - 1));
     // const type_ = blk: {
     //     var b = try heap.object_builder();
     //     try b.emit_pointer(lambda_symbol);
@@ -2234,7 +2248,7 @@ pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Address 
     // return builder.finish();
 }
 
-pub fn code_to_lambda(ally: Ally, heap: *Heap, common: CommonObjects, env: anytype, code: Str) !Address {
+pub fn code_to_lambda(ally: Ally, heap: *Heap, common: CommonObjects, env: anytype, code: Str) !Obj {
     std.debug.print("parsing\n", .{});
     const ast = try str_to_ast(ally, code);
     const ir = try ast_to_ir(ally, heap, common, env, ast);

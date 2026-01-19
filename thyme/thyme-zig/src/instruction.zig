@@ -5,12 +5,14 @@ const Writer = std.io.Writer;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
-const Address = Heap.Address;
-const object_mod = @import("object.zig");
+const Obj = Heap.Obj;
+const Val = @import("value.zig");
+const new_symbol = Val.new_symbol;
+const get_symbol = Val.get_symbol;
 
 pub const Instruction = union(enum) {
     word: Word, // Pushes the word to the stack.
-    address: Object, // Pushes the address to the stack.
+    address: Obj, // Pushes the address to the stack.
     stack: usize, // Pushes a word from the stack to the stack. Offset 0 = top element, 1 = below top, etc.
     pop: usize, // Pops the given number of words from the stack.
     popover: usize, // Keeps the top element on the stack, but pops the given number of words below that.
@@ -34,49 +36,31 @@ pub const Instruction = union(enum) {
     eval, // Pops an address, which should point to an object containing instructions. Runs those.
     crash, // Pops a message. Crashes with the message.
 
-    const Object = struct { address: Address };
     const If = struct { then: []const Instruction, else_: []const Instruction };
     const New = struct { has_pointers: bool, num_words: usize };
 
-    pub fn new_instruction(ally: Ally, heap: *Heap, instruction: Instruction) error{OutOfMemory}!Address {
+    pub fn new_instruction(ally: Ally, heap: *Heap, instruction: Instruction) error{OutOfMemory}!Obj {
         switch (instruction) {
             inline else => |payload| {
-                const symbol = try object_mod.new_symbol(heap, @tagName(instruction));
+                const symbol = try new_symbol(heap, @tagName(instruction));
                 const payloads = switch (comptime @TypeOf(payload)) {
                     void => .{},
-                    Word => .{obj: {
-                        var b = try heap.object_builder();
-                        try b.emit_literal(@bitCast(payload));
-                        break :obj b.finish();
-                    }},
-                    Object => .{payload.address},
-                    usize => .{obj: {
-                        var b = try heap.object_builder();
-                        try b.emit_literal(@bitCast(payload));
-                        break :obj b.finish();
-                    }},
+                    Word => .{try heap.new_leaf(&.{ @bitCast(payload) })},
+                    Obj => .{payload},
                     If => .{
                         try new_instructions(ally, heap, payload.then),
                         try new_instructions(ally, heap, payload.else_),
                     },
                     New => .{
-                        obj: {
-                            var b = try heap.object_builder();
-                            try b.emit_literal(if (payload.has_pointers) 1 else 0);
-                            break :obj b.finish();
-                        },
-                        obj: {
-                            var b = try heap.object_builder();
-                            try b.emit_literal(@intCast(payload.num_words));
-                            break :obj b.finish();
-                        },
+                      try heap.new_leaf(&.{ if (payload.has_pointers) 1 else 0 }),
+                        try heap.new_leaf(&.{ @intCast(payload.num_words) }),
                     },
                     else => @compileError("Handle type " ++ @typeName(@TypeOf(payload))),
                 };
                 const instr_obj = obj: {
-                    var b = try heap.object_builder();
-                    try b.emit_pointer(symbol);
-                    inline for (payloads) |p| try b.emit_pointer(p);
+                    var b = try heap.build_inner();
+                    try b.emit(symbol);
+                    inline for (payloads) |p| try b.emit(p);
                     break :obj b.finish();
                 };
                 return instr_obj;
@@ -87,36 +71,31 @@ pub const Instruction = union(enum) {
         ally: Ally,
         heap: *Heap,
         instructions: []const Instruction,
-    ) !Address {
-        var objs = try ally.alloc(Address, instructions.len);
+    ) !Obj {
+        var objs = try ally.alloc(Obj, instructions.len);
         for (0.., instructions) |i, instruction| objs[i] = try new_instruction(ally, heap, instruction);
-        const instr = try heap.new(.{ .has_pointers = true, .words = objs });
+        const instr = try heap.new_inner(objs);
         ally.free(objs);
         return instr;
     }
 
-    const ParseResult = struct { instruction: Instruction, rest: Address };
-    pub fn parse_instruction(
-        ally: Ally,
-        heap: Heap,
-        instruction: Address,
-    ) error{ ParseError, OutOfMemory }!Instruction {
-        const words = heap.get(instruction).words;
-        const name = object_mod.get_symbol(heap, words[0]);
+    const ParseResult = struct { instruction: Instruction, rest: Obj };
+    pub fn parse_instruction(ally: Ally, instruction: Obj) error{ ParseError, OutOfMemory }!Instruction {
+        const children = instruction.children();
+        const name = get_symbol(children[0]);
         inline for (@typeInfo(Instruction).@"union".fields) |field| {
             if (std.mem.eql(u8, name, field.name)) {
                 const payload: field.type = switch (field.type) {
                     void => {},
-                    Word => @intCast(heap.load(words[1], 0)),
-                    Object => Object{ .address = words[1] },
-                    usize => @intCast(heap.load(words[1], 0)),
+                    Word => children[1].word(0),
+                    Obj => children[1],
                     If => If{
-                        .then = try Instruction.parse_instructions(ally, heap, words[1]),
-                        .else_ = try Instruction.parse_instructions(ally, heap, words[2]),
+                        .then = try Instruction.parse_instructions(ally, children[1]),
+                        .else_ = try Instruction.parse_instructions(ally, children[2]),
                     },
                     New => New{
-                        .has_pointers = heap.load(words[1], 0) != 0,
-                        .num_words = @intCast(heap.load(words[2], 0)),
+                        .has_pointers = children[1].word(0) != 0,
+                        .num_words = @intCast(children[2].word(0)),
                     },
                     else => @compileError("Handle type " ++ @typeName(field.type)),
                 };
@@ -128,12 +107,11 @@ pub const Instruction = union(enum) {
     }
     pub fn parse_instructions(
         ally: Ally,
-        heap: Heap,
-        instructions: Address,
+        instructions: Obj,
     ) error{ ParseError, OutOfMemory }![]const Instruction {
-        const words = heap.get(instructions).words;
-        var out = try ally.alloc(Instruction, words.len);
-        for (0.., words) |i, word| out[i] = try parse_instruction(ally, heap, word);
+        const children = instructions.children();
+        var out = try ally.alloc(Instruction, children.len);
+        for (0.., children) |i, child| out[i] = try parse_instruction(ally, child);
         return out;
     }
 
