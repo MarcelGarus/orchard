@@ -165,7 +165,6 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Obj, Obj) {
     var write = from.address;
     var map = Map(Obj, Obj).init(ally);
     while (read < @intFromPtr(heap.memory.ptr) + heap.used) {
-      std.debug.print("Deduplicating. read = {x} write = {x}\n", .{ read, write });
         // Adjust the pointers using the mapping so far.
         const header: Header = @as(*Header, @ptrFromInt(read)).*;
         if (header.is_inner == 1) {

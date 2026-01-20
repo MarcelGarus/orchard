@@ -25,26 +25,29 @@ pub fn main() !void {
     // const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    // const lambda = try object_mod.new_lambda(&heap, .{
-    //     .num_params = 2,
-    //     .instructions = try Instruction.new_instructions(ally, &heap, &[_]Instruction{
+    // const lambda = try Val.Lambda.new(
+    //     &heap,
+    //     try Instruction.new_instructions(ally, &heap, &[_]Instruction{
     //       .{ .pop = 3 },
     //       .{ .word = 2 },
-    //       .{ .word = 3 },
-    //       .add,
+    //       .{ .@"if" = .{
+    //         .then = &.{ .{ .word = 4 } },
+    //         .else_ = &.{ .{ .word = 42 } },
+    //       } },
     //       .{ .new = .{ .has_pointers = false, .num_words = 1 } },
     //     }),
-    //     .closure = try object_mod.empty_obj(&heap),
-    //     .ir = null,
-    // });
-    // const two = try Int.new(&heap, 2);
-    // const three = try Int.new(&heap, 3);
-    // const result = try vm.call(lambda, &[_]Address{two, three});
+    //     2,
+    //     try Val.new_empty(&heap),
+    //     null,
+    // );
+    // const two = (try Val.Int.new(&heap, 2)).as_value();
+    // const three = (try Val.Int.new(&heap, 3)).as_value();
+    // const result = try vm.call(lambda, &[_]Val.Value{two, three});
     // {
     //     var buffer: [64]u8 = undefined;
     //     const bw = std.debug.lockStderrWriter(&buffer);
     //     defer std.debug.unlockStderrWriter();
-    //     try heap.format(result, bw);
+    //     try heap.format(result.obj, bw);
     //     try bw.print("\n", .{});
     // }
     // if (true) return;

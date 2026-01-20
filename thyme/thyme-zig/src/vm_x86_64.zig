@@ -7,48 +7,84 @@
 // Call stack:  The VM's call stack is a memory region that we allocate. The call stack can't grow
 //   dynamically; code can overflow it.
 //
-// We don't really use the x86 stack.
-//
 // r8 = heap cursor
-// r9 = heap end
-// r10 = data stack cursor
-// r11 = data stack end
-// r12 = call stack cursor
-// r13 = call stack end
+// r9 = call stack cursor
+// rsp = data stack cursor
 
 const std = @import("std");
 const ArrayList = std.ArrayListUnmanaged;
 const Map = std.AutoArrayHashMap;
+const Ally = std.mem.Allocator;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
-const Address = Heap.Address;
+const Obj = Heap.Obj;
 const Instruction = @import("instruction.zig").Instruction;
-const Vm = @import("vm.zig");
+const ObjMap = @import("obj_map.zig").ObjMap;
+const Val = @import("value.zig");
 
-pub const Ally = struct {
-  ally: std.mem.Allocator,
+const Vm = @This();
 
-  pub fn init(ally: std.mem.Allocator) !Ally {
-    return .{ .ally = ally };
+ally: Ally,
+heap: *Heap,
+data_stack: Stack,
+call_stack: Stack,
+jit_cache: ObjMap([]const u8), // maps (pointer to instructions obj) to (x86_64 machine code)
+// TODO: std.linux.munmap() the cache
+
+// TODO: add guard pages next to the stack
+
+// The stack grows downward, just like the native x86 stack. This allows us to use push and pop
+// instructions directly to modify the (data) stack.
+const Stack = struct {
+  memory: []Word,
+  cursor: usize,
+
+  pub fn init(ally: Ally, num_words: usize) !Stack {
+    return .{ .memory = try ally.alloc(Word, num_words), .cursor = num_words };
+  }
+  pub fn push(self: *Stack, word: Word) !void {
+      if (self.cursor == 0) @panic("stack overflow");
+      self.cursor -= 1;
+      self.memory[self.cursor] = word;
+  }
+  pub fn pop(self: *Stack) Word {
+      const word = self.memory[self.cursor];
+      self.cursor += 1;
+      return word;
   }
 };
 
-pub const Jitted = struct {
-    address: [*]u8, // Pointer to non-writable, executable memory with machine code.
-    len: usize, // Length of the memory.
+pub fn init(heap: *Heap, ally: Ally) !Vm {
+    return .{
+        .ally = ally,
+        .heap = heap,
+        .data_stack = try Stack.init(ally, 100),
+        .call_stack = try Stack.init(ally, 100),
+        .jit_cache = ObjMap([]const u8).empty,
+    };
+}
 
-    pub fn deinit() !void {
-        std.linux.munmap();
-    }
-};
-
-pub fn compile(ally: Ally, instructions: []const Instruction) !Jitted {
-    // Turn the instructions into x86 machine code bytes.
-    var emitter = Emitter.init(ally.ally);
-    _ = try compile_all(&emitter, instructions);
-    try emitter.emit("ret", .{});
-    const bytes = emitter.bytes.items;
+pub fn call(vm: *Vm, lambda: Val.Lambda, args: []const Val.Value) !Val.Value {
+    const instructions = lambda.obj.child(1);
+    const closure = lambda.obj.child(2);
+    for (args) |arg| try vm.data_stack.push(arg.obj.address);
+    try vm.data_stack.push(closure.address);
+    try vm.run(try vm.compile(instructions));
+    return .{ .obj = .{ .address = vm.data_stack.pop() } };
+}
+pub fn compile(vm: *Vm, instructions: Obj) ![]const u8 {
+  if (vm.jit_cache.get(instructions)) |machine_code| return machine_code;
+  const jitted = try compile_instructions(vm.ally, try Instruction.parse_instructions(vm.ally, instructions));
+  try vm.jit_cache.put(vm.ally, instructions, jitted);
+  return jitted;
+}
+// Turns the instructions into x86 machine code bytes.
+pub fn compile_instructions(ally: Ally, instructions: []const Instruction) ![]const u8 {
+    var code = MachineCode.init(ally);
+    _ = try compile_all(&code, instructions);
+    try code.emit("ret", .{});
+    const bytes = code.bytes.items;
 
     std.debug.print("bytes:", .{});
     for (bytes) |byte| std.debug.print(" {x:02}", .{byte});
@@ -76,65 +112,350 @@ pub fn compile(ally: Ally, instructions: []const Instruction) !Jitted {
     };
     std.debug.print("machine code lives at {*}\n", .{address});
 
-    // Step 2: Copy the machine code to that memory region. This requires
-    //         adjusting the targets of internal jump instructions.
-    // TODO: adjust jumps when relocating
+    // Step 2: Copy the machine code to that memory region.
     @memcpy(address, bytes);
 
-    // Step 3: Make the memory executable. After this, writing to the memory
-    //         will cause a fault.
+    // Step 3: Make the memory executable. After this, writing to the memory will cause a fault.
     std.debug.assert(std.os.linux.mprotect(
         address,
         bytes.len,
         std.os.linux.PROT.READ | std.os.linux.PROT.EXEC,
     ) == 0);
 
-    return .{ .address = address, .len = bytes.len };
+    return address[0..bytes.len];
 }
+const MachineCode = struct {
+    ally: std.mem.Allocator,
+    bytes: ArrayList(u8),
 
-pub fn run(vm: *Vm, jitted: Jitted) !void {
+    pub fn init(ally: std.mem.Allocator) MachineCode {
+        return .{ .ally = ally, .bytes = ArrayList(u8).empty };
+    }
+    fn emit_byte(self: *MachineCode, byte: u8) !void {
+        try self.bytes.append(self.ally, byte);
+    }
+    pub fn len(self: MachineCode) usize {
+        return self.bytes.items.len;
+    }
+    pub fn emit(self: *MachineCode, comptime x86_instr: []const u8, args: anytype) !void {
+        std.debug.print("{s:<30} {any:<30} ", .{ x86_instr, args });
+        const constants = .{
+            // TODO: remove some unused instructions from here
+            .@"hlt" = "f4",
+            .@"push qword {:i32}" = "68 {0:i32le}",
+            .@"push rax" = "50",
+            .@"push [rax]" = "ff 30",
+            .@"push rbx" = "53",
+            .@"push rcx" = "51",
+            .@"pop rax" = "58",
+            .@"pop rbx" = "5b",
+            .@"pop rcx" = "59",
+            .@"mov rax, {:64}" = "48 b8 {0:u64le}",
+            .@"mov rax, rsp" = "48 89 e0",
+            .@"mov rax, r10" = "4c 89 d0",
+            .@"mov rax, r12" = "4c 89 e0",
+            .@"mov rax, [rax]" = "48 8b 00",
+            .@"mov rax, [r10]" = "49 8b 02",
+            .@"mov rax, [r10 - 8]" = "49 8b 42 f8",
+            .@"mov rax, [r12]" = "49 8b 04 24",
+            .@"mov rbx, 0xffffffffffff" = "48 bb ff ff ff ff ff ff 00 00",
+            .@"mov rbx, {:64}" = "48 bb {0:u64le}",
+            .@"mov rbx, [rax]" = "48 8b 18",
+            .@"mov rcx, r8" = "4c 89 c1",
+            .@"mov rcx, [r10]" = "49 8b 0a",
+            .@"mov [r8], rax" = "49 89 00",
+            .@"mov [r8], rbx" = "49 89 18",
+            .@"mov [r10], rax" = "49 89 02",
+            .@"mov [r10], rcx" = "49 89 0a",
+            .@"mov [r10], {:32}" = "49 c7 02 {0:u32le}",
+            .@"mov [r10 - 8], rax" = "49 89 42 f8",
+            .@"mov [r10 - 16], rax" = "49 89 42 f0",
+            .@"mov [r12], rax" = "49 89 04 24",
+            .@"mov [r12], {:32}" = "49 c7 04 24 {0:u32le}",
+            .@"mov [r12 - 16], rax" = "49 89 44 24 f0",
+            .@"add rax, 8" = "48 83 c0 08",
+            .@"add rax, {:8}" = "48 83 c0 {0:i8}",
+            .@"add rax, rbx" = "48 01 d8",
+            .@"add rax, [r10 - 16]" = "49 03 42 f0",
+            .@"add rsp, rax" = "48 01 c4",
+            .@"add rsp, rbx" = "48 01 dc",
+            .@"add r8, 8" = "49 83 c0 08",
+            .@"add r10, 8" = "49 83 c2 08",
+            .@"add r12, 8" = "49 83 c4 08",
+            .@"sub rax, 8" = "49 83 e8 08",
+            .@"sub rax, {:32}" = "48 2d {0:u32le}", // TODO: remove?
+            .@"sub rax, rbx" = "48 29 d8",
+            .@"sub rax, [r10 - 16]" = "49 2b 42 f0",
+            .@"sub r10, rax" = "49 29 c2",
+            .@"sub r10, rbx" = "49 29 da",
+            .@"sub r10, 8" = "49 83 ea 08",
+            .@"sub r10d, {:32}" = "41 81 ea {0:u32le}",
+            .@"shl rbx, 3" = "48 c1 e3 03",
+            .@"and rax, rbx" = "48 21 d8",
+            .@"xor rax, rax" = "48 31 c0",
+            .@"cmp rax, 0" = "48 83 f8 00",
+            .@"cmp rcx, 0" = "48 83 f9 00",
+            .@"cmovnz rax, rbx" = "48 0f 45 c3",
+            .@"jz {:32}" = "0f 84 {0:i32le}",
+            .@"jmp {:32}" = "e9 {0:i32le}",
+            .@"call rax" = "ff d0",
+            .ret = "c3",
+        };
+        const len_before = self.len();
+        inline for (@typeInfo(@TypeOf(constants)).@"struct".fields) |field| {
+            if (comptime std.mem.eql(u8, x86_instr, field.name)) {
+                const bytes = @field(constants, field.name);
+                comptime var iter = std.mem.splitScalar(u8, bytes, ' ');
+                inline while (comptime iter.next()) |item| {
+                    if (comptime std.mem.startsWith(u8, item, "{")) {
+                        const content = item[1..(item.len - 1)];
+                        comptime var it = std.mem.splitScalar(u8, content, ':');
+                        const index_str = comptime it.next() orelse @compileError("expected index part");
+                        const how_to_emit = comptime it.next() orelse @compileError("expected how to emit");
+                        const index = comptime std.fmt.parseInt(usize, index_str, 10) catch unreachable;
+                        const value = args[index];
+                        if (comptime std.mem.eql(u8, how_to_emit, "i8")) {
+                          if (@TypeOf(value) != i8) @compileError("expected i8, got " ++ @typeName(@TypeOf(value)));
+                          try self.emit_byte(@bitCast(value));
+                        } else if (comptime std.mem.eql(u8, how_to_emit, "u32le")) {
+                          if (@TypeOf(value) != u32) @compileError("expected u32, got " ++ @typeName(@TypeOf(value)));
+                          const target_space = try self.bytes.addManyAsArray(self.ally, 4);
+                          std.mem.writeInt(u32, target_space, value, .little);
+                        } else if (comptime std.mem.eql(u8, how_to_emit, "i32le")) {
+                          if (@TypeOf(value) != i32) @compileError("expected i32, got " ++ @typeName(@TypeOf(value)));
+                          const target_space = try self.bytes.addManyAsArray(self.ally, 4);
+                          std.mem.writeInt(i32, target_space, value, .little);
+                        } else if (comptime std.mem.eql(u8, how_to_emit, "u64le")) {
+                          if (@TypeOf(value) != u64) @compileError("expected u64, got " ++ @typeName(@TypeOf(value)));
+                          const target_space = try self.bytes.addManyAsArray(self.ally, 8);
+                          std.mem.writeInt(u64, target_space, value, .little);
+                        } else @compileError("unknown formatting" ++ how_to_emit);
+                    } else {
+                        const byte = comptime std.fmt.parseInt(u8, item, 16) catch unreachable;
+                        try self.emit_byte(byte);
+                    }
+                }
+                for (self.bytes.items[len_before..]) |b| std.debug.print(" {x:02}", .{b});
+                std.debug.print("\n", .{});
+                return;
+            }
+        }
+        @panic("Unknown instruction: " ++ x86_instr);
+    }
+    pub fn emit_placeholder(self: *MachineCode, comptime x86_instr: []const u8, args: anytype) !usize {
+        const length = self.len();
+        try self.emit(x86_instr, args);
+        return length;
+    }
+    pub fn patch(self: *MachineCode, at: usize, comptime x86_instr: []const u8, args: anytype) void {
+        const cursor = self.bytes.items.len;
+        self.bytes.items.len = at;
+        self.emit(x86_instr, args) catch unreachable;
+        self.bytes.items.len = cursor;
+    }
+};
+fn compile_all(code: *MachineCode, instructions: []const Instruction) !void {
+    for (instructions) |instruction| try compile_single(code, instruction);
+}
+fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemory}!void {
+    // Before an instruction, we expected to following invariants to hold:
+    //
+    // - r8 contains the heap cursor (the address that the next heap-allocated object would get)
+    // - r9 points to the call stack, which grows downward
+    // - rsp points to the data stack, which grows downward
+    //
+    // Instructions may modify the rax, rbx, rcx, rdx registers as they please.
+    switch (instruction) {
+        // TODO: choose smaller instruction sequences when possible
+        .word => |word| {
+            const signed = @as(i64, @bitCast(word));
+            if (word == 0) {
+                try code.emit("xor rax, rax", .{});
+                try code.emit("push rax", .{});
+            } else if (signed >= -0x80000000 and signed < 0x7fffffff) {
+                try code.emit("push qword {:i32}", .{@as(i32, @intCast(signed))});
+            } else {
+                try code.emit("mov rax, {:64}", .{@as(u64, @intCast(word))});
+                try code.emit("push rax", .{});
+            }
+        },
+        .address => |object| {
+            const address = object.address;
+            const signed = @as(i64, @bitCast(address));
+            if (signed >= -0x80000000 and signed < 0x7fffffff) {
+                try code.emit("push qword {:i32}", .{@as(i32, @intCast(signed))});
+            } else {
+                try code.emit("mov rax, {:64}", .{@as(u64, @intCast(address))});
+                try code.emit("push rax", .{});
+            }
+        },
+        .stack => |offset| {
+            const real_offset = offset * 8 + 8;
+            const signed = @as(i64, @bitCast(real_offset));
+            try code.emit("mov rax, rsp", .{});
+            if (real_offset >= -0x80 and real_offset < 0x7f) {
+              try code.emit("add rax, {:8}", .{@as(i8, @intCast(signed))});
+            } else {
+              try code.emit("mov rbx, {:64}", .{@as(u64, @intCast(real_offset))});
+              try code.emit("add rax, rbx", .{});
+            }
+            try code.emit("push [rax]", .{});
+        },
+        .pop => |amount| {
+            try code.emit("mov rax, {:64}", .{@as(u64, @intCast(amount * 8))});
+            try code.emit("add rsp, rax", .{});
+        },
+        .popover => |amount| {
+            try code.emit("pop rax", .{});
+            try code.emit("mov rbx, {:64}", .{@as(u64, @intCast(amount * 8))});
+            try code.emit("add rsp, rbx", .{});
+            try code.emit("push rax", .{});
+        },
+        .add => {
+            try code.emit("pop rbx", .{});
+            try code.emit("pop rax", .{});
+            try code.emit("add rax, rbx", .{});
+            try code.emit("push rax", .{});
+        },
+        .subtract => {
+            try code.emit("pop rbx", .{});
+            try code.emit("pop rax", .{});
+            try code.emit("sub rax, rbx", .{});
+            try code.emit("push rax", .{});
+        },
+        .multiply => {
+            try code.emit("pop rbx", .{});
+            try code.emit("pop rax", .{});
+            try code.emit("imul rax, rbx", .{});
+            try code.emit("push rax", .{});
+        },
+        .divide => {
+            try code.emit("pop rbx", .{});
+            try code.emit("pop rax", .{});
+            try code.emit("div rax, rbx", .{});
+            try code.emit("push rax", .{});
+        },
+        .modulo => {
+            try code.emit("pop rbx", .{});
+            try code.emit("pop rax", .{});
+            try code.emit("mod rax, rbx", .{});
+            try code.emit("push rax", .{});
+        },
+        .shl => {
+            try code.emit("pop rbx", .{});
+            try code.emit("pop rax", .{});
+            try code.emit("shl rax, rbx", .{});
+            try code.emit("push rax", .{});
+        },
+        .shr => {
+            try code.emit("pop rbx", .{});
+            try code.emit("pop rax", .{});
+            try code.emit("shr rax, rbx", .{});
+            try code.emit("push rax", .{});
+        },
+        .compare => @panic("JIT compare"), // equal: 0, greater: 1, less: 2
+        .@"if" => |if_| {
+            try code.emit("pop rax", .{});
+            try code.emit("cmp rax, 0", .{});
+            const jump_to_else_placeholder = try code.emit_placeholder("jz {:32}", .{ @as(i32, 0) });
+            try compile_all(code, if_.then);
+            const jump_to_after_if_placeholder = try code.emit_placeholder("jmp {:32}", .{ @as(i32, 0) });
+            const else_ = code.len();
+            try compile_all(code, if_.else_);
+            const after_if = code.len();
+            // Patch the placeholders (these are relative jumps).
+            code.patch(jump_to_else_placeholder, "jz {:32}", .{ @as(i32, @intCast(else_ - jump_to_else_placeholder)) });
+            code.patch(jump_to_after_if_placeholder, "jmp {:32}", .{ @as(i32, @intCast(after_if - jump_to_after_if_placeholder)) });
+        },
+        .new => |new| {
+            try code.emit("mov rax, r8", .{});
+            // rax = start of object; r8 = start of object; rsp = top of stack
+            try code.emit("mov rbx, {:64}", .{
+              @as(u64, @bitCast(Heap.Header {
+                .num_words = @intCast(new.num_words),
+                .is_inner = if (new.has_pointers) 1 else 0,
+              })),
+            });
+            try code.emit("mov [r8], rbx", .{});
+            try code.emit("add r8, 8", .{});
+            // The header word has now been allocated on the heap.
+            try code.emit("mov rbx, {:64}", .{ @as(u64, @intCast(new.num_words * 8)) });
+            try code.emit("add rsp, rbx", .{ });
+            try code.emit("mov rbx, rsp", .{});
+            for (0..new.num_words) |_| {
+                try code.emit("sub rbx, 8", .{});
+                try code.emit("mov rcx, [rbx]", .{});
+                try code.emit("mov [r8], rcx", .{});
+                try code.emit("add r8, 8", .{});
+            }
+            try code.emit("push rax", .{});
+        },
+        .flatptro => @panic("JIT flatptro"),
+        .flatlito => @panic("JIT flatlito"),
+        .points => @panic("JIT points"),
+        .size => {
+          try code.emit("pop rax", .{});
+          try code.emit("mov rax, [rax]", .{});
+          try code.emit("mov rbx, 0xffffffffffff", .{});
+          try code.emit("and rax, rbx", .{});
+          try code.emit("push rax", .{});
+        },
+        .load => {
+          try code.emit("pop rbx", .{});
+          try code.emit("shl rbx, 3", .{});
+          try code.emit("pop rax", .{});
+          try code.emit("add rax, 8", .{});
+          try code.emit("add rax, rbx", .{});
+          try code.emit("push [rax]", .{});
+        },
+        .heapsize => {
+          try code.emit("push r8", .{});
+        },
+        .gc => @panic("JIT gc"),
+        .eval => {
+          try code.emit("hlt", .{});
+          // try code.emit("mov rax, {:64}", .{ @as(u64, @bitCast(@intFromPtr(&hook_eval))) });
+          // try code.emit("call rax", .{});
+        },
+        .crash => {
+          try code.emit("mov rax, {:64}", .{ @as(u64, @bitCast(@intFromPtr(&hook_crash))) });
+          try code.emit("call rax", .{});
+        },
+    }
+}
+pub fn run(vm: *Vm, jitted: []const u8) !void {
     std.debug.print("data stack:", .{});
-    for (vm.data_stack.memory[0..vm.data_stack.used]) |byte| std.debug.print(" {x:02}", .{byte});
+    for (vm.data_stack.memory[vm.data_stack.cursor..]) |byte| std.debug.print(" {x:02}", .{byte});
     std.debug.print("\n", .{});
     std.debug.print("running jitted instructions\n", .{});
 
     const State = packed struct {
         heap_cursor: [*]Word,
-        heap_end: [*]Word,
         data_stack_cursor: [*]Word,
-        data_stack_end: [*]Word,
         call_stack_cursor: [*]Word,
-        call_stack_end: [*]Word,
+        original_rsp: usize,
     };
     var state = State{
         .heap_cursor = @ptrFromInt(@intFromPtr(vm.heap.memory.ptr) + (8 * vm.heap.used)),
-        .heap_end = @ptrFromInt(@intFromPtr(vm.heap.memory.ptr) + (8 * vm.heap.memory.len)),
-        .data_stack_cursor = @ptrFromInt(@intFromPtr(vm.data_stack.memory.ptr) + (8 * vm.data_stack.used)),
-        .data_stack_end = @ptrFromInt(@intFromPtr(vm.data_stack.memory.ptr) + (8 * vm.data_stack.memory.len)),
-        .call_stack_cursor = @ptrFromInt(@intFromPtr(vm.call_stack.memory.ptr) + (8 * vm.call_stack.used)),
-        .call_stack_end = @ptrFromInt(@intFromPtr(vm.call_stack.memory.ptr) + (8 * vm.call_stack.memory.len)),
+        .data_stack_cursor = @ptrFromInt(@intFromPtr(vm.data_stack.memory.ptr) + (8 * vm.data_stack.cursor)),
+        .call_stack_cursor = @ptrFromInt(@intFromPtr(vm.call_stack.memory.ptr) + (8 * vm.call_stack.cursor)),
+        .original_rsp = 0,
     };
     std.debug.print("state = {any}\n", .{state});
     @breakpoint();
     asm volatile (
-        \\ movq (%%rbx), %%r8      # heap cursor
-        \\ movq +8(%%rbx), %%r9    # heap end
-        \\ movq +16(%%rbx), %%r10  # data stack cursor
-        \\ movq +24(%%rbx), %%r11  # data stack end
-        \\ movq +32(%%rbx), %%r12  # call stack cursor
-        \\ movq +40(%%rbx), %%r13  # call stack end
-        \\ push %%rbx
+        \\ movq %%rsp, +24(%%r15)  # original rsp
+        \\ movq (%%r15), %%r8  # heap cursor
+        \\ movq +8(%%r15), %%rsp  # data stack cursor
+        \\ movq +16(%%r15), %%r9  # call stack cursor
         \\ call *%%rax
-        \\ pop %%rbx
-        \\ movq %%r8, (%%rbx)      # heap cursor
-        \\ movq %%r9, +8(%%rbx)    # heap end
-        \\ movq %%r10, +16(%%rbx)  # data stack cursor
-        \\ movq %%r11, +24(%%rbx)  # data stack end
-        \\ movq %%r12, +32(%%rbx)  # call stack cursor
-        \\ movq %%r13, +40(%%rbx)  # call stack end
+        \\ movq %%r8, (%%r15)  # heap cursor
+        \\ movq %%rsp, +8(%%r15)  # data stack cursor
+        \\ movq %%r9, +16(%%r15)  # call stack cursor
+        \\ movq +24(%%r15), %%rsp  # original rsp
         :
-        : [machine_code] "{rax}" (jitted.address),
-          [vm_state] "{rbx}" (&state),
+        : [machine_code] "{rax}" (jitted.ptr),
+          [vm_state] "{r15}" (&state),
         : .{
           .memory = true,
           .rax = true,
@@ -151,153 +472,15 @@ pub fn run(vm: *Vm, jitted: Jitted) !void {
         });
     std.debug.print("state = {any}\n", .{state});
     vm.heap.used = (@intFromPtr(state.heap_cursor) - @intFromPtr(vm.heap.memory.ptr)) / 8;
-    vm.data_stack.used = (@intFromPtr(state.data_stack_cursor) - @intFromPtr(vm.data_stack.memory.ptr)) / 8;
-    vm.call_stack.used = (@intFromPtr(state.call_stack_cursor) - @intFromPtr(vm.call_stack.memory.ptr)) / 8;
+    vm.data_stack.cursor = (@intFromPtr(state.data_stack_cursor) - @intFromPtr(vm.data_stack.memory.ptr)) / 8;
+    vm.call_stack.cursor = (@intFromPtr(state.call_stack_cursor) - @intFromPtr(vm.call_stack.memory.ptr)) / 8;
 
     std.debug.print("ran jitted instructions\n", .{});
     std.debug.print("data stack:", .{});
-    for (vm.data_stack.memory[0..vm.data_stack.used]) |word| std.debug.print(" {x:02}", .{word});
+    for (vm.data_stack.memory[vm.data_stack.cursor..]) |word| std.debug.print(" {x:02}", .{word});
     std.debug.print("\n", .{});
 }
 
-fn compile_all(emitter: *Emitter, instructions: []const Instruction) !void {
-    for (instructions) |instruction|
-        try compile_single(emitter, instruction);
-}
-fn compile_single(emitter: *Emitter, instruction: Instruction) error{OutOfMemory}!void {
-    switch (instruction) {
-        .word => |word| {
-            try emitter.emit("mov rax, {:64}", .{@as(u64, @intCast(word))});
-            try emitter.emit("mov [r10], rax", .{});
-            try emitter.emit("add r10, 8", .{});
-        },
-        .address => |object| {
-            try emitter.emit("mov rax, {:64}", .{@as(u64, @intCast(object.address))});
-            try emitter.emit("mov [r10], rax", .{});
-            try emitter.emit("add r10, 8", .{});
-        },
-        .stack => |offset| {
-            try emitter.emit("mov rax, r10", .{});
-            try emitter.emit("mov rbx, {:64}", .{@as(u64, @intCast(offset * 8 + 8))});
-            try emitter.emit("sub rax, rbx", .{});
-            try emitter.emit("mov rax, [rax]", .{});
-            try emitter.emit("mov [r10], rax", .{});
-            try emitter.emit("add r10, 8", .{});
-        },
-        .pop => |amount| {
-            try emitter.emit("mov rax, {:64}", .{@as(u64, @intCast(amount * 8))});
-            try emitter.emit("sub r10, rax", .{});
-        },
-        .popover => |amount| {
-            try emitter.emit("mov rax, [r10 - 8]", .{});
-            try emitter.emit("mov rbx, {:64}", .{@as(u64, @intCast(amount * 8))});
-            try emitter.emit("sub r10, rbx", .{});
-            try emitter.emit("mov [r10 - 8], rax", .{});
-        },
-        .add => {
-            try emitter.emit("mov rax, [r10 - 8]", .{});
-            try emitter.emit("add rax, [r10 - 16]", .{});
-            try emitter.emit("mov [r10 - 16], rax", .{});
-            try emitter.emit("sub r10, 8", .{});
-        },
-        .subtract => {
-            try emitter.emit("mov rax, [r10 - 8]", .{});
-            try emitter.emit("sub rax, [r10 - 16]", .{});
-            try emitter.emit("mov [r10 - 16], rax", .{});
-            try emitter.emit("sub r10, 8", .{});
-        },
-        .multiply => {
-            try emitter.emit("mov rax, [r10 - 8]", .{});
-            try emitter.emit("imul rax, [r10 - 16]", .{});
-            try emitter.emit("mov [r10 - 16], rax", .{});
-            try emitter.emit("sub r10, 8", .{});
-        },
-        .divide => {
-            try emitter.emit("mov rax, [r10 - 8]", .{});
-            try emitter.emit("div rax, [r10 - 16]", .{});
-            try emitter.emit("mov [r10 - 16], rax", .{});
-            try emitter.emit("sub r10, 8", .{});
-        },
-        .modulo => {
-            try emitter.emit("mov rax, [r10 - 8]", .{});
-            try emitter.emit("div rax, [r10 - 16]", .{});
-            try emitter.emit("mov [r10 - 16], rax", .{});
-            try emitter.emit("sub r10, 8", .{});
-        },
-        .shl => {
-            try emitter.emit("mov rax, [r10 - 8]", .{});
-            try emitter.emit("add rax, [r10 - 16]", .{});
-            try emitter.emit("mov [r10 - 16], rax", .{});
-            try emitter.emit("sub r10, 8", .{});
-        },
-        .shr => {
-            try emitter.emit("mov rax, [r10 - 8]", .{});
-            try emitter.emit("add rax, [r10 - 16]", .{});
-            try emitter.emit("mov [r10 - 16], rax", .{});
-            try emitter.emit("sub r10, 8", .{});
-        },
-        .compare => @panic("JIT compare"), // equal: 0, greater: 1, less: 2
-        .@"if" => |if_| {
-            const then = try compile(.{ .ally = emitter.ally }, if_.then);
-            const else_ = try compile(.{ .ally = emitter.ally }, if_.else_);
-            try emitter.emit("mov rax, {:64}", .{@as(u64, @bitCast(@intFromPtr(else_.address)))});
-            try emitter.emit("mov rbx, {:64}", .{@as(u64, @bitCast(@intFromPtr(then.address)))});
-            try emitter.emit("sub r10, 8", .{});
-            try emitter.emit("mov rcx, [r10]", .{});
-            try emitter.emit("cmp rcx, 0", .{});
-            try emitter.emit("cmovnz rax, rbx", .{});
-            try emitter.emit("call rax", .{});
-        },
-        .new => |new| {
-            try emitter.emit("mov rcx, r8", .{});
-            try emitter.emit("mov rax, {:64}", .{
-              @as(u64, @bitCast(Heap.Header {
-                .num_words = @intCast(new.num_words),
-                .is_inner = if (new.has_pointers) 1 else 0,
-              })),
-            });
-            try emitter.emit("mov [r8], rax", .{});
-            try emitter.emit("add r8, 8", .{});
-            try emitter.emit("mov rax, {:64}", .{ @as(u64, @intCast(new.num_words * 8)) });
-            try emitter.emit("sub r10, rax", .{ });
-            try emitter.emit("mov rax, r10", .{});
-            for (0..new.num_words) |_| {
-                try emitter.emit("mov rbx, [rax]", .{});
-                try emitter.emit("mov [r8], rbx", .{});
-                try emitter.emit("add rax, 8", .{});
-                try emitter.emit("add r8, 8", .{});
-            }
-            try emitter.emit("mov [r10], rcx", .{});
-            try emitter.emit("add r10, 8", .{});
-        },
-        .flatptro => @panic("JIT flatptro"),
-        .flatlito => @panic("JIT flatlito"),
-        .points => @panic("JIT points"),
-        .size => {
-          try emitter.emit("mov rax, [r10 - 8]", .{});
-          try emitter.emit("mov rbx, 0xffffffffffff", .{});
-          try emitter.emit("and rax, rbx", .{});
-        },
-        .load => {
-          try emitter.emit("mov rax, [r10 - 8]", .{});
-          try emitter.emit("add rax, [r10 - 16]", .{});
-          try emitter.emit("add rax, 8", .{});
-          try emitter.emit("mov rax, [rax]", .{});
-          try emitter.emit("mov [r10 - 16], rax", .{});
-          try emitter.emit("sub r10, 8", .{});
-        },
-        .heapsize => @panic("JIT heapsize"),
-        .gc => @panic("JIT gc"),
-        .eval => {
-          try emitter.emit("mov rax, {:64}", .{ @as(u64, @bitCast(@intFromPtr(&hook_eval))) });
-          try emitter.emit("call rax", .{});
-        },
-        .crash => {
-          try emitter.emit("mov rax, {:64}", .{ @as(u64, @bitCast(@intFromPtr(&hook_crash))) });
-          try emitter.emit("call rax", .{});
-        },
-    }
-}
 fn hook_crash() callconv(.c) void {
   std.debug.print("oh no! crashing\n", .{});
   std.process.exit(1);
@@ -307,99 +490,16 @@ fn hook_eval() callconv(.c) void {
   std.process.exit(1);
 }
 
-const Emitter = struct {
-    ally: std.mem.Allocator,
-    bytes: ArrayList(u8),
+pub fn deduplicate(vm: *Vm, ally: Ally, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
+    var map = try vm.heap.deduplicate(ally, checkpoint);
+    vm.jit_cache.remove_everything_after(checkpoint.address);
+    const mapped = map.get(keep) orelse keep;
+    map.deinit();
+    return mapped;
+}
 
-    pub fn init(ally: std.mem.Allocator) Emitter {
-        return .{ .ally = ally, .bytes = ArrayList(u8).empty };
-    }
-
-    fn emit_byte(self: *Emitter, byte: u8) !void {
-        try self.bytes.append(self.ally, byte);
-    }
-
-    pub fn emit(self: *Emitter, comptime x86_instr: []const u8, args: anytype) !void {
-        std.debug.print("{s:<30} {any}\n", .{ x86_instr, args });
-        const constants = .{
-          .@"mov rax, {:64}" = "48 b8 {0:64le}",
-            .@"mov rax, r10" = "4c 89 d0",
-            .@"mov rax, r12" = "4c 89 e0",
-            .@"mov rax, [rax]" = "48 8b 00",
-            .@"mov rax, [r10]" = "49 8b 02",
-            .@"mov rax, [r10 - 8]" = "49 8b 42 f8",
-            .@"mov rax, [r12]" = "49 8b 04 24",
-            .@"mov rbx, 0xffffffffffff" = "48 bb ff ff ff ff ff ff 00 00",
-            .@"mov rbx, {:64}" = "48 bb {0:64le}",
-            .@"mov rbx, [rax]" = "48 8b 18",
-            .@"mov rcx, r8" = "4c 89 c1",
-            .@"mov rcx, [r10]" = "49 8b 0a",
-            .@"mov [r8], rax" = "49 89 00",
-            .@"mov [r8], rbx" = "49 89 18",
-            .@"mov [r10], rax" = "49 89 02",
-            .@"mov [r10], rcx" = "49 89 0a",
-            .@"mov [r10], {:32}" = "49 c7 02 {0:32le}",
-            .@"mov [r10 - 8], rax" = "49 89 42 f8",
-            .@"mov [r10 - 16], rax" = "49 89 42 f0",
-            .@"mov [r12], rax" = "49 89 04 24",
-            .@"mov [r12], {:32}" = "49 c7 04 24 {0:32le}",
-            .@"mov [r12 - 16], rax" = "49 89 44 24 f0",
-            .@"add rax, 8" = "48 83 c0 08",
-            .@"add rax, [r10 - 16]" = "49 03 42 f0",
-            .@"add r8, 8" = "49 83 c0 08",
-            .@"add r10, 8" = "49 83 c2 08",
-            .@"add r12, 8" = "49 83 c4 08",
-            .@"sub rax, 8" = "49 83 e8 08",
-            .@"sub rax, {:32}" = "48 2d {0:32le}", // TODO: remove?
-            .@"sub rax, rbx" = "48 29 d8",
-            .@"sub rax, [r10 - 16]" = "49 2b 42 f0",
-            .@"sub r10, rax" = "49 29 c2",
-            .@"sub r10, rbx" = "49 29 da",
-            .@"sub r10, 8" = "49 83 ea 08",
-            .@"sub r10d, {:32}" = "41 81 ea {0:32le}",
-            .@"and rax, rbx" = "48 21 d8",
-            .@"cmp rcx, 0" = "48 83 f9 00",
-            .@"cmovnz rax, rbx" = "48 0f 45 c3",
-            .@"call rax" = "ff d0",
-            .ret = "c3",
-        };
-        inline for (@typeInfo(@TypeOf(constants)).@"struct".fields) |field| {
-            if (comptime std.mem.eql(u8, x86_instr, field.name)) {
-                const bytes = @field(constants, field.name);
-                comptime var iter = std.mem.splitScalar(u8, bytes, ' ');
-                inline while (comptime iter.next()) |item| {
-                    if (comptime std.mem.startsWith(u8, item, "{")) {
-                        const content = item[1..(item.len - 1)];
-                        comptime var it = std.mem.splitScalar(u8, content, ':');
-                        const index_str = comptime it.next() orelse @compileError("expected index part");
-                        const how_to_emit = comptime it.next() orelse @compileError("expected how to emit");
-                        const index = comptime std.fmt.parseInt(usize, index_str, 10) catch unreachable;
-                        const value = args[index];
-                        if (comptime std.mem.eql(u8, how_to_emit, "32le")) {
-                          if (@TypeOf(value) != u32) @compileError("expected u32, got " ++ @typeName(@TypeOf(value)));
-                          try self.emit_byte(@truncate(value));
-                          try self.emit_byte(@truncate(value >> 8));
-                          try self.emit_byte(@truncate(value >> 16));
-                          try self.emit_byte(@truncate(value >> 24));
-                        } else if (comptime std.mem.eql(u8, how_to_emit, "64le")) {
-                          if (@TypeOf(value) != u64) @compileError("expected u64, got " ++ @typeName(@TypeOf(value)));
-                          try self.emit_byte(@truncate(value));
-                          try self.emit_byte(@truncate(value >> 8));
-                          try self.emit_byte(@truncate(value >> 16));
-                          try self.emit_byte(@truncate(value >> 24));
-                          try self.emit_byte(@truncate(value >> 32));
-                          try self.emit_byte(@truncate(value >> 40));
-                          try self.emit_byte(@truncate(value >> 48));
-                          try self.emit_byte(@truncate(value >> 56));
-                        } else @compileError("unknown formatting" ++ how_to_emit);
-                    } else {
-                        const byte = comptime std.fmt.parseInt(u8, item, 16) catch unreachable;
-                        try self.emit_byte(byte);
-                    }
-                }
-                return;
-            }
-        }
-        @panic("Unknown instruction: " ++ x86_instr);
-    }
-};
+pub fn garbage_collect(vm: *Vm, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
+    const mapped = vm.heap.garbage_collect(vm.ally, checkpoint, keep);
+    vm.jit_cache.remove_everything_after(checkpoint.address);
+    return mapped;
+}
