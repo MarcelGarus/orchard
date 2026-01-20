@@ -490,10 +490,10 @@ fn hook_eval() callconv(.c) void {
   std.process.exit(1);
 }
 
-pub fn deduplicate(vm: *Vm, ally: Ally, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
-    var map = try vm.heap.deduplicate(ally, checkpoint);
+pub fn deduplicate(vm: *Vm, ally: Ally, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
+    var map = try vm.heap.deduplicate(vm.ally, checkpoint);
     vm.jit_cache.remove_everything_after(checkpoint.address);
-    const mapped = map.get(keep) orelse keep;
+    const mapped = map.get(obj) orelse obj;
     map.deinit();
     return mapped;
 }

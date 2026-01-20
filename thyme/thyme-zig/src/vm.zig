@@ -28,7 +28,7 @@ const Val = @import("value.zig");
 // The implementation should provide the following fields/functions:
 // - heap: *Heap
 // - init(heap: *Heap, ally: Ally) !Impl
-// - deduplicate(impl: *Impl, obj: Obj) Obj
+// - deduplicate(impl: *Impl, checkpoint: Checkpoint, obj: Obj) Obj
 // - garbage_collect(impl: *Impl, checkpoint: Checkpoint, keep: Obj) Obj
 const Impl = switch (builtin.cpu.arch) {
     // .x86_64 => @import("vm_x86_64.zig"), // a JIT compiler
@@ -45,7 +45,7 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
 pub fn eval(vm: *Vm, ally: Ally, common: compiler.CommonObjects, env: anytype, code: []const u8) !Val.Value {
     const check = vm.impl.heap.checkpoint();
     const fun = try compiler.code_to_lambda(ally, vm.impl.heap, common, env, code);
-    const fun_ = try vm.deduplicate(ally, check, fun);
+    const fun_ = try vm.deduplicate(check, fun);
     // {
     //     var buffer: [64]u8 = undefined;
     //     const bw = std.debug.lockStderrWriter(&buffer);
@@ -73,6 +73,6 @@ pub fn garbage_collect(vm: *Vm, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
     return try vm.impl.garbage_collect(checkpoint, keep);
 }
 
-pub fn deduplicate(vm: *Vm, ally: Ally, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
-  return vm.impl.deduplicate(ally, checkpoint, keep);
+pub fn deduplicate(vm: *Vm, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
+  return vm.impl.deduplicate(checkpoint, obj);
 }
