@@ -684,8 +684,8 @@ pub const Ir = struct {
                 break :bad bb.finish(result);
             });
         }
-        pub fn get_int_value(body: *BodyBuilder, int: Id) !Id {
-            return try body.load(try body.load(int, try body.word(1)), try body.word(0));
+        pub fn get_int_value(b: *BodyBuilder, int: Id) !Id {
+            return try b.load(try b.load(int, try b.word(1)), try b.word(0));
         }
 
         pub fn assert_is_string(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
@@ -729,15 +729,21 @@ pub const Ir = struct {
             });
         }
 
-        pub fn assert_is_array(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
-            const kind = try body.kind_of(try body.type_of(value));
-            return try body.if_eq_symbol(heap, kind, "array", good: {
-                var bb = body.child_body();
+        pub fn assert_is_array(b: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
+            const kind = try b.kind_of(try b.type_of(value));
+            return try b.if_eq_symbol(heap, kind, "array", good: {
+                var bb = b.child_body();
                 break :good try bb.finish_with_zero();
             }, bad: {
-                var bb = body.child_body();
+                var bb = b.child_body();
                 break :bad try bb.finish_with_symbol_crash(heap, message);
             });
+        }
+        pub fn array_len(b: *BodyBuilder, array: Id) !Id {
+            return try b.subtract(try b.num_words(array), try b.word(1));
+        }
+        pub fn get_array_item(b: *BodyBuilder, array: Id, index: Id) !Id {
+            return try b.load(array, try b.add(index, try b.word(1)));
         }
 
         pub fn new_closure(body: *BodyBuilder, captured: []Id) !Id {
@@ -2012,6 +2018,105 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         break :ir builder.finish(body);
     });
 
+    const make_struct_type_rec = try ir_to_instructions(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const rec = try builder.param();
+        const fields = try builder.param();
+        const index = try builder.param();
+        var b = builder.body();
+        const result = try b.if_eq(index, try b.array_len(fields), done: {
+            var bb = builder.body();
+            const result = try bb.object(common.empty_obj);
+            break :done bb.finish(result);
+        }, more: {
+            var bb = builder.body();
+            const field = try bb.get_array_item(fields, index);
+            _ = try bb.assert_is_struct(field, heap, "bad make_struct");
+            const zero = try bb.word(0);
+            const field_struct_type = try bb.load(field, zero);
+            const lookup_field = try bb.object(common.lookup_field_fun);
+            const name_symbol = try bb.object(try new_symbol(heap, "name"));
+            const field_index = try bb.call(lookup_field, try box(ally, .{ field_struct_type, name_symbol }));
+            const name_obj = try bb.load(field, field_index);
+            _ = try bb.assert_is_string(name_obj, heap, "bad make_struct");
+            const name = try bb.load(name_obj, try bb.word(1));
+            const next_index = try bb.add(index, try bb.word(1));
+            const tail = try bb.call(rec, try box(ally, .{ rec, fields, next_index }));
+            const result = try bb.new(true, try box(ally, .{ name, tail }));
+            break :more bb.finish(result);
+        });
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+    const make_struct_values_rec = try ir_to_instructions(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const rec = try builder.param();
+        const fields = try builder.param();
+        const index = try builder.param();
+        var b = builder.body();
+        const result = try b.if_eq(index, try b.array_len(fields), done: {
+            var bb = builder.body();
+            const result = try bb.object(common.empty_obj);
+            break :done bb.finish(result);
+        }, more: {
+            var bb = builder.body();
+            const field = try bb.get_array_item(fields, index);
+            _ = try bb.assert_is_struct(field, heap, "bad make_struct");
+            const zero = try bb.word(0);
+            const field_struct_type = try bb.load(field, zero);
+            const lookup_field = try bb.object(common.lookup_field_fun);
+            const value_symbol = try bb.object(try new_symbol(heap, "value"));
+            const field_index = try bb.call(lookup_field, try box(ally, .{ field_struct_type, value_symbol }));
+            const value = try bb.load(field, field_index);
+            const next_index = try bb.add(index, try bb.word(1));
+            const tail = try bb.call(rec, try box(ally, .{ rec, fields, next_index }));
+            const result = try bb.new(true, try box(ally, .{ value, tail }));
+            break :more bb.finish(result);
+        });
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+    const make_struct = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const fields = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        _ = try b.crash(fields);
+        _ = try b.assert_is_array(fields, heap, "bad make_struct");
+        const type_ = type_: {
+            const rec = try b.object(make_struct_type_rec);
+            var args = try ally.alloc(Ir.Id, 3);
+            args[0] = rec;
+            args[1] = fields;
+            args[2] = try b.word(0);
+            const field_names = try b.call(rec, args);
+            const result = obj: {
+                var words = try ally.alloc(Ir.Id, 2);
+                words[0] = try b.object(common.struct_symbol);
+                words[1] = field_names;
+                break :obj try b.new(true, words);
+            };
+            break :type_ try b.flatten_to_pointers_object(result);
+        };
+        const obj = obj: {
+            const rec = try b.object(make_struct_values_rec);
+            var args = try ally.alloc(Ir.Id, 3);
+            args[0] = rec;
+            args[1] = fields;
+            args[2] = try b.word(0);
+            const field_values = try b.call(rec, args);
+            const result = o: {
+                var words = try ally.alloc(Ir.Id, 2);
+                words[0] = type_;
+                words[1] = field_values;
+                break :o try b.new(true, words);
+            };
+            break :obj try b.flatten_to_pointers_object(result);
+        };
+        const body = b.finish(obj);
+        break :ir builder.finish(body);
+    });
+
     const array_from_list_rec = try ir_to_instructions(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const rec = try builder.param();
@@ -2165,7 +2270,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         .string_get = string_get,
         .string_from_chars = string_from_chars,
         .string_equals = string_equals,
-        // .num_words = get_num_words,
+        .make_struct = make_struct,
         .array_from_list = array_from_list,
         .array_len = array_len,
         .array_get = array_get,
