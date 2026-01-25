@@ -2105,32 +2105,17 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         _ = try b.assert_is_array(fields, heap, "bad make_struct");
         const type_ = type_: {
             const rec = try b.object(make_struct_type_rec);
-            var args = try ally.alloc(Ir.Id, 3);
-            args[0] = rec;
-            args[1] = fields;
-            args[2] = try b.word(0);
-            const field_names = try b.call(rec, args);
-            const result = obj: {
-                var words = try ally.alloc(Ir.Id, 2);
-                words[0] = try b.object(common.struct_symbol);
-                words[1] = field_names;
-                break :obj try b.new(true, words);
-            };
+            const zero = try b.word(0);
+            const field_names = try b.call(rec, try box(ally, .{ rec, fields, zero }));
+            const struct_symbol = try b.object(common.struct_symbol);
+            const result = try b.new(true, try box(ally, .{ struct_symbol, field_names }));
             break :type_ try b.flatten_to_pointers_object(result);
         };
         const obj = obj: {
             const rec = try b.object(make_struct_values_rec);
-            var args = try ally.alloc(Ir.Id, 3);
-            args[0] = rec;
-            args[1] = fields;
-            args[2] = try b.word(0);
-            const field_values = try b.call(rec, args);
-            const result = o: {
-                var words = try ally.alloc(Ir.Id, 2);
-                words[0] = type_;
-                words[1] = field_values;
-                break :o try b.new(true, words);
-            };
+            const zero = try b.word(0);
+            const field_values = try b.call(rec, try box(ally, .{ rec, fields, zero }));
+            const result = try b.new(true, try box(ally, .{ type_, field_values }));
             break :obj try b.flatten_to_pointers_object(result);
         };
         const body = b.finish(obj);
@@ -2153,6 +2138,21 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         const index = try b.call(lookup_field, args);
         const value = try b.load(struct_, index);
         const body = b.finish(value);
+        break :ir builder.finish(body);
+    });
+
+    const make_enum = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const variant = try builder.param();
+        const payload = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        _ = try b.assert_is_string(variant, heap, "bad enum");
+        const enum_symbol = try b.object(common.enum_symbol);
+        const variant_symbol = try b.get_string_value(variant);
+        const type_ = try b.new(true, try box(ally, .{ enum_symbol, variant_symbol }));
+        const result = try b.new(true, try box(ally, .{ type_, payload }));
+        const body = b.finish(result);
         break :ir builder.finish(body);
     });
 
@@ -2201,11 +2201,11 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
                 _ = try bbb.assert_is_struct(payload, heap, "bad array_from_list");
                 const payload_type = try bbb.type_of(payload);
                 const lookup_field = try bbb.object(common.lookup_field_fun);
+                // I don't get Zig. Calling the get_field function results in errors, although it literally does what we do here inline.
+                // const head = try bbb.get_field(ally, heap, common, payload, "head");
                 const head = head: {
-                    var args = try ally.alloc(Ir.Id, 2);
-                    args[0] = payload_type;
-                    args[1] = try bbb.object(try new_symbol(heap, "head"));
-                    const index = try bbb.call(lookup_field, args);
+                    const head_symbol = try bbb.object(try new_symbol(heap, "head"));
+                    const index = try bbb.call(lookup_field, try box(ally , .{ payload_type, head_symbol }));
                     break :head try bbb.load(payload, index);
                 };
                 const tail = tail: {
@@ -2335,6 +2335,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         .string_equals = string_equals,
         .make_struct = make_struct,
         .field = get_field,
+        .make_enum = make_enum,
         .variant = get_variant,
         .payload = get_payload,
         .array_from_list = array_from_list,
@@ -2380,13 +2381,13 @@ pub fn instructions_to_fun(
 }
 
 pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Obj {
-    std.debug.print("IR:\n", .{});
-    {
-       var buffer: [64]u8 = undefined;
-       const bw = std.debug.lockStderrWriter(&buffer);
-       defer std.debug.unlockStderrWriter();
-       ir.format(heap.*, bw) catch unreachable;
-    }
+    // std.debug.print("IR:\n", .{});
+    // {
+    //    var buffer: [64]u8 = undefined;
+    //    const bw = std.debug.lockStderrWriter(&buffer);
+    //    defer std.debug.unlockStderrWriter();
+    //    ir.format(heap.*, bw) catch unreachable;
+    // }
     const waffle = try ir_to_waffle(ally, ir);
     const optimized_waffle = try optimize_waffle(ally, waffle);
     const instructions = try waffle_to_instructions(ally, optimized_waffle);

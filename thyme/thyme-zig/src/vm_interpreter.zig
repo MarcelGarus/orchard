@@ -209,14 +209,7 @@ pub fn run(vm: *Vm, instructions: []const Instruction) !void {
             .eval => try vm.run(try vm.parse(Obj{ .address = vm.data_stack.pop() })),
             .crash => {
                 const message = vm.data_stack.pop();
-                std.debug.print("Crashed:\n", .{});
-                {
-                    var buffer: [64]u8 = undefined;
-                    const bw = std.debug.lockStderrWriter(&buffer);
-                    defer std.debug.unlockStderrWriter();
-                    vm.heap.format(Obj{ .address = message }, bw) catch unreachable;
-                    bw.print("\n", .{}) catch unreachable;
-                }
+                std.debug.print("Crashed:\n{f}\n", .{ Val.Value.from(Obj{ .address = message }) });
                 std.process.exit(1);
             },
         }

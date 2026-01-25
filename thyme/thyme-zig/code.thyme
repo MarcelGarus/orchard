@@ -1,10 +1,46 @@
 (:
   # (
-    Welcome to Thyme. This is a tiny programming language with Lisp-like syntax that is closely modeled
-    after the untyped lambda calculus. As values, only has ints, strings, structs, enums, and lambdas.
-    For ints and strings, operations are available via builtin functions (available in the @ struct that is
-    magically in scope). For structs, enums, and lambdas, there are language-level operations for accessing
-    struct members, switching on enums, and calling lambdas.
+    Time to Thyme! This is a tiny programming language with Lisp-like syntax that is closely modeled after
+    the untyped lambda calculus. It has the following types of values: ints, strings, structs, enums, arrays,
+    and functions. With each of these types, you can do different things:
+
+    Ints: You can create ints by writing a number in the code like this: 3. Ints are 64-bit signed integers.
+      You can do stuff with ints using these builtin functions:
+      - add
+      - subtract
+      - multiply
+      - divide
+      - modulo
+      - and
+      - or
+      - xor
+      - shift_left
+      - shift_right
+      - compare (returns an enum; either (| less), (| greater), or (| equal)).
+
+    Strings: You can create strings using double quotes in your code like this: "hello". Strings can go over
+      multiple lines. Inside strings, you can use a backslash \ followed by a backslash, quote, or "n" to mean
+      a backslash, quote, or newline. You can do stuff with strings using these builtin functions:
+      - string_len
+      - get_char
+      - string_from_chars
+
+    Structs: You can create structs by writing a parenthesized group where the first word is "&", like this:
+      (& x 1 y 4). You can access the fields of structs like this: (. some_struct x). You can also do stuff with
+      structs using these builtin functions:
+      - make_struct: Turns an array of (& name ... value ...) structs into an actual struct.
+      - field: Takes a struct and a string, returns the field.
+
+    Enums: You can create enums by writing a parenthesized group where the first word is "|", like this:
+      (| foo). You can switch on an enum like this: (% some_enum foo 2 bar 5 (baz binding) binding). You can
+      also do stuff with enums using these builtin functions:
+      - make_enum: Turns a string and a payload value into an enum: (make_enum "foo" 3) is (| foo 3).
+      - variant: Takes an enum, returns the variant as a string: (variant (| foo)) is "foo".
+      - payload: Takes an enum, returns the payload: (payload (| some 4)) is 4.
+
+    Arrays: They exist.
+
+    Functions: They exist.
   )
 
   # (Nil is used whenever we don't actually want to provide a useful value. Functions that only have
@@ -88,7 +124,7 @@
     (rec_2 list amount (\ (rec list amount)
       (% (== amount 0)
         true list
-        false (rec rec (% list empty (crash "bad skip") (more m) (. m tail)) (- amount 1))))))
+        false (rec (% list empty (crash "bad skip") (more m) (. m tail)) (- amount 1))))))
   list_find (\ (list check)
     (rec list (\ (rec list)
       (% list
@@ -216,9 +252,9 @@
                     false (% (str== w ".")
                       true (% (== (list_len tail) 2)
                         true (% (list_get tail 1)
-                          (word w) (| member (& of (add_semantics (list_get tail 0)) name w))
-                          _ (crash "members need to have the form (. of name)"))
-                        false (crash "members need to have the form (. of name)"))
+                          (word w) (| field (& of (add_semantics (list_get tail 0)) name w))
+                          _ (crash "field access needs to have the form (. of name)"))
+                        false (crash "field access needs to have the form (. of name)"))
                       false (% (str== w "|")
                         true (% tail
                           empty (crash "bad enum")
@@ -285,7 +321,8 @@
                                         def (add_semantics (list_get list 1))
                                         expr (extract_bindings (list_skip list 2))))))))
                               false
-                                (| call (& callee head args (array_from_list (list_map tail (\ (t) (add_semantics t))))))))))))
+                                (| call
+                                  (& callee (| name w) args (array_from_list (list_map tail (\ (t) (add_semantics t))))))))))))
                 group
                   (| call (&
                     callee (add_semantics head)
@@ -302,30 +339,36 @@
     (rec_2 code bindings (\ (eval code bindings)
       (% code
         (name name) (bindings_get bindings name)
-        (number n) (| number n)
+        (number n) n
         (let let) (eval (. let expr) (bindings_add bindings (. let name) (eval (. let def) bindings)))
         (struct fields)
-          (| struct (array_map fields (\ (field) (& name (. field name) value (eval (. field value) bindings)))))
-        (member member) (:
-          fields (% (eval (. member of) bindings) (struct s) s _ (crash "member of non-struct"))
-          name (. member name)
+          ((. @ make_struct)
+            (array_map fields (\ (field) (& name (. field name) value (eval (. field value) bindings)))))
+        (field field) (:
+          fields (% (eval (. field of) bindings) (struct s) s _ (crash "field access of non-struct"))
+          name (. field name)
           field (% (array_find fields (\ (field) (str== (. field name) name)))
-            none (crash "The member doesn't exist.")
+            none (crash "The field doesn't exist.")
             (some field) field)
           (. field value))
-        (enum enum) (| enum (& variant (. enum variant) payload (eval (. enum payload) bindings)))
+        (enum enum) ((. @ make_enum) (. enum variant) (eval (. enum payload) bindings))
         (switch switch) (:
-          enum (% (eval (. switch condition) bindings) (enum e) e _ (crash "switch on non-enum"))
-          variant (. enum variant)
+          enum (eval (. switch condition) bindings)
+          variant ((. @ variant) enum)
+          payload ((. @ payload) enum)
           case
             (% (array_find (. switch cases) (\ (case) (str== (. case variant) variant)))
               none (crash "Unhandled variant.")
               (some case) case)
           new_bindings
-            (% (. case binding) none bindings (some name) (bindings_add bindings name (. enum payload)))
+            (% (. case binding) none bindings (some name) (bindings_add bindings name payload))
           (eval (. case body) new_bindings))
-        (lambda lambda) (| lambda lambda)
-        (call call) (crash "todo call")
+        (lambda lambda) (& lambda lambda bindings bindings)
+        (call call) (:
+          callee (eval (. call callee) bindings)
+          args (array_map (. call args) (\ (arg) (eval arg bindings)))
+          (crash args)
+          )
         ))))
 
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
@@ -333,8 +376,7 @@
 
   # (eval (parse "(% (| bar 5) foo 1 (bar b) b baz 3)") no_bindings)
   # (eval (parse "(: a 5 (+ a 1))") no_bindings)
-  (% (| a) b 1 _ 4)
-
+  (eval (parse "(: b 3 (\\ (a) (& x a y b)))") (bindings_add no_bindings "a" true))
 )
 
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))
