@@ -462,7 +462,7 @@ pub const Ir = struct {
             .word => |word| try writer.print("word {}\n", .{word}),
             .object => |object| {
                 try writer.print("object ", .{});
-                try heap.format_indented(object, writer, indentation);
+                try heap.format(object, writer);
                 try writer.print("\n", .{});
             },
             .new => |new| {
@@ -478,9 +478,13 @@ pub const Ir = struct {
             .multiply => |args| try writer.print("multiply {f} {f}\n", .{ args.left, args.right }),
             .divide => |args| try writer.print("divide {f} {f}\n", .{ args.left, args.right }),
             .modulo => |args| try writer.print("modulo {f} {f}\n", .{ args.left, args.right }),
+            .shift_left => |args| try writer.print("shift_left {f} {f}\n", .{ args.left, args.right }),
+            .shift_right => |args| try writer.print("shift_right {f} {f}\n", .{ args.left, args.right }),
+            .flatten_to_literals_object => |obj| try writer.print("flatten_to_literals_object {f}\n", .{ obj }),
+            .flatten_to_pointers_object => |obj| try writer.print("flatten_to_pointers_object {f}\n", .{ obj }),
             .compare => |args| try writer.print("compare {f} {f}\n", .{ args.left, args.right }),
             .call => |call| {
-                try writer.print("call {f} with", .{call.fun});
+                try writer.print("call {f} with", .{call.instructions});
                 for (call.args) |arg| try writer.print(" {f}", .{arg});
                 try writer.print("\n", .{});
             },
@@ -717,6 +721,15 @@ pub const Ir = struct {
                 break :bad bb.finish(result);
             });
         }
+        pub fn get_field(
+            b: *BodyBuilder, ally: Ally, heap: *Heap, common: CommonObjects, struct_: Id, name: []const u8
+        ) !Id {
+            const type_ = try b.type_of(struct_);
+            const fun = try b.object(common.lookup_field_fun);
+            const symbol = try b.object(try new_symbol(heap, name));
+            const index = try b.call(fun, try box(ally, .{ type_, symbol }));
+            return try b.load(struct_, index);
+        }
 
         pub fn assert_is_enum(body: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
             const kind = try body.kind_of(try body.type_of(value));
@@ -728,9 +741,19 @@ pub const Ir = struct {
                 break :bad try bb.finish_with_string_crash(heap, message);
             });
         }
+        pub fn get_variant(b: *BodyBuilder, enum_: Id) !Id {
+            const type_ = try b.type_of(enum_);
+            const one = try b.word(1);
+            return b.load(type_, one);
+        }
+        pub fn get_payload(b: *BodyBuilder, enum_: Id) !Id {
+            const one = try b.word(1);
+            return b.load(enum_, one);
+        }
 
         pub fn assert_is_array(b: *BodyBuilder, value: Id, heap: *Heap, message: []const u8) !Id {
-            const kind = try b.kind_of(try b.type_of(value));
+            const type_ = try b.type_of(value);
+            const kind = try b.kind_of(type_);
             return try b.if_eq_symbol(heap, kind, "array", good: {
                 var bb = b.child_body();
                 break :good try bb.finish_with_zero();
@@ -742,8 +765,10 @@ pub const Ir = struct {
         pub fn array_len(b: *BodyBuilder, array: Id) !Id {
             return try b.subtract(try b.num_words(array), try b.word(1));
         }
-        pub fn get_array_item(b: *BodyBuilder, array: Id, index: Id) !Id {
-            return try b.load(array, try b.add(index, try b.word(1)));
+        pub fn get_item(b: *BodyBuilder, array: Id, index: Id) !Id {
+            const one = try b.word(1);
+            const real_index = try b.add(index, one);
+            return try b.load(array, real_index);
         }
 
         pub fn new_closure(body: *BodyBuilder, captured: []Id) !Id {
@@ -1057,8 +1082,7 @@ const AstToIr = struct {
             .switch_ => |switch_| {
                 const condition = try self.compile_expr(switch_.condition.*, b, bindings);
                 _ = try b.assert_is_enum(condition, self.heap, "you can only switch on enums");
-                const type_ = try b.type_of(condition);
-                const variant = try b.loadi(type_, 1);
+                const variant = try b.get_variant(condition);
                 const result = try self.handle_switch_cases(b, condition, variant, switch_.cases, switch_.default, bindings);
                 return result;
             },
@@ -1325,10 +1349,7 @@ const IrToWaffle = struct {
             .new => |new| {
                 const children = try self.ally.alloc(Waffle, new.words.len);
                 for (0.., new.words) |i, word| children[i] = self.ref(word);
-                return .{
-                    .op = .{ .new = .{ .has_pointers = new.has_pointers } },
-                    .children = children,
-                };
+                return .{ .op = .{ .new = .{ .has_pointers = new.has_pointers } }, .children = children };
             },
             .flatten_to_pointers_object => |id| {
                 const children = try self.ally.alloc(Waffle, 1);
@@ -2029,7 +2050,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
             break :done bb.finish(result);
         }, more: {
             var bb = builder.body();
-            const field = try bb.get_array_item(fields, index);
+            const field = try bb.get_item(fields, index);
             _ = try bb.assert_is_struct(field, heap, "bad make_struct");
             const zero = try bb.word(0);
             const field_struct_type = try bb.load(field, zero);
@@ -2059,7 +2080,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
             break :done bb.finish(result);
         }, more: {
             var bb = builder.body();
-            const field = try bb.get_array_item(fields, index);
+            const field = try bb.get_item(fields, index);
             _ = try bb.assert_is_struct(field, heap, "bad make_struct");
             const zero = try bb.word(0);
             const field_struct_type = try bb.load(field, zero);
@@ -2132,6 +2153,19 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         const index = try b.call(lookup_field, args);
         const value = try b.load(struct_, index);
         const body = b.finish(value);
+        break :ir builder.finish(body);
+    });
+
+    const get_variant = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const enum_ = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        _ = try b.assert_is_enum(enum_, heap, "bad variant");
+        const variant = try b.get_variant(enum_);
+        const string_type = try b.object(common.string_type);
+        const result = try b.new(true, try box(ally, .{ string_type, variant }));
+        const body = b.finish(result);
         break :ir builder.finish(body);
     });
 
@@ -2290,6 +2324,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         .string_equals = string_equals,
         .make_struct = make_struct,
         .field = get_field,
+        .variant = get_variant,
         .array_from_list = array_from_list,
         .array_len = array_len,
         .array_get = array_get,
@@ -2333,13 +2368,13 @@ pub fn instructions_to_fun(
 }
 
 pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Obj {
-    //std.debug.print("IR:\n", .{});
-    //{
-    //    var buffer: [64]u8 = undefined;
-    //    const bw = std.debug.lockStderrWriter(&buffer);
-    //    defer std.debug.unlockStderrWriter();
-    //    ir.format(heap.*, bw) catch unreachable;
-    //}
+    std.debug.print("IR:\n", .{});
+    {
+       var buffer: [64]u8 = undefined;
+       const bw = std.debug.lockStderrWriter(&buffer);
+       defer std.debug.unlockStderrWriter();
+       ir.format(heap.*, bw) catch unreachable;
+    }
     const waffle = try ir_to_waffle(ally, ir);
     const optimized_waffle = try optimize_waffle(ally, waffle);
     const instructions = try waffle_to_instructions(ally, optimized_waffle);
