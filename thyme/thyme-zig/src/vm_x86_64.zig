@@ -26,13 +26,23 @@ const Val = @import("value.zig");
 const Vm = @This();
 
 ally: Ally,
+// TODO: add guard pages next to the heap and stacks
 heap: *Heap,
 data_stack: Stack,
 call_stack: Stack,
 jit_cache: ObjMap([]const u8), // maps (pointer to instructions obj) to (x86_64 machine code)
+run_jitted: *const RunFun,
 // TODO: std.linux.munmap() the cache
 
-// TODO: add guard pages next to the stack
+// The jitted machine code doesn't follow the Sys-V calling convention.
+
+const RunFun = fn(*RunState) callconv(.c) void;
+const RunState = packed struct {
+  machine_code: *const anyopaque,
+  heap_cursor: *anyopaque,
+  call_stack_cursor: *anyopaque,
+  data_stack_cursor: *anyopaque,
+};
 
 // The stack grows downward, just like the native x86 stack. This allows us to use push and pop
 // instructions directly to modify the (data) stack.
@@ -62,7 +72,54 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
         .data_stack = try Stack.init(ally, 100),
         .call_stack = try Stack.init(ally, 100),
         .jit_cache = ObjMap([]const u8).empty,
+        .run_jitted = @ptrCast(try make_run_fun(ally)),
     };
+}
+
+pub fn make_run_fun(ally: Ally) ![]const u8 {
+  var code = MachineCode.init(ally);
+
+  // Find out the instruction pointer. You'd normally do this by just hardcoding it into the machine code, but
+  // the MachineCode builder only supports creating relocatable code. Thus, we generate and call a tiny
+  // function inline that just copies the address from the x86 call stack and then returns.
+  const a = try code.emit_placeholder("call {:32}", .{@as(i32, 0)});
+  const b = try code.emit_placeholder("jmp {:32}", .{@as(i32, 0)});
+  const c = code.len();
+  try code.emit("mov rax, [rsp]", .{});
+  try code.emit("ret", .{});
+  const d = code.len();
+  code.patch(a, "call {:32}", .{ @as(i32, @intCast(c - b)) });
+  code.patch(b, "jmp {:32}", .{ @as(i32, @intCast(d - c)) });
+
+  // Save relevant registers.
+  try code.emit("mov r15, rsp", .{});
+
+  // Move the state (rdi) from the struct into the correct registers.
+  try code.emit("mov rbx, [rdi]", .{}); // machine code
+  try code.emit("mov r8, [rdi + 8]", .{}); // heap
+  try code.emit("mov rsp, [rdi + 16]", .{}); // data stack
+  try code.emit("mov r9, [rdi + 24]", .{}); // call stack
+
+  // "call" the jitted code (putting our next instruction on the VM's call stack)
+  try code.emit("sub r9, 8", .{});
+  const e = try code.emit_placeholder("add rax, {:8}", .{ @as(i8, 0) });
+  try code.emit("mov [r9], rax", .{});
+  try code.emit("jmp rbx", .{});
+  const f = code.len();
+  code.patch(e, "add rax, {:8}", .{ @as(i8, @intCast(f - b)) });
+
+  try code.emit("hlt", .{});
+
+  // Move the state from the registers into the struct.
+  try code.emit("mov [rdi + 8], r8", .{}); // heap
+  try code.emit("mov [rdi + 16], rsp", .{}); // data stack
+
+  // Restore relevant registers.
+  try code.emit("mov rsp, r15", .{});
+
+  try code.emit("ret", .{});
+
+  return try code.finish();
 }
 
 pub fn call(vm: *Vm, lambda: Val.Lambda, args: []const Val.Value) !Val.Value {
@@ -83,46 +140,10 @@ pub fn compile(vm: *Vm, instructions: Obj) ![]const u8 {
 pub fn compile_instructions(ally: Ally, instructions: []const Instruction) ![]const u8 {
     var code = MachineCode.init(ally);
     _ = try compile_all(&code, instructions);
-    try code.emit("ret", .{});
-    const bytes = code.bytes.items;
-
-    std.debug.print("bytes:", .{});
-    for (bytes) |byte| std.debug.print(" {x:02}", .{byte});
-    std.debug.print("\n", .{});
-
-    // We want to create an executable memory region that contains the machine
-    // code. To do that, we need to talk to the operating system in a low level
-    // way, so we don't go through Zig allocators.
-
-    // Step 1: Allocate a page-aligned memory region that is big enough for our
-    //         generated machine code. Some operating systems don't like memory
-    //         that is marked as executable and writable, so we only make it
-    //         readable and writable for now.
-    const address: [*]u8 = address: {
-        const address = std.os.linux.mmap(
-            null,
-            bytes.len,
-            std.os.linux.PROT.READ | std.os.linux.PROT.WRITE,
-            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
-            -1,
-            0,
-        );
-        if (address == 0) return error.OutOfMemory;
-        break :address @ptrFromInt(address);
-    };
-    std.debug.print("machine code lives at {*}\n", .{address});
-
-    // Step 2: Copy the machine code to that memory region.
-    @memcpy(address, bytes);
-
-    // Step 3: Make the memory executable. After this, writing to the memory will cause a fault.
-    std.debug.assert(std.os.linux.mprotect(
-        address,
-        bytes.len,
-        std.os.linux.PROT.READ | std.os.linux.PROT.EXEC,
-    ) == 0);
-
-    return address[0..bytes.len];
+    try code.emit("mov rax, [r9]", .{});
+    try code.emit("add r9, 8", .{});
+    try code.emit("jmp rax", .{});
+    return code.finish();
 }
 const MachineCode = struct {
     ally: std.mem.Allocator,
@@ -150,8 +171,15 @@ const MachineCode = struct {
             .@"pop rax" = "58",
             .@"pop rbx" = "5b",
             .@"pop rcx" = "59",
+            .@"mov rsp, [rdi + 16]" = "48 8b 67 10",
+            .@"mov rsp, r15" = "4c 89 fc",
+            .@"mov [rdi + 8], r8" = "4c 89 47 08",
+            .@"mov [rdi + 16], rsp" = "48 89 67 10",
             .@"mov rax, {:64}" = "48 b8 {0:u64le}",
             .@"mov rax, rsp" = "48 89 e0",
+            .@"mov rax, [rsp]" = "48 8b 04 24",
+            .@"mov rax, r8" = "4c 89 c0",
+            .@"mov rax, [r9]" = "49 8b 01",
             .@"mov rax, r10" = "4c 89 d0",
             .@"mov rax, r12" = "4c 89 e0",
             .@"mov rax, [rax]" = "48 8b 00",
@@ -160,11 +188,18 @@ const MachineCode = struct {
             .@"mov rax, [r12]" = "49 8b 04 24",
             .@"mov rbx, 0xffffffffffff" = "48 bb ff ff ff ff ff ff 00 00",
             .@"mov rbx, {:64}" = "48 bb {0:u64le}",
+            .@"mov rbx, rsp" = "48 89 e3",
+            .@"mov rbx, [rdi]" = "48 8b 1f",
             .@"mov rbx, [rax]" = "48 8b 18",
             .@"mov rcx, r8" = "4c 89 c1",
+            .@"mov rcx, [rbx]" = "48 8b 0b",
             .@"mov rcx, [r10]" = "49 8b 0a",
+            .@"mov r8, [rdi + 8]" = "4c 8b 47 08",
             .@"mov [r8], rax" = "49 89 00",
             .@"mov [r8], rbx" = "49 89 18",
+            .@"mov [r8], rcx" = "49 89 08",
+            .@"mov r9, [rdi + 24]" = "4c 8b 4f 18",
+            .@"mov [r9], rax" = "49 89 01",
             .@"mov [r10], rax" = "49 89 02",
             .@"mov [r10], rcx" = "49 89 0a",
             .@"mov [r10], {:32}" = "49 c7 02 {0:u32le}",
@@ -173,6 +208,7 @@ const MachineCode = struct {
             .@"mov [r12], rax" = "49 89 04 24",
             .@"mov [r12], {:32}" = "49 c7 04 24 {0:u32le}",
             .@"mov [r12 - 16], rax" = "49 89 44 24 f0",
+            .@"mov r15, rsp" = "49 89 e7",
             .@"add rax, 8" = "48 83 c0 08",
             .@"add rax, {:8}" = "48 83 c0 {0:i8}",
             .@"add rax, rbx" = "48 01 d8",
@@ -180,12 +216,15 @@ const MachineCode = struct {
             .@"add rsp, rax" = "48 01 c4",
             .@"add rsp, rbx" = "48 01 dc",
             .@"add r8, 8" = "49 83 c0 08",
+            .@"add r9, 8" = "49 83 c1 08",
             .@"add r10, 8" = "49 83 c2 08",
             .@"add r12, 8" = "49 83 c4 08",
             .@"sub rax, 8" = "49 83 e8 08",
             .@"sub rax, {:32}" = "48 2d {0:u32le}", // TODO: remove?
             .@"sub rax, rbx" = "48 29 d8",
             .@"sub rax, [r10 - 16]" = "49 2b 42 f0",
+            .@"sub rbx, 8" = "48 83 eb 08",
+            .@"sub r9, 8" = "49 83 e9 08",
             .@"sub r10, rax" = "49 29 c2",
             .@"sub r10, rbx" = "49 29 da",
             .@"sub r10, 8" = "49 83 ea 08",
@@ -198,6 +237,9 @@ const MachineCode = struct {
             .@"cmovnz rax, rbx" = "48 0f 45 c3",
             .@"jz {:32}" = "0f 84 {0:i32le}",
             .@"jmp {:32}" = "e9 {0:i32le}",
+            .@"jmp rax" = "ff e0",
+            .@"jmp rbx" = "ff e3",
+            .@"call {:32}" = "e8 {0:i32le}",
             .@"call rax" = "ff d0",
             .ret = "c3",
         };
@@ -252,6 +294,27 @@ const MachineCode = struct {
         self.bytes.items.len = at;
         self.emit(x86_instr, args) catch unreachable;
         self.bytes.items.len = cursor;
+    }
+    pub fn finish(self: *MachineCode) ![]const u8 {
+      const bytes = self.bytes.items;
+
+      std.debug.print("bytes:", .{});
+      for (bytes) |byte| std.debug.print(" {x:02}", .{byte});
+      std.debug.print("\n", .{});
+
+      // We want to create an executable memory region that contains the machine code. To do that, we
+      // need to talk to the operating system in a low level way, so we don't go through Zig allocators.
+      const permission_read_write = std.os.linux.PROT.READ | std.os.linux.PROT.WRITE;
+      const permission_read_exec = std.os.linux.PROT.READ | std.os.linux.PROT.EXEC;
+      const address = std.os.linux.mmap(
+          null, bytes.len, permission_read_write, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0,
+      );
+      if (address == 0) return error.OutOfMemory;
+      const ptr: [*]u8 =@ptrFromInt(address);
+      std.debug.print("machine code lives at {*}\n", .{ptr});
+      @memcpy(ptr, bytes);
+      std.debug.assert(std.os.linux.mprotect(ptr, bytes.len, permission_read_exec) == 0);
+      return ptr[0..bytes.len];
     }
 };
 fn compile_all(code: *MachineCode, instructions: []const Instruction) !void {
@@ -358,14 +421,16 @@ fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemor
             try code.emit("pop rax", .{});
             try code.emit("cmp rax, 0", .{});
             const jump_to_else_placeholder = try code.emit_placeholder("jz {:32}", .{ @as(i32, 0) });
+            const after_jump_to_else = code.len();
             try compile_all(code, if_.then);
             const jump_to_after_if_placeholder = try code.emit_placeholder("jmp {:32}", .{ @as(i32, 0) });
+            const after_jump_to_after_if = code.len();
             const else_ = code.len();
             try compile_all(code, if_.else_);
             const after_if = code.len();
             // Patch the placeholders (these are relative jumps).
-            code.patch(jump_to_else_placeholder, "jz {:32}", .{ @as(i32, @intCast(else_ - jump_to_else_placeholder)) });
-            code.patch(jump_to_after_if_placeholder, "jmp {:32}", .{ @as(i32, @intCast(after_if - jump_to_after_if_placeholder)) });
+            code.patch(jump_to_else_placeholder, "jz {:32}", .{ @as(i32, @intCast(else_ - after_jump_to_else)) });
+            code.patch(jump_to_after_if_placeholder, "jmp {:32}", .{ @as(i32, @intCast(after_if - after_jump_to_after_if)) });
         },
         .new => |new| {
             try code.emit("mov rax, r8", .{});
@@ -429,47 +494,15 @@ pub fn run(vm: *Vm, jitted: []const u8) !void {
     std.debug.print("\n", .{});
     std.debug.print("running jitted instructions\n", .{});
 
-    const State = packed struct {
-        heap_cursor: [*]Word,
-        data_stack_cursor: [*]Word,
-        call_stack_cursor: [*]Word,
-        original_rsp: usize,
-    };
-    var state = State{
+    var state = RunState{
+        .machine_code = @ptrCast(jitted.ptr),
         .heap_cursor = @ptrFromInt(@intFromPtr(vm.heap.memory.ptr) + (8 * vm.heap.used)),
         .data_stack_cursor = @ptrFromInt(@intFromPtr(vm.data_stack.memory.ptr) + (8 * vm.data_stack.cursor)),
         .call_stack_cursor = @ptrFromInt(@intFromPtr(vm.call_stack.memory.ptr) + (8 * vm.call_stack.cursor)),
-        .original_rsp = 0,
     };
     std.debug.print("state = {any}\n", .{state});
     @breakpoint();
-    asm volatile (
-        \\ movq %%rsp, +24(%%r15)  # original rsp
-        \\ movq (%%r15), %%r8  # heap cursor
-        \\ movq +8(%%r15), %%rsp  # data stack cursor
-        \\ movq +16(%%r15), %%r9  # call stack cursor
-        \\ call *%%rax
-        \\ movq %%r8, (%%r15)  # heap cursor
-        \\ movq %%rsp, +8(%%r15)  # data stack cursor
-        \\ movq %%r9, +16(%%r15)  # call stack cursor
-        \\ movq +24(%%r15), %%rsp  # original rsp
-        :
-        : [machine_code] "{rax}" (jitted.ptr),
-          [vm_state] "{r15}" (&state),
-        : .{
-          .memory = true,
-          .rax = true,
-          .rbx = true,
-          .rcx = true,
-          .r8 = true,
-          .r9 = true,
-          .r10 = true,
-          .r11 = true,
-          .r12 = true,
-          .r13 = true,
-          .r14 = true,
-          .r15 = true,
-        });
+    vm.run_jitted(&state);
     std.debug.print("state = {any}\n", .{state});
     vm.heap.used = (@intFromPtr(state.heap_cursor) - @intFromPtr(vm.heap.memory.ptr)) / 8;
     vm.data_stack.cursor = (@intFromPtr(state.data_stack_cursor) - @intFromPtr(vm.data_stack.memory.ptr)) / 8;
@@ -481,7 +514,7 @@ pub fn run(vm: *Vm, jitted: []const u8) !void {
     std.debug.print("\n", .{});
 }
 
-fn hook_crash() callconv(.c) void {
+pub export fn hook_crash() callconv(.c) void {
   std.debug.print("oh no! crashing\n", .{});
   std.process.exit(1);
 }

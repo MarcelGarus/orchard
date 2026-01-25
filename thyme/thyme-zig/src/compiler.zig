@@ -653,8 +653,8 @@ pub const Ir = struct {
             }
         }
 
-        pub fn crash_with_symbol(b: *BodyBuilder, heap: *Heap, message: []const u8) !Id {
-            const message_obj = try new_symbol(heap, message);
+        pub fn crash_with_string(b: *BodyBuilder, heap: *Heap, message: []const u8) !Id {
+            const message_obj = (try Val.String.new(heap, message)).obj;
             return b.crash(try b.object(message_obj));
         }
 
@@ -680,7 +680,7 @@ pub const Ir = struct {
                 break :good bb.finish(result);
             }, bad: {
                 var bb = body.child_body();
-                const result = try bb.crash_with_symbol(heap, message);
+                const result = try bb.crash_with_string(heap, message);
                 break :bad bb.finish(result);
             });
         }
@@ -696,7 +696,7 @@ pub const Ir = struct {
                 break :good bb.finish(result);
             }, bad: {
                 var bb = body.child_body();
-                const result = try bb.crash_with_symbol(heap, message);
+                const result = try bb.crash_with_string(heap, message);
                 break :bad bb.finish(result);
             });
         }
@@ -713,7 +713,7 @@ pub const Ir = struct {
                 break :good bb.finish(result);
             }, bad: {
                 var bb = body.child_body();
-                const result = try bb.crash_with_symbol(heap, message);
+                const result = try bb.crash_with_string(heap, message);
                 break :bad bb.finish(result);
             });
         }
@@ -725,7 +725,7 @@ pub const Ir = struct {
                 break :good try bb.finish_with_zero();
             }, bad: {
                 var bb = body.child_body();
-                break :bad try bb.finish_with_symbol_crash(heap, message);
+                break :bad try bb.finish_with_string_crash(heap, message);
             });
         }
 
@@ -736,7 +736,7 @@ pub const Ir = struct {
                 break :good try bb.finish_with_zero();
             }, bad: {
                 var bb = b.child_body();
-                break :bad try bb.finish_with_symbol_crash(heap, message);
+                break :bad try bb.finish_with_string_crash(heap, message);
             });
         }
         pub fn array_len(b: *BodyBuilder, array: Id) !Id {
@@ -765,8 +765,8 @@ pub const Ir = struct {
             const never = try b.crash(message);
             return b.finish(never);
         }
-        pub fn finish_with_symbol_crash(b: *BodyBuilder, heap: *Heap, message: []const u8) !Body {
-            const never = try b.crash_with_symbol(heap, message);
+        pub fn finish_with_string_crash(b: *BodyBuilder, heap: *Heap, message: []const u8) !Body {
+            const never = try b.crash_with_string(heap, message);
             return b.finish(never);
         }
     };
@@ -889,8 +889,7 @@ pub const CommonObjects = struct {
             var b = builder.body();
             const result = try b.if_eq(index, try b.num_words(type_obj), no_match: {
                 var bb = builder.body();
-                const result = try bb.crash(try bb.object(try new_symbol(heap, "no such field")));
-                break :no_match bb.finish(result);
+                break :no_match try bb.finish_with_string_crash(heap, "no such field");
             }, check: {
                 var bb = builder.body();
                 const field_name = try bb.load(type_obj, index);
@@ -1116,12 +1115,12 @@ const AstToIr = struct {
                         break :args_fit bbb.finish(result);
                     }, args_dont_fit: {
                         var bbb = bb.child_body();
-                        break :args_dont_fit try bbb.finish_with_symbol_crash(self.heap, "wrong number of arguments");
+                        break :args_dont_fit try bbb.finish_with_string_crash(self.heap, "wrong number of arguments");
                     });
                     break :is_lambda bb.finish(result);
                 }, not_lambda: {
                     var bb = b.child_body();
-                    break :not_lambda try bb.finish_with_symbol_crash(self.heap, "you can only call lambdas");
+                    break :not_lambda try bb.finish_with_string_crash(self.heap, "you can only call lambdas");
                 });
             },
         }
@@ -1141,7 +1140,7 @@ const AstToIr = struct {
               try self.compile_expr(d.*, b, bindings)
             else
               // TODO: name the variant in the error message
-              try b.crash_with_symbol(self.heap, "unknown variant");
+              try b.crash_with_string(self.heap, "unknown variant");
         } else {
             const case = cases[0];
             return try b.if_eq_symbol(self.heap, variant, case.variant, found_it: {
@@ -1728,12 +1727,12 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
                 break :has_no_args bbb.finish(result);
             }, has_args: {
                 var bbb = bb.child_body();
-                break :has_args try bbb.finish_with_symbol_crash(heap, "expected lambda with zero arguments");
+                break :has_args try bbb.finish_with_string_crash(heap, "expected lambda with zero arguments");
             });
             break :is_lambda bb.finish(result);
         }, not_lambda: {
             var bb = b.child_body();
-            break :not_lambda try bb.finish_with_symbol_crash(heap, "expected lambda");
+            break :not_lambda try bb.finish_with_string_crash(heap, "expected lambda");
         });
         const body = b.finish(result);
         break :ir builder.finish(body);
@@ -2067,8 +2066,9 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
             const lookup_field = try bb.object(common.lookup_field_fun);
             const value_symbol = try bb.object(try new_symbol(heap, "value"));
             const field_index = try bb.call(lookup_field, try box(ally, .{ field_struct_type, value_symbol }));
+            const one = try bb.word(1);
+            const next_index = try bb.add(index, one);
             const value = try bb.load(field, field_index);
-            const next_index = try bb.add(index, try bb.word(1));
             const tail = try bb.call(rec, try box(ally, .{ rec, fields, next_index }));
             const result = try bb.new(true, try box(ally, .{ value, tail }));
             break :more bb.finish(result);
@@ -2081,7 +2081,6 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         const fields = try builder.param();
         _ = try builder.param(); // closure
         var b = builder.body();
-        _ = try b.crash(fields);
         _ = try b.assert_is_array(fields, heap, "bad make_struct");
         const type_ = type_: {
             const rec = try b.object(make_struct_type_rec);
@@ -2114,6 +2113,25 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
             break :obj try b.flatten_to_pointers_object(result);
         };
         const body = b.finish(obj);
+        break :ir builder.finish(body);
+    });
+
+    const get_field = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const struct_ = try builder.param();
+        const name = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        _ = try b.assert_is_struct(struct_, heap, "bad field");
+        _ = try b.assert_is_string(name, heap, "bad field");
+        const type_ = try b.type_of(struct_);
+        const lookup_field = try b.object(common.lookup_field_fun);
+        var args = try ally.alloc(Ir.Id, 2);
+        args[0] = type_;
+        args[1] = try b.load(name, try b.word(1));
+        const index = try b.call(lookup_field, args);
+        const value = try b.load(struct_, index);
+        const body = b.finish(value);
         break :ir builder.finish(body);
     });
 
@@ -2167,7 +2185,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
                 break :more bbb.finish(result);
             }, bad: {
                 var bbb = bb.child_body();
-                const result = try bbb.crash_with_symbol(heap, "bad array_from_list");
+                const result = try bbb.crash_with_string(heap, "bad array_from_list");
                 break :bad bbb.finish(result);
             });
             break :not_empty bb.finish(result);
@@ -2225,7 +2243,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         const len = try b.subtract(num_words, one);
         _ = try b.if_eq(try b.compare(index, zero), two, bad: {
           var inner = b.child_body();
-          const result = try inner.crash_with_symbol(heap, "out of bounds");
+          const result = try inner.crash_with_string(heap, "out of bounds");
           break :bad inner.finish(result);
         }, good: {
           var inner = b.child_body();
@@ -2236,7 +2254,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
           break :good try inner.finish_with_zero();
         }, bad: {
           var inner = b.child_body();
-          const result = try inner.crash_with_symbol(heap, "out of bounds");
+          const result = try inner.crash_with_string(heap, "out of bounds");
           break :bad inner.finish(result);
         });
         const actual_index = try b.add(index, one);
@@ -2271,6 +2289,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         .string_from_chars = string_from_chars,
         .string_equals = string_equals,
         .make_struct = make_struct,
+        .field = get_field,
         .array_from_list = array_from_list,
         .array_len = array_len,
         .array_get = array_get,

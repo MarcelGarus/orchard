@@ -46,6 +46,8 @@ pub fn eval(vm: *Vm, ally: Ally, common: compiler.CommonObjects, env: anytype, c
     const check = vm.impl.heap.checkpoint();
     const fun = try compiler.code_to_lambda(ally, vm.impl.heap, common, env, code);
     const fun_ = try vm.deduplicate(check, fun);
+    // const fun_ = fun;
+    // _ = check;
     // {
     //     var buffer: [64]u8 = undefined;
     //     const bw = std.debug.lockStderrWriter(&buffer);

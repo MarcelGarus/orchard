@@ -54,11 +54,11 @@ pub const String = struct {
   pub fn from(obj: Obj) String {
     return Value.from(obj).kind().string;
   }
-  pub fn new(heap: *Heap, string: []const u8) String {
+  pub fn new(heap: *Heap, string: []const u8) !String {
     const string_symbol = try new_symbol(heap, "string");
     const ty = try heap.new_inner(&.{ string_symbol });
     const symbol = try new_symbol(heap, string);
-    return try heap.new_inner(&.{ ty, symbol });
+    return .{ .obj = try heap.new_inner(&.{ ty, symbol }) };
   }
   pub fn get(self: String) []const u8 {
     return get_symbol(self.obj.child(1));

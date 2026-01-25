@@ -164,7 +164,8 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Obj, Obj) {
     var read = from.address;
     var write = from.address;
     var map = Map(Obj, Obj).init(ally);
-    while (read < @intFromPtr(heap.memory.ptr) + heap.used) {
+    const heap_end = heap.checkpoint().address;
+    while (read < heap_end) {
         // Adjust the pointers using the mapping so far.
         const header: Header = @as(*Header, @ptrFromInt(read)).*;
         if (header.is_inner == 1) {
@@ -173,7 +174,7 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Obj, Obj) {
                 if (map.get(ptr.*)) |to| ptr.* = to;
             }
         }
-        const total_words = 1 + header.num_words;
+        const size = 1 + header.num_words;
         // Compare to existing objects.
         var it = map.iterator();
         while (it.next()) |mapping| {
@@ -182,54 +183,55 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Obj, Obj) {
             if (header.num_words != candidate_header.num_words) continue;
             if (std.mem.eql(
                 Word,
-                @as([*]Word, @ptrFromInt(read))[0..total_words],
-                @as([*]Word, @ptrFromInt(candidate.address))[0..total_words],
+                @as([*]Word, @ptrFromInt(read))[0..size],
+                @as([*]Word, @ptrFromInt(candidate.address))[0..size],
             )) {
                 try map.put(@bitCast(read), candidate);
                 break;
             }
         } else {
             // Not equal to an existing one. Copy it to the beginning of the compressed heap.
-            if (read > write) {
-                for (0..total_words) |i|
+            if (read != write) {
+                for (0..size) |i|
                     @as(*Word, @ptrFromInt(write + 8 * i)).* = @as(*Word, @ptrFromInt(read + 8 * i)).*;
             }
             try map.put(@bitCast(read), @bitCast(write));
-            write += 8 * (1 + header.num_words);
+            write += 8 * size;
         }
-        read += 8 * total_words;
+        read += 8 * size;
     }
-    heap.used = write - @intFromPtr(heap.memory.ptr);
+    heap.used = (write - @intFromPtr(heap.memory.ptr)) / 8;
     return map;
 }
 
-pub fn garbage_collect(
-    heap: *Heap,
-    ally: Ally,
-    from: Checkpoint,
-    keep: Obj,
-) !Obj {
-    mark(from.address, keep.address);
-    return try heap.sweep(ally, from.address, keep.address);
+pub fn garbage_collect(heap: *Heap, ally: Ally, boundary: Checkpoint, keep: Obj) !Obj {
+    mark(keep, boundary);
+    return try heap.sweep(ally, keep, boundary);
 }
-fn mark(boundary: Word, address: Word) void {
-    if (address < boundary) return;
-    const header: *Header = @ptrFromInt(address);
+fn mark(obj: Obj, boundary: Checkpoint) void {
+    if (obj.address < boundary.address) return;
+    const header: *Header = @ptrFromInt(obj.address);
     if (header.marked == 1) return;
     header.marked = 1;
-    if (header.is_inner == 1)
-        for (0..header.num_words) |i|
-            mark(boundary, address + 8 * (1 + i));
+    if (header.is_inner == 1) for (obj.children()) |child| mark(child, boundary);
 }
-fn sweep(heap: *Heap, ally: Ally, boundary: Word, keep: Word) !Obj {
-    var read = boundary;
-    var write = boundary;
+fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !Obj {
+    var read = boundary.address;
+    var write = boundary.address;
     var mapping = Map(Word, Word).init(ally);
     defer mapping.deinit();
-    while (read < heap.used) {
+    const heap_end = heap.checkpoint().address;
+    while (read < heap_end) {
+      // std.debug.print("read: {x} of {x}\n", .{read, heap_end});
         const header: *Header = @ptrFromInt(read);
         const size = 1 + header.num_words;
-        if (header.marked == 1) {
+        if (size > 1000) {
+            std.debug.print("sus\n", .{});
+            std.debug.print("size: {}\n", .{size});
+        }
+        if (header.marked == 0) {
+            read += 8 * size; // We don't need this object. Just overwrite it.
+        } else {
             header.marked = 0;
             if (read != write) {
                 if (header.is_inner == 1) {
@@ -243,12 +245,10 @@ fn sweep(heap: *Heap, ally: Ally, boundary: Word, keep: Word) !Obj {
             }
             read += 8 * size;
             write += 8 * size;
-        } else {
-            read += 8 * size;
         }
     }
-    heap.used = write;
-    return .{ .address = mapping.get(keep) orelse keep };
+    heap.used = (write - @intFromPtr(heap.memory.ptr)) / 8;
+    return if (mapping.get(keep.address)) |mapped| .{ .address = mapped } else keep;
 }
 
 // pub fn copy_to_other(heap: *Heap, ally: Ally, other: *Heap, address: Ptr) Ptr {
