@@ -2169,6 +2169,17 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         break :ir builder.finish(body);
     });
 
+    const get_payload = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const enum_ = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        _ = try b.assert_is_enum(enum_, heap, "bad payload");
+        const result = try b.get_payload(enum_);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+
     const array_from_list_rec = try ir_to_instructions(ally, heap, ir: {
         var builder = Ir.Builder.init(ally);
         const rec = try builder.param();
@@ -2325,6 +2336,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         .make_struct = make_struct,
         .field = get_field,
         .variant = get_variant,
+        .payload = get_payload,
         .array_from_list = array_from_list,
         .array_len = array_len,
         .array_get = array_get,
