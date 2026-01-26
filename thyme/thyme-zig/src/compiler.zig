@@ -2103,9 +2103,9 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         _ = try builder.param(); // closure
         var b = builder.body();
         _ = try b.assert_is_array(fields, heap, "bad make_struct");
+        const zero = try b.word(0);
         const type_ = type_: {
             const rec = try b.object(make_struct_type_rec);
-            const zero = try b.word(0);
             const field_names = try b.call(rec, try box(ally, .{ rec, fields, zero }));
             const struct_symbol = try b.object(common.struct_symbol);
             const result = try b.new(true, try box(ally, .{ struct_symbol, field_names }));
@@ -2113,7 +2113,6 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         };
         const obj = obj: {
             const rec = try b.object(make_struct_values_rec);
-            const zero = try b.word(0);
             const field_values = try b.call(rec, try box(ally, .{ rec, fields, zero }));
             const result = try b.new(true, try box(ally, .{ type_, field_values }));
             break :obj try b.flatten_to_pointers_object(result);
@@ -2138,6 +2137,53 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         const index = try b.call(lookup_field, args);
         const value = try b.load(struct_, index);
         const body = b.finish(value);
+        break :ir builder.finish(body);
+    });
+
+    const get_fields_rec = try ir_to_instructions(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const rec = try builder.param();
+        const struct_ = try builder.param();
+        const i = try builder.param();
+        var b = builder.body();
+        const type_ = try b.type_of(struct_);
+        const result = try b.if_eq(i, try b.num_words(type_), done: {
+          var bb = builder.body();
+          const result = try bb.object(common.empty_obj);
+          break :done bb.finish(result);
+        }, more: {
+          var bb = builder.body();
+          const symbol = try bb.load(type_, i);
+          const string_type = try bb.object(common.string_type);
+          const name = try bb.new(true, try box(ally, .{ string_type, symbol }));
+          const value = try bb.load(struct_, i);
+          const name_symbol = try new_symbol(heap, "name");
+          const value_symbol = try new_symbol(heap, "value");
+          const node_type = try bb.object(
+              try heap.new_inner(&.{ common.struct_symbol, name_symbol, value_symbol })
+          );
+          const node = try bb.new(true, try box(ally, .{ node_type, name, value }));
+          const next_i = try bb.add(i, try bb.word(1));
+          const rest = try bb.call(rec, try box(ally, .{ rec, struct_, next_i }));
+          const result = try bb.new(true, try box(ally, .{ node, rest }));
+          break :more bb.finish(result);
+        });
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+    const get_fields = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const struct_ = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        _ = try b.assert_is_struct(struct_, heap, "bad fields");
+        const rec = try b.object(get_fields_rec);
+        const one = try b.word(1);
+        const nodes = try b.call(rec, try box(ally, .{ rec, struct_, one }));
+        const array_type = try b.object(common.array_type);
+        const all_nodes = try b.new(true, try box(ally, .{ array_type, nodes }));
+        const result = try b.flatten_to_pointers_object(all_nodes);
+        const body = b.finish(result);
         break :ir builder.finish(body);
     });
 
@@ -2203,30 +2249,14 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
                 const lookup_field = try bbb.object(common.lookup_field_fun);
                 // I don't get Zig. Calling the get_field function results in errors, although it literally does what we do here inline.
                 // const head = try bbb.get_field(ally, heap, common, payload, "head");
-                const head = head: {
-                    const head_symbol = try bbb.object(try new_symbol(heap, "head"));
-                    const index = try bbb.call(lookup_field, try box(ally , .{ payload_type, head_symbol }));
-                    break :head try bbb.load(payload, index);
-                };
-                const tail = tail: {
-                    var args = try ally.alloc(Ir.Id, 2);
-                    args[0] = payload_type;
-                    args[1] = try bbb.object(try new_symbol(heap, "tail"));
-                    const index = try bbb.call(lookup_field, args);
-                    break :tail try bbb.load(payload, index);
-                };
-                const mapped_tail = mapped: {
-                    var args = try ally.alloc(Ir.Id, 2);
-                    args[0] = rec;
-                    args[1] = tail;
-                    break :mapped try bbb.call(rec, args);
-                };
-                const result = obj: {
-                    var words = try ally.alloc(Ir.Id, 2);
-                    words[0] = head;
-                    words[1] = mapped_tail;
-                    break :obj try bbb.new(true, words);
-                };
+                const head_symbol = try bbb.object(try new_symbol(heap, "head"));
+                const head_index = try bbb.call(lookup_field, try box(ally , .{ payload_type, head_symbol }));
+                const head = try bbb.load(payload, head_index);
+                const tail_symbol = try bbb.object(try new_symbol(heap, "tail"));
+                const tail_index = try bbb.call(lookup_field, try box(ally, .{ payload_type, tail_symbol }));
+                const tail = try bbb.load(payload, tail_index);
+                const mapped_tail = try bbb.call(rec, try box(ally, .{ rec, tail }));
+                const result = try bbb.new(true, try box(ally, .{ head, mapped_tail }));
                 break :more bbb.finish(result);
             }, bad: {
                 var bbb = bb.child_body();
@@ -2244,18 +2274,9 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         _ = try builder.param(); // closure
         var b = builder.body();
         const rec = try b.object(array_from_list_rec);
-        const mapped = mapped: {
-            var args = try ally.alloc(Ir.Id, 2);
-            args[0] = rec;
-            args[1] = list;
-            break :mapped try b.call(rec, args);
-        };
-        const extra_node = node: {
-            var words = try ally.alloc(Ir.Id, 2);
-            words[0] = try b.object(common.array_type);
-            words[1] = mapped;
-            break :node try b.new(true, words);
-        };
+        const mapped = try b.call(rec, try box(ally, .{ rec, list }));
+        const array_type = try b.object(common.array_type);
+        const extra_node = try b.new(true, try box(ally, .{ array_type, mapped }));
         const result = try b.flatten_to_pointers_object(extra_node);
         const body = b.finish(result);
         break :ir builder.finish(body);
@@ -2335,6 +2356,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         .string_equals = string_equals,
         .make_struct = make_struct,
         .field = get_field,
+        .fields = get_fields,
         .make_enum = make_enum,
         .variant = get_variant,
         .payload = get_payload,

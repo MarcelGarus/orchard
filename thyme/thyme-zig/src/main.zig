@@ -61,6 +61,7 @@ pub fn main() !void {
         var buffer: [64]u8 = undefined;
         const bw = std.debug.lockStderrWriter(&buffer);
         defer std.debug.unlockStderrWriter();
+        // try heap.format(app.obj, bw);
         try app.format(bw);
         try bw.print("\n", .{});
     }
