@@ -132,9 +132,11 @@
         (more m) (: current (. m head) (% (check current) true (| some current) false (rec (. m tail))))))))
 
   # (Arrays)
-  array_from_list (\ (list) ((. @ array_from_list) list))
   array_len (\ (array) ((. @ array_len) array))
   array_get (\ (array index) ((. @ array_get) array index))
+  array_from_list (\ (list) ((. @ array_from_list) list))
+  list_from_array (\ (array)
+    (rec 0 (\ (rec i) (% (== i (array_len array)) true empty_list false (cons (array_get array i) (rec (+ i 1)))))))
   array_map (\ (array mapper)
     (array_from_list
       (rec 0 (\ (rec i)
@@ -304,11 +306,11 @@
                               true (:
                                 args (% (list_get tail 0)
                                   (group g)
-                                    (array_from_list (list_map g (\ (item) (% item (word w) w _ (crash "bad lambda")))))
-                                  _ (crash "bad lambda"))
+                                    (array_from_list (list_map g (\ (item) (% item (word w) w _ (crash "bad function")))))
+                                  _ (crash "bad function"))
                                 body (add_semantics (list_get tail 1))
-                                (| lambda (& args args body body)))
-                              false (crash "bad lambda"))
+                                (| function (& args args body body)))
+                              false (crash "bad function"))
                             false (% (str== w ":")
                               true (:
                                 _ (% (is_odd (list_len tail)) true nil false (crash "bad let"))
@@ -340,17 +342,12 @@
       (% code
         (name name) (bindings_get bindings name)
         (number n) n
+        (add args) (+ (eval (. args left) bindings) (eval (. args right) bindings))
         (let let) (eval (. let expr) (bindings_add bindings (. let name) (eval (. let def) bindings)))
         (struct fields)
           ((. @ make_struct)
             (array_map fields (\ (field) (& name (. field name) value (eval (. field value) bindings)))))
-        (field field) (:
-          fields (% (eval (. field of) bindings) (struct s) s _ (crash "field access of non-struct"))
-          name (. field name)
-          field (% (array_find fields (\ (field) (str== (. field name) name)))
-            none (crash "The field doesn't exist.")
-            (some field) field)
-          (. field value))
+        (field field) ((. @ field) (eval (. field of) bindings) (. field name))
         (enum enum) ((. @ make_enum) (. enum variant) (eval (. enum payload) bindings))
         (switch switch) (:
           enum (eval (. switch condition) bindings)
@@ -363,12 +360,18 @@
           new_bindings
             (% (. case binding) none bindings (some name) (bindings_add bindings name payload))
           (eval (. case body) new_bindings))
-        (lambda lambda) (& lambda lambda bindings bindings)
+        (function function) (&
+          args (. function args)
+          body (. function body)
+          captured ((. @ make_struct) (array_from_list bindings)))
         (call call) (:
           callee (eval (. call callee) bindings)
           args (array_map (. call args) (\ (arg) (eval arg bindings)))
-          (crash args)
-          )
+          inner_bindings (rec 0 (\ (rec i)
+            (% (== i (array_len args))
+              true (list_from_array ((. @ fields) (. callee captured)))
+              false (cons (& name (array_get (. callee args) i) value (array_get args i)) (rec (+ i 1))))))
+          (eval (. callee body) inner_bindings))
         ))))
 
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
@@ -376,7 +379,16 @@
 
   # (eval (parse "(% (| bar 5) foo 1 (bar b) b baz 3)") no_bindings)
   # (eval (parse "(: a 5 (+ a 1))") no_bindings)
-  (eval (parse "(: b 3 (\\ (a) (& x a y b)))") (bindings_add no_bindings "a" true))
+  virtual_builtins (&
+    add (&
+      args (array_from_list (push (push empty_list "a") "b"))
+      body (| add (& left (| name "a") right (| name "b")))
+      captured (&))
+  )
+  # (crash (parse "((. @ add) 1 2)"))
+  code (parse "((. @ add) 1 2)")
+  result (eval code (bindings_add no_bindings "@" virtual_builtins))
+  (& code code result result)
 )
 
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))
