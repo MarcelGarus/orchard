@@ -162,7 +162,7 @@ pub const Value = struct {
   pub fn format(self: Value, writer: *std.io.Writer) !void {
     try self.format_indented(writer, 0);
   }
-  pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) !void {
+  pub fn format_singleline(self: Value, writer: *std.io.Writer) !void {
     const ty = self.obj.child(0);
     switch (self.kind()) {
       .int => |int| try writer.print("{d}", .{int.get()}),
@@ -170,12 +170,58 @@ pub const Value = struct {
       .struct_ => {
         try writer.print("(&", .{});
         for (ty.children()[1..], self.obj.children()[1..]) |field_name, field| {
+            try writer.print(" {s} ", .{get_symbol(field_name)});
+            try (Value{ .obj = field }).format_singleline(writer);
+        }
+        try writer.print(")", .{});
+      },
+      .enum_ => |en| {
+        try writer.print("(| {s} ", .{en.variant()});
+        try en.payload().format_singleline(writer);
+        try writer.print(")", .{});
+      },
+      .array => |a| {
+        try writer.print("([]", .{});
+        for (a.items()) |item| {
+            try writer.print(" ", .{});
+            try item.format_singleline(writer);
+        }
+        try writer.print(")", .{});
+      },
+      .lambda => try writer.print("lambda", .{}),
+    }
+  }
+  fn singleline_len(self: Value) !usize {
+      var len_tracker = std.Io.Writer.Discarding.init(&[_]u8{});
+      try self.format_singleline(&len_tracker.writer);
+      return len_tracker.count;
+  }
+  const WIDTH_LIMIT = 80;
+  pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) !void {
+    if (2 * indentation + try self.singleline_len() <= WIDTH_LIMIT) {
+        try self.format_singleline(writer);
+        return;
+    }
+
+    const ty = self.obj.child(0);
+    switch (self.kind()) {
+      .int => |int| try writer.print("{d}", .{int.get()}),
+      .string => |str| try writer.print("\"{s}\"", .{str.get()}),
+      .struct_ => {
+        try writer.print("(&", .{});
+        for (ty.children()[1..], self.obj.children()[1..]) |field_name, field_value| {
+            const name = get_symbol(field_name);
+            const value = Value{ .obj = field_value };
             try writer.print("\n", .{});
             for (0..indentation + 1) |_| try writer.writeAll("  ");
-            try writer.print("{s} ", .{get_symbol(field_name)});
-            try writer.print("\n", .{});
-            for (0..indentation + 2) |_| try writer.writeAll("  ");
-            try (Value{ .obj = field }).format_indented(writer, indentation + 2);
+            try writer.print("{s} ", .{name});
+            if (2 * (indentation + 1) + name.len + 1 + try value.singleline_len() <= WIDTH_LIMIT) {
+                try value.format_singleline(writer);
+            } else {
+                try writer.print("\n", .{});
+                for (0..indentation + 2) |_| try writer.writeAll("  ");
+                try value.format_indented(writer, indentation + 2);
+            }
         }
         try writer.print(")", .{});
       },
@@ -187,7 +233,7 @@ pub const Value = struct {
         try writer.print(")", .{});
       },
       .array => |a| {
-        try writer.print("(array", .{});
+        try writer.print("([]", .{});
         for (a.items()) |item| {
             try writer.print("\n", .{});
             for (0..indentation + 1) |_| try writer.writeAll("  ");
