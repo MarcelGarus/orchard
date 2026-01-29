@@ -141,6 +141,10 @@
     (array_from_list
       (rec 0 (\ (rec i)
         (% (== i (array_len array)) true empty_list false (cons (mapper (array_get array i)) (rec (+ i 1))))))))
+  array_all (\ (array check)
+    (rec 0 (\ (all i)
+      (% (== i (array_len array)) true true false (% (check (array_get array i)) true (all (+ i 1)) false false)))))
+  array_any (\ (array check) (not (array_all array (\ (item) (not (check item))))))
   array_find (\ (array check)
     (rec 0 (\ (find i)
       (% (== i (array_len array))
@@ -335,15 +339,22 @@
   bindings_add (\ (bindings name value) (cons (& name name value value) bindings))
   bindings_get (\ (bindings name)
     (% (list_find bindings (\ (binding) (str== (. binding name) name)))
-      none (crash "A name is not defined.")
-      (some binding) (. binding value)))
+      none (| none)
+      (some binding) (| some (. binding value))))
+  bindings_remove (\ (bindings name)
+    (rec bindings (\ (rec bindings)
+      (% bindings
+        empty no_bindings
+        (more m)
+          (% (str== (. (. m head) name) name) true (rec (. m tail)) false (cons (. m head) (rec (. m tail))))))))
   eval (\ (code bindings)
     (rec_2 code bindings (\ (eval code bindings)
       (% code
-        (name name) (bindings_get bindings name)
+        (object object) object
+        (let let) (eval (. let expr) (bindings_add bindings (. let name) (eval (. let def) bindings)))
+        (name name) (% (bindings_get bindings name) none "A name is not defined." (some value) value)
         (number n) n
         (add args) (+ (eval (. args left) bindings) (eval (. args right) bindings))
-        (let let) (eval (. let expr) (bindings_add bindings (. let name) (eval (. let def) bindings)))
         (struct fields)
           ((. @ make_struct)
             (array_map fields (\ (field) (& name (. field name) value (eval (. field value) bindings)))))
@@ -377,6 +388,117 @@
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
   # (substr "hello world" 2 7)
 
+  bind (\ (code bindings)
+    (rec_2 code bindings (\ (bind code bindings)
+      (% bindings
+        empty code
+        more
+          (% code
+            object code
+            (let let)
+              (| let (&
+                name (. let name)
+                def (bind (. let def) bindings)
+                expr (bind (. let expr) (bindings_remove bindings (. let name)))))
+            (name n) (% (bindings_get bindings n) (some code) code none code)
+            number code
+            (add args) (| add (& left (bind (. args left) bindings) right (bind (. args right) bindings)))
+            (subtract args) (| subtract (& left (bind (. args left) bindings) right (bind (. args right) bindings)))
+            (multiply args) (| multiply (& left (bind (. args left) bindings) right (bind (. args right) bindings)))
+            (divide args) (| divide (& left (bind (. args left) bindings) right (bind (. args right) bindings)))
+            (modulo args) (| modulo (& left (bind (. args left) bindings) right (bind (. args right) bindings)))
+            (struct fields)
+              (| struct (array_map fields (\ (field) (& name (. field name) value (bind (. field value) bindings)))))
+            (field field) (| field (& of (bind (. field of) bindings) name (. field name)))
+            (enum enum) (| enum (& variant (. enum variant) payload (bind (. enum payload) bindings)))
+            (switch switch)
+              (| switch (&
+                condition (bind (. switch condition) bindings)
+                cases
+                  (array_map
+                    (. switch cases)
+                    (\ (case) (:
+                      inner_bindings
+                        (% (. case binding) none bindings (some name) (bindings_remove bindings name))
+                      (& variant (. case variant) binding (. case binding) body (bind (. case body) inner_bindings)))
+                    ))))
+            (function function) (:
+              inner_bindings
+                (rec 0 (\ (rec i)
+                  (% (== i (array_len (. function args)))
+                    true bindings
+                    false (bindings_remove (rec (+ i 1)) (array_get (. function args) i)))))
+              (| function (& args (. function args) body (bind (. function body) inner_bindings))))
+            (call call)
+              (| call (&
+                callee (bind (. call callee) bindings)
+                args (array_map (. call args) (\ (arg) (bind arg bindings)))))
+            error code
+            _ (crash "can't bind"))))))
+  optimize_obj (\ (object)
+    (crash "todo optimize object"))
+  optimize_code (\ (code)
+    (rec code (\ (optimize code)
+      (% code
+        (let let) (:
+          name (. let name)
+          def (optimize (. let def))
+          expr (optimize (. let expr))
+          (% def object (optimize (bind expr (bindings_add no_bindings name def))) _ (| let (& name name def def expr expr))))
+        (number n) (| object n)
+        (multiply args) (:
+          left (optimize (. args left))
+          right (optimize (. args right))
+          (% right
+            (object right) (% (== right 1) true left false (| multiply (& left left right (| object right))))
+            _ (% left (object left) (optimize (| multiply (& left right right (| object left))))))
+        )
+        (struct fields) (:
+          fields (array_map fields (\ (field) (& name (. field name) value (optimize (. field value)))))
+          are_all_fields_comptime (array_all fields (\ (field) (% (. field value) object true _ false)))
+          (% are_all_fields_comptime true (| object ((. @ make_struct) fields)) false (| struct fields)))
+        (field field) (:
+          of (optimize (. field of))
+          name (. field name)
+          (% of
+            (object object) (:
+              # (todo: handle field access on non-struct (this should result in a runtime error))
+              (% (array_find ((. @ fields) object) (\ (field) (str== (. field name) name)))
+                none (| error "no such field")
+                (some field) (| object (. field value))))
+            (struct struct) (crash "optimize field of struct")
+            _ (| field (& of of name name))))
+        (enum enum) (:
+          variant (. enum variant)
+          payload (optimize (. enum payload))
+          is_payload_comptime (% payload object true _ false)
+          (% payload
+            (object payload) (| object ((. @ make_enum) variant payload))
+            _ (| enum (& variant variant payload payload))))
+        (function function) (| function (& args (. function args) body (optimize (. function body))))
+        (call call) (:
+          callee (optimize (. call callee))
+          args (array_map (. call args) (\ (arg) (optimize arg)))
+          should_inline
+            (% callee
+              (object function) (:
+                params (. function args)
+                bindings
+                  (rec 0 (\ ( rec i)
+                    (% (== i (array_len params))
+                      true no_bindings
+                      false (bindings_add (rec (+ i 1)) (array_get params i) (array_get args i)))))
+                (| yeah (bind (. function body) bindings))
+              )
+              name (| nope)
+              _ (crash "huh"))
+          (% should_inline
+            nope (| call (& callee callee args args))
+            (yeah to_inline) (optimize to_inline)
+            _ (crash "should we inline?"))
+          )
+        _ code))))
+
   # (eval (parse "(% (| bar 5) foo 1 (bar b) b baz 3)") no_bindings)
   # (eval (parse "(: a 5 (+ a 1))") no_bindings)
   virtual_builtins (&
@@ -384,11 +506,27 @@
       args (array_from_list (push (push empty_list "a") "b"))
       body (| add (& left (| name "a") right (| name "b")))
       captured (&))
+    subtract (&
+      args (array_from_list (push (push empty_list "a") "b"))
+      body (| subtract (& left (| name "a") right (| name "b")))
+      captured (&))
+    multiply (&
+      args (array_from_list (push (push empty_list "a") "b"))
+      body (| multiply (& left (| name "a") right (| name "b")))
+      captured (&))
   )
-  # (crash (parse "((. @ add) 1 2)"))
-  code (parse "((. @ add) 1 2)")
-  result (eval code (bindings_add no_bindings "@" virtual_builtins))
-  (& code code result result)
+  # (crash (parse "(: true (| true) (. @ add) 1 2)"))
+  code (parse "
+    (:
+      + (. @ add)
+      - (. @ subtract)
+      * (. @ multiply)
+      (\\ (a b) (+ a (* b 2)))
+    )")
+  original_code code
+  code (optimize_code (bind code (bindings_add no_bindings "@" (| object virtual_builtins))))
+  result (eval code no_bindings)
+  (& original original_code code code result result)
 )
 
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))
@@ -397,12 +535,8 @@ pow = |base, i| pow_rec(pow_rec, base, 1, i)
 is_nil = |obj| ==(@num_words(obj), 0)
 
 # Linked Lists
-head = |list| list:0
-tail = |list| list:1
 push_rec = |rec, list, item| if is_nil(list) then cons(item, nil) else cons(head(list), rec(rec, tail(list), item))
 push = |list, item| push_rec(push_rec, list, item)
-get_rec = |rec, list, index| if index.==(0) then list:0 else rec(rec, list:1, index.-(1))
-get = |list, index| get_rec(get_rec, list, index)
 insert_rec = |rec, list, index, item| {
   if index.==(0) then
     cons(item, list)
