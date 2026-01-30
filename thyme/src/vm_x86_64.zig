@@ -283,6 +283,7 @@ const MachineCode = struct {
             .@"sub r10, rbx" = "49 29 da",
             .@"sub r10, 8" = "49 83 ea 08",
             .@"sub r10d, {:32}" = "41 81 ea {0:u32le}",
+            .@"imul rax, rbx" = "48 0f af c3",
             .@"shl rbx, 3" = "48 c1 e3 03",
             .@"and rax, rbx" = "48 21 d8",
             .@"xor rax, rax" = "48 31 c0",
@@ -471,26 +472,28 @@ fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemor
         .divide => {
             try code.emit("pop rbx", .{});
             try code.emit("pop rax", .{});
-            try code.emit("div rax, rbx", .{});
-            try code.emit("push rax", .{});
+            @panic("div rax, rbx");
+            // try code.emit("push rax", .{});
         },
         .modulo => {
             try code.emit("pop rbx", .{});
             try code.emit("pop rax", .{});
-            try code.emit("mod rax, rbx", .{});
-            try code.emit("push rax", .{});
+            @panic("mod rax, rbx");
+            // try code.emit("push rax", .{});
         },
         .shl => {
             try code.emit("pop rbx", .{});
             try code.emit("pop rax", .{});
-            try code.emit("shl rax, rbx", .{});
-            try code.emit("push rax", .{});
+            @panic("shl");
+            // try code.emit("shl rax, rbx", .{});
+            // try code.emit("push rax", .{});
         },
         .shr => {
             try code.emit("pop rbx", .{});
             try code.emit("pop rax", .{});
-            try code.emit("shr rax, rbx", .{});
-            try code.emit("push rax", .{});
+            @panic("shr");
+            // try code.emit("shr rax, rbx", .{});
+            // try code.emit("push rax", .{});
         },
         .compare => @panic("JIT compare"), // equal: 0, greater: 1, less: 2
         .@"if" => |if_| {
