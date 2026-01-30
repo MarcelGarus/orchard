@@ -348,18 +348,22 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
                             }
                             const body = try add_semantics(ally, group[2 * i + 3]);
                             if (std.mem.eql(u8, case_variant, "_")) {
-                              if (default != null) @panic("switch with multiple default variants");
-                              if (case_payload_name != null) @panic("switch default with payload name");
-                              default = body;
+                                if (default != null) @panic("switch with multiple default variants");
+                                if (case_payload_name != null) @panic("switch default with payload name");
+                                default = body;
                             } else {
-                              try cases.append(ally, .{
-                                  .variant = case_variant,
-                                  .payload_name = case_payload_name,
-                                  .body = try box(ally, body),
-                              });
+                                try cases.append(ally, .{
+                                    .variant = case_variant,
+                                    .payload_name = case_payload_name,
+                                    .body = try box(ally, body),
+                                });
                             }
                         }
-                        return .{ .switch_ = .{ .condition = try box(ally, condition), .cases = cases.items, .default = if (default) |d| try box(ally, d) else null, } };
+                        return .{ .switch_ = .{
+                            .condition = try box(ally, condition),
+                            .cases = cases.items,
+                            .default = if (default) |d| try box(ally, d) else null,
+                        } };
                     }
                     if (std.mem.eql(u8, name, "\\")) {
                         if (group.len != 3) return error.BadLambda;
@@ -480,8 +484,8 @@ pub const Ir = struct {
             .modulo => |args| try writer.print("modulo {f} {f}\n", .{ args.left, args.right }),
             .shift_left => |args| try writer.print("shift_left {f} {f}\n", .{ args.left, args.right }),
             .shift_right => |args| try writer.print("shift_right {f} {f}\n", .{ args.left, args.right }),
-            .flatten_to_literals_object => |obj| try writer.print("flatten_to_literals_object {f}\n", .{ obj }),
-            .flatten_to_pointers_object => |obj| try writer.print("flatten_to_pointers_object {f}\n", .{ obj }),
+            .flatten_to_literals_object => |obj| try writer.print("flatten_to_literals_object {f}\n", .{obj}),
+            .flatten_to_pointers_object => |obj| try writer.print("flatten_to_pointers_object {f}\n", .{obj}),
             .compare => |args| try writer.print("compare {f} {f}\n", .{ args.left, args.right }),
             .call => |call| {
                 try writer.print("call {f} with", .{call.instructions});
@@ -721,9 +725,7 @@ pub const Ir = struct {
                 break :bad bb.finish(result);
             });
         }
-        pub fn get_field(
-            b: *BodyBuilder, ally: Ally, heap: *Heap, common: CommonObjects, struct_: Id, name: []const u8
-        ) !Id {
+        pub fn get_field(b: *BodyBuilder, ally: Ally, heap: *Heap, common: CommonObjects, struct_: Id, name: []const u8) !Id {
             const type_ = try b.type_of(struct_);
             const fun = try b.object(common.lookup_field_fun);
             const symbol = try b.object(try new_symbol(heap, name));
@@ -828,9 +830,7 @@ pub const CommonObjects = struct {
         const int_type = try heap.new_inner(&.{int_symbol});
         const string_type = try heap.new_inner(&.{string_symbol});
         const array_type = try heap.new_inner(&.{array_symbol});
-        const empty_struct = try heap.new_inner(&.{
-            try heap.new_inner(&.{struct_symbol})
-        });
+        const empty_struct = try heap.new_inner(&.{try heap.new_inner(&.{struct_symbol})});
         const true_ = try heap.new_inner(&.{
             try heap.new_inner(&.{ enum_symbol, try new_symbol(heap, "true") }),
             empty_struct,
@@ -997,7 +997,7 @@ const AstToIr = struct {
             }
             std.debug.print("name {s}\n", .{name});
             std.debug.print("in scope:", .{});
-            for (bindings.bindings.items) |b| std.debug.print(" {s}", .{b.name });
+            for (bindings.bindings.items) |b| std.debug.print(" {s}", .{b.name});
             std.debug.print("\n", .{});
             return error.NameNotInScope;
         }
@@ -1023,7 +1023,7 @@ const AstToIr = struct {
         return builder.finish(body_result);
     }
 
-    fn compile_expr(self: *AstToIr, expr: Ast.Expr, b: *Ir.BodyBuilder, bindings: *Bindings) error{OutOfMemory, NameNotInScope}!Id {
+    fn compile_expr(self: *AstToIr, expr: Ast.Expr, b: *Ir.BodyBuilder, bindings: *Bindings) error{ OutOfMemory, NameNotInScope }!Id {
         switch (expr) {
             .name => |name| return bindings.get(name),
             .int => |value| return try b.object((try Val.Int.new(self.heap, value)).obj),
@@ -1069,10 +1069,7 @@ const AstToIr = struct {
             },
             .enum_ => |enum_| {
                 const variant_name = try new_symbol(self.heap, enum_.variant);
-                const type_ = try self.heap.new_inner(&.{
-                    self.common.enum_symbol,
-                    variant_name
-                });
+                const type_ = try self.heap.new_inner(&.{ self.common.enum_symbol, variant_name });
                 const payload = try self.compile_expr(enum_.payload.*, b, bindings);
                 const compiled = try self.ally.alloc(Id, 2);
                 compiled[0] = try b.object(type_);
@@ -1087,7 +1084,7 @@ const AstToIr = struct {
                 return result;
             },
             .lambda => |lambda| {
-                const num_args_obj = try self.heap.new_leaf(&.{ @intCast(lambda.params.len) });
+                const num_args_obj = try self.heap.new_leaf(&.{@intCast(lambda.params.len)});
                 const type_ = try self.heap.new_inner(&.{ self.common.lambda_symbol, num_args_obj });
                 const captured = try get_captured(self.ally, lambda);
                 const ir = ir: {
@@ -1161,10 +1158,10 @@ const AstToIr = struct {
     ) !Id {
         if (cases.len == 0) {
             return if (default) |d|
-              try self.compile_expr(d.*, b, bindings)
+                try self.compile_expr(d.*, b, bindings)
             else
-              // TODO: name the variant in the error message
-              try b.crash_with_string(self.heap, "unknown variant");
+                // TODO: name the variant in the error message
+                try b.crash_with_string(self.heap, "unknown variant");
         } else {
             const case = cases[0];
             return try b.if_eq_symbol(self.heap, variant, case.variant, found_it: {
@@ -2148,25 +2145,23 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         var b = builder.body();
         const type_ = try b.type_of(struct_);
         const result = try b.if_eq(i, try b.num_words(type_), done: {
-          var bb = builder.body();
-          const result = try bb.object(common.empty_obj);
-          break :done bb.finish(result);
+            var bb = builder.body();
+            const result = try bb.object(common.empty_obj);
+            break :done bb.finish(result);
         }, more: {
-          var bb = builder.body();
-          const symbol = try bb.load(type_, i);
-          const string_type = try bb.object(common.string_type);
-          const name = try bb.new(true, try box(ally, .{ string_type, symbol }));
-          const value = try bb.load(struct_, i);
-          const name_symbol = try new_symbol(heap, "name");
-          const value_symbol = try new_symbol(heap, "value");
-          const node_type = try bb.object(
-              try heap.new_inner(&.{ common.struct_symbol, name_symbol, value_symbol })
-          );
-          const node = try bb.new(true, try box(ally, .{ node_type, name, value }));
-          const next_i = try bb.add(i, try bb.word(1));
-          const rest = try bb.call(rec, try box(ally, .{ rec, struct_, next_i }));
-          const result = try bb.new(true, try box(ally, .{ node, rest }));
-          break :more bb.finish(result);
+            var bb = builder.body();
+            const symbol = try bb.load(type_, i);
+            const string_type = try bb.object(common.string_type);
+            const name = try bb.new(true, try box(ally, .{ string_type, symbol }));
+            const value = try bb.load(struct_, i);
+            const name_symbol = try new_symbol(heap, "name");
+            const value_symbol = try new_symbol(heap, "value");
+            const node_type = try bb.object(try heap.new_inner(&.{ common.struct_symbol, name_symbol, value_symbol }));
+            const node = try bb.new(true, try box(ally, .{ node_type, name, value }));
+            const next_i = try bb.add(i, try bb.word(1));
+            const rest = try bb.call(rec, try box(ally, .{ rec, struct_, next_i }));
+            const result = try bb.new(true, try box(ally, .{ node, rest }));
+            break :more bb.finish(result);
         });
         const body = b.finish(result);
         break :ir builder.finish(body);
@@ -2250,7 +2245,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
                 // I don't get Zig. Calling the get_field function results in errors, although it literally does what we do here inline.
                 // const head = try bbb.get_field(ally, heap, common, payload, "head");
                 const head_symbol = try bbb.object(try new_symbol(heap, "head"));
-                const head_index = try bbb.call(lookup_field, try box(ally , .{ payload_type, head_symbol }));
+                const head_index = try bbb.call(lookup_field, try box(ally, .{ payload_type, head_symbol }));
                 const head = try bbb.load(payload, head_index);
                 const tail_symbol = try bbb.object(try new_symbol(heap, "tail"));
                 const tail_index = try bbb.call(lookup_field, try box(ally, .{ payload_type, tail_symbol }));
@@ -2308,20 +2303,20 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         const index = try b.get_int_value(index_obj);
         const len = try b.subtract(num_words, one);
         _ = try b.if_eq(try b.compare(index, zero), two, bad: {
-          var inner = b.child_body();
-          const result = try inner.crash_with_string(heap, "out of bounds");
-          break :bad inner.finish(result);
+            var inner = b.child_body();
+            const result = try inner.crash_with_string(heap, "out of bounds");
+            break :bad inner.finish(result);
         }, good: {
-          var inner = b.child_body();
-          break :good try inner.finish_with_zero();
+            var inner = b.child_body();
+            break :good try inner.finish_with_zero();
         });
         _ = try b.if_eq(try b.compare(index, len), two, good: {
-          var inner = b.child_body();
-          break :good try inner.finish_with_zero();
+            var inner = b.child_body();
+            break :good try inner.finish_with_zero();
         }, bad: {
-          var inner = b.child_body();
-          const result = try inner.crash_with_string(heap, "out of bounds");
-          break :bad inner.finish(result);
+            var inner = b.child_body();
+            const result = try inner.crash_with_string(heap, "out of bounds");
+            break :bad inner.finish(result);
         });
         const actual_index = try b.add(index, one);
         const item = try b.load(array, actual_index);
@@ -2419,7 +2414,8 @@ pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Ob
 
 pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Obj {
     const instructions = try ir_to_instructions(ally, heap, ir);
-    return (try Val.Lambda.new(heap,
+    return (try Val.Lambda.new(
+        heap,
         instructions,
         ir.params.len - 1,
         try new_empty(heap),
@@ -2443,7 +2439,6 @@ pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Obj {
 }
 
 pub fn code_to_lambda(ally: Ally, heap: *Heap, common: CommonObjects, env: anytype, code: Str) !Obj {
-    std.debug.print("parsing\n", .{});
     const ast = try str_to_ast(ally, code);
     const ir = try ast_to_ir(ally, heap, common, env, ast);
     return try ir_to_lambda(ally, heap, ir);

@@ -31,7 +31,7 @@ const Val = @import("value.zig");
 // - deduplicate(impl: *Impl, checkpoint: Checkpoint, obj: Obj) Obj
 // - garbage_collect(impl: *Impl, checkpoint: Checkpoint, keep: Obj) Obj
 const Impl = switch (builtin.cpu.arch) {
-    // .x86_64 => @import("vm_x86_64.zig"), // a JIT compiler
+    .x86_64 => @import("vm_x86_64.zig"), // a JIT compiler
     else => @import("vm_interpreter.zig"), // an interpreter
 };
 const Vm = @This();
