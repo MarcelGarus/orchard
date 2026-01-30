@@ -9,7 +9,7 @@ The most interesting bits:
 - **Thyme**:
   A virtual machine for a stack-based byte code that operates on a heap of immutable objects.
   Also contains a programming language, which is basically just the untyped lambda calculus with Lisp syntax.  
-  [`thyme/thyme-zig`](thyme/thyme-zig) contains the Zig implementation.
+  [`thyme/`](thyme/) contains the Zig implementation.
 - **Ground**:
   A low-level stack-based byte code.  
   [`ground/readme.md`](ground/readme.md) contains the specification.  
