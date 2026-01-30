@@ -136,9 +136,9 @@ pub fn run(vm: *Vm, instructions: []const Instruction) !void {
                 const stack = vm.data_stack.memory[0..vm.data_stack.used];
                 const words = stack[stack.len - new.num_words ..];
                 const obj = if (new.has_pointers)
-                  try vm.heap.new_inner(@ptrCast(words))
+                    try vm.heap.new_inner(@ptrCast(words))
                 else
-                  try vm.heap.new_leaf(@ptrCast(words));
+                    try vm.heap.new_leaf(@ptrCast(words));
                 vm.data_stack.pop_n(new.num_words);
                 try vm.data_stack.push(obj.address);
             },
@@ -209,7 +209,7 @@ pub fn run(vm: *Vm, instructions: []const Instruction) !void {
             .eval => try vm.run(try vm.parse(Obj{ .address = vm.data_stack.pop() })),
             .crash => {
                 const message = vm.data_stack.pop();
-                std.debug.print("Crashed:\n{f}\n", .{ Val.Value.from(Obj{ .address = message }) });
+                std.debug.print("Crashed:\n{f}\n", .{Val.Value.from(Obj{ .address = message })});
                 std.process.exit(1);
             },
         }

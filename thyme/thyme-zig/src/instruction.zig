@@ -45,15 +45,15 @@ pub const Instruction = union(enum) {
                 const symbol = try new_symbol(heap, @tagName(instruction));
                 const payloads = switch (comptime @TypeOf(payload)) {
                     void => .{},
-                    Word => .{try heap.new_leaf(&.{ @bitCast(payload) })},
+                    Word => .{try heap.new_leaf(&.{@bitCast(payload)})},
                     Obj => .{payload},
                     If => .{
                         try new_instructions(ally, heap, payload.then),
                         try new_instructions(ally, heap, payload.else_),
                     },
                     New => .{
-                      try heap.new_leaf(&.{ if (payload.has_pointers) 1 else 0 }),
-                        try heap.new_leaf(&.{ @intCast(payload.num_words) }),
+                        try heap.new_leaf(&.{if (payload.has_pointers) 1 else 0}),
+                        try heap.new_leaf(&.{@intCast(payload.num_words)}),
                     },
                     else => @compileError("Handle type " ++ @typeName(@TypeOf(payload))),
                 };

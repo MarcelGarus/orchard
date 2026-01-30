@@ -43,43 +43,43 @@ comptime {
 }
 
 pub const Obj = packed struct {
-  address: Word,
+    address: Word,
 
-  pub fn is_same(a: Obj, b: Obj) bool {
-    return a.address == b.address;
-  }
+    pub fn is_same(a: Obj, b: Obj) bool {
+        return a.address == b.address;
+    }
 
-  pub fn is_inner(self: Obj) bool {
-    const header: *Header = @ptrFromInt(self.address);
-    return header.is_inner == 1;
-  }
-  pub fn is_leaf(self: Obj) bool {
-    return !self.is_inner();
-  }
+    pub fn is_inner(self: Obj) bool {
+        const header: *Header = @ptrFromInt(self.address);
+        return header.is_inner == 1;
+    }
+    pub fn is_leaf(self: Obj) bool {
+        return !self.is_inner();
+    }
 
-  pub fn size(self: Obj) usize {
-    const header: *Header = @ptrFromInt(self.address);
-    return @intCast(header.num_words);
-  }
+    pub fn size(self: Obj) usize {
+        const header: *Header = @ptrFromInt(self.address);
+        return @intCast(header.num_words);
+    }
 
-  pub fn words(self: Obj) []const Word {
-    if (!self.is_leaf()) unreachable;
-    const header: *Header = @ptrFromInt(self.address);
-    return @as([*]Word, @ptrFromInt(self.address))[1..][0..header.num_words];
-  }
+    pub fn words(self: Obj) []const Word {
+        if (!self.is_leaf()) unreachable;
+        const header: *Header = @ptrFromInt(self.address);
+        return @as([*]Word, @ptrFromInt(self.address))[1..][0..header.num_words];
+    }
 
-  pub fn children(self: Obj) []const Obj {
-    if (!self.is_inner()) unreachable;
-    const header: *Header = @ptrFromInt(self.address);
-    return @as([*]Obj, @ptrFromInt(self.address))[1..][0..header.num_words];
-  }
+    pub fn children(self: Obj) []const Obj {
+        if (!self.is_inner()) unreachable;
+        const header: *Header = @ptrFromInt(self.address);
+        return @as([*]Obj, @ptrFromInt(self.address))[1..][0..header.num_words];
+    }
 
-  pub fn word(self: Obj, index: usize) Word {
-    return self.words()[index];
-  }
-  pub fn child(self: Obj, index: usize) Obj {
-    return self.children()[index];
-  }
+    pub fn word(self: Obj, index: usize) Word {
+        return self.words()[index];
+    }
+    pub fn child(self: Obj, index: usize) Obj {
+        return self.children()[index];
+    }
 };
 
 memory: []Word,
@@ -94,15 +94,15 @@ pub fn is_full(heap: Heap) bool {
     return heap.used == heap.memory.len;
 }
 fn emit(heap: *Heap, word: Word) !void {
-  if (heap.is_full()) return error.OutOfMemory;
-  heap.memory[heap.used] = word;
-  heap.used += 1;
+    if (heap.is_full()) return error.OutOfMemory;
+    heap.memory[heap.used] = word;
+    heap.used += 1;
 }
 
 pub fn build_leaf(heap: *Heap) !LeafObjBuilder {
-  const start = heap.used;
-  try heap.emit(@bitCast(Header{ .num_words = 0, .is_inner = 0 }));
-  return .{ .heap = heap, .start = start, .num_words = 0 };
+    const start = heap.used;
+    try heap.emit(@bitCast(Header{ .num_words = 0, .is_inner = 0 }));
+    return .{ .heap = heap, .start = start, .num_words = 0 };
 }
 pub const LeafObjBuilder = struct {
     heap: *Heap,
@@ -126,9 +126,9 @@ pub fn new_leaf(heap: *Heap, words: []const Word) !Obj {
 }
 
 pub fn build_inner(heap: *Heap) !InnerObjBuilder {
-  const start = heap.used;
-  try heap.emit(@bitCast(Header{ .num_words = 0, .is_inner = 1 }));
-  return .{ .heap = heap, .start = start, .num_words = 0 };
+    const start = heap.used;
+    try heap.emit(@bitCast(Header{ .num_words = 0, .is_inner = 1 }));
+    return .{ .heap = heap, .start = start, .num_words = 0 };
 }
 pub const InnerObjBuilder = struct {
     heap: *Heap,
@@ -222,7 +222,7 @@ fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !Obj {
     defer mapping.deinit();
     const heap_end = heap.checkpoint().address;
     while (read < heap_end) {
-      // std.debug.print("read: {x} of {x}\n", .{read, heap_end});
+        // std.debug.print("read: {x} of {x}\n", .{read, heap_end});
         const header: *Header = @ptrFromInt(read);
         const size = 1 + header.num_words;
         if (size > 1000) {
@@ -377,8 +377,7 @@ pub fn format_indented(
             if (i > 0) try writer.print("\n", .{});
             try heap.format_indented(child, writer, parents, indent);
         }
-      }
-else {
+    } else {
         for (0.., obj.words()) |i, literal| {
             if (i > 0) try writer.print("\n", .{});
             try print_indentation(writer, parents, indent);

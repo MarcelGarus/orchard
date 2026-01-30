@@ -34,23 +34,23 @@ heap: *Heap,
 data_stack: Stack,
 call_stack: Stack,
 jit_cache: ObjMap([]const u8), // maps (pointer to instructions obj) to (x86_64 machine code)
-run_jitted: *const fn(*VmState, *ZigState, [*]const u8) callconv(.c) void,
+run_jitted: *const fn (*VmState, *ZigState, [*]const u8) callconv(.c) void,
 
 const VmState = packed struct {
-  heap_cursor: *anyopaque,
-  data_stack_cursor: *anyopaque,
-  call_stack_cursor: *anyopaque,
+    heap_cursor: *anyopaque,
+    data_stack_cursor: *anyopaque,
+    call_stack_cursor: *anyopaque,
 
-  fn load_from_vm(self: *VmState, vm: *Vm) void {
-    self.heap_cursor = @ptrFromInt(@intFromPtr(vm.heap.memory.ptr) + (8 * vm.heap.used));
-    self.data_stack_cursor = @ptrFromInt(@intFromPtr(vm.data_stack.memory.ptr) + (8 * vm.data_stack.cursor));
-    self.call_stack_cursor = @ptrFromInt(@intFromPtr(vm.call_stack.memory.ptr) + (8 * vm.call_stack.cursor));
-  }
-  fn store_to_vm(self: *VmState, vm: *Vm) void {
-    vm.heap.used = (@intFromPtr(self.heap_cursor) - @intFromPtr(vm.heap.memory.ptr)) / 8;
-    vm.data_stack.cursor = (@intFromPtr(self.data_stack_cursor) - @intFromPtr(vm.data_stack.memory.ptr)) / 8;
-    vm.call_stack.cursor = (@intFromPtr(self.call_stack_cursor) - @intFromPtr(vm.call_stack.memory.ptr)) / 8;
-  }
+    fn load_from_vm(self: *VmState, vm: *Vm) void {
+        self.heap_cursor = @ptrFromInt(@intFromPtr(vm.heap.memory.ptr) + (8 * vm.heap.used));
+        self.data_stack_cursor = @ptrFromInt(@intFromPtr(vm.data_stack.memory.ptr) + (8 * vm.data_stack.cursor));
+        self.call_stack_cursor = @ptrFromInt(@intFromPtr(vm.call_stack.memory.ptr) + (8 * vm.call_stack.cursor));
+    }
+    fn store_to_vm(self: *VmState, vm: *Vm) void {
+        vm.heap.used = (@intFromPtr(self.heap_cursor) - @intFromPtr(vm.heap.memory.ptr)) / 8;
+        vm.data_stack.cursor = (@intFromPtr(self.data_stack_cursor) - @intFromPtr(vm.data_stack.memory.ptr)) / 8;
+        vm.call_stack.cursor = (@intFromPtr(self.call_stack_cursor) - @intFromPtr(vm.call_stack.memory.ptr)) / 8;
+    }
 };
 const ZigState = struct {
     vm: *Vm,
@@ -61,22 +61,22 @@ const ZigState = struct {
 // The stack grows downward, just like the native x86 stack. This allows us to use push and pop
 // instructions directly to modify the (data) stack.
 const Stack = struct {
-  memory: []Word,
-  cursor: usize,
+    memory: []Word,
+    cursor: usize,
 
-  pub fn init(ally: Ally, num_words: usize) !Stack {
-    return .{ .memory = try ally.alloc(Word, num_words), .cursor = num_words };
-  }
-  pub fn push(self: *Stack, word: Word) !void {
-      if (self.cursor == 0) @panic("stack overflow");
-      self.cursor -= 1;
-      self.memory[self.cursor] = word;
-  }
-  pub fn pop(self: *Stack) Word {
-      const word = self.memory[self.cursor];
-      self.cursor += 1;
-      return word;
-  }
+    pub fn init(ally: Ally, num_words: usize) !Stack {
+        return .{ .memory = try ally.alloc(Word, num_words), .cursor = num_words };
+    }
+    pub fn push(self: *Stack, word: Word) !void {
+        if (self.cursor == 0) @panic("stack overflow");
+        self.cursor -= 1;
+        self.memory[self.cursor] = word;
+    }
+    pub fn pop(self: *Stack) Word {
+        const word = self.memory[self.cursor];
+        self.cursor += 1;
+        return word;
+    }
 };
 
 pub fn init(heap: *Heap, ally: Ally) !Vm {
@@ -91,36 +91,36 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
 }
 
 pub fn make_run_fun(ally: Ally) ![]const u8 {
-  var code = MachineCode.init(ally);
-  // Args: vm state (rdi), Zig state (rsi), machine code (rdx)
+    var code = MachineCode.init(ally);
+    // Args: vm state (rdi), Zig state (rsi), machine code (rdx)
 
-  // Switch from Sys-V calling convention to Thyme calling convention.
-  try code.emit("mov r15, rsp", .{});
-  try code.emit("mov r14, rsi", .{});
-  try code.emit("mov r13, rdi", .{});
-  try code.emit("mov r8, [rdi]", .{}); // heap
-  try code.emit("mov rsp, [rdi + 8]", .{}); // data stack
-  try code.emit("mov r9, [rdi + 16]", .{}); // call stack
+    // Switch from Sys-V calling convention to Thyme calling convention.
+    try code.emit("mov r15, rsp", .{});
+    try code.emit("mov r14, rsi", .{});
+    try code.emit("mov r13, rdi", .{});
+    try code.emit("mov r8, [rdi]", .{}); // heap
+    try code.emit("mov rsp, [rdi + 8]", .{}); // data stack
+    try code.emit("mov r9, [rdi + 16]", .{}); // call stack
 
-  // "call" the jitted code (putting our next instruction on the VM's call stack)
-  try code.emit("sub r9, 8", .{});
-  try code.emit("mov rax, {base}", .{});
-  const a = try code.emit_placeholder("add rax, {:8}", .{ @as(i8, 0) });
-  try code.emit("mov [r9], rax", .{});
-  try code.emit("jmp rdx", .{});
-  const b = code.len();
-  code.patch(a, "add rax, {:8}", .{ @as(i8, @intCast(b)) });
+    // "call" the jitted code (putting our next instruction on the VM's call stack)
+    try code.emit("sub r9, 8", .{});
+    try code.emit("mov rax, {base}", .{});
+    const a = try code.emit_placeholder("add rax, {:8}", .{@as(i8, 0)});
+    try code.emit("mov [r9], rax", .{});
+    try code.emit("jmp rdx", .{});
+    const b = code.len();
+    code.patch(a, "add rax, {:8}", .{@as(i8, @intCast(b))});
 
-  // Switch from Thyme calling convention to Sys-V calling convention.
-  try code.emit("mov rdi, r13", .{});
-  try code.emit("mov [rdi], r8", .{}); // heap
-  try code.emit("mov [rdi + 8], rsp", .{}); // data stack
-  try code.emit("mov [rdi + 16], r9", .{}); // call stack
-  try code.emit("mov rsp, r15", .{});
+    // Switch from Thyme calling convention to Sys-V calling convention.
+    try code.emit("mov rdi, r13", .{});
+    try code.emit("mov [rdi], r8", .{}); // heap
+    try code.emit("mov [rdi + 8], rsp", .{}); // data stack
+    try code.emit("mov [rdi + 16], r9", .{}); // call stack
+    try code.emit("mov rsp, r15", .{});
 
-  try code.emit("ret", .{});
+    try code.emit("ret", .{});
 
-  return try code.finish();
+    return try code.finish();
 }
 pub fn run(vm: *Vm, jitted: []const u8) !void {
     std.debug.print("data stack:", .{});
@@ -152,17 +152,17 @@ pub fn call(vm: *Vm, lambda: Val.Lambda, args: []const Val.Value) !Val.Value {
     return .{ .obj = .{ .address = vm.data_stack.pop() } };
 }
 pub fn compile(vm: *Vm, instructions: Obj) ![]const u8 {
-  if (vm.jit_cache.get(instructions)) |machine_code| return machine_code;
-  const parsed = try Instruction.parse_instructions(vm.ally, instructions);
+    if (vm.jit_cache.get(instructions)) |machine_code| return machine_code;
+    const parsed = try Instruction.parse_instructions(vm.ally, instructions);
 
-  std.debug.print("Instructions:\n", .{});
-  std.debug.print("\x1b[92m", .{});
-  for (parsed) |instr| std.debug.print("{f}", .{instr});
-  std.debug.print("\x1b[0m", .{});
+    std.debug.print("Instructions:\n", .{});
+    std.debug.print("\x1b[92m", .{});
+    for (parsed) |instr| std.debug.print("{f}", .{instr});
+    std.debug.print("\x1b[0m", .{});
 
-  const jitted = try compile_instructions(vm.ally, parsed);
-  try vm.jit_cache.put(vm.ally, instructions, jitted);
-  return jitted;
+    const jitted = try compile_instructions(vm.ally, parsed);
+    try vm.jit_cache.put(vm.ally, instructions, jitted);
+    return jitted;
 }
 // Turns the instructions into x86 machine code bytes.
 pub fn compile_instructions(ally: Ally, instructions: []const Instruction) ![]const u8 {
@@ -197,7 +197,7 @@ const MachineCode = struct {
         // std.debug.print("{s:<30} {any:<30} ", .{ x86_instr, args });
         const constants = .{
             // TODO: remove some unused instructions from here
-            .@"hlt" = "f4",
+            .hlt = "f4",
             .@"push qword {:i32}" = "68 {0:i32le}",
             .@"push [rsp]" = "ff 34 24",
             .@"push rax" = "50",
@@ -318,20 +318,20 @@ const MachineCode = struct {
                         const index = comptime std.fmt.parseInt(usize, index_str, 10) catch unreachable;
                         const value = args[index];
                         if (comptime std.mem.eql(u8, how_to_emit, "i8")) {
-                          if (@TypeOf(value) != i8) @compileError("expected i8, got " ++ @typeName(@TypeOf(value)));
-                          try self.emit_byte(@bitCast(value));
+                            if (@TypeOf(value) != i8) @compileError("expected i8, got " ++ @typeName(@TypeOf(value)));
+                            try self.emit_byte(@bitCast(value));
                         } else if (comptime std.mem.eql(u8, how_to_emit, "u32le")) {
-                          if (@TypeOf(value) != u32) @compileError("expected u32, got " ++ @typeName(@TypeOf(value)));
-                          const target_space = try self.bytes.addManyAsArray(self.ally, 4);
-                          std.mem.writeInt(u32, target_space, value, .little);
+                            if (@TypeOf(value) != u32) @compileError("expected u32, got " ++ @typeName(@TypeOf(value)));
+                            const target_space = try self.bytes.addManyAsArray(self.ally, 4);
+                            std.mem.writeInt(u32, target_space, value, .little);
                         } else if (comptime std.mem.eql(u8, how_to_emit, "i32le")) {
-                          if (@TypeOf(value) != i32) @compileError("expected i32, got " ++ @typeName(@TypeOf(value)));
-                          const target_space = try self.bytes.addManyAsArray(self.ally, 4);
-                          std.mem.writeInt(i32, target_space, value, .little);
+                            if (@TypeOf(value) != i32) @compileError("expected i32, got " ++ @typeName(@TypeOf(value)));
+                            const target_space = try self.bytes.addManyAsArray(self.ally, 4);
+                            std.mem.writeInt(i32, target_space, value, .little);
                         } else if (comptime std.mem.eql(u8, how_to_emit, "u64le")) {
-                          if (@TypeOf(value) != u64) @compileError("expected u64, got " ++ @typeName(@TypeOf(value)));
-                          const target_space = try self.bytes.addManyAsArray(self.ally, 8);
-                          std.mem.writeInt(u64, target_space, value, .little);
+                            if (@TypeOf(value) != u64) @compileError("expected u64, got " ++ @typeName(@TypeOf(value)));
+                            const target_space = try self.bytes.addManyAsArray(self.ally, 8);
+                            std.mem.writeInt(u64, target_space, value, .little);
                         } else @compileError("unknown formatting " ++ how_to_emit);
                     } else {
                         const byte = comptime std.fmt.parseInt(u8, item, 16) catch unreachable;
@@ -341,7 +341,7 @@ const MachineCode = struct {
                 return;
             }
         }
-        @panic("Unknown instruction: " ++ x86_instr);
+        @compileError("Unknown instruction: " ++ x86_instr);
     }
     pub fn emit_placeholder(self: *MachineCode, comptime x86_instr: []const u8, args: anytype) !usize {
         const length = self.len();
@@ -355,21 +355,26 @@ const MachineCode = struct {
         self.bytes.items.len = cursor;
     }
     pub fn finish(self: *MachineCode) ![]const u8 {
-      const bytes = self.bytes.items;
+        const bytes = self.bytes.items;
 
-      // We want to create an executable memory region that contains the machine code. To do that, we
-      // need to talk to the operating system in a low level way, so we don't go through Zig allocators.
-      const permission_read_write = std.os.linux.PROT.READ | std.os.linux.PROT.WRITE;
-      const permission_read_exec = std.os.linux.PROT.READ | std.os.linux.PROT.EXEC;
-      const address = std.os.linux.mmap(
-          null, bytes.len, permission_read_write, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0,
-      );
-      if (address == 0) return error.OutOfMemory;
-      const ptr: [*]u8 =@ptrFromInt(address);
-      @memcpy(ptr, bytes);
-      for (self.patches.items) |pos| std.mem.writeInt(u64, ptr[pos..][0..8], address, .little);
-      std.debug.assert(std.os.linux.mprotect(ptr, bytes.len, permission_read_exec) == 0);
-      return ptr[0..bytes.len];
+        // We want to create an executable memory region that contains the machine code. To do that, we
+        // need to talk to the operating system in a low level way, so we don't go through Zig allocators.
+        const permission_read_write = std.os.linux.PROT.READ | std.os.linux.PROT.WRITE;
+        const permission_read_exec = std.os.linux.PROT.READ | std.os.linux.PROT.EXEC;
+        const address = std.os.linux.mmap(
+            null,
+            bytes.len,
+            permission_read_write,
+            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+            -1,
+            0,
+        );
+        if (address == 0) return error.OutOfMemory;
+        const ptr: [*]u8 = @ptrFromInt(address);
+        @memcpy(ptr, bytes);
+        for (self.patches.items) |pos| std.mem.writeInt(u64, ptr[pos..][0..8], address, .little);
+        std.debug.assert(std.os.linux.mprotect(ptr, bytes.len, permission_read_exec) == 0);
+        return ptr[0..bytes.len];
     }
 };
 fn compile_all(code: *MachineCode, instructions: []const Instruction) !void {
@@ -426,7 +431,7 @@ fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemor
         .pop => |amount| {
             const byte_amount = amount * 8;
             if (byte_amount < 128) {
-                try code.emit("add rsp, {:8}", .{ @as(i8, @intCast(byte_amount)) });
+                try code.emit("add rsp, {:8}", .{@as(i8, @intCast(byte_amount))});
             } else {
                 try code.emit("mov rax, {:64}", .{@as(u64, @intCast(amount * 8))});
                 try code.emit("add rsp, rax", .{});
@@ -491,32 +496,32 @@ fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemor
         .@"if" => |if_| {
             try code.emit("pop rax", .{});
             try code.emit("cmp rax, 0", .{});
-            const jump_to_else_placeholder = try code.emit_placeholder("jz {:32}", .{ @as(i32, 0) });
+            const jump_to_else_placeholder = try code.emit_placeholder("jz {:32}", .{@as(i32, 0)});
             const after_jump_to_else = code.len();
             try compile_all(code, if_.then);
-            const jump_to_after_if_placeholder = try code.emit_placeholder("jmp {:32}", .{ @as(i32, 0) });
+            const jump_to_after_if_placeholder = try code.emit_placeholder("jmp {:32}", .{@as(i32, 0)});
             const after_jump_to_after_if = code.len();
             const else_ = code.len();
             try compile_all(code, if_.else_);
             const after_if = code.len();
             // Patch the placeholders (these are relative jumps).
-            code.patch(jump_to_else_placeholder, "jz {:32}", .{ @as(i32, @intCast(else_ - after_jump_to_else)) });
-            code.patch(jump_to_after_if_placeholder, "jmp {:32}", .{ @as(i32, @intCast(after_if - after_jump_to_after_if)) });
+            code.patch(jump_to_else_placeholder, "jz {:32}", .{@as(i32, @intCast(else_ - after_jump_to_else))});
+            code.patch(jump_to_after_if_placeholder, "jmp {:32}", .{@as(i32, @intCast(after_if - after_jump_to_after_if))});
         },
         .new => |new| {
             try code.emit("mov rax, r8", .{});
             // rax = start of object; r8 = start of object; rsp = top of stack
             try code.emit("mov rbx, {:64}", .{
-              @as(u64, @bitCast(Heap.Header {
-                .num_words = @intCast(new.num_words),
-                .is_inner = if (new.has_pointers) 1 else 0,
-              })),
+                @as(u64, @bitCast(Heap.Header{
+                    .num_words = @intCast(new.num_words),
+                    .is_inner = if (new.has_pointers) 1 else 0,
+                })),
             });
             try code.emit("mov [r8], rbx", .{});
             try code.emit("add r8, 8", .{});
             // The header word has now been allocated on the heap.
-            try code.emit("mov rbx, {:64}", .{ @as(u64, @intCast(new.num_words * 8)) });
-            try code.emit("add rsp, rbx", .{ });
+            try code.emit("mov rbx, {:64}", .{@as(u64, @intCast(new.num_words * 8))});
+            try code.emit("add rsp, rbx", .{});
             try code.emit("mov rbx, rsp", .{});
             for (0..new.num_words) |_| {
                 try code.emit("sub rbx, 8", .{});
@@ -530,54 +535,54 @@ fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemor
         .flatlito => @panic("JIT flatlito"),
         .points => @panic("JIT points"),
         .size => {
-          try code.emit("pop rax", .{});
-          try code.emit("mov rax, [rax]", .{});
-          try code.emit("mov rbx, 0xffffffffffff", .{});
-          try code.emit("and rax, rbx", .{});
-          try code.emit("push rax", .{});
+            try code.emit("pop rax", .{});
+            try code.emit("mov rax, [rax]", .{});
+            try code.emit("mov rbx, 0xffffffffffff", .{});
+            try code.emit("and rax, rbx", .{});
+            try code.emit("push rax", .{});
         },
         .load => {
-          try code.emit("pop rbx", .{});
-          try code.emit("shl rbx, 3", .{});
-          try code.emit("pop rax", .{});
-          try code.emit("add rax, 8", .{});
-          try code.emit("add rax, rbx", .{});
-          try code.emit("push [rax]", .{});
+            try code.emit("pop rbx", .{});
+            try code.emit("shl rbx, 3", .{});
+            try code.emit("pop rax", .{});
+            try code.emit("add rax, 8", .{});
+            try code.emit("add rax, rbx", .{});
+            try code.emit("push [rax]", .{});
         },
         .heapsize => {
-          try code.emit("push r8", .{});
+            try code.emit("push r8", .{});
         },
         .gc => @panic("JIT gc"),
         .eval => {
-          try code.emit("pop rdx", .{});
+            try code.emit("pop rdx", .{});
 
-          // Swap back to the C calling convention.
-          try code.emit("mov rdi, r13", .{});
-          try code.emit("mov [rdi], r8", .{}); // heap
-          try code.emit("mov [rdi + 8], rsp", .{}); // data stack
-          try code.emit("mov [rdi + 16], r9", .{}); // call stack
-          try code.emit("mov rsi, r14", .{});
-          try code.emit("mov rsp, r15", .{});
+            // Swap back to the C calling convention.
+            try code.emit("mov rdi, r13", .{});
+            try code.emit("mov [rdi], r8", .{}); // heap
+            try code.emit("mov [rdi + 8], rsp", .{}); // data stack
+            try code.emit("mov [rdi + 16], r9", .{}); // call stack
+            try code.emit("mov rsi, r14", .{});
+            try code.emit("mov rsp, r15", .{});
 
-          // Align the x86 stack to 16 bytes.
-          try code.emit("push qword {:i32}", .{ @as(i32, 0) });
+            // Align the x86 stack to 16 bytes.
+            try code.emit("push qword {:i32}", .{@as(i32, 0)});
 
-          // Call the Zig function.
-          try code.emit("mov rax, {:64}", .{ @as(u64, @intCast(@intFromPtr(&hook_eval))) });
-          try code.emit("call rax", .{});
+            // Call the Zig function.
+            try code.emit("mov rax, {:64}", .{@as(u64, @intCast(@intFromPtr(&hook_eval)))});
+            try code.emit("call rax", .{});
 
-          try code.emit("hlt", .{});
+            try code.emit("hlt", .{});
         },
         .crash => {
-          try code.emit("mov rax, {:64}", .{ @as(u64, @bitCast(@intFromPtr(&hook_crash))) });
-          try code.emit("call rax", .{});
+            try code.emit("mov rax, {:64}", .{@as(u64, @bitCast(@intFromPtr(&hook_crash)))});
+            try code.emit("call rax", .{});
         },
     }
 }
 
 fn hook_crash() callconv(.c) void {
-  std.debug.print("oh no! crashing\n", .{});
-  std.process.exit(1);
+    std.debug.print("oh no! crashing\n", .{});
+    std.process.exit(1);
 }
 fn hook_eval(vm_state: *VmState, zig_state: *ZigState, instructions: Obj) callconv(.c) void {
     std.debug.print("oh no! evaling {x}\n", .{instructions.address});
