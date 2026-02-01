@@ -71,6 +71,15 @@ pub const Struct = struct {
     pub fn from(obj: Obj) Struct {
         return Value.from(obj).kind().struct_;
     }
+    pub fn get_field(self: Struct, name: []const u8) Value {
+        const ty = self.obj.child(0).children();
+        for (ty[1..], 1..) |field, i| {
+            if (std.mem.eql(u8, get_symbol(field), name)) {
+                return Value.from(self.obj.child(i));
+            }
+        }
+        @panic("field");
+    }
 };
 
 pub const Enum = struct {
@@ -107,28 +116,30 @@ pub const Lambda = struct {
     pub fn from(obj: Obj) Lambda {
         return Value.from(obj).kind().lambda;
     }
-    pub fn new(heap: *Heap, instructions: Obj, num_params: usize, closure: Obj, ir: ?Obj) !Lambda {
+    pub fn new(heap: *Heap, instructions: Obj, captured: Obj, args: Obj, ir: ?Obj) !Lambda {
         const lambda_symbol = try new_symbol(heap, "lambda");
-        const num_params_obj = try heap.new_leaf(&.{@bitCast(num_params)});
-        const ty = try heap.new_inner(&.{ lambda_symbol, num_params_obj });
+        const ty = try heap.new_inner(&.{lambda_symbol});
         const lambda_obj = obj: {
             var b = try heap.build_inner();
             try b.emit(ty);
             try b.emit(instructions);
-            try b.emit(closure);
+            try b.emit(captured);
+            try b.emit(args);
             if (ir) |ir_| try b.emit(ir_);
             break :obj b.finish();
         };
         return .{ .obj = lambda_obj };
     }
-    // pub fn get_lambda(heap: *Heap, lambda: Address) Lambda {
-    //     return .{
-    //         .num_params = heap.load(heap.load(heap.load(lambda, 0), 1), 0),
-    //         .instructions = heap.load(lambda, 1),
-    //         .closure = heap.load(lambda, 2),
-    //         .ir = if (heap.get(lambda).words.len == 4) heap.load(lambda, 3) else null,
-    //     };
-    // }
+    pub fn get_captured(self: Lambda) Obj {
+        return self.obj.child(2);
+    }
+    pub fn get_args(self: Lambda) Obj {
+        return self.obj.child(3);
+    }
+    pub fn get_ir(self: Lambda) ?Obj {
+        if (self.obj.children().len < 5) return null;
+        return self.obj.child(4);
+    }
 };
 
 pub const Value = struct {
@@ -162,7 +173,7 @@ pub const Value = struct {
     pub fn format(self: Value, writer: *std.io.Writer) !void {
         try self.format_indented(writer, 0);
     }
-    pub fn format_singleline(self: Value, writer: *std.io.Writer) !void {
+    pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}!void {
         const ty = self.obj.child(0);
         switch (self.kind()) {
             .int => |int| try writer.print("{d}", .{int.get()}),
@@ -188,8 +199,43 @@ pub const Value = struct {
                 }
                 try writer.print(")", .{});
             },
-            .lambda => try writer.print("lambda", .{}),
+            .lambda => |lambda| {
+                try writer.print("(\\ (", .{});
+                for (lambda.get_args().children(), 0..) |arg, i| {
+                    if (i > 0) try writer.print(" ", .{});
+                    try writer.print("{s}", .{ get_symbol(arg) });
+                }
+                try writer.print(") ", .{});
+                if (lambda.get_ir()) |ir| {
+                    try Value.from(ir).format_singleline_code(writer);
+                } else {
+                    try writer.print("...", .{});
+                }
+                try writer.print(" ", .{});
+                try Value.from(lambda.get_captured()).format_singleline(writer);
+                try writer.print(")", .{});
+            },
         }
+    }
+    pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
+        const enum_ = self.kind().enum_;
+        const variant = enum_.variant();
+        const payload = enum_.payload();
+        if (std.mem.eql(u8, variant, "name")) {
+            const name = payload.kind().string.get();
+            try writer.print("{s}", .{name});
+            return;
+        }
+        if (std.mem.eql(u8, variant, "add")) {
+            const args = payload.kind().struct_;
+            try writer.print("(@add ", .{});
+            try args.get_field("left").format_singleline_code(writer);
+            try writer.print(" ", .{});
+            try args.get_field("right").format_singleline_code(writer);
+            try writer.print(")", .{});
+            return;
+        }
+        try self.format_singleline(writer);
     }
     fn singleline_len(self: Value) !usize {
         var len_tracker = std.Io.Writer.Discarding.init(&[_]u8{});
@@ -241,7 +287,14 @@ pub const Value = struct {
                 }
                 try writer.print(")", .{});
             },
-            .lambda => try writer.print("lambda", .{}),
+            .lambda => |lambda| {
+              if (lambda.get_ir()) |ir| {
+                  try writer.print("lambda with IR:\n", .{});
+                  try Value.from(ir).format_indented(writer, indentation + 1);
+              } else {
+                  try writer.print("lambda without IR", .{});
+              }
+            },
         }
     }
 };

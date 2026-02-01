@@ -31,7 +31,7 @@ const Val = @import("value.zig");
 // - deduplicate(impl: *Impl, checkpoint: Checkpoint, obj: Obj) Obj
 // - garbage_collect(impl: *Impl, checkpoint: Checkpoint, keep: Obj) Obj
 const Impl = switch (builtin.cpu.arch) {
-    .x86_64 => @import("vm_x86_64.zig"), // a JIT compiler
+    // .x86_64 => @import("vm_x86_64.zig"), // a JIT compiler
     else => @import("vm_interpreter.zig"), // an interpreter
 };
 const Vm = @This();
@@ -48,14 +48,15 @@ pub fn eval(vm: *Vm, ally: Ally, common: compiler.CommonObjects, env: anytype, c
     const fun_ = try vm.deduplicate(check, fun);
     // const fun_ = fun;
     // _ = check;
-    // {
-    //     var buffer: [64]u8 = undefined;
-    //     const bw = std.debug.lockStderrWriter(&buffer);
-    //     defer std.debug.unlockStderrWriter();
-    //     try bw.print("evaling ", .{});
-    //     try vm.heap.format(fun_, bw);
-    //     try bw.print("\n", .{});
-    // }
+    // std.debug.print("evaling {f}\n", .{ Val.Value.from(fun_) });
+    {
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        try bw.print("evaling ", .{});
+        try vm.impl.heap.format(fun_, bw);
+        try bw.print("\n", .{});
+    }
     const result = try vm.call(Val.Lambda.from(fun_), &[_]Val.Value{});
     return result;
 }
@@ -64,8 +65,7 @@ pub fn call(vm: *Vm, lambda: Val.Lambda, args: []const Val.Value) !Val.Value {
     // std.debug.print("calling function {}\n", .{lambda});
     vm.impl.heap.dump_stats();
 
-    const type_ = lambda.obj.child(0);
-    const num_params = type_.child(1).word(0);
+    const num_params = lambda.obj.child(3).children().len;
     if (num_params != args.len) @panic("called function with wrong number of params");
 
     return vm.impl.call(lambda, args);
@@ -76,5 +76,5 @@ pub fn garbage_collect(vm: *Vm, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
 }
 
 pub fn deduplicate(vm: *Vm, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
-  return vm.impl.deduplicate(checkpoint, obj);
+    return vm.impl.deduplicate(checkpoint, obj);
 }

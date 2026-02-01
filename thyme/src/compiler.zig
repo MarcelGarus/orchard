@@ -809,6 +809,7 @@ pub const CommonObjects = struct {
     int_type: Obj,
     string_type: Obj,
     array_type: Obj,
+    lambda_type: Obj,
     empty_struct: Obj,
     true_: Obj,
     false_: Obj,
@@ -830,6 +831,7 @@ pub const CommonObjects = struct {
         const int_type = try heap.new_inner(&.{int_symbol});
         const string_type = try heap.new_inner(&.{string_symbol});
         const array_type = try heap.new_inner(&.{array_symbol});
+        const lambda_type = try heap.new_inner(&.{lambda_symbol});
         const empty_struct = try heap.new_inner(&.{try heap.new_inner(&.{struct_symbol})});
         const true_ = try heap.new_inner(&.{
             try heap.new_inner(&.{ enum_symbol, try new_symbol(heap, "true") }),
@@ -958,6 +960,7 @@ pub const CommonObjects = struct {
             .int_type = int_type,
             .string_type = string_type,
             .array_type = array_type,
+            .lambda_type = lambda_type,
             .empty_struct = empty_struct,
             .true_ = true_,
             .false_ = false_,
@@ -1084,13 +1087,13 @@ const AstToIr = struct {
                 return result;
             },
             .lambda => |lambda| {
-                const num_args_obj = try self.heap.new_leaf(&.{@intCast(lambda.params.len)});
-                const type_ = try self.heap.new_inner(&.{ self.common.lambda_symbol, num_args_obj });
+                const ty = try b.object(self.common.lambda_type);
                 const captured = try get_captured(self.ally, lambda);
                 const ir = ir: {
                     var lambda_bindings = Bindings.init();
                     var lambda_builder = Builder.init(self.ally);
-                    for (lambda.params) |param| try lambda_bindings.bind(self.ally, param, try lambda_builder.param());
+                    for (lambda.params) |param|
+                        try lambda_bindings.bind(self.ally, param, try lambda_builder.param());
                     const closure_param = try lambda_builder.param();
                     var lambda_body = lambda_builder.body();
                     for (0.., captured.items) |i, name| {
@@ -1108,22 +1111,24 @@ const AstToIr = struct {
                     for (captured.items) |name| try captured_values.append(self.ally, try bindings.get(name));
                     break :closure try b.new_closure(captured_values.items);
                 };
-                const pointers = try b.parent.ally.alloc(Id, 3);
-                pointers[0] = try b.object(type_);
-                pointers[1] = instructions;
-                pointers[2] = closure;
-                return try b.new(true, pointers);
+                const args_obj = try b.object(try create_numbered_args(self.ally, self.heap, lambda.params.len));
+                var words = try self.ally.alloc(Id, 4);
+                words[0] = ty;
+                words[1] = instructions;
+                words[2] = closure;
+                words[3] = args_obj;
+                return try b.new(true, words);
             },
             .call => |call| {
                 const callee = try self.compile_expr(call.callee.*, b, bindings);
-                const zero = try b.word(0);
                 const one = try b.word(1);
                 const two = try b.word(2);
                 const type_ = try b.type_of(callee);
                 const kind = try b.kind_of(type_);
                 return try b.if_eq_symbol(self.heap, kind, "lambda", is_lambda: {
                     var bb = b.child_body();
-                    const num_params = try bb.load(try bb.load(type_, one), zero);
+                    const args_array = try bb.load(callee, try bb.word(3));
+                    const num_params = try bb.num_words(args_array);
                     const num_args = try bb.word(call.args.len);
                     const result = try bb.if_eq(num_params, num_args, args_fit: {
                         var bbb = bb.child_body();
@@ -1707,6 +1712,19 @@ const WaffleToInstructions = struct {
     }
 };
 
+fn create_numbered_args(ally: Ally, heap: *Heap, num_args: usize) !Obj {
+    var params = try ally.alloc(Obj, num_args);
+    defer ally.free(params);
+    for (0..num_args) |i| {
+        var buf: [10]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, "{d}", .{i}) catch return error.OutOfMemory;
+        params[i] = try new_symbol(heap, s);
+    }
+    var b = try heap.build_inner();
+    for (params) |param| try b.emit(param);
+    return b.finish();
+}
+
 pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
     // "collect_garbage" accepts a lambda that takes zero arguments. It makes a
     // heap checkpoint, calls the lambda, and does a garbage collection, freeing
@@ -1732,7 +1750,8 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         const kind = try b.kind_of(type_);
         const result = try b.if_eq_symbol(heap, kind, "lambda", is_lambda: {
             var bb = b.child_body();
-            const num_params = try bb.loadi(try bb.loadi(type_, 1), 0);
+            const params_obj = try bb.load(lambda, try bb.word(3));
+            const num_params = try bb.num_words(params_obj);
             const result = try bb.if_eq(num_params, zero, has_no_args: {
                 var bbb = bb.child_body();
                 const fun = try bbb.loadi(lambda, 1);
@@ -2337,6 +2356,57 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
     });
     _ = get_num_words;
 
+    const make_symbol_array_rec = try ir_to_instructions(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const rec = try builder.param();
+        const string_array = try builder.param();
+        const index = try builder.param();
+        var b = builder.body();
+        const result = try b.if_eq(index, try b.array_len(string_array), done: {
+            var bb = b.child_body();
+            const empty_obj = try bb.object(common.empty_obj);
+            break :done bb.finish(empty_obj);
+        }, more: {
+            var bb = b.child_body();
+            const string_item = try bb.get_item(string_array, index);
+            _ = try bb.assert_is_string(string_item, heap, "make_function");
+            const symbol = try bb.load(string_item, try bb.word(1));
+            const next_index = try bb.add(index, try bb.word(1));
+            const tail = try bb.call(rec, try box(ally, .{ rec, string_array, next_index }));
+            const result = try bb.new(true, try box(ally, .{ symbol, tail }));
+            break :more bb.finish(result);
+        });
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+    const make_function = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const params = try builder.param();
+        const ir = try builder.param();
+        const captured = try builder.param();
+        _ = try builder.param();
+        var b = builder.body();
+        // const result = try b.crash_with_string(heap, "hey");
+        // _ = params;
+        // _ = ir;
+        // _ = captured;
+        _ = try b.assert_is_array(params, heap, "make_function");
+        const zero = try b.word(0);
+        const rec = try b.object(make_symbol_array_rec);
+        const params_list = try b.call(rec, try box(ally, .{ rec, params, zero }));
+        const params_array = try b.flatten_to_pointers_object(params_list);
+        const instructions = try b.object(try Instruction.new_instructions(ally, heap, &[_]Instruction{
+            .{ .address = (try Val.String.new(heap, "crashed in make_function")).obj },
+            .crash,
+        }));
+        const ty = try b.object(common.lambda_type);
+        const lambda = try b.new(true, &[_]Ir.Id{ ty, instructions, captured, params_array, ir });
+        const body = b.finish(lambda);
+        // const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+    // _ = make_function;
+
     const builtins = .{
         .collect_garbage = collect_garbage,
         .crash = crash,
@@ -2358,6 +2428,7 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         .array_from_list = array_from_list,
         .array_len = array_len,
         .array_get = array_get,
+        .make_function = make_function,
     };
 
     var symbols = [_]Obj{undefined} ** @typeInfo(@TypeOf(builtins)).@"struct".fields.len;
@@ -2398,13 +2469,13 @@ pub fn instructions_to_fun(
 }
 
 pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Obj {
-    // std.debug.print("IR:\n", .{});
-    // {
-    //    var buffer: [64]u8 = undefined;
-    //    const bw = std.debug.lockStderrWriter(&buffer);
-    //    defer std.debug.unlockStderrWriter();
-    //    ir.format(heap.*, bw) catch unreachable;
-    // }
+    std.debug.print("IR:\n", .{});
+    {
+       var buffer: [64]u8 = undefined;
+       const bw = std.debug.lockStderrWriter(&buffer);
+       defer std.debug.unlockStderrWriter();
+       ir.format(heap.*, bw) catch unreachable;
+    }
     const waffle = try ir_to_waffle(ally, ir);
     const optimized_waffle = try optimize_waffle(ally, waffle);
     const instructions = try waffle_to_instructions(ally, optimized_waffle);
@@ -2412,30 +2483,10 @@ pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Ob
     return instructions_obj;
 }
 
-pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Obj {
+pub fn ir_to_lambda(ally: Ally, heap: *Heap, ir: Ir) !Obj {
     const instructions = try ir_to_instructions(ally, heap, ir);
-    return (try Val.Lambda.new(
-        heap,
-        instructions,
-        ir.params.len - 1,
-        try new_empty(heap),
-        null,
-    )).obj;
-
-    // const lambda_symbol = try new_symbol(heap, "lambda");
-    // const num_params_obj = try Val.Int.new(heap, @intCast(ir.params.len - 1));
-    // const type_ = blk: {
-    //     var b = try heap.object_builder();
-    //     try b.emit_pointer(lambda_symbol);
-    //     try b.emit_pointer(num_params_obj);
-    //     break :blk b.finish();
-    // };
-    // const nil = try object_mod.new_nil(heap);
-    // var builder = try heap.object_builder();
-    // try builder.emit_pointer(type_);
-    // try builder.emit_pointer(fun);
-    // try builder.emit_pointer(nil);
-    // return builder.finish();
+    const args_obj = try create_numbered_args(ally, heap, ir.params.len - 1);
+    return (try Val.Lambda.new(heap, instructions, try new_empty(heap), args_obj, null)).obj;
 }
 
 pub fn code_to_lambda(ally: Ally, heap: *Heap, common: CommonObjects, env: anytype, code: Str) !Obj {
