@@ -1,5 +1,5 @@
-(& foo 2)
 (:
+  # (& foo 2)
   # (
     Time to Thyme! This is a tiny programming language with Lisp-like syntax that is closely modeled after
     the untyped lambda calculus. It has the following types of values: ints, strings, structs, enums, arrays,
@@ -162,12 +162,16 @@
   str== (\ (a b) ((. @ string_equals) a b))
   ascii_0 (get_char "0" 0)
   ascii_9 (get_char "9" 0)
+  ascii_n (get_char "n" 0)
   ascii_space (get_char " " 0)
   ascii_newline (get_char "\n" 0)
   ascii_opening_paren (get_char "(" 0)
   ascii_closing_paren (get_char ")" 0)
   ascii_quote (get_char "\"" 0)
   ascii_backslash (get_char "\\" 0)
+
+  # (Function stuff.)
+  make_function (\ (args code captured) ((. @ make_function) args code captured))
 
   # (Parsing)
   parse (\ (text) (:
@@ -181,14 +185,25 @@
       (rec_2 0 i (\ (rec so_far i) (:
         char (get_char text i)
         (% (is_digit char) true (rec (+ (* so_far 10) (- char ascii_0)) (+ i 1)) false (& index i result so_far))))))
-    parse_string (\ (i)
-      (rec (+ i 1) (\ (rec i) (:
-        char (get_char text i)
-        (% (== char ascii_backslash)
-          true (crash "escape")
-          false (% (== char ascii_quote)
-            true (& index (+ i 1) result empty_list)
-            false (: result (rec (+ i 1)) (& index (. result index) result (cons char (. result result))))))))))
+    parse_string (\ (i) (:
+        chars
+          (rec (+ i 1) (\ (parse_rest i) (:
+            char (get_char text i)
+            (% (== char ascii_backslash)
+              true (:
+                escaped (get_char text (+ i 1))
+                escaped
+                  (% (== escaped ascii_backslash)
+                    true ascii_backslash
+                    false (% (== escaped ascii_quote)
+                      true ascii_quote
+                      false (% (== escaped ascii_n) true ascii_newline false (crash "unknown escaped char"))))
+                rest (parse_rest (+ i 2))
+                (& index (. rest index) result (cons escaped (. rest result))))
+              false (% (== char ascii_quote)
+                true (& index (+ i 1) result empty_list)
+                false (: result (parse_rest (+ i 1)) (& index (. result index) result (cons char (. result result)))))))))
+        (& index (. chars index) result (string_from_chars (array_from_list (. chars result))))))
     parse_word (\ (start)
       (rec start (\ (rec i) (:
         char (get_char text i)
@@ -246,9 +261,7 @@
                           (% list
                             empty empty_list
                             (more m) (% (. m head)
-                              number (crash "bad struct")
-                              string (crash "bad struct")
-                              group (crash "bad struct")
+                              _ (crash "bad struct")
                               (word field_name) (% (. m tail)
                                 empty (unreachable)
                                 (more m)
@@ -322,11 +335,15 @@
                                 (rec tail (\ (extract_bindings list)
                                   (% (== (list_len list) 1)
                                     true (add_semantics (list_get list 0))
-                                    false
-                                      (| let (&
-                                        name (% (list_get list 0) (word name) name _ (crash "bad let"))
-                                        def (add_semantics (list_get list 1))
-                                        expr (extract_bindings (list_skip list 2))))))))
+                                    false (:
+                                      name (% (list_get list 0) (word name) name _ (crash "bad let"))
+                                      (% (str== name "#")
+                                        true (extract_bindings (list_skip list 2))
+                                        false
+                                          (| let (&
+                                            name name
+                                            def (add_semantics (list_get list 1))
+                                            expr (extract_bindings (list_skip list 2))))))))))
                               false
                                 (| call
                                   (& callee (| name w) args (array_from_list (list_map tail (\ (t) (add_semantics t))))))))))))
@@ -372,10 +389,8 @@
           new_bindings
             (% (. case binding) none bindings (some name) (bindings_add bindings name payload))
           (eval (. case body) new_bindings))
-        (function function) (&
-          args (. function args)
-          body (. function body)
-          captured ((. @ make_struct) (array_from_list bindings)))
+        (function function)
+          ((. @ make_function) (. function args) (. function body) ((. @ make_struct) (array_from_list bindings)))
         (call call) (:
           callee (eval (. call callee) bindings)
           args (array_map (. call args) (\ (arg) (eval arg bindings)))
@@ -384,6 +399,7 @@
               true (list_from_array ((. @ fields) (. callee captured)))
               false (cons (& name (array_get (. callee args) i) value (array_get args i)) (rec (+ i 1))))))
           (eval (. callee body) inner_bindings))
+        _ (crash (| eval code))
         ))))
 
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
@@ -408,6 +424,7 @@
             (multiply args) (| multiply (& left (bind (. args left) bindings) right (bind (. args right) bindings)))
             (divide args) (| divide (& left (bind (. args left) bindings) right (bind (. args right) bindings)))
             (modulo args) (| modulo (& left (bind (. args left) bindings) right (bind (. args right) bindings)))
+            string code
             (struct fields)
               (| struct (array_map fields (\ (field) (& name (. field name) value (bind (. field value) bindings)))))
             (field field) (| field (& of (bind (. field of) bindings) name (. field name)))
@@ -421,8 +438,7 @@
                     (\ (case) (:
                       inner_bindings
                         (% (. case binding) none bindings (some name) (bindings_remove bindings name))
-                      (& variant (. case variant) binding (. case binding) body (bind (. case body) inner_bindings)))
-                    ))))
+                      (& variant (. case variant) binding (. case binding) body (bind (. case body) inner_bindings)))))))
             (function function) (:
               inner_bindings
                 (rec 0 (\ (rec i)
@@ -435,7 +451,7 @@
                 callee (bind (. call callee) bindings)
                 args (array_map (. call args) (\ (arg) (bind arg bindings)))))
             error code
-            _ (crash "can't bind"))))))
+            _ (crash (| cannot_bind code)))))))
   optimize_obj (\ (object)
     (crash "todo optimize object"))
   optimize_code (\ (code)
@@ -445,7 +461,9 @@
           name (. let name)
           def (optimize (. let def))
           expr (optimize (. let expr))
-          (% def object (optimize (bind expr (bindings_add no_bindings name def))) _ (| let (& name name def def expr expr))))
+          (% def
+            object (optimize (bind expr (bindings_add no_bindings name def)))
+            _ (| let (& name name def def expr expr))))
         (number n) (| object n)
         (multiply args) (:
           left (optimize (. args left))
@@ -454,6 +472,7 @@
             (object right) (% (== right 1) true left false (| multiply (& left left right (| object right))))
             _ (% left (object left) (optimize (| multiply (& left right right (| object left))))))
         )
+        (string s) (| object s)
         (struct fields) (:
           fields (array_map fields (\ (field) (& name (. field name) value (optimize (. field value)))))
           are_all_fields_comptime (array_all fields (\ (field) (% (. field value) object true _ false)))
@@ -482,17 +501,16 @@
           args (array_map (. call args) (\ (arg) (optimize arg)))
           should_inline
             (% callee
-              (object function) (:
+              (mehhh_object function) (:
                 params (. function args)
                 bindings
-                  (rec 0 (\ ( rec i)
+                  (rec 0 (\ (rec i)
                     (% (== i (array_len params))
                       true no_bindings
                       false (bindings_add (rec (+ i 1)) (array_get params i) (array_get args i)))))
                 (| yeah (bind (. function body) bindings))
               )
-              name (| nope)
-              _ (crash "huh"))
+              _ (| nope))
           (% should_inline
             nope (| call (& callee callee args args))
             (yeah to_inline) (optimize to_inline)
@@ -503,6 +521,10 @@
   # (eval (parse "(% (| bar 5) foo 1 (bar b) b baz 3)") no_bindings)
   # (eval (parse "(: a 5 (+ a 1))") no_bindings)
   virtual_builtins (&
+    crash (make_function
+      (array_from_list (push empty_list "message"))
+      (| crash (| name "message"))
+      (&))
     add (&
       args (array_from_list (push (push empty_list "a") "b"))
       body (| add (& left (| name "a") right (| name "b")))
@@ -516,18 +538,12 @@
       body (| multiply (& left (| name "a") right (| name "b")))
       captured (&))
   )
-  # (crash (parse "(: true (| true) (. @ add) 1 2)"))
-  code (parse "
-    (:
-      + (. @ add)
-      - (. @ subtract)
-      * (. @ multiply)
-      (\\ (a b) (+ a (* b 2)))
-    )")
-  original_code code
-  code (optimize_code (bind code (bindings_add no_bindings "@" (| object virtual_builtins))))
-  result (eval code no_bindings)
-  (& original original_code code code result result)
+  compile (\ (code)
+    (optimize_code (bind (parse code) (bindings_add no_bindings "@" (| object virtual_builtins)))))
+  (&
+    eval (\ (code)
+      (optimize_code (bind (parse code) (bindings_add no_bindings "@" (| object virtual_builtins))))
+      ))
 )
 
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))
