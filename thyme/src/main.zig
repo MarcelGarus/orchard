@@ -57,14 +57,11 @@ pub fn main() !void {
     const file = try std.fs.cwd().openFile("code.thyme", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
     const app = try vm.eval(ally, common, .{ .@"@" = builtins }, code);
-    {
-        var buffer: [64]u8 = undefined;
-        const bw = std.debug.lockStderrWriter(&buffer);
-        defer std.debug.unlockStderrWriter();
-        // try heap.format(app.obj, bw);
-        try app.format(bw);
-        try bw.print("\n", .{});
-    }
+    std.debug.print("Output: {f}\n", .{ app });
+    const eval = app.kind().struct_.get_field("eval");
+    const code_str = try Val.String.new(&heap, code);
+    const result = try vm.call(eval.kind().lambda, &.{ code_str.as_value() });
+    std.debug.print("Result: {f}\n", .{ result });
     if (true) return;
     // app = try handle_tasks(ally, &vm, app);
 

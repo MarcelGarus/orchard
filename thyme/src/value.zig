@@ -54,6 +54,9 @@ pub const String = struct {
     pub fn from(obj: Obj) String {
         return Value.from(obj).kind().string;
     }
+    pub fn as_value(string: String) Value {
+        return Value.from(string.obj);
+    }
     pub fn new(heap: *Heap, string: []const u8) !String {
         const string_symbol = try new_symbol(heap, "string");
         const ty = try heap.new_inner(&.{string_symbol});
@@ -211,8 +214,6 @@ pub const Value = struct {
                 } else {
                     try writer.print("...", .{});
                 }
-                try writer.print(" ", .{});
-                try Value.from(lambda.get_captured()).format_singleline(writer);
                 try writer.print(")", .{});
             },
         }
@@ -221,6 +222,16 @@ pub const Value = struct {
         const enum_ = self.kind().enum_;
         const variant = enum_.variant();
         const payload = enum_.payload();
+        if (std.mem.eql(u8, variant, "object")) {
+            try payload.format_singleline(writer);
+            return;
+        }
+        if (std.mem.eql(u8, variant, "crash")) {
+            try writer.print("(@crash ", .{});
+            try payload.format_singleline_code(writer);
+            try writer.print(")", .{});
+            return;
+        }
         if (std.mem.eql(u8, variant, "name")) {
             const name = payload.kind().string.get();
             try writer.print("{s}", .{name});
@@ -235,7 +246,27 @@ pub const Value = struct {
             try writer.print(")", .{});
             return;
         }
+        if (std.mem.eql(u8, variant, "subtract")) {
+            const args = payload.kind().struct_;
+            try writer.print("(@subtract ", .{});
+            try args.get_field("left").format_singleline_code(writer);
+            try writer.print(" ", .{});
+            try args.get_field("right").format_singleline_code(writer);
+            try writer.print(")", .{});
+            return;
+        }
+        if (std.mem.eql(u8, variant, "multiply")) {
+            const args = payload.kind().struct_;
+            try writer.print("(@multiply ", .{});
+            try args.get_field("left").format_singleline_code(writer);
+            try writer.print(" ", .{});
+            try args.get_field("right").format_singleline_code(writer);
+            try writer.print(")", .{});
+            return;
+        }
+        try writer.print("(@ir ", .{});
         try self.format_singleline(writer);
+        try writer.print(")", .{});
     }
     fn singleline_len(self: Value) !usize {
         var len_tracker = std.Io.Writer.Discarding.init(&[_]u8{});

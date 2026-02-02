@@ -2469,13 +2469,13 @@ pub fn instructions_to_fun(
 }
 
 pub fn ir_to_instructions(ally: Ally, heap: *Heap, ir: Ir) error{OutOfMemory}!Obj {
-    std.debug.print("IR:\n", .{});
-    {
-       var buffer: [64]u8 = undefined;
-       const bw = std.debug.lockStderrWriter(&buffer);
-       defer std.debug.unlockStderrWriter();
-       ir.format(heap.*, bw) catch unreachable;
-    }
+    // std.debug.print("IR:\n", .{});
+    // {
+    //    var buffer: [64]u8 = undefined;
+    //    const bw = std.debug.lockStderrWriter(&buffer);
+    //    defer std.debug.unlockStderrWriter();
+    //    ir.format(heap.*, bw) catch unreachable;
+    // }
     const waffle = try ir_to_waffle(ally, ir);
     const optimized_waffle = try optimize_waffle(ally, waffle);
     const instructions = try waffle_to_instructions(ally, optimized_waffle);
