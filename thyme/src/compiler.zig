@@ -1081,7 +1081,21 @@ const AstToIr = struct {
             },
             .switch_ => |switch_| {
                 const condition = try self.compile_expr(switch_.condition.*, b, bindings);
-                _ = try b.assert_is_enum(condition, self.heap, "you can only switch on enums");
+                const kind = try b.kind_of(try b.type_of(condition));
+                _ = try b.if_eq_symbol(self.heap, kind, "enum", good: {
+                    var bb = b.child_body();
+                    break :good try bb.finish_with_zero();
+                }, bad: {
+                    var bb = b.child_body();
+                    const variant_name = try new_symbol(self.heap, "switch_on_non_enum");
+                    const type_ = try self.heap.new_inner(&.{ self.common.enum_symbol, variant_name });
+                    const compiled = try self.ally.alloc(Id, 2);
+                    compiled[0] = try b.object(type_);
+                    compiled[1] = condition;
+                    const err = try b.new(true, compiled);
+                    break :bad try bb.finish_with_crash(err);
+                });
+                // _ = try b.assert_is_enum(condition, self.heap, "you can only switch on enums");
                 const variant = try b.get_variant(condition);
                 const result = try self.handle_switch_cases(b, condition, variant, switch_.cases, switch_.default, bindings);
                 return result;
