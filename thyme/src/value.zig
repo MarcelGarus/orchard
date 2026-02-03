@@ -264,6 +264,48 @@ pub const Value = struct {
             try writer.print(")", .{});
             return;
         }
+        if (std.mem.eql(u8, variant, "string")) {
+            try payload.format_singleline(writer);
+            return;
+        }
+        if (std.mem.eql(u8, variant, "switch")) {
+            const args = payload.kind().struct_;
+            try writer.print("(% ", .{});
+            try args.get_field("condition").format_singleline_code(writer);
+            const cases = args.get_field("cases").kind().array.items();
+            for (cases) |case| {
+                const case_struct = case.kind().struct_;
+                const case_variant = case_struct.get_field("variant").kind().string.get();
+                const binding = bind: {
+                    const en = case_struct.get_field("binding").kind().enum_;
+                    const bind = en.variant();
+                    if (std.mem.eql(u8, bind, "none")) break :bind null;
+                    if (std.mem.eql(u8, bind, "some")) break :bind en.payload().kind().string.get();
+                    @panic("invalid IR");
+                };
+                const body = case_struct.get_field("body");
+                if (binding) |name| {
+                    try writer.print(" ({s} {s}) ", .{ case_variant, name });
+                } else {
+                    try writer.print(" {s} ", .{ case_variant });
+                }
+                try body.format_singleline_code(writer);
+            }
+            try writer.print(")", .{});
+            return;
+        }
+        if (std.mem.eql(u8, variant, "call")) {
+            const call = payload.kind().struct_;
+            try writer.print("(", .{});
+            try call.get_field("callee").format_singleline_code(writer);
+            const args = call.get_field("args").kind().array.items();
+            for (args) |arg| {
+                try writer.print(" ", .{});
+                try arg.format_singleline_code(writer);
+            }
+            try writer.print(")", .{});
+            return;
+        }
         try writer.print("(@ir ", .{});
         try self.format_singleline(writer);
         try writer.print(")", .{});
@@ -273,7 +315,7 @@ pub const Value = struct {
         try self.format_singleline(&len_tracker.writer);
         return len_tracker.count;
     }
-    const WIDTH_LIMIT = 80;
+    const WIDTH_LIMIT = 120;
     pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) !void {
         if (2 * indentation + try self.singleline_len() <= WIDTH_LIMIT) {
             try self.format_singleline(writer);
@@ -319,12 +361,18 @@ pub const Value = struct {
                 try writer.print(")", .{});
             },
             .lambda => |lambda| {
-              if (lambda.get_ir()) |ir| {
-                  try writer.print("lambda with IR:\n", .{});
-                  try Value.from(ir).format_indented(writer, indentation + 1);
-              } else {
-                  try writer.print("lambda without IR", .{});
-              }
+                try writer.print("(\\ (", .{});
+                for (lambda.get_args().children(), 0..) |arg, i| {
+                    if (i > 0) try writer.print(" ", .{});
+                    try writer.print("{s}", .{ get_symbol(arg) });
+                }
+                try writer.print(") ", .{});
+                if (lambda.get_ir()) |ir| {
+                    try Value.from(ir).format_singleline_code(writer);
+                } else {
+                    try writer.print("...", .{});
+                }
+                try writer.print(")", .{});
             },
         }
     }
