@@ -5,7 +5,8 @@
     the untyped lambda calculus. It has the following types of values: ints, strings, structs, enums, arrays,
     and functions. With each of these types, you can do different things:
 
-    Ints: You can create ints by writing a number in the code like this: 3. Ints are 64-bit signed integers.
+    Ints: You can create ints by writing a number in the code like this: 3. Ints are 64-bit signed integers. If
+      a number literal is too big to fit into 64 bits, it will crash with "number too big: {number}".
       You can do stuff with ints using these builtin functions:
       - add
       - subtract
@@ -33,8 +34,9 @@
       - field: Takes a struct and a string, returns the field.
 
     Enums: You can create enums by writing a parenthesized group where the first word is "|", like this:
-      (| foo). You can switch on an enum like this: (% some_enum foo 2 bar 5 (baz binding) binding). You can
-      also do stuff with enums using these builtin functions:
+      (| foo). You can switch on an enum like this: (% some_enum foo 2 bar 5 (baz binding) binding). If you
+      switch on a non-enum, you crash with the value: (| switch_on_non_enum value). You can also do stuff
+      with enums using these builtin functions:
       - make_enum: Turns a string and a payload value into an enum: (make_enum "foo" 3) is (| foo 3).
       - variant: Takes an enum, returns the variant as a string: (variant (| foo)) is "foo".
       - payload: Takes an enum, returns the payload: (payload (| some 4)) is 4.
@@ -52,6 +54,7 @@
   # (Functions related to crashing.)
   crash (\ (message) ((. @ crash) message))
   unreachable (\ () (crash "unreachable"))
+  todo (\ (message) (crash (| todo message)))
   ... (\ () (crash "todo"))
   assert (\ (check) (% check true nil false (crash "assert failed")))
 
@@ -113,6 +116,8 @@
   cons (\ (head tail) (| more (& head head tail tail)))
   push (\ (list item)
     (rec list (\ (rec list) (% list empty (cons item empty_list) (more m) (cons (. m head) (rec (. m tail)))))))
+  list_1 (\ (a) (push empty_list a))
+  list_2 (\ (a b) (push (list_1 a) b))
   list_map (\ (list mapper)
     (rec list (\ (rec list) (% list empty empty_list (more m) (cons (mapper (. m head)) (rec (. m tail)))))))
   list_len (\ (list) (rec list (\ (rec list) (% list empty 0 (more m) (+ (rec (. m tail)) 1)))))
@@ -131,6 +136,11 @@
       (% list
         empty (| none)
         (more m) (: current (. m head) (% (check current) true (| some current) false (rec (. m tail))))))))
+  list_any (\ (list check)
+    (rec list (\ (rec list) (% list empty false (more m) (% (check (. m head)) true true false (rec (. m tail)))))))
+  list_concat (\ (a b) (rec a (\ (rec a) (% a empty b (more m) (cons (. m head) (rec (. m tail)))))))
+  list_flatten (\ (lists)
+    (rec lists (\ (rec lists) (% lists empty empty_list (more m) (list_concat (. m head) (rec (. m tail)))))))
 
   # (Arrays)
   array_len (\ (array) ((. @ array_len) array))
@@ -450,8 +460,43 @@
               (| call (&
                 callee (bind (. call callee) bindings)
                 args (array_map (. call args) (\ (arg) (bind arg bindings)))))
-            error code
+            crash code
             _ (crash (| cannot_bind code)))))))
+
+  get_captured (\ (code ignore)
+    (rec_2 code ignore (\ (get_captured code ignore)
+      (% code
+        object empty_list
+        (let let)
+          (list_concat (get_captured (. let def) ignore) (get_captured (. let expr) (cons (. let name) ignore)))
+        (name n) (% (list_any ignore (\ (name) (str== name n))) true empty_list false (cons n empty_list))
+        number empty_list
+        (add args) (list_concat (get_captured (. args left) ignore) (get_captured (. args right) ignore))
+        (subtract args) (list_concat (get_captured (. args left) ignore) (get_captured (. args right) ignore))
+        (multiply args) (list_concat (get_captured (. args left) ignore) (get_captured (. args right) ignore))
+        (divide args) (list_concat (get_captured (. args left) ignore) (get_captured (. args right) ignore))
+        (modulo args) (list_concat (get_captured (. args left) ignore) (get_captured (. args right) ignore))
+        string empty_list
+        (struct fields)
+          (list_flatten (list_map (list_from_array fields) (\ (field) (get_captured (. field value) ignore))))
+        (field field) (get_captured (. field of) ignore)
+        (enum enum) (get_captured (. enum payload) ignore)
+        (switch switch)
+          (list_concat
+            (get_captured (. switch condition) ignore)
+            (list_flatten
+              (list_map (list_from_array (. switch cases)) (\ (case) (:
+                new_ignore (% (. case binding) none ignore (some name) (cons name ignore))
+                (get_captured (. case body) new_ignore))))))
+        (function function)
+          (get_captured (. function body) (list_concat (list_from_array (. function args)) ignore))
+        (call call)
+          (list_concat
+            (get_captured (. call callee) ignore)
+            (list_flatten (list_map (list_from_array (. call args)) (\ (arg) (get_captured arg ignore)))))
+        (crash message) (get_captured message ignore)
+        _ (todo (| get_captured code))))))
+
   optimize_obj (\ (object)
     (crash "todo optimize object"))
   optimize_code (\ (code)
@@ -484,7 +529,7 @@
             (object object) (:
               # (todo: handle field access on non-struct (this should result in a runtime error))
               (% (array_find ((. @ fields) object) (\ (field) (str== (. field name) name)))
-                none (| error "no such field")
+                none (| crash (| object "no such field"))
                 (some field) (| object (. field value))))
             (struct struct) (crash "optimize field of struct")
             _ (| field (& of of name name))))
@@ -495,7 +540,12 @@
           (% payload
             (object payload) (| object ((. @ make_enum) variant payload))
             _ (| enum (& variant variant payload payload))))
-        (function function) (| function (& args (. function args) body (optimize (. function body))))
+        (function function) (:
+          args (. function args)
+          body (optimize (. function body))
+          (% (get_captured body (list_from_array args))
+            empty (| object (make_function args body (&)))
+            more (| function (& args args body body))))
         (call call) (:
           callee (optimize (. call callee))
           args (array_map (. call args) (\ (arg) (optimize arg)))
