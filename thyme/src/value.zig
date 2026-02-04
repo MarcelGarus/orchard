@@ -206,7 +206,7 @@ pub const Value = struct {
                 try writer.print("(\\ (", .{});
                 for (lambda.get_args().children(), 0..) |arg, i| {
                     if (i > 0) try writer.print(" ", .{});
-                    try writer.print("{s}", .{ get_symbol(arg) });
+                    try writer.print("{s}", .{get_symbol(arg)});
                 }
                 try writer.print(") ", .{});
                 if (lambda.get_ir()) |ir| {
@@ -229,6 +229,15 @@ pub const Value = struct {
         if (std.mem.eql(u8, variant, "crash")) {
             try writer.print("(@crash ", .{});
             try payload.format_singleline_code(writer);
+            try writer.print(")", .{});
+            return;
+        }
+        if (std.mem.eql(u8, variant, "let")) {
+            const args = payload.kind().struct_;
+            try writer.print("(: {s} ", .{args.get_field("name").kind().string.get()});
+            try args.get_field("def").format_singleline_code(writer);
+            try writer.print(" ", .{});
+            try args.get_field("expr").format_singleline_code(writer);
             try writer.print(")", .{});
             return;
         }
@@ -268,6 +277,33 @@ pub const Value = struct {
             try payload.format_singleline(writer);
             return;
         }
+        if (std.mem.eql(u8, variant, "struct")) {
+            const struct_payload = payload.kind().array.items();
+            try writer.print("(&", .{});
+            for (struct_payload) |field| {
+                const field_struct = field.kind().struct_;
+                try writer.print(" {s} ", .{field_struct.get_field("name").kind().string.get()});
+                try field_struct.get_field("value").format_singleline_code(writer);
+            }
+            try writer.print(")", .{});
+            return;
+        }
+        if (std.mem.eql(u8, variant, "field")) {
+            const field = payload.kind().struct_;
+            try writer.print("(. ", .{});
+            try field.get_field("of").format_singleline_code(writer);
+            try writer.print(" {s})", .{field.get_field("name").kind().string.get()});
+            return;
+        }
+        if (std.mem.eql(u8, variant, "enum")) {
+            const enum_payload = payload.kind().struct_;
+            const actual_variant = enum_payload.get_field("variant").kind().string.get();
+            const actual_payload = enum_payload.get_field("payload");
+            try writer.print("(| {s} ", .{actual_variant});
+            try actual_payload.format_singleline_code(writer);
+            try writer.print(")", .{});
+            return;
+        }
         if (std.mem.eql(u8, variant, "switch")) {
             const args = payload.kind().struct_;
             try writer.print("(% ", .{});
@@ -287,10 +323,23 @@ pub const Value = struct {
                 if (binding) |name| {
                     try writer.print(" ({s} {s}) ", .{ case_variant, name });
                 } else {
-                    try writer.print(" {s} ", .{ case_variant });
+                    try writer.print(" {s} ", .{case_variant});
                 }
                 try body.format_singleline_code(writer);
             }
+            try writer.print(")", .{});
+            return;
+        }
+        if (std.mem.eql(u8, variant, "function")) {
+            const fun = payload.kind().struct_;
+            try writer.print("(\\ (", .{});
+            const args = fun.get_field("args").kind().array.items();
+            for (args, 0..) |arg, i| {
+                if (i > 0) try writer.print(" ", .{});
+                try writer.print("{s}", .{arg.kind().string.get()});
+            }
+            try writer.print(") ", .{});
+            try fun.get_field("body").format_singleline_code(writer);
             try writer.print(")", .{});
             return;
         }
@@ -364,7 +413,7 @@ pub const Value = struct {
                 try writer.print("(\\ (", .{});
                 for (lambda.get_args().children(), 0..) |arg, i| {
                     if (i > 0) try writer.print(" ", .{});
-                    try writer.print("{s}", .{ get_symbol(arg) });
+                    try writer.print("{s}", .{get_symbol(arg)});
                 }
                 try writer.print(") ", .{});
                 if (lambda.get_ir()) |ir| {
