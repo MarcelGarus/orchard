@@ -572,6 +572,12 @@
           (% payload
             (object payload) (| object (make_enum variant payload))
             _ (| enum (& variant variant payload payload))))
+        (switch switch) (:
+          condition (optimize (. switch condition))
+          cases (array_map (. switch cases) (\ (case) (& variant (. case variant) binding (. case binding) body (optimize (. case body)))))
+          # code
+          (| switch (& condition condition cases cases))
+        )
         (function function) (:
           args (. function args)
           body (optimize (. function body))
@@ -619,13 +625,14 @@
   )
   compile (\ (code)
     (optimize_code (bind (parse code) (bindings_add no_bindings "@" (| object virtual_builtins)))))
-  # (crash (compile "
+  # (crash (optimize_code (compile "
     (:
-    crash (\\ (message) ((. @ crash) message))
-    unreachable (\\ () (crash \"unreachable\"))
-    unreachable
+      nil (&)
+      crash (\\ (message) ((. @ crash) message))
+      assert (\\ (check) (% check true nil false (crash \"assert failed\")))
+      (assert (| true))
     )
-  "))
+  ")))
   (&
     eval (\ (code)
       (optimize_code (bind (parse code) (bindings_add no_bindings "@" (| object virtual_builtins))))
