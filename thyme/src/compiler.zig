@@ -1097,7 +1097,7 @@ const AstToIr = struct {
                 });
                 // _ = try b.assert_is_enum(condition, self.heap, "you can only switch on enums");
                 const variant = try b.get_variant(condition);
-                const result = try self.handle_switch_cases(b, condition, variant, switch_.cases, switch_.default, bindings);
+                const result = try self.handle_switch_cases(b, condition, variant, switch_.cases, switch_.cases, switch_.default, bindings);
                 return result;
             },
             .lambda => |lambda| {
@@ -1172,15 +1172,32 @@ const AstToIr = struct {
         condition: Id,
         variant: Id,
         cases: []const Ast.Case,
+        all_cases: []const Ast.Case,
         default: ?*const Ast.Expr,
         bindings: *Bindings,
     ) !Id {
         if (cases.len == 0) {
-            return if (default) |d|
-                try self.compile_expr(d.*, b, bindings)
-            else
-                // TODO: name the variant in the error message
-                try b.crash_with_string(self.heap, "unknown variant");
+            if (default) |d| {
+                return try self.compile_expr(d.*, b, bindings);
+            } else {
+                var string_parts = std.ArrayList(u8).empty;
+                defer string_parts.deinit(self.ally);
+                try string_parts.appendSlice(self.ally, "unhandled_variant");
+                for (all_cases) |case| {
+                    try string_parts.append(self.ally, '_');
+                    try string_parts.appendSlice(self.ally, case.variant);
+                }
+                const string = try string_parts.toOwnedSlice(self.ally);
+                defer self.ally.free(string);
+
+                const variant_name = try new_symbol(self.heap, string);
+                const type_ = try self.heap.new_inner(&.{ self.common.enum_symbol, variant_name });
+                const compiled = try self.ally.alloc(Id, 2);
+                compiled[0] = try b.object(type_);
+                compiled[1] = condition;
+                const err = try b.new(true, compiled);
+                return try b.crash(err);
+            }
         } else {
             const case = cases[0];
             return try b.if_eq_symbol(self.heap, variant, case.variant, found_it: {
@@ -1195,7 +1212,7 @@ const AstToIr = struct {
                 break :found_it bb.finish(result);
             }, not_found_yet: {
                 var bb = b.child_body();
-                const result = try self.handle_switch_cases(&bb, condition, variant, cases[1..], default, bindings);
+                const result = try self.handle_switch_cases(&bb, condition, variant, cases[1..], all_cases, default, bindings);
                 break :not_found_yet bb.finish(result);
             });
         }
@@ -2421,6 +2438,88 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
     });
     // _ = make_function;
 
+    const symbols_to_strings_rec = try ir_to_instructions(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const rec = try builder.param();
+        const symbols = try builder.param();
+        const index = try builder.param();
+        var b = builder.body();
+        const result = try b.if_eq(index, try b.num_words(symbols), done: {
+            var bb = b.child_body();
+            const result = try bb.object(common.empty_obj);
+            break :done bb.finish(result);
+        }, more: {
+            var bb = b.child_body();
+            const symbol = try bb.load(symbols, index);
+            const string_type = try bb.object(common.string_type);
+            const string = try bb.new(true, try box(ally, .{ string_type, symbol }));
+            const next_index = try bb.add(index, try bb.word(1));
+            const tail = try bb.call(rec, try box(ally, .{ rec, symbols, next_index }));
+            const result = try bb.new(true, try box(ally, .{ string, tail }));
+            break :more bb.finish(result);
+        });
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+    const function_arguments = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const lambda = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+        const type_ = try b.type_of(lambda);
+        const kind = try b.kind_of(type_);
+        _ = try b.if_eq_symbol(heap, kind, "lambda", good: {
+            var bb = b.child_body();
+            break :good try bb.finish_with_zero();
+        }, bad: {
+            var bb = b.child_body();
+            break :bad try bb.finish_with_string_crash(heap, "function_arguments expects a function");
+        });
+        const three = try b.word(3);
+        const args_obj = try b.load(lambda, three);
+        const rec = try b.object(symbols_to_strings_rec);
+        const zero = try b.word(0);
+        const nodes = try b.call(rec, try box(ally, .{ rec, args_obj, zero }));
+        const array_type = try b.object(common.array_type);
+        const all_nodes = try b.new(true, try box(ally, .{ array_type, nodes }));
+        const result = try b.flatten_to_pointers_object(all_nodes);
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+
+    const function_body = try ir_to_lambda(ally, heap, ir: {
+        var builder = Ir.Builder.init(ally);
+        const lambda = try builder.param();
+        _ = try builder.param(); // closure
+        var b = builder.body();
+
+        const type_ = try b.type_of(lambda);
+        const kind = try b.kind_of(type_);
+        _ = try b.if_eq_symbol(heap, kind, "lambda", good: {
+            var bb = b.child_body();
+            break :good try bb.finish_with_zero();
+        }, bad: {
+            var bb = b.child_body();
+            break :bad try bb.finish_with_string_crash(heap, "function_body expects a function");
+        });
+
+        const five = try b.word(5);
+        const num_words = try b.num_words(lambda);
+        const comparison = try b.compare(num_words, five);
+        const result = try b.if_eq(comparison, try b.word(2), no_ir: { // num_words < 5
+             var bb = b.child_body();
+             break :no_ir try bb.finish_with_string_crash(heap, "function has no body");
+        }, has_ir: {
+             var bb = b.child_body();
+             const four = try bb.word(4);
+             const ir_val = try bb.load(lambda, four);
+             break :has_ir bb.finish(ir_val);
+        });
+
+        const body = b.finish(result);
+        break :ir builder.finish(body);
+    });
+
     const builtins = .{
         .collect_garbage = collect_garbage,
         .crash = crash,
@@ -2443,6 +2542,8 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
         .array_len = array_len,
         .array_get = array_get,
         .make_function = make_function,
+        .function_arguments = function_arguments,
+        .function_body = function_body,
     };
 
     var symbols = [_]Obj{undefined} ** @typeInfo(@TypeOf(builtins)).@"struct".fields.len;
