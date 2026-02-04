@@ -180,8 +180,19 @@
   ascii_quote (get_char "\"" 0)
   ascii_backslash (get_char "\\" 0)
 
+  # (Struct stuff.)
+  make_struct (\ (fields) ((. @ make_struct) fields))
+  get_fields (\ (struct) ((. @ fields) struct))
+
+  # (Enum stuff.)
+  make_enum (\ (variant payload) ((. @ make_enum) variant payload))
+  get_variant (\ (enum) ((. @ variant) enum))
+  get_payload (\ (enum) ((. @ payload) enum))
+
   # (Function stuff.)
   make_function (\ (args code captured) ((. @ make_function) args code captured))
+  get_arguments (\ (function) ((. @ function_arguments) function))
+  get_body (\ (function) ((. @ function_body) function))
 
   # (Parsing)
   parse (\ (text) (:
@@ -384,14 +395,13 @@
         (number n) n
         (add args) (+ (eval (. args left) bindings) (eval (. args right) bindings))
         (struct fields)
-          ((. @ make_struct)
-            (array_map fields (\ (field) (& name (. field name) value (eval (. field value) bindings)))))
-        (field field) ((. @ field) (eval (. field of) bindings) (. field name))
-        (enum enum) ((. @ make_enum) (. enum variant) (eval (. enum payload) bindings))
+          (make_struct (array_map fields (\ (field) (& name (. field name) value (eval (. field value) bindings)))))
+        (field field) (get_fields (eval (. field of) bindings) (. field name))
+        (enum enum) (make_enum (. enum variant) (eval (. enum payload) bindings))
         (switch switch) (:
           enum (eval (. switch condition) bindings)
-          variant ((. @ variant) enum)
-          payload ((. @ payload) enum)
+          variant (get_variant enum)
+          payload (get_payload enum)
           case
             (% (array_find (. switch cases) (\ (case) (str== (. case variant) variant)))
               none (crash "Unhandled variant.")
@@ -400,16 +410,16 @@
             (% (. case binding) none bindings (some name) (bindings_add bindings name payload))
           (eval (. case body) new_bindings))
         (function function)
-          ((. @ make_function) (. function args) (. function body) ((. @ make_struct) (array_from_list bindings)))
+          (make_function (. function args) (. function body) (make_struct (array_from_list bindings)))
         (call call) (:
           callee (eval (. call callee) bindings)
           args (array_map (. call args) (\ (arg) (eval arg bindings)))
           inner_bindings (rec 0 (\ (rec i)
             (% (== i (array_len args))
-              true (list_from_array ((. @ fields) (. callee captured)))
+              true (list_from_array (get_fields (. callee captured)))
               false (cons (& name (array_get (. callee args) i) value (array_get args i)) (rec (+ i 1))))))
           (eval (. callee body) inner_bindings))
-        _ (crash (| eval code))
+        _ (todo (| eval code))
         ))))
 
   # (push (push (push (push (push empty_list 1) 2) 3) 4) 5)
@@ -460,8 +470,30 @@
               (| call (&
                 callee (bind (. call callee) bindings)
                 args (array_map (. call args) (\ (arg) (bind arg bindings)))))
-            crash code
-            _ (crash (| cannot_bind code)))))))
+            (crash error) (| crash (bind error bindings))
+            _ (todo (| bind code)))))))
+
+  calls_something (\ (code)
+    (rec code (\ (check code)
+      (% code
+        (call c) true
+        (let l) (or (check (. l def)) (check (. l expr)))
+        name false
+        number false
+        object false
+        string false
+        (add a) (or (check (. a left)) (check (. a right)))
+        (subtract a) (or (check (. a left)) (check (. a right)))
+        (multiply a) (or (check (. a left)) (check (. a right)))
+        (divide a) (or (check (. a left)) (check (. a right)))
+        (modulo a) (or (check (. a left)) (check (. a right)))
+        (struct fields) (array_any fields (\ (f) (check (. f value))))
+        (field f) (check (. f of))
+        (enum e) (check (. e payload))
+        (switch s) (or (check (. s condition)) (array_any (. s cases) (\ (c) (check (. c body)))))
+        function false
+        (crash error) (check error)
+        _ (todo (| calls_something code))))))
 
   get_captured (\ (code ignore)
     (rec_2 code ignore (\ (get_captured code ignore)
@@ -497,8 +529,7 @@
         (crash message) (get_captured message ignore)
         _ (todo (| get_captured code))))))
 
-  optimize_obj (\ (object)
-    (crash "todo optimize object"))
+  optimize_obj (\ (object) (todo "optimize object"))
   optimize_code (\ (code)
     (rec code (\ (optimize code)
       (% code
@@ -514,31 +545,32 @@
           left (optimize (. args left))
           right (optimize (. args right))
           (% right
-            (object right) (% (== right 1) true left false (| multiply (& left left right (| object right))))
-            _ (% left (object left) (optimize (| multiply (& left right right (| object left))))))
-        )
+            (object r) (% (== r 1) true left false (| multiply (& left left right right)))
+            _ (% left
+              object (optimize (| multiply (& left right right left)))
+              _ (| multiply (& left left right right)))))
         (string s) (| object s)
         (struct fields) (:
           fields (array_map fields (\ (field) (& name (. field name) value (optimize (. field value)))))
           are_all_fields_comptime (array_all fields (\ (field) (% (. field value) object true _ false)))
-          (% are_all_fields_comptime true (| object ((. @ make_struct) fields)) false (| struct fields)))
+          (% are_all_fields_comptime true (| object (make_struct fields)) false (| struct fields)))
         (field field) (:
           of (optimize (. field of))
           name (. field name)
           (% of
             (object object) (:
               # (todo: handle field access on non-struct (this should result in a runtime error))
-              (% (array_find ((. @ fields) object) (\ (field) (str== (. field name) name)))
+              (% (array_find (get_fields object) (\ (field) (str== (. field name) name)))
                 none (| crash (| object "no such field"))
                 (some field) (| object (. field value))))
-            (struct struct) (crash "optimize field of struct")
+            (struct struct) (todo "optimize field of struct")
             _ (| field (& of of name name))))
         (enum enum) (:
           variant (. enum variant)
           payload (optimize (. enum payload))
           is_payload_comptime (% payload object true _ false)
           (% payload
-            (object payload) (| object ((. @ make_enum) variant payload))
+            (object payload) (| object (make_enum variant payload))
             _ (| enum (& variant variant payload payload))))
         (function function) (:
           args (. function args)
@@ -549,52 +581,57 @@
         (call call) (:
           callee (optimize (. call callee))
           args (array_map (. call args) (\ (arg) (optimize arg)))
+          interesting (array_any args (\ (arg) (% arg name false _ true)))
+          # (% interesting false nil true (crash (& args args callee callee)))
           should_inline
             (% callee
-              (mehhh_object function) (:
-                params (. function args)
-                bindings
-                  (rec 0 (\ (rec i)
-                    (% (== i (array_len params))
-                      true no_bindings
-                      false (bindings_add (rec (+ i 1)) (array_get params i) (array_get args i)))))
-                (| yeah (bind (. function body) bindings))
-              )
-              _ (| nope))
-          (% should_inline
-            nope (| call (& callee callee args args))
-            (yeah to_inline) (optimize to_inline)
-            _ (crash "should we inline?"))
-          )
+              _ (| nope)
+              (object function)
+                (% (calls_something (get_body function))
+                  true (| nope)
+                  false (:
+                    params (get_arguments function)
+                    bindings
+                      (rec 0 (\ (rec i)
+                        (% (== i (array_len params))
+                          true no_bindings
+                          false (bindings_add (rec (+ i 1)) (array_get params i) (array_get args i)))))
+                    result (bind (get_body function) bindings)
+                    # (% interesting false nil true (crash (& callee callee args args params params bindings bindings body (get_body function) result result)))
+                    # (% interesting false nil true (crash (& args args)))
+                    (| yeah result))))
+          (% should_inline nope (| call (& callee callee args args)) (yeah to_inline) (optimize to_inline)))
         _ code))))
 
   # (eval (parse "(% (| bar 5) foo 1 (bar b) b baz 3)") no_bindings)
   # (eval (parse "(: a 5 (+ a 1))") no_bindings)
   virtual_builtins (&
-    crash (make_function
-      (array_from_list (push empty_list "message"))
-      (| crash (| name "message"))
+    crash (make_function (array_from_list (list_1 "message")) (| crash (| name "message")) (&))
+    add (make_function (array_from_list (list_2 "a" "b")) (| add (& left (| name "a1") right (| name "b"))) (&))
+    subtract (make_function
+      (array_from_list (list_2 "a" "b"))
+      (| subtract (& left (| name "a2") right (| name "b")))
       (&))
-    add (&
-      args (array_from_list (push (push empty_list "a") "b"))
-      body (| add (& left (| name "a") right (| name "b")))
-      captured (&))
-    subtract (&
-      args (array_from_list (push (push empty_list "a") "b"))
-      body (| subtract (& left (| name "a") right (| name "b")))
-      captured (&))
-    multiply (&
-      args (array_from_list (push (push empty_list "a") "b"))
-      body (| multiply (& left (| name "a") right (| name "b")))
-      captured (&))
+    multiply (make_function
+      (array_from_list (list_2 "a" "b"))
+      (| multiply (& left (| name "a3") right (| name "b")))
+      (&))
   )
   compile (\ (code)
     (optimize_code (bind (parse code) (bindings_add no_bindings "@" (| object virtual_builtins)))))
+  # (crash (compile "
+    (:
+    crash (\\ (message) ((. @ crash) message))
+    unreachable (\\ () (crash \"unreachable\"))
+    unreachable
+    )
+  "))
   (&
     eval (\ (code)
       (optimize_code (bind (parse code) (bindings_add no_bindings "@" (| object virtual_builtins))))
       ))
 )
+
 
 pow_rec = |rec, base, so_far, i| if i.==(0) then so_far else rec(rec, base, so_far.*(base), i.-(1))
 pow = |base, i| pow_rec(pow_rec, base, 1, i)
