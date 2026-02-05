@@ -61,8 +61,7 @@ pub fn main() !void {
     // const eval = app.kind().struct_.get_field("eval");
     // const code_str = try Val.String.new(&heap, code);
     // const result = try vm.call(eval.kind().lambda, &.{code_str.as_value()});
-    // _ = result;
-    // std.debug.print("Result: {f}\n", .{ result });
+    // std.debug.print("Result: {f}\n", .{result});
     if (true) return;
     // app = try handle_tasks(ally, &vm, app);
 

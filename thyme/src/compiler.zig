@@ -38,19 +38,21 @@ const Ast = struct {
         int: i64,
         string: Str,
         struct_: Struct,
-        enum_: Enum,
         member: Member,
+        enum_: Enum,
         switch_: Switch,
+        array: Array,
         lambda: Lambda,
         call: Call,
     };
     pub const Let = struct { name: Str, value: *const Expr, expr: *const Expr };
     pub const Struct = struct { fields: []const Field };
     pub const Field = struct { name: Str, value: Expr };
-    pub const Enum = struct { variant: []const u8, payload: *const Expr };
     pub const Member = struct { of: *const Expr, name: Str };
+    pub const Enum = struct { variant: []const u8, payload: *const Expr };
     pub const Switch = struct { condition: *const Expr, cases: []const Case, default: ?*const Expr };
     pub const Case = struct { variant: []const u8, payload_name: ?Str, body: *const Expr };
+    pub const Array = struct { items: []const Expr };
     pub const Lambda = struct { params: []Str, body: *const Expr };
     pub const Call = struct { callee: *const Expr, args: []const Expr };
 
@@ -128,6 +130,14 @@ const Ast = struct {
                     try format_expr(arg, writer, indentation + 2);
                 }
                 for (0..indentation + 1) |_| try writer.print("  ", .{});
+                try writer.print(")", .{});
+            },
+            .array => |array| {
+                try writer.print("([]", .{});
+                for (array.items) |item| {
+                    try writer.print("\n", .{});
+                    try format_expr(item, writer, indentation + 1);
+                }
                 try writer.print(")", .{});
             },
         }
@@ -288,6 +298,11 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
                             expr = new;
                         }
                         return expr;
+                    }
+                    if (std.mem.eql(u8, name, "[]")) {
+                        var items = try ally.alloc(Ast.Expr, group.len - 1);
+                        for (group[1..], 0..) |item, i| items[i] = try add_semantics(ally, item);
+                        return .{ .array = .{ .items = items } };
                     }
                     if (std.mem.eql(u8, name, "&")) {
                         if (group.len % 2 != 1) return error.BadStruct;
@@ -1100,6 +1115,13 @@ const AstToIr = struct {
                 const result = try self.handle_switch_cases(b, condition, variant, switch_.cases, switch_.cases, switch_.default, bindings);
                 return result;
             },
+            .array => |array| {
+                const array_type = try b.object(self.common.array_type);
+                var items = try self.ally.alloc(Id, 1 + array.items.len);
+                items[0] = array_type;
+                for (1.., array.items) |i, item| items[i] = try self.compile_expr(item, b, bindings);
+                return try b.new(true, items);
+            },
             .lambda => |lambda| {
                 const ty = try b.object(self.common.lambda_type);
                 const captured = try get_captured(self.ally, lambda);
@@ -1253,8 +1275,8 @@ const AstToIr = struct {
             .int => {},
             .string => {},
             .struct_ => |struct_| for (struct_.fields) |field| try collect_captured(ally, field.value, ignore, out),
-            .enum_ => |enum_| try collect_captured(ally, enum_.payload.*, ignore, out),
             .member => |member| try collect_captured(ally, member.of.*, ignore, out),
+            .enum_ => |enum_| try collect_captured(ally, enum_.payload.*, ignore, out),
             .switch_ => |switch_| {
                 try collect_captured(ally, switch_.condition.*, ignore, out);
                 for (switch_.cases) |case| {
@@ -1265,6 +1287,7 @@ const AstToIr = struct {
                 }
                 if (switch_.default) |d| try collect_captured(ally, d.*, ignore, out);
             },
+            .array => |array| for (array.items) |item| try collect_captured(ally, item, ignore, out),
             .lambda => |lambda| {
                 const len = ignore.items.len;
                 for (lambda.params) |param| try ignore.append(ally, param);
