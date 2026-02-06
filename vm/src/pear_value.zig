@@ -3,6 +3,7 @@ const Heap = @import("heap.zig");
 const Address = Heap.Address;
 const Word = Heap.Word;
 const Obj = Heap.Obj;
+const Vm = @import("vm.zig");
 
 pub fn new_empty(heap: *Heap) !Obj {
     var b = try heap.build_leaf();
@@ -142,6 +143,18 @@ pub const Lambda = struct {
     pub fn get_ir(self: Lambda) ?Obj {
         if (self.obj.children().len < 5) return null;
         return self.obj.child(4);
+    }
+
+    pub fn call(lambda: Lambda, vm: *Vm, args: []const Value) !Value {
+        vm.impl.heap.dump_stats();
+        const instructions = lambda.obj.child(1);
+        const closure = lambda.obj.child(2);
+        const num_params = lambda.obj.child(3).children().len;
+        if (num_params != args.len) @panic("called function with wrong number of params");
+        for (args) |arg| try vm.impl.push(arg.obj.address);
+        try vm.impl.push(closure.address);
+        try vm.impl.run(instructions);
+        return .{ .obj = .{ .address = vm.impl.pop() } };
     }
 };
 

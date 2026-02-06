@@ -1,4 +1,4 @@
-// This file contains the Thyme compiler, turning source code into heap objects.
+// This file contains the Pear compiler, turning source code into heap objects.
 
 const std = @import("std");
 const Writer = std.io.Writer;
@@ -10,7 +10,7 @@ const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Obj = Heap.Obj;
 const Instruction = @import("instruction.zig").Instruction;
-const Val = @import("value.zig");
+const Val = @import("pear_value.zig");
 const new_empty = Val.new_empty;
 const new_symbol = Val.new_symbol;
 const get_symbol = Val.get_symbol;
@@ -2631,4 +2631,12 @@ pub fn code_to_lambda(ally: Ally, heap: *Heap, common: CommonObjects, env: anyty
     const ast = try str_to_ast(ally, code);
     const ir = try ast_to_ir(ally, heap, common, env, ast);
     return try ir_to_lambda(ally, heap, ir);
+}
+
+pub fn eval(vm: *Vm, ally: Ally, common: CommonObjects, env: anytype, code: []const u8) !Val.Value {
+    const check = vm.get_heap().checkpoint();
+    const fun = try code_to_lambda(ally, vm.get_heap(), common, env, code);
+    const fun_ = try vm.deduplicate(check, fun);
+    const result = try vm.call(Val.Lambda.from(fun_), &[_]Val.Value{});
+    return result;
 }

@@ -24,7 +24,7 @@ const Word = Heap.Word;
 const Obj = Heap.Obj;
 const Instruction = @import("instruction.zig").Instruction;
 const ObjMap = @import("obj_map.zig").ObjMap;
-const Val = @import("value.zig");
+const Val = @import("pear_value.zig");
 
 const Vm = @This();
 
@@ -94,7 +94,7 @@ pub fn make_run_fun(ally: Ally) ![]const u8 {
     var code = MachineCode.init(ally);
     // Args: vm state (rdi), Zig state (rsi), machine code (rdx)
 
-    // Switch from Sys-V calling convention to Thyme calling convention.
+    // Switch from Sys-V calling convention to Orchard calling convention.
     try code.emit("mov r15, rsp", .{});
     try code.emit("mov r14, rsi", .{});
     try code.emit("mov r13, rdi", .{});
@@ -111,7 +111,7 @@ pub fn make_run_fun(ally: Ally) ![]const u8 {
     const b = code.len();
     code.patch(a, "add rax, {:8}", .{@as(i8, @intCast(b))});
 
-    // Switch from Thyme calling convention to Sys-V calling convention.
+    // Switch from Orchard calling convention to Sys-V calling convention.
     try code.emit("mov rdi, r13", .{});
     try code.emit("mov [rdi], r8", .{}); // heap
     try code.emit("mov [rdi + 8], rsp", .{}); // data stack

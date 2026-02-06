@@ -17,12 +17,10 @@ const ArrayList = std.ArrayList;
 const Ally = std.mem.Allocator;
 const builtin = @import("builtin");
 
-const compiler = @import("compiler.zig");
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Obj = Heap.Obj;
 const Instruction = @import("instruction.zig").Instruction;
-const Val = @import("value.zig");
 
 // Depending on the system, choose a different implementation.
 // The implementation should provide the following fields/functions:
@@ -52,28 +50,8 @@ pub fn pop(vm: *Vm) Word {
     return vm.impl.pop();
 }
 
-pub fn eval(vm: *Vm, ally: Ally, common: compiler.CommonObjects, env: anytype, code: []const u8) !Val.Value {
-    const check = vm.impl.heap.checkpoint();
-    const fun = try compiler.code_to_lambda(ally, vm.impl.heap, common, env, code);
-    const fun_ = try vm.deduplicate(check, fun);
-    const result = try vm.call(Val.Lambda.from(fun_), &[_]Val.Value{});
-    return result;
-}
-
 pub fn run(vm: *Vm, instructions: Obj) !void {
     try vm.impl.run(instructions);
-}
-
-pub fn call(vm: *Vm, lambda: Val.Lambda, args: []const Val.Value) !Val.Value {
-    vm.impl.heap.dump_stats();
-    const instructions = lambda.obj.child(1);
-    const closure = lambda.obj.child(2);
-    const num_params = lambda.obj.child(3).children().len;
-    if (num_params != args.len) @panic("called function with wrong number of params");
-    for (args) |arg| try vm.impl.push(arg.obj.address);
-    try vm.impl.push(closure.address);
-    try vm.impl.run(instructions);
-    return .{ .obj = .{ .address = vm.impl.pop() } };
 }
 
 pub fn garbage_collect(vm: *Vm, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {

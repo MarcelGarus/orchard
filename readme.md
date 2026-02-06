@@ -6,10 +6,19 @@ I explore languages with different language complexity vs. efficiency vs. ergono
 
 The most interesting bits:
 
-- **Thyme**:
-  A virtual machine for a stack-based byte code that operates on a heap of immutable objects.
-  Also contains a programming language, which is basically just the untyped lambda calculus with Lisp syntax.  
-  [`thyme/`](thyme/) contains the Zig implementation.
+- **VM**:
+  A virtual machine for a stack-based byte code that operates on a heap of immutable objects.  
+  [`vm/`](vm/) contains the VM, written in Zig.  
+  [`vm/vm_interpreter.zig`](vm/vm_interpreter.zig) contains the core interpreter.  
+  [`vm/vm_x86_64.zig`](vm/vm_x86_64.zig) contains a JIT compiler.  
+- **Olive**:
+  A low-level programming language that allows you to create objects and byte code in the Orchard VM.  
+  [`vm/compiler_olive.zig`](vm/compiler_olive.zig) contains an Olive compiler written in Zig.  
+  [`olive/`](olive/) contains Olive code.
+- **Pear**:
+  A functional programming language that is basically just the untyped lambda calculus with Lisp syntax.  
+  [`vm/compiler_pear.zig`](vm/compiler_pear.zig) contains a Pear compiler written in Zig.  
+  [`pear/`](pear/) contains Pear code.
 - **Ground**:
   A low-level stack-based byte code.  
   [`ground/readme.md`](ground/readme.md) contains the specification.  

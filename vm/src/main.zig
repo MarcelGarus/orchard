@@ -1,23 +1,22 @@
 const std = @import("std");
-const thyme_zig = @import("thyme_zig");
-const compiler = @import("compiler.zig");
-const Ir = compiler.Ir;
-const ir_to_lambda = compiler.ir_to_lambda;
-const ir_to_fun = compiler.ir_to_fun;
-const instructions_to_fun = compiler.instructions_to_fun;
-const parsley_compiler = @import("compiler_parsley.zig");
+const pear_compiler = @import("compiler_pear.zig");
+const Ir = pear_compiler.Ir;
+const ir_to_lambda = pear_compiler.ir_to_lambda;
+const ir_to_fun = pear_compiler.ir_to_fun;
+const instructions_to_fun = pear_compiler.instructions_to_fun;
+const olive_compiler = @import("compiler_olive.zig");
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Instruction = @import("instruction.zig").Instruction;
 const Vm = @import("vm.zig");
 const Graphics = @import("graphics.zig");
-const Val = @import("value.zig");
+const Val = @import("pear_value.zig");
 const Obj = Heap.Obj;
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
 pub fn main() !void {
-    std.debug.print("Time to Thyme.\n", .{});
+    std.debug.print("Orchard!\n", .{});
 
     var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
     const ally = debug_ally.allocator();
@@ -55,9 +54,9 @@ pub fn main() !void {
 
     // const common = try compiler.CommonObjects.create(ally, &heap);
     // const builtins = try compiler.create_builtins(ally, &heap, common);
-    const file = try std.fs.cwd().openFile("bootstrap.parsley", .{});
+    const file = try std.fs.cwd().openFile("../olive/bootstrap.olive", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
-    const result = try parsley_compiler.eval(ally, &vm, code);
+    const result = try olive_compiler.eval(ally, &vm, code);
     // try vm.run(instructions);
     // const app = try vm.eval(ally, common, .{ .@"@" = builtins }, code);
     // std.debug.print("Output: {f}\n", .{app});
@@ -83,8 +82,8 @@ pub fn main() !void {
     //         const update_lambda = heap.load(app, 2);
     //         try object_mod.assert_lambda(&heap, update_lambda);
     //         for (gfx.event_queue.items) |event| {
-    //             // TODO: do the decision of handling in thyme
-    //             const thyme_event = event: switch (event) {
+    //             // TODO: do the decision of handling in Pear
+    //             const pear_event = event: switch (event) {
     //                 .entered_char => |char| {
     //                     std.debug.print("Char: {d}\n", .{char.codepoint});
     //                     const kind = try Symbol.new(&heap, "char");
@@ -104,7 +103,7 @@ pub fn main() !void {
     //                     break :event try heap.new_inner(.{ kind, keycode, control_pressed, shift_pressed, alt_pressed });
     //                 },
     //             };
-    //             app = try vm.call(heap.load(update_lambda, 0), &[_]Address{ thyme_event, heap.load(update_lambda, 1) });
+    //             app = try vm.call(heap.load(update_lambda, 0), &[_]Address{ pear_event, heap.load(update_lambda, 1) });
     //             app = try handle_tasks(ally, &vm, app);
 
     //             {

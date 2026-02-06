@@ -6,7 +6,7 @@ const Writer = std.io.Writer;
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Obj = Heap.Obj;
-const Val = @import("value.zig");
+const Val = @import("pear_value.zig");
 const new_symbol = Val.new_symbol;
 const get_symbol = Val.get_symbol;
 

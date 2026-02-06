@@ -1,7 +1,7 @@
 const std = @import("std");
 const Heap = @import("heap.zig");
 const Obj = Heap.Obj;
-const Val = @import("value.zig");
+const Val = @import("pear_value.zig");
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const builtin = @import("builtin");
@@ -157,7 +157,7 @@ pub fn init(ally: Ally) !*Graphics {
     const window = gl.glfwCreateWindow(
         @as(i32, @intFromFloat(scale * 1000)),
         @as(i32, @intFromFloat(scale * 600)),
-        "Thyme",
+        "Orchard",
         null,
         null,
     );

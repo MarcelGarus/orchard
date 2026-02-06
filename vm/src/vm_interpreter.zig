@@ -7,7 +7,7 @@ const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Obj = Heap.Obj;
 const Instruction = @import("instruction.zig").Instruction;
-const Val = @import("value.zig");
+const Val = @import("pear_value.zig");
 const ObjMap = @import("obj_map.zig").ObjMap;
 
 const Vm = @This();

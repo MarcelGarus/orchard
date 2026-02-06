@@ -1,16 +1,16 @@
-// This file contains the Thyme compiler, turning source code into heap objects.
+// This file contains the Olive compiler, turning source code into heap objects.
 
 const std = @import("std");
 const Writer = std.io.Writer;
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const Map = std.AutoArrayHashMap;
+const StringMap = std.StringHashMap;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Obj = Heap.Obj;
 const Instruction = @import("instruction.zig").Instruction;
-const Val = @import("value.zig");
+const Val = @import("pear_value.zig");
 const new_empty = Val.new_empty;
 const new_symbol = Val.new_symbol;
 const get_symbol = Val.get_symbol;
@@ -318,7 +318,7 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
     }
 }
 
-pub fn function_to_object(ally: Ally, heap: *Heap, params: []const Str, body: Ast.Expr, defs: *Map(Str, Obj)) !Obj {
+pub fn function_to_object(ally: Ally, heap: *Heap, params: []const Str, body: Ast.Expr, defs: *StringMap(Obj)) !Obj {
     var vars = ArrayList(Var).empty;
     for (params, 0..) |param, i| try vars.append(ally, .{ .name = param, .offset = i });
     var instructions = ArrayList(Instruction).empty;
@@ -331,7 +331,7 @@ fn ast_to_instructions(
     heap: *Heap,
     expr: Ast.Expr,
     instructions: *ArrayList(Instruction),
-    defs: *Map(Str, Obj),
+    defs: *StringMap(Obj),
     vars: *ArrayList(Var),
     stack_size: usize,
 ) error{ OutOfMemory, BadProgram }!void {
@@ -389,10 +389,10 @@ fn ast_to_instructions(
     }
 }
 
-pub fn eval(ally: Ally, vm: *Vm, code: Str) !Map(Str, Obj) {
+pub fn eval(ally: Ally, vm: *Vm, code: Str) !StringMap(Obj) {
     const ast = try str_to_ast(ally, code);
     std.debug.print("AST:\n{f}", .{ast});
-    var defs = Map(Str, Obj).init(ally);
+    var defs = StringMap(Obj).init(ally);
     for (ast.defs) |def| {
         const instructions = try function_to_object(ally, vm.get_heap(), &.{}, def.value, &defs);
         try vm.run(instructions);

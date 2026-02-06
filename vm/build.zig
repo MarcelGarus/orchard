@@ -1,4 +1,4 @@
-// Builds the Thyme VM with graphics support.
+// Builds the Orchard VM with graphics support.
 
 // To future me reading this: Graphics development is a mess. The graphics stack
 // and the abstractions differ based on hardware and OS. Because I spent the day
@@ -85,17 +85,17 @@ pub fn build(b: *std.Build) void {
         nanovg.addIncludePath(b.path("nanovg/web/libc"));
     }
 
-    const thyme = b.createModule(.{
+    const orchard = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    //thyme.linkLibrary(raylib.artifact("raylib"));
-    thyme.addImport("nanovg", nanovg);
+    //orchard.linkLibrary(raylib.artifact("raylib"));
+    orchard.addImport("nanovg", nanovg);
 
     const exe = b.addExecutable(.{
-        .name = "thyme",
-        .root_module = thyme,
+        .name = "orchard",
+        .root_module = orchard,
     });
     if (target.result.cpu.arch.isWasm()) {
         exe.rdynamic = true;
@@ -133,6 +133,6 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    const run_step = b.step("run", "Run Thyme");
+    const run_step = b.step("run", "Run Orchard");
     run_step.dependOn(&run_cmd.step);
 }
