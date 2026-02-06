@@ -1,416 +1,55 @@
-// This file contains the Thyme compiler, turning source code into heap objects.
+(:
+  # (The IR:
+    | also (& ignored value)
+      let (& name def value)
+      name String
+      word Word
+      object Object
+      new (& has_pointers: Bool words: (Array Ir))
+      flatten_to_pointers_object Ir
+      flatten_to_literals_object Ir
+      has_pointers Ir # takes address, returns 1 or 0
+      num_words Ir // takes address, returns number of words
+      load: Load, // loads a field of an object
+      add (& left right)
+      subtract (& left right)
+      multiply (& left right)
+      divide (& left right)
+      modulo (& left right)
+      shift_left (& left right)
+      shift_right (& left right)
+      compare (& left right) // equal: 0, greater: 1, less: 2
+      call (& instructions: Object args: (Array Object))
+      if_not_zero (& condition then else)
+      crash Ir
+  )
 
-const std = @import("std");
-const Writer = std.io.Writer;
-const Ally = std.mem.Allocator;
-const ArrayList = std.ArrayList;
-const Map = std.AutoArrayHashMap;
-
-const Heap = @import("heap.zig");
-const Word = Heap.Word;
-const Obj = Heap.Obj;
-const Instruction = @import("instruction.zig").Instruction;
-const Val = @import("value.zig");
-const new_empty = Val.new_empty;
-const new_symbol = Val.new_symbol;
-const get_symbol = Val.get_symbol;
-const Vm = @import("vm.zig");
-
-const Str = []const u8;
-
-fn box(ally: Ally, value: anytype) !*@TypeOf(value) {
-    const ptr = try ally.create(@TypeOf(value));
-    ptr.* = value;
-    return ptr;
-}
-
-// The abstract syntax tree represents the syntax of the program, omitting stuff
-// that's irrelevant for the semantics such as comments and whitespace.
-
-const ProtoAst = union(enum) { name: Str, int: i64, string: Str, group: []const ProtoAst };
-
-const Ast = struct {
-    expr: Expr,
-
-    pub const Expr = union(enum) {
-        name: Str,
-        let: Let,
-        int: i64,
-        string: Str,
-        struct_: Struct,
-        member: Member,
-        enum_: Enum,
-        switch_: Switch,
-        array: Array,
-        lambda: Lambda,
-        call: Call,
-    };
-    pub const Let = struct { name: Str, value: *const Expr, expr: *const Expr };
-    pub const Struct = struct { fields: []const Field };
-    pub const Field = struct { name: Str, value: Expr };
-    pub const Member = struct { of: *const Expr, name: Str };
-    pub const Enum = struct { variant: []const u8, payload: *const Expr };
-    pub const Switch = struct { condition: *const Expr, cases: []const Case, default: ?*const Expr };
-    pub const Case = struct { variant: []const u8, payload_name: ?Str, body: *const Expr };
-    pub const Array = struct { items: []const Expr };
-    pub const Lambda = struct { params: []Str, body: *const Expr };
-    pub const Call = struct { callee: *const Expr, args: []const Expr };
-
-    pub fn format(expr: Expr, writer: *Writer) !void {
-        try format_expr(expr, writer, 0);
-    }
-    pub fn format_expr(expr: Expr, writer: *Writer, indentation: usize) !void {
-        for (0..indentation) |_| try writer.print("  ", .{});
-        switch (expr) {
-            .name => |name| try writer.print("{s}", .{name}),
-            .int => |int| try writer.print("{}", .{int}),
-            .string => |string| try writer.print("\"{s}\"", .{string}),
-            .let => |let| {
-                try writer.print("(: {s}\n", .{let.name});
-                try format_expr(let.value.*, writer, indentation + 1);
-                try writer.print("\n", .{});
-                try format_expr(let.expr.*, writer, indentation + 1);
-                try writer.print(")", .{});
-            },
-            .struct_ => |struct_| {
-                try writer.print("(&\n", .{});
-                for (struct_.fields) |field| {
-                    for (0..indentation + 1) |_| try writer.print("  ", .{});
-                    try writer.print("{s}\n", .{field.name});
-                    try format_expr(field.value, writer, indentation + 1);
-                    try writer.print("\n", .{});
-                }
-            },
-            .member => |member| {
-                try writer.print("(.\n", .{});
-                try format_expr(member.of.*, writer, indentation);
-                try writer.print("\n", .{});
-                for (0..indentation) |_| try writer.print("  ", .{});
-                try writer.print("{s})\n", .{member.name});
-            },
-            .enum_ => |enum_| {
-                try writer.print("(| {s}\n", .{enum_.variant});
-                try format_expr(enum_.payload.*, writer, indentation + 2);
-                try writer.print(")", .{});
-            },
-            .switch_ => |switch_| {
-                try writer.print("(%\n", .{});
-                try format_expr(switch_.condition.*, writer, indentation + 1);
-                for (switch_.cases) |case| {
-                    for (0..indentation) |_| try writer.print("  ", .{});
-                    try writer.print("{s}", .{case.variant});
-                    if (case.payload_name) |payload_name| {
-                        try writer.print(" {s}", .{payload_name});
-                    }
-                    try writer.print("\n", .{});
-                    try format_expr(case.body.*, writer, indentation + 1);
-                }
-                if (switch_.default) |d| {
-                    for (0..indentation) |_| try writer.print("  ", .{});
-                    try writer.print("_\n", .{});
-                    try format_expr(d.*, writer, indentation + 1);
-                }
-                try writer.print(")", .{});
-            },
-            .lambda => |lambda| {
-                try writer.print("(\\ (", .{});
-                for (0.., lambda.params) |i, param| {
-                    if (i > 0) try writer.print(" ", .{});
-                    try writer.print("{s}", .{param});
-                }
-                try writer.print(")\n", .{});
-                try format_expr(lambda.body.*, writer, indentation + 1);
-                try writer.print(")", .{});
-            },
-            .call => |call| {
-                try writer.print("(\n", .{});
-                try format_expr(call.callee.*, writer, indentation);
-                for (call.args) |arg| {
-                    try writer.print("\n", .{});
-                    try format_expr(arg, writer, indentation + 2);
-                }
-                for (0..indentation + 1) |_| try writer.print("  ", .{});
-                try writer.print(")", .{});
-            },
-            .array => |array| {
-                try writer.print("([]", .{});
-                for (array.items) |item| {
-                    try writer.print("\n", .{});
-                    try format_expr(item, writer, indentation + 1);
-                }
-                try writer.print(")", .{});
-            },
-        }
-    }
-};
-
-pub fn str_to_ast(ally: Ally, input: Str) !Ast.Expr {
-    var parser = Parser{ .ally = ally, .input = input, .cursor = 0 };
-    const expr = parser.parse_expr() catch |e| {
-        std.debug.print("Error at {}: {}\n", .{ parser.cursor, e });
-        @panic("bad input");
-    } orelse return error.ExpectedExpr;
-    parser.consume_whitespace();
-    if (parser.cursor < parser.input.len) std.debug.print("Unparsed input at {}.\n", .{parser.cursor});
-    return try add_semantics(ally, expr);
-}
-const Parser = struct {
-    ally: Ally,
-    input: Str,
-    cursor: usize,
-
-    fn current(parser: Parser) u8 {
-        return if (parser.is_at_end()) 0 else parser.input[parser.cursor];
-    }
-    fn advance(parser: *Parser) void {
-        parser.cursor += 1;
-    }
-    fn is_at_end(parser: Parser) bool {
-        return parser.cursor >= parser.input.len;
-    }
-    fn consume_whitespace(parser: *Parser) void {
-        while (true) : (parser.advance()) {
-            if (parser.current() == ' ') continue;
-            if (parser.current() == '\n') continue;
-            break;
-        }
-    }
-    fn consume_char(parser: *Parser) u8 {
-        const char = parser.current();
-        parser.advance();
-        return char;
-    }
-    fn consume(parser: *Parser, prefix: Str) bool {
-        parser.consume_whitespace();
-        const start = parser.cursor;
-        for (prefix) |char| {
-            if (parser.current() != char) {
-                parser.cursor = start;
-                return false;
-            }
-            parser.advance();
-        }
-        return true;
-    }
-
-    fn parse_name(parser: *Parser) ?Str {
-        parser.consume_whitespace();
-        const start = parser.cursor;
-        while (true) {
-            const char = parser.current();
-            const is_letter = char != ' ' and char != '\n' and char != '(' and char != ')';
-            if (is_letter) parser.advance() else break;
-        }
-        const end = parser.cursor;
-        if (start == end) return null;
-        return parser.input[start..end];
-    }
-
-    fn parse_int(parser: *Parser) ?i64 {
-        parser.consume_whitespace();
-        const start = parser.cursor;
-        var num: i64 = 0;
-        while (true) {
-            const char = parser.current();
-            const digit = std.mem.indexOfScalar(u8, "0123456789", char) orelse break;
-            num = num * 10 + @as(i64, @intCast(digit));
-            parser.advance();
-        }
-        const end = parser.cursor;
-        if (start == end) return null;
-        return num;
-    }
-
-    fn parse_string(parser: *Parser) !?Str {
-        if (!parser.consume("\"")) return null;
-        var b = ArrayList(u8).empty;
-        while (true) {
-            if (parser.is_at_end()) return error.StringDoesNotEnd;
-            if (parser.current() == '\"') {
-                parser.advance();
-                break;
-            }
-            if (try parser.parse_escaped()) |escaped|
-                try b.appendSlice(parser.ally, escaped)
-            else
-                try b.append(parser.ally, parser.consume_char());
-        }
-        return b.items;
-    }
-    fn parse_escaped(parser: *Parser) !?Str {
-        if (parser.current() != '\\') return null;
-        parser.advance();
-        if (parser.is_at_end()) return error.NoEscapeSequence;
-        const char = parser.consume_char();
-        if (char == '\\') return "\\";
-        if (char == '"') return "\"";
-        if (char == 'n') return "\n";
-        return error.UnknownEscapeSequence;
-    }
-
-    fn parse_group(parser: *Parser) !?[]const ProtoAst {
-        if (!parser.consume("(")) return null;
-        var parts = ArrayList(ProtoAst).empty;
-        while (try parser.parse_expr()) |expr| try parts.append(parser.ally, expr);
-        if (!parser.consume(")")) return error.ExpectedClosingBracket;
-        return parts.items;
-    }
-
-    fn parse_expr(parser: *Parser) error{
-        OutOfMemory,
-        StringDoesNotEnd,
-        NoEscapeSequence,
-        UnknownEscapeSequence,
-        ExpectedExpr,
-        ExpectedClosingBracket,
-    }!?ProtoAst {
-        if (parser.parse_int()) |int| return .{ .int = int };
-        if (try parser.parse_string()) |string| return .{ .string = string };
-        if (parser.parse_name()) |name| return .{ .name = name };
-        if (try parser.parse_group()) |exprs| return .{ .group = exprs };
-        return null;
-    }
-};
-fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
-    switch (ast) {
-        .name => |n| return .{ .name = n },
-        .int => |i| return .{ .int = i },
-        .string => |s| return .{ .string = s },
-        .group => |group| {
-            if (group.len == 0) return error.ExpectedExpr;
-            switch (group[0]) {
-                .name => |name| {
-                    if (std.mem.eql(u8, name, ":")) {
-                        if (group.len % 2 == 1) return error.BadLet;
-                        var expr = try add_semantics(ally, group[group.len - 1]);
-                        for (0..group.len / 2 - 1) |i| {
-                            const let_name = switch (group[group.len - 2 * i - 3]) {
-                                .name => |n| n,
-                                else => return error.BadLet,
-                            };
-                            if (std.mem.eql(u8, let_name, "#")) continue;
-                            const value = try add_semantics(ally, group[group.len - 2 * i - 2]);
-                            const new = Ast.Expr{ .let = .{
-                                .name = let_name,
-                                .value = try box(ally, value),
-                                .expr = try box(ally, expr),
-                            } };
-                            expr = new;
-                        }
-                        return expr;
-                    }
-                    if (std.mem.eql(u8, name, "[]")) {
-                        var items = try ally.alloc(Ast.Expr, group.len - 1);
-                        for (group[1..], 0..) |item, i| items[i] = try add_semantics(ally, item);
-                        return .{ .array = .{ .items = items } };
-                    }
-                    if (std.mem.eql(u8, name, "&")) {
-                        if (group.len % 2 != 1) return error.BadStruct;
-                        var fields = try ally.alloc(Ast.Field, group.len / 2);
-                        for (0..group.len / 2) |i|
-                            fields[i] = .{
-                                .name = switch (group[2 * i + 1]) {
-                                    .name => |n| n,
-                                    else => return error.BadStruct,
-                                },
-                                .value = try add_semantics(ally, group[2 * i + 2]),
-                            };
-                        return .{ .struct_ = .{ .fields = fields } };
-                    }
-                    if (std.mem.eql(u8, name, ".")) {
-                        if (group.len != 3) return error.BadMember;
-                        const of = try add_semantics(ally, group[1]);
-                        const member = switch (group[2]) {
-                            .name => |n| n,
-                            else => return error.BadMember,
-                        };
-                        return .{ .member = .{ .of = try box(ally, of), .name = member } };
-                    }
-                    if (std.mem.eql(u8, name, "|")) {
-                        if (group.len < 2 or group.len > 3) return error.BadEnum;
-                        const variant = switch (group[1]) {
-                            .name => |n| n,
-                            else => return error.BadEnum,
-                        };
-                        const payload = if (group.len == 3)
-                            try add_semantics(ally, group[2])
-                        else
-                            Ast.Expr{ .struct_ = .{ .fields = &.{} } }; // Directly create an empty Ast.Struct
-                        return .{ .enum_ = .{ .variant = variant, .payload = try box(ally, payload) } };
-                    }
-                    if (std.mem.eql(u8, name, "%")) {
-                        if (group.len % 2 == 1) return error.BadSwitch;
-                        const condition = try add_semantics(ally, group[1]);
-                        var cases = ArrayList(Ast.Case).empty;
-                        var default: ?Ast.Expr = null;
-                        for (0..group.len / 2 - 1) |i| {
-                            var case_variant: Str = undefined;
-                            var case_payload_name: ?Str = null;
-                            switch (group[2 * i + 2]) {
-                                .name => |n| case_variant = n,
-                                .group => |g| {
-                                    if (g.len != 2) return error.BadSwitch;
-                                    case_variant = switch (g[0]) {
-                                        .name => |n| n,
-                                        else => return error.BadSwitch,
-                                    };
-                                    case_payload_name = switch (g[1]) {
-                                        .name => |n| n,
-                                        else => return error.BadSwitch,
-                                    };
-                                },
-                                else => return error.BadSwitch,
-                            }
-                            const body = try add_semantics(ally, group[2 * i + 3]);
-                            if (std.mem.eql(u8, case_variant, "_")) {
-                                if (default != null) @panic("switch with multiple default variants");
-                                if (case_payload_name != null) @panic("switch default with payload name");
-                                default = body;
-                            } else {
-                                try cases.append(ally, .{
-                                    .variant = case_variant,
-                                    .payload_name = case_payload_name,
-                                    .body = try box(ally, body),
-                                });
-                            }
-                        }
-                        return .{ .switch_ = .{
-                            .condition = try box(ally, condition),
-                            .cases = cases.items,
-                            .default = if (default) |d| try box(ally, d) else null,
-                        } };
-                    }
-                    if (std.mem.eql(u8, name, "\\")) {
-                        if (group.len != 3) return error.BadLambda;
-                        var params = ArrayList(Str).empty;
-                        for (switch (group[1]) {
-                            .group => |g| g,
-                            else => return error.BadLambda,
-                        }) |param| {
-                            switch (param) {
-                                .name => |n| try params.append(ally, n),
-                                else => return error.BadLambda,
-                            }
-                        }
-                        return .{ .lambda = .{
-                            .params = params.items,
-                            .body = try box(ally, try add_semantics(ally, group[2])),
-                        } };
-                    }
-                },
-                else => {},
-            }
-            const callee = try add_semantics(ally, group[0]);
-            var args = ArrayList(Ast.Expr).empty;
-            for (group[1..]) |arg| try args.append(ally, try add_semantics(ally, arg));
-            return .{ .call = .{ .callee = try box(ally, callee), .args = args.items } };
-        },
-    }
-}
-
-// The Intermediate Representation is a semantic representation of code.
-// Variable names have been removed, nested expressions been flattened, and
-// everything is just a graph.
+  # (The Waffle:
+    | param
+      also (& ignored value)
+      let (& id def value)
+      ref id
+      word word
+      object object
+      new (& has_pointers words)
+      flatten_to_pointers_object object
+      flatten_to_literals_object object
+      has_pointers object
+      num_words object
+      load base offset
+      add (& left right)
+      subtract (& left right)
+      multiply (& left right)
+      divide (& left right)
+      modulo (& left right)
+      shift_left (& left right)
+      shift_right (& left right)
+      compare (& left right)
+      call (& left right)
+      if_not_zero (& left right)
+      crash (& left right)
+  )
+)
 
 pub const Ir = struct {
     nodes: []Node,
@@ -1810,6 +1449,9 @@ pub fn create_builtins(ally: Ally, heap: *Heap, common: CommonObjects) !Obj {
                 var bbb = bb.child_body();
                 const fun = try bbb.loadi(lambda, 1);
                 const closure = try bbb.loadi(lambda, 2);
+                # (A function for making recursive stuff easier.)
+                rec (\ (state fun) (: rec (\ (rec state) (fun (\ (state) (rec rec state)) state)) (rec rec state)))
+                rec_2 (\ (a b fun) (: rec (\ (rec a b) (fun (\ (a b) (rec rec a b)) a b)) (rec rec a b)))
                 const unchecked = try bbb.object(unchecked_collect_garbage);
                 const args = try ally.alloc(Ir.Id, 2);
                 args[0] = fun;

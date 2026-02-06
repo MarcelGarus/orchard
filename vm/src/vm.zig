@@ -42,6 +42,16 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
     return .{ .impl = try Impl.init(heap, ally) };
 }
 
+pub fn get_heap(vm: *Vm) *Heap {
+    return vm.impl.heap;
+}
+pub fn push(vm: *Vm, word: Word) !void {
+    try vm.impl.push(word);
+}
+pub fn pop(vm: *Vm) Word {
+    return vm.impl.pop();
+}
+
 pub fn eval(vm: *Vm, ally: Ally, common: compiler.CommonObjects, env: anytype, code: []const u8) !Val.Value {
     const check = vm.impl.heap.checkpoint();
     const fun = try compiler.code_to_lambda(ally, vm.impl.heap, common, env, code);
@@ -50,11 +60,20 @@ pub fn eval(vm: *Vm, ally: Ally, common: compiler.CommonObjects, env: anytype, c
     return result;
 }
 
+pub fn run(vm: *Vm, instructions: Obj) !void {
+    try vm.impl.run(instructions);
+}
+
 pub fn call(vm: *Vm, lambda: Val.Lambda, args: []const Val.Value) !Val.Value {
     vm.impl.heap.dump_stats();
+    const instructions = lambda.obj.child(1);
+    const closure = lambda.obj.child(2);
     const num_params = lambda.obj.child(3).children().len;
     if (num_params != args.len) @panic("called function with wrong number of params");
-    return vm.impl.call(lambda, args);
+    for (args) |arg| try vm.impl.push(arg.obj.address);
+    try vm.impl.push(closure.address);
+    try vm.impl.run(instructions);
+    return .{ .obj = .{ .address = vm.impl.pop() } };
 }
 
 pub fn garbage_collect(vm: *Vm, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {

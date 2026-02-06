@@ -55,13 +55,16 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
     };
 }
 
-pub fn call(vm: *Vm, lambda: Val.Lambda, args: []const Val.Value) !Val.Value {
-    const instructions = lambda.obj.child(1);
-    const closure = lambda.obj.child(2);
-    for (args) |arg| try vm.data_stack.push(arg.obj.address);
-    try vm.data_stack.push(closure.address);
-    try vm.run(try vm.parse(instructions));
-    return .{ .obj = .{ .address = vm.data_stack.pop() } };
+pub fn push(vm: *Vm, word: Word) !void {
+    try vm.data_stack.push(word);
+}
+pub fn pop(vm: *Vm) Word {
+    return vm.data_stack.pop();
+}
+
+pub fn run(vm: *Vm, instructions_obj: Obj) error{ ParseError, OutOfMemory }!void {
+    const parsed = try vm.parse(instructions_obj);
+    try vm.run_parsed(parsed);
 }
 pub fn parse(vm: *Vm, instructions_obj: Obj) ![]const Instruction {
     if (vm.parsed_cache.get(instructions_obj)) |parsed| return parsed;
@@ -69,7 +72,7 @@ pub fn parse(vm: *Vm, instructions_obj: Obj) ![]const Instruction {
     try vm.parsed_cache.put(vm.ally, instructions_obj, parsed);
     return parsed;
 }
-pub fn run(vm: *Vm, instructions: []const Instruction) !void {
+pub fn run_parsed(vm: *Vm, instructions: []const Instruction) !void {
     for (instructions) |instruction| {
         //std.debug.print("{any}\n", .{vm.data_stack.used});
         //std.debug.print("Running {f}", .{instruction});
@@ -130,7 +133,7 @@ pub fn run(vm: *Vm, instructions: []const Instruction) !void {
             .@"if" => |if_| {
                 const condition = vm.data_stack.pop();
                 const body_to_run = if (condition != 0) if_.then else if_.else_;
-                try run(vm, body_to_run);
+                try vm.run_parsed(body_to_run);
             },
             .new => |new| {
                 const stack = vm.data_stack.memory[0..vm.data_stack.used];
@@ -206,7 +209,7 @@ pub fn run(vm: *Vm, instructions: []const Instruction) !void {
                 vm.heap.dump_stats();
                 try vm.data_stack.push(mapped_keep.address);
             },
-            .eval => try vm.run(try vm.parse(Obj{ .address = vm.data_stack.pop() })),
+            .eval => try vm.run(Obj{ .address = vm.data_stack.pop() }),
             .crash => {
                 const message = vm.data_stack.pop();
                 std.debug.print("Crashed:\n{f}\n", .{Val.Value.from(Obj{ .address = message })});

@@ -5,6 +5,7 @@ const Ir = compiler.Ir;
 const ir_to_lambda = compiler.ir_to_lambda;
 const ir_to_fun = compiler.ir_to_fun;
 const instructions_to_fun = compiler.instructions_to_fun;
+const parsley_compiler = @import("compiler_parsley.zig");
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Instruction = @import("instruction.zig").Instruction;
@@ -52,16 +53,18 @@ pub fn main() !void {
     // }
     // if (true) return;
 
-    const common = try compiler.CommonObjects.create(ally, &heap);
-    const builtins = try compiler.create_builtins(ally, &heap, common);
-    const file = try std.fs.cwd().openFile("code.thyme", .{});
+    // const common = try compiler.CommonObjects.create(ally, &heap);
+    // const builtins = try compiler.create_builtins(ally, &heap, common);
+    const file = try std.fs.cwd().openFile("bootstrap.parsley", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
-    const app = try vm.eval(ally, common, .{ .@"@" = builtins }, code);
-    std.debug.print("Output: {f}\n", .{app});
+    const result = try parsley_compiler.eval(ally, &vm, code);
+    // try vm.run(instructions);
+    // const app = try vm.eval(ally, common, .{ .@"@" = builtins }, code);
+    // std.debug.print("Output: {f}\n", .{app});
     // const eval = app.kind().struct_.get_field("eval");
     // const code_str = try Val.String.new(&heap, code);
     // const result = try vm.call(eval.kind().lambda, &.{code_str.as_value()});
-    // std.debug.print("Result: {f}\n", .{result});
+    std.debug.print("Result: {any}\n", .{result});
     if (true) return;
     // app = try handle_tasks(ally, &vm, app);
 

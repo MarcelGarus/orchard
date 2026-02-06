@@ -1,0 +1,81 @@
+_ "
+  This is Parsley, a low-level language for my VM.
+  This file consists of a number of top-level definitions of the form '{name} {expr}' that are executed one
+  after another, resulting in heap objects. Definitions can refer to previous definitions.
+
+  Every expression, once evaluated results in a heap object. The following expressions exist:
+  - Number literals: 4. These result in a leaf object with the number inside.
+  - String literals like this comment. These result in a leaf object with the characters inside (See heap.zig's
+    new_symbol function).
+  - Allocations: (# 3). These create inner objects (objects that point to other objects).
+  - Functions: (\\ (a) (+ a a)). These get turned into instruction objects. They can't capture anything from the
+    outer environment (although they can of course refer to previous top-level definitions).
+  - Calls: (+ a a). These evaluate the instructions of the callee.
+  - Let bindings: (: foo 3 foo).
+  - If: (if something then else). Executes then if something is non-zero, otherwise else.
+
+  You can think of Parsley as a low-level companion language to Thyme. Thyme is memory-safe (the first
+  word of every Thyme value points to a meta-object describing the type); operations like calling a
+  function, getting a struct field, etc. check for correct types up front.
+  Parsley is a lower-level language. In the long term, the idea is for the Thyme compiler, as well as the
+  Thyme-builtin functions to be implemented in Parsley. Parsley itself doesn't have any builtin functions.
+  Instead, functions like add are defined in user-space as a series of instructions.
+"
+
+empty_obj (#)
+
+instr_word (\ (word) (# "word" word))
+instr_stack (\ (offset) (# "stack" offset))
+instr_add (\ () (# "add"))
+instr_subtract (\ () (# "subtract"))
+instr_multiply (\ () (# "multiply"))
+instr_divide (\ () (# "divide"))
+instr_modulo (\ () (# "modulo"))
+instr_load (\ () (# "load"))
+instr_popover (\ (amount) (# "popover" amount))
+instr_if (\ (then else) (# "if" then else))
+
++ (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_add) (instr_popover 1))
+- (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_subtract) (instr_popover 1))
+* (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_multiply) (instr_popover 1))
+/ (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_divide) (instr_popover 1))
+mod (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_modulo) (instr_popover 1))
+
+result (+ 2 3)
+
+
+
+# (
+
+crash (# (instr_crash))
+unreachable (\ () (crash "unreachable"))
+todo (\ (message) (crash message))
+... (\ () (crash "todo"))
+assert (\ (check) (if check (\ () nil) (\ () (crash "assert failed"))))
+
+# (The IR:
+    | also (& ignored value)
+      let (& name def value)
+      name String
+      word Word
+      object Object
+      new (& has_pointers: Bool words: (Array Ir))
+      flatten_to_pointers_object Ir
+      flatten_to_literals_object Ir
+      has_pointers Ir # takes address, returns 1 or 0
+      num_words Ir // takes address, returns number of words
+      load: Load, // loads a field of an object
+      add (& left right)
+      subtract (& left right)
+      multiply (& left right)
+      divide (& left right)
+      modulo (& left right)
+      shift_left (& left right)
+      shift_right (& left right)
+      compare (& left right) // equal: 0, greater: 1, less: 2
+      call (& instructions: Object args: (Array Object))
+      if_not_zero (& condition then else)
+      crash Ir
+  )
+
+)
