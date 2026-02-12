@@ -257,22 +257,21 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
             switch (group[0]) {
                 .name => |name| {
                     if (std.mem.eql(u8, name, ":")) {
-                        if (group.len % 2 == 1) return error.BadLet;
-                        var expr = try add_semantics(ally, group[group.len - 1]);
-                        for (0..group.len / 2 - 1) |i| {
-                            const let_name = switch (group[group.len - 2 * i - 3]) {
-                                .name => |n| n,
-                                else => return error.BadLet,
-                            };
-                            const value = try add_semantics(ally, group[group.len - 2 * i - 2]);
-                            const new = Ast.Expr{ .let = .{
-                                .name = let_name,
-                                .def = try box(ally, value),
-                                .expr = try box(ally, expr),
-                            } };
-                            expr = new;
+                        if (group.len != 4) {
+                            std.debug.print("Bad let with {} children:\n{any}\n", .{ group.len, ast });
+                            return error.BadLet;
                         }
-                        return expr;
+                        const let_name = switch (group[1]) {
+                            .name => |n| n,
+                            else => return error.BadLet,
+                        };
+                        const def = try add_semantics(ally, group[2]);
+                        const expr = try add_semantics(ally, group[3]);
+                        return Ast.Expr{ .let = .{
+                            .name = let_name,
+                            .def = try box(ally, def),
+                            .expr = try box(ally, expr),
+                        } };
                     }
                     if (std.mem.eql(u8, name, "#")) {
                         var children = try ally.alloc(Ast.Expr, group.len - 1);
@@ -280,7 +279,10 @@ fn add_semantics(ally: Ally, ast: ProtoAst) !Ast.Expr {
                         return .{ .new = .{ .children = children } };
                     }
                     if (std.mem.eql(u8, name, "if")) {
-                        if (group.len != 4) return error.BadIf;
+                        if (group.len != 4) {
+                            std.debug.print("Bad if: {any}\n", .{ast});
+                            return error.BadIf;
+                        }
                         const condition = try add_semantics(ally, group[1]);
                         const then = try add_semantics(ally, group[2]);
                         const else_ = try add_semantics(ally, group[3]);
@@ -323,6 +325,7 @@ pub fn function_to_object(ally: Ally, heap: *Heap, params: []const Str, body: As
     for (params, 0..) |param, i| try vars.append(ally, .{ .name = param, .offset = i });
     var instructions = ArrayList(Instruction).empty;
     try ast_to_instructions(ally, heap, body, &instructions, defs, &vars, params.len);
+    if (params.len > 0) try instructions.append(ally, .{ .popover = params.len });
     return try Instruction.new_instructions(ally, heap, instructions.items);
 }
 const Var = struct { name: Str, offset: usize };
@@ -357,7 +360,10 @@ fn ast_to_instructions(
             try instructions.append(ally, .{ .popover = 1 });
             _ = vars.pop() orelse unreachable;
         },
-        .int => |int| try instructions.append(ally, .{ .word = @bitCast(int) }),
+        .int => |int| {
+            try instructions.append(ally, .{ .word = @bitCast(int) });
+            try instructions.append(ally, .{ .new = .{ .has_pointers = false, .num_words = 1 } });
+        },
         .string => |string| {
             const obj = try new_symbol(heap, string);
             try instructions.append(ally, .{ .address = obj });
@@ -368,6 +374,8 @@ fn ast_to_instructions(
         },
         .if_ => |if_| {
             try ast_to_instructions(ally, heap, if_.condition.*, instructions, defs, vars, stack_size);
+            try instructions.append(ally, .{ .word = 0 });
+            try instructions.append(ally, .load);
             var then_instructions = ArrayList(Instruction).empty;
             try ast_to_instructions(ally, heap, if_.then.*, &then_instructions, defs, vars, stack_size);
             var else_instructions = ArrayList(Instruction).empty;
@@ -391,14 +399,17 @@ fn ast_to_instructions(
 
 pub fn eval(ally: Ally, vm: *Vm, code: Str) !StringMap(Obj) {
     const ast = try str_to_ast(ally, code);
-    std.debug.print("AST:\n{f}", .{ast});
     var defs = StringMap(Obj).init(ally);
     for (ast.defs) |def| {
+        std.debug.print("\nRunning {s}\n", .{def.name});
         const instructions = try function_to_object(ally, vm.get_heap(), &.{}, def.value, &defs);
         try vm.run(instructions);
         const result = Obj{ .address = vm.pop() };
         try defs.put(def.name, result);
     }
-    std.debug.print("Defs: {any}", .{defs});
-    @panic("todo");
+    var it = defs.iterator();
+    while (it.next()) |entry| {
+        std.debug.print("  {s} = {x}\n", .{ entry.key_ptr.*, entry.value_ptr.address });
+    }
+    return defs;
 }
