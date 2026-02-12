@@ -1,5 +1,5 @@
 _ "
-  This is Parsley, a low-level language for my VM.
+  This is Olive, a low-level language for my VM.
   This file consists of a number of top-level definitions of the form '{name} {expr}' that are executed one
   after another, resulting in heap objects. Definitions can refer to previous definitions.
 
@@ -8,8 +8,8 @@ _ "
   - String literals like this comment. These result in a leaf object with the characters inside (See heap.zig's
     new_symbol function).
   - Allocations: (# 3). These create inner objects (objects that point to other objects).
-  - Functions: (\\ (a) (+ a a)). These get turned into instruction objects. They can't capture anything from the
-    outer environment (although they can of course refer to previous top-level definitions).
+  - Functions: (\\ (a) (+ a a)). These get turned into instruction objects. They can't capture anything from
+    the outer environment (although they can of course refer to previous top-level definitions).
   - Calls: (+ a a). These evaluate the instructions of the callee.
   - Let bindings: (: foo 3 foo).
   - If: (if something then else). Executes then if something is non-zero, otherwise else.
@@ -17,65 +17,305 @@ _ "
   You can think of Olive as a low-level companion language to Pear. Pear is memory-safe (the first
   word of every Pear value points to a meta-object describing the type); operations like calling a
   function, getting a struct field, etc. check for correct types up front.
-  Parsley is a lower-level language. In the long term, the idea is for the Pear compiler, as well as the
-  Pear-builtin functions to be implemented in Parsley. Parsley itself doesn't have any builtin functions.
-  Instead, functions like add are defined in user-space as a series of instructions.
+  In the long term, the idea is for the Pear compiler, as well as the Pear-builtin functions to be
+  implemented in Olive. Olive itrec doesn't have any builtin functions. Instead, functions like add are
+  defined in user-space as a series of instructions.
 "
 
-empty_obj (#)
+_ "Instruction constructors"
+$word (\ (word) (# "word" word))
+$stack (\ (offset) (# "stack" offset))
+$add (\ () (# "add"))
+$subtract (\ () (# "subtract"))
+$multiply (\ () (# "multiply"))
+$divide (\ () (# "divide"))
+$modulo (\ () (# "modulo"))
+$load (\ () (# "load"))
+$popover (\ (amount) (# "popover" amount))
+$if (\ (then else) (# "if" then else))
+$crash (\ () (# "crash"))
+$new (\ (has_pointers num_words) (# "new" has_pointers num_words))
+$compare (\ () (# "compare"))
+$size (\ () (# "size"))
+$shr (\ () (# "shr"))
+$shl (\ () (# "shl"))
+$flatlito (\ () (# "flatlito"))
+$flatptro (\ () (# "flatptro"))
+$pop (\ (amount) (# "pop" amount))
+$object (\ (obj) (# "address" obj))
 
-instr_word (\ (word) (# "word" word))
-instr_stack (\ (offset) (# "stack" offset))
-instr_add (\ () (# "add"))
-instr_subtract (\ () (# "subtract"))
-instr_multiply (\ () (# "multiply"))
-instr_divide (\ () (# "divide"))
-instr_modulo (\ () (# "modulo"))
-instr_load (\ () (# "load"))
-instr_popover (\ (amount) (# "popover" amount))
-instr_if (\ (then else) (# "if" then else))
+_ "Arithmetic stuff"
+test ($word 0)
++ (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($add) ($popover 1) ($new 0 1))
+- (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($subtract) ($popover 2) ($new 0 1))
+* (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($multiply) ($popover 1) ($new 0 1))
+/ (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($divide) ($popover 2) ($new 0 1))
+mod (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($modulo) ($popover 2) ($new 0 1))
+>> (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($shr) ($popover 2) ($new 0 1))
+<< (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($shl) ($popover 2) ($new 0 1))
 
-+ (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_add) (instr_popover 1))
-- (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_subtract) (instr_popover 1))
-* (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_multiply) (instr_popover 1))
-/ (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_divide) (instr_popover 1))
-mod (# (instr_word 0) (instr_load) (instr_stack 1) (instr_word 0) (instr_load) (instr_modulo) (instr_popover 1))
-
-result (+ 2 3)
-
-
-
-# (
-
-crash (# (instr_crash))
+_ "Crashing stuff"
+crash (# ($crash))
 unreachable (\ () (crash "unreachable"))
 todo (\ (message) (crash message))
 ... (\ () (crash "todo"))
-assert (\ (check) (if check (\ () nil) (\ () (crash "assert failed"))))
 
-# (The IR:
-    | also (& ignored value)
-      let (& name def value)
-      name String
-      word Word
-      object Object
-      new (& has_pointers: Bool words: (Array Ir))
-      flatten_to_pointers_object Ir
-      flatten_to_literals_object Ir
-      has_pointers Ir # takes address, returns 1 or 0
-      num_words Ir // takes address, returns number of words
-      load: Load, // loads a field of an object
-      add (& left right)
-      subtract (& left right)
-      multiply (& left right)
-      divide (& left right)
-      modulo (& left right)
-      shift_left (& left right)
-      shift_right (& left right)
-      compare (& left right) // equal: 0, greater: 1, less: 2
-      call (& instructions: Object args: (Array Object))
-      if_not_zero (& condition then else)
-      crash Ir
-  )
+_ "Bool stuff"
+false 0
+true 1
+and (\ (a b) (* a b))
+and-3 (\ (a b c) (and (and a b) c))
+and-4 (\ (a b c d) (and (and-3 a b c) d))
+and-5 (\ (a b c d e) (and (and-4 a b c d) e))
+or (\ (a b) (if a true b))
+not (\ (a) (- 1 a))
 
-)
+_ "Comparison functions that return raw values (for direct use with 'if')."
+= (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($subtract) ($if (# ($object false)) (# ($object true))) ($popover 1))
+!= (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($subtract) ($if (# ($object true)) (# ($object false))) ($popover 1))
+< (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($compare) ($word 2) ($subtract) ($if (# ($object false)) (# ($object true))) ($popover 2))
+< (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($compare) ($word 1) ($subtract) ($if (# ($object false)) (# ($object true))) ($popover 2))
+<= (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($compare) ($word 1) ($subtract) ($if (# ($object true)) (# ($object false))) ($popover 2))
+>= (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($compare) ($word 2) ($subtract) ($if (# ($object true)) (# ($object false))) ($popover 2))
+
+_ "Object stuff"
+size (# ($size) ($new 0 1))
+. (# ($stack 1) ($word 0) ($load) ($load) ($popover 1))
+nil (#)
+nil? (\ (obj) (= 0 (size obj)))
+list-to-leaf (# ($flatlito))
+list-to-array (# ($flatptro))
+array-to-list-rec (\ (rec array i) (if (= i (size array)) nil (# (. i array) (rec rec array (+ i 1)))))
+array-to-list (\ (array) (array-to-list-rec array-to-list-rec array 0))
+
+_ "More numbers stuff"
+is-even (\ (a) (= (mod a 2) 0))
+is-odd (\ (a) (= (mod a 2) 1))
+
+_ "Linked list stuff"
+head (\ (list) (. 0 list))
+tail (\ (list) (. 1 list))
+list-len-rec (\ (rec list) (if (nil? list) 0 (+ 1 (rec rec (tail list)))))
+list-len (\ (list) (list-len-rec list-len-rec list))
+list-reverse-rec (\ (rec list acc) (if (nil? list) acc (rec rec (tail list) (# (head list) acc))))
+list-reverse (\ (list) (list-reverse-rec list-reverse-rec list nil))
+list-get-rec (\ (rec list n) (if (= n 0) (head list) (rec rec (tail list) (- n 1))))
+list-get (\ (list n) (list-get-rec list-get-rec list n))
+list-map-rec (\ (rec f input list) (if (nil? list) nil (# (f f input (head list)) (rec rec f input (tail list)))))
+list-map (\ (f input list) (list-map-rec list-map-rec f input list))
+
+_ "String stuff"
+str-get (\ (string index)
+  (: word_index (/ index 8)
+    (if (>= word_index (size string))
+      0
+      (: word ((# ($new 0 1)) (. word_index string))
+        (mod (>> word (* (mod index 8) 8)) 256)))))
+str=-rec (\ (rec a b i)
+  (: ca (str-get a i) (: cb (str-get b i) (if (= ca 0) (= cb 0) (if (= ca cb) (rec rec a b (+ i 1)) false)))))
+str= (\ (a b) (str=-rec str=-rec a b 0))
+substr-pack-rec (\ (rec s pos end shift acc)
+  (if (>= shift 64)
+    acc
+    (if (>= pos end) acc (rec rec s (+ pos 1) end (+ shift 8) (+ acc (* (str-get s pos) (<< 1 shift)))))))
+substr-rec (\ (rec s pos end)
+  (if (>= pos end) nil (# (substr-pack-rec substr-pack-rec s pos end 0 0) (rec rec s (+ pos 8) end))))
+substr (\ (s start end) (list-to-leaf (substr-rec substr-rec s start end)))
+chars-to-str-pack-rec (\ (rec chars shift acc)
+  (if (>= shift 64)
+    (# acc chars)
+    (if (nil? chars) (# acc chars) (rec rec (tail chars) (+ shift 8) (+ acc (* (head chars) (<< 1 shift)))))))
+chars-to-str-rec (\ (rec chars)
+  (if (nil? chars) nil (: r (chars-to-str-pack-rec chars-to-str-pack-rec chars 0 0) (# (head r) (rec rec (tail r))))))
+chars-to-str (\ (chars) (list-to-leaf (chars-to-str-rec chars-to-str-rec chars)))
+
+_ "Chars"
+ascii-newline 10
+ascii-space 32
+ascii-quote 34
+ascii-open-paren 40
+ascii-close-paren 41
+ascii-0 48
+ascii-9 57
+ascii-backslash 92
+ascii-n 110
+
+_ "Parse the string into an abstract syntax (AST) using a recursive descent parser.
+  The individual parsing functions accept the input and a cursor. They return either:
+    (# cursor) = no match
+    (# cursor value) = match"
+has-result (\ (result) (= (size result) 2))
+result-cursor (\ (result) (. 0 result))
+result-value (\ (result) (. 1 result))
+is-whitespace (\ (char) (or (= char ascii-newline) (= char ascii-space)))
+is-digit (\ (char) (and (>= char ascii-0) (<= char ascii-9)))
+is-name (\ (char)
+  (and-5
+    (not (is-whitespace char))
+    (!= char ascii-open-paren)
+    (!= char ascii-close-paren)
+    (!= char ascii-quote)
+    (!= char 0)))
+consume-whitespace-rec (\ (rec input cursor)
+  (: c (str-get input cursor) (if (is-whitespace c) (rec rec input (+ cursor 1)) cursor)))
+consume-whitespace (\ (input cursor) (consume-whitespace-rec consume-whitespace-rec input cursor))
+parse-int-rec (\ (rec input cursor num)
+  (: c (str-get input cursor)
+    (if (is-digit c) (rec rec input (+ cursor 1) (+ (* num 10) (- c ascii-0))) (# cursor num))))
+parse-int (\ (input cursor)
+  (if (is-digit (str-get input cursor)) (parse-int-rec parse-int-rec input cursor 0) (# cursor)))
+parse-name-end (\ (rec input cursor) (if (is-name (str-get input cursor)) (rec rec input (+ cursor 1)) cursor))
+parse-name (\ (input cursor)
+  (: start (consume-whitespace input cursor)
+    (: end (parse-name-end parse-name-end input start)
+      (if (= start end) (# start) (# end (# "name" (substr input start end)))))))
+parse-string-rec (\ (rec input cursor acc)
+  (: c (str-get input cursor)
+    (if (= c 0) (crash "string does not end")
+      (if (= c ascii-quote) (# (+ cursor 1) acc)
+        (if (= c ascii-backslash)
+          (: escaped (str-get input (+ cursor 1))
+            (if (= escaped ascii-backslash) (rec rec input (+ cursor 2) (# ascii-backslash acc))
+              (if (= escaped ascii-quote) (rec rec input (+ cursor 2) (# ascii-quote acc))
+                (if (= escaped ascii-n) (rec rec input (+ cursor 2) (# ascii-newline acc))
+                  (crash "unknown escape sequence")))))
+          (rec rec input (+ cursor 1) (# c acc)))))))
+parse-string (\ (input cursor)
+  (: cursor (consume-whitespace input cursor)
+    (if (= (str-get input cursor) ascii-quote)
+      (: r (parse-string-rec parse-string-rec input (+ cursor 1) nil)
+        (# (result-cursor r) (chars-to-str (list-reverse (result-value r)))))
+      (# cursor))))
+parse-expr-rec (\ (parse-expr parse-exprs input cursor)
+  (: cursor (consume-whitespace input cursor)
+    (: c (str-get input cursor)
+      (: int-res (parse-int input cursor)
+        (if (has-result int-res)
+          (# (result-cursor int-res) (# "int" (result-value int-res)))
+          (: str-res (parse-string input cursor)
+            (if (has-result str-res)
+              (# (result-cursor str-res) (# "string" (result-value str-res)))
+              (if (= c ascii-open-paren)
+                (: group (parse-exprs parse-expr parse-exprs input (+ cursor 1))
+                  (: cursor (consume-whitespace input (result-cursor group))
+                    (if (= (str-get input cursor) ascii-close-paren)
+                      (# (+ cursor 1) (# "group" (list-to-array (result-value group))))
+                      (crash "expected closing paren"))))
+                (: name-res (parse-name input cursor) (if (has-result name-res) name-res (# cursor)))))))))))
+parse-exprs-rec (\ (parse-expr parse-exprs input cursor)
+  (: r (parse-expr parse-expr parse-exprs input cursor)
+    (if (has-result r)
+      (: rest (parse-exprs parse-expr parse-exprs input (result-cursor r))
+        (# (result-cursor rest) (# (result-value r) (result-value rest))))
+      (# cursor (#)))))
+parse-string-to-raw (\ (input)
+  (: r (parse-expr-rec parse-expr-rec parse-exprs-rec input 0)
+    (if (has-result r) (result-value r) (crash "failed to parse"))))
+
+_ "Convert the raw tree consisting only of number, string, name, and group expressions, into semantic
+  entities like let bindings, functions, calls, etc."
+tag (\ (value) (. 0 value))
+has-tag (\ (value checked) (str= (tag value) checked))
+match-let (\ (rec sem children)
+  (if (nil? (tail children))
+    (sem sem (head children))
+    (: first (head children)
+      (: second (head (tail children))
+        (: rest (tail (tail children))
+          (: name (if (has-tag first "name") (. 1 first) (crash "bad let"))
+            (if (str= name "#")
+              (rec rec sem rest)
+              (: def (sem sem second) (# "let" name def (rec rec sem rest))))))))))
+match-fields (\ (rec sem fields)
+  (if (nil? fields)
+    nil
+    (: first (head fields)
+      (: second (head (tail fields))
+        (: rest (tail (tail fields))
+          (: field
+            (# (if (has-tag first "name") (. 1 first) (crash "bad struct")) (sem sem second))
+            (# field (rec rec sem rest))))))))
+match-cases (\ (rec sem cases)
+  (if (nil? cases)
+    nil
+    (: first (head cases)
+      (: second (head (tail cases))
+        (: rest (tail (tail cases))
+          (: case
+            (#
+              (if (has-tag first "name")
+                (# (. 1 first))
+                (if (has-tag first "group")
+                  (: children (. 1 first)
+                    (if (= (size children) 2)
+                      (#
+                        (if (has-tag (. 0 children) "name") (. 1 (. 0 children)) (crash "bad switch"))
+                        (if (has-tag (. 1 children) "name") (. 1 (. 1 children)) (crash "bad switch")))
+                      (crash "bad switch")))
+                  (crash "bad switch")))
+              (sem sem second))
+            (# case (rec rec sem rest))))))))
+extract-default-case (\ (rec cases)
+  (if (nil? cases)
+    (# nil nil)
+    (: case (head cases)
+      (if (str= (. 0 (. 0 case)) "_")
+        (# (tail cases) (. 1 case))
+        (: rest (rec rec (tail cases))
+          (# (# case (. 0 rest)) (. 1 rest)))))))
+match-params (\ (rec nodes)
+  (if (nil? nodes)
+    nil
+    (# (if (has-tag (head nodes) "name") (. 1 (head nodes)) (crash "bad function")) (rec rec (tail nodes)))))
+add-sems (\ (rec sem nodes)
+  (if (nil? nodes) nil (# (sem sem (head nodes)) (rec rec sem (tail nodes)))))
+add-sem (\ (sem node)
+  (if (has-tag node "group")
+    (: children (. 1 node)
+      (if (nil? children)
+        (crash "empty group")
+        (: first (. 0 children)
+          (: rest (tail (array-to-list children))
+            (if (has-tag first "name")
+              (: name (. 1 first)
+                (if (str= name ":")
+                  (if (is-odd (size children))
+                    (crash "bad let")
+                    (match-let match-let sem rest))
+                  (if (str= name "[]")
+                    (# "array" (list-to-array (add-sems add-sems sem rest)))
+                    (if (str= name "&")
+                      (# "struct" (list-to-array (match-fields match-fields sem rest)))
+                      (if (str= name ".")
+                        (if (!= (size children) 3)
+                          (crash "bad field")
+                          (#
+                            "field"
+                            (sem sem (. 1 children))
+                            (if (has-tag (. 2 children) "name") (. 1 name) (crash "bad field"))))
+                        (if (str= name "|")
+                          (if (not (or (= (size children) 2) (= (size children) 3)))
+                            (crash "bad enum")
+                            (: variant (if (has-tag (. 1 children) "name") (. 1 (. 1 children)) (crash "bad enum"))
+                              (if (= (size children) 2)
+                                (# "enum" variant (# "struct" nil))
+                                (# "enum" variant (sem sem (head (tail rest)))))))
+                          (if (str= name "%")
+                            (if (is-odd (size children))
+                              (crash "bad switch")
+                              (: condition (sem sem (. 1 children))
+                                (: cases (match-cases match-cases sem (tail rest))
+                                  (: cases (extract-default-case extract-default-case cases)
+                                    (# "switch" condition (list-to-array (. 0 cases)) (. 1 cases))))))
+                            (if (str= name "\\")
+                              (if (!= (size children) 3)
+                                (crash "bad lambda")
+                                (: params
+                                  (if (has-tag (. 1 children) "group")
+                                    (list-to-array (match-params match-params (array-to-list (. 1 (. 1 children)))))
+                                    (crash "bad lambda"))
+                                  (: body (sem sem (. 2 children)) (# "lambda" params body))))
+                              (# "call" (sem sem first) (list-to-array (add-sems add-sems sem rest)))))))))))
+              (# "call" (sem sem first) (list-to-array (add-sems add-sems sem rest))))))))
+    node))
+add-semantics (\ (node) (add-sem add-sem node))
