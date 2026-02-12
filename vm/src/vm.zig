@@ -24,10 +24,13 @@ const Instruction = @import("instruction.zig").Instruction;
 
 // Depending on the system, choose a different implementation.
 // The implementation should provide the following fields/functions:
-// - heap: *Heap
 // - init(heap: *Heap, ally: Ally) !Impl
-// - deduplicate(impl: *Impl, checkpoint: Checkpoint, obj: Obj) Obj
+// - heap: *Heap
+// - push(impl: *Impl, ally: Word) !void
+// - pop(impl: *Impl) Word
+// - run(impl: *Impl, instructions: Obj) Obj
 // - garbage_collect(impl: *Impl, checkpoint: Checkpoint, keep: Obj) Obj
+// - deduplicate(impl: *Impl, checkpoint: Checkpoint, obj: Obj) Obj
 const Impl = switch (builtin.cpu.arch) {
     // .x86_64 => @import("vm_x86_64.zig"), // a JIT compiler
     else => @import("vm_interpreter.zig"), // an interpreter
