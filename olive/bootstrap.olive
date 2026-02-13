@@ -140,7 +140,7 @@ ascii-9 57
 ascii-backslash 92
 ascii-n 110
 
-_ "Parse the string into an abstract syntax (AST) using a recursive descent parser.
+_ "Parse the string into the intermediate representation (called jam) using a recursive descent parser.
   The individual parsing functions accept the input and a cursor. They return either:
     (# cursor) = no match
     (# cursor value) = match"
@@ -319,3 +319,91 @@ add-sem (\ (sem node)
               (# "call" (sem sem first) (list-to-array (add-sems add-sems sem rest))))))))
     node))
 add-semantics (\ (node) (add-sem add-sem node))
+
+_ "We allow creating new functions during runtime by compiling the Jam intermediate representation
+  using the make_function builtin. Similarly, you can access the Jam of existing functions at runtime.
+  To do that from the (memory-safe) Pear language, we need a way to turn the Jam into Pear values and
+  vice versa. This 'pearification' and 'unpearification' happens here."
+
+_ "Pear value constructors"
+pear-int (\ (value) (# (# "int") value))
+pear-string (\ (string) (# (# "string") string))
+pear-enum (\ (variant payload) (# (# "enum" variant) payload))
+pear-list-to-array (\ (items) (list-to-array (# (# "array") items)))
+pear-struct-1 (\ (k1 v1) (# (# "struct" k1) v1))
+pear-struct-2 (\ (k1 v1 k2 v2) (# (# "struct" k1 k2) v1 v2))
+pear-struct-3 (\ (k1 v1 k2 v2 k3 v3) (# (# "struct" k1 k2 k3) v1 v2 v3))
+pear-empty-struct (# (# "struct") )
+pear-none (pear-enum "none" pear-empty-struct)
+pear-some (\ (payload) (pear-enum "some" payload))
+
+pearify-params-rec (\ (rec params)
+  (if (nil? params) nil (: p (head params) (# (pear-string p) (rec rec (tail params))))))
+pearify-params (\ (params) (pear-list-to-array (pearify-params-rec pearify-params-rec params)))
+pearify-fields-rec (\ (rec f fields)
+  (if (nil? fields)
+    nil
+    (: field (head fields)
+      (# (pear-struct-2 "name" (pear-string (. 0 field)) "value" (f f (. 1 field))) (rec rec f (tail fields))))))
+pearify-fields (\ (f fields) (pear-list-to-array (pearify-fields-rec pearify-fields-rec f fields)))
+pearify-cases-rec (\ (rec f cases i)
+  (if (= i (size cases))
+    nil
+    (: case (. i cases)
+      (: left (. 0 case)
+        (: binding (if (= (size left) 1) pear-none (pear-some (pear-string (. 1 left))))
+          (#
+            (pear-struct-3 "variant" (pear-string (. 0 left)) "binding" binding "body" (f f (. 1 case)))
+            (rec rec f cases (+ i 1))))))))
+pearify-cases (\ (f cases) (pear-list-to-array (pearify-cases-rec pearify-cases-rec f cases 0)))
+pearify-rec (\ (rec jam)
+  (: tag (. 0 jam)
+    (if (str= tag "int")
+      (pear-enum "number" (pear-int (. 1 jam)))
+      (if (str= tag "name")
+        (pear-enum "name" (pear-string (. 1 jam)))
+        (if (str= tag "string")
+          (pear-enum "string" (pear-string (chars-to-str (. 1 jam))))
+          (if (str= tag "let")
+            (pear-enum
+              "let"
+              (pear-struct-3
+                "name" (pear-string (substr (. 1 jam) (. 2 jam)))
+                "def" (rec rec (. 3 jam))
+                "expr" (rec rec (. 4 jam))))
+            (if (str= tag "call")
+              (pear-enum
+                "call"
+                (pear-struct-2 "callee" (rec rec (. 1 jam)) "args" (pear-list-to-array (list-map rec (. 2 jam)))))
+              (if (str= tag "lambda")
+                (pear-enum
+                  "function"
+                  (pear-struct-2 "args" (pearify-params (. 1 jam)) "body" (rec rec (. 2 jam))))
+                (if (str= tag "struct")
+                  (pear-enum "struct" (pearify-fields rec (. 1 jam)))
+                  (if (str= tag "member")
+                    (pear-enum
+                      "field"
+                      (pear-struct-2 "of" (rec rec (. 1 jam)) "name" (pear-string (substr (. 2 jam) (. 3 jam)))))
+                    (if (str= tag "enum")
+                      (pear-enum
+                        "enum"
+                        (pear-struct-2
+                          "variant" (pear-string (substr (. 1 jam) (. 2 jam)))
+                          "payload" (rec rec (. 3 jam))))
+                      (if (str= tag "switch")
+                        (pear-enum
+                          crash "switch"
+                          (pear-struct-3
+                            "condition" (rec rec (. 1 jam))
+                            "cases" (pearify-cases rec (. 2 jam))
+                            "default" (if (nil? (. 3 jam)) pear-none (pear-some (rec rec (. 3 jam))))))
+                        (if (str= tag "array")
+                          (pear-enum "array" (pear-list-to-array (list-map rec (. 1 jam))))
+                          (crash "unknown ast tag"))))))))))))))
+pearify (\ (jam) (pearify-rec pearify-rec jam))
+
+do_the_thingy (crash (add-semantics (parse-string-to-raw "(% foo a 2 (b bar) 3)")))
+
+_ "Full pipeline: source string -> Pear IR"
+_ (crash "hi")
