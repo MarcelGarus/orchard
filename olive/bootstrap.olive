@@ -81,6 +81,7 @@ _ "Comparison functions that return raw values (for direct use with 'if')."
 _ "Object stuff"
 size (# ($size) ($new 0 1))
 . (# ($stack 1) ($word 0) ($load) ($load) ($popover 1))
+load_word (\ (index obj) ((# ($new 0 1)) (. index obj)))
 nil (#)
 nil? (\ (obj) (= 0 (size obj)))
 list-to-leaf (# ($flatlito))
@@ -103,6 +104,8 @@ list-get-rec (\ (rec list n) (if (= n 0) (head list) (rec rec (tail list) (- n 1
 list-get (\ (list n) (list-get-rec list-get-rec list n))
 list-map-rec (\ (rec f input list) (if (nil? list) nil (# (f f input (head list)) (rec rec f input (tail list)))))
 list-map (\ (f input list) (list-map-rec list-map-rec f input list))
+list-prepend-all-rec (\ (rec from to) (if (nil? from) to (rec rec (tail from) (# (head from) to))))
+list-prepend-all (\ (from to) (list-prepend-all-rec list-prepend-all-rec from to))
 
 _ "String stuff"
 str-get (\ (string index)
@@ -128,6 +131,9 @@ chars-to-str-pack-rec (\ (rec chars shift acc)
 chars-to-str-rec (\ (rec chars)
   (if (nil? chars) nil (: r (chars-to-str-pack-rec chars-to-str-pack-rec chars 0 0) (# (head r) (rec rec (tail r))))))
 chars-to-str (\ (chars) (list-to-leaf (chars-to-str-rec chars-to-str-rec chars)))
+
+list-contains-rec (\ (rec list string) (if (nil? list) false (if (str= (head list) string) true (rec rec (tail list) string))))
+list-contains (\ (list string) (list-contains-rec list-contains-rec list string))
 
 _ "Chars"
 ascii-newline 10
@@ -241,10 +247,10 @@ match-cases (\ (rec sem cases)
     (: first (head cases)
       (: second (head (tail cases))
         (: rest (tail (tail cases))
-          (: case
-            (#
+          (#
+            (: left
               (if (has-tag first "name")
-                (# (. 1 first))
+                (# (. 1 first) nil)
                 (if (has-tag first "group")
                   (: children (. 1 first)
                     (if (= (size children) 2)
@@ -253,14 +259,14 @@ match-cases (\ (rec sem cases)
                         (if (has-tag (. 1 children) "name") (. 1 (. 1 children)) (crash "bad switch")))
                       (crash "bad switch")))
                   (crash "bad switch")))
-              (sem sem second))
-            (# case (rec rec sem rest))))))))
+              (# (. 0 left) (. 1 left) (sem sem second)))
+            (rec rec sem rest)))))))
 extract-default-case (\ (rec cases)
   (if (nil? cases)
     (# nil nil)
     (: case (head cases)
-      (if (str= (. 0 (. 0 case)) "_")
-        (# (tail cases) (. 1 case))
+      (if (str= (. 0 case) "_")
+        (# (tail cases) (. 2 case))
         (: rest (rec rec (tail cases))
           (# (# case (. 0 rest)) (. 1 rest)))))))
 match-params (\ (rec nodes)
@@ -292,7 +298,7 @@ add-sem (\ (sem node)
                           (#
                             "field"
                             (sem sem (. 1 children))
-                            (if (has-tag (. 2 children) "name") (. 1 name) (crash "bad field"))))
+                            (if (has-tag (. 2 children) "name") (. 1 (. 2 children)) (crash "bad field"))))
                         (if (str= name "|")
                           (if (not (or (= (size children) 2) (= (size children) 3)))
                             (crash "bad enum")
@@ -309,12 +315,12 @@ add-sem (\ (sem node)
                                     (# "switch" condition (list-to-array (. 0 cases)) (. 1 cases))))))
                             (if (str= name "\\")
                               (if (!= (size children) 3)
-                                (crash "bad lambda")
+                                (crash "bad function")
                                 (: params
                                   (if (has-tag (. 1 children) "group")
                                     (list-to-array (match-params match-params (array-to-list (. 1 (. 1 children)))))
-                                    (crash "bad lambda"))
-                                  (: body (sem sem (. 2 children)) (# "lambda" params body))))
+                                    (crash "bad function"))
+                                  (: body (sem sem (. 2 children)) (# "function" params body))))
                               (# "call" (sem sem first) (list-to-array (add-sems add-sems sem rest)))))))))))
               (# "call" (sem sem first) (list-to-array (add-sems add-sems sem rest))))))))
     node))
@@ -359,7 +365,7 @@ pearify-cases (\ (f cases) (pear-list-to-array (pearify-cases-rec pearify-cases-
 pearify-rec (\ (rec jam)
   (: tag (. 0 jam)
     (if (str= tag "int")
-      (pear-enum "number" (pear-int (. 1 jam)))
+      (pear-enum "int" (pear-int (. 1 jam)))
       (if (str= tag "name")
         (pear-enum "name" (pear-string (. 1 jam)))
         (if (str= tag "string")
@@ -375,7 +381,7 @@ pearify-rec (\ (rec jam)
               (pear-enum
                 "call"
                 (pear-struct-2 "callee" (rec rec (. 1 jam)) "args" (pear-list-to-array (list-map rec (. 2 jam)))))
-              (if (str= tag "lambda")
+              (if (str= tag "function")
                 (pear-enum
                   "function"
                   (pear-struct-2 "args" (pearify-params (. 1 jam)) "body" (rec rec (. 2 jam))))
@@ -393,17 +399,196 @@ pearify-rec (\ (rec jam)
                           "payload" (rec rec (. 3 jam))))
                       (if (str= tag "switch")
                         (pear-enum
-                          crash "switch"
+                          "switch"
                           (pear-struct-3
                             "condition" (rec rec (. 1 jam))
                             "cases" (pearify-cases rec (. 2 jam))
                             "default" (if (nil? (. 3 jam)) pear-none (pear-some (rec rec (. 3 jam))))))
                         (if (str= tag "array")
                           (pear-enum "array" (pear-list-to-array (list-map rec (. 1 jam))))
-                          (crash "unknown ast tag"))))))))))))))
+                          (crash "unknown jam tag"))))))))))))))
 pearify (\ (jam) (pearify-rec pearify-rec jam))
 
-do_the_thingy (crash (add-semantics (parse-string-to-raw "(% foo a 2 (b bar) 3)")))
+_ "Detect free variables"
+free-vars-arr-rec (\ (rec fv arr i bound free)
+  (if (= i (size arr)) free (rec rec fv arr (+ i 1) bound (fv fv (. i arr) bound free))))
+free-vars-arr (\ (fv arr bound free) (free-vars-arr-rec free-vars-arr-rec fv arr 0 bound free))
+free-vars-fields-rec (\ (rec fv fields i bound free)
+  (if (= i (size fields)) free (rec rec fv fields (+ i 1) bound (fv fv (. 1 (. i fields)) bound free))))
+free-vars-fields (\ (fv fields bound free) (free-vars-fields-rec free-vars-fields-rec fv fields 0 bound free))
+free-vars-switch-cases-rec (\ (rec fv cases i bound free)
+  (if (= i (size cases))
+    free
+    (: case (. i cases)
+      (: bound2 (if (nil? (. 1 case)) bound (# (. 1 case) bound))
+        (rec rec fv cases (+ i 1) bound (fv fv (. 2 case) bound2 free))))))
+free-vars-switch-cases (\ (fv cases bound free)
+  (free-vars-switch-cases-rec free-vars-switch-cases-rec fv cases 0 bound free))
+free-vars-rec (\ (rec jam bound free)
+  (: tag (. 0 jam)
+    (if (str= tag "name")
+      (: name (. 1 jam) (if (list-contains bound name) free (if (list-contains free name) free (# name free))))
+      (if (str= tag "let")
+        (: free (rec rec (. 2 jam) bound free) (rec rec (. 3 jam) (# (. 1 jam) bound) free))
+        (if (str= tag "int")
+          free
+          (if (str= tag "string")
+            free
+            (if (str= tag "struct")
+              (free-vars-fields rec (. 1 jam) bound free)
+              (if (str= tag "field")
+                (rec rec (. 1 jam) bound free)
+                (if (str= tag "enum")
+                  (rec rec (. 2 jam) bound free)
+                  (if (str= tag "switch")
+                    (: free (rec rec (. 1 jam) bound free)
+                      (: free (free-vars-switch-cases rec (. 2 jam) bound free)
+                        (if (nil? (. 3 jam)) free (rec rec (. 3 jam) bound free))))
+                    (if (str= tag "array")
+                      (free-vars-arr rec (. 1 jam) bound free)
+                      (if (str= tag "function")
+                        (rec rec (. 2 jam) (list-prepend-all (array-to-list (. 1 jam)) bound) free)
+                        (if (str= tag "call")
+                          (: free (rec rec (. 1 jam) bound free) (free-vars-arr rec (. 2 jam) bound free))
+                          (crash "unknown jam tag in free-vars"))))))))))))))
+free-vars (\ (jam bound) (free-vars-rec free-vars-rec jam bound nil))
 
-_ "Full pipeline: source string -> Pear IR"
+_ "Next, we lower the high-level Jam into a low-level Jam. Instead of operations such as struct and enum,
+  we then have operations like load and new."
+lower-array-to-list-rec (\ (rec lower compile array i)
+  (if (= i (size array)) nil (# (lower lower compile (. i array)) (rec rec lower compile array (+ i 1)))))
+lower-array-to-list (\ (lower compile array)
+  (lower-array-to-list-rec lower-array-to-list-rec lower compile array 0))
+build-struct-meta-object-rec (\ (rec fields i) (if (= i (size fields)) nil (# (. 0 (. i fields)) (rec rec fields (+ i 1)))))
+build-struct-meta-object (\ (fields)
+  (# "object" (list-to-array (# "struct" (build-struct-meta-object-rec build-struct-meta-object-rec fields 0)))))
+lower-struct-values-rec (\ (rec lower compile fields i)
+  (if (= i (size fields)) nil (# (lower lower compile (. 1 (. i fields))) (rec rec lower compile fields (+ i 1)))))
+lower-struct-values (\ (lower compile fields)
+  (lower-struct-values-rec lower-struct-values-rec lower compile fields 0))
+get-field-index-rec (\ (rec type i name)
+  (if (= i (size type)) (crash "This field doesn't exist.") (if (str= (. i type) name) i (rec rec type (+ 1 i) name))))
+get-field (\ (of name)
+  (: type (. 0 of)
+    (if (str= (. 0 type) "struct")
+      (: index (get-field-index-rec get-field-index-rec type 1 name) (. index of))
+      (crash "You can only get the field of structs."))))
+lower-switch-cases-rec (\ (rec lower compile cases i default)
+  (if (= i (size cases))
+    default
+    (: case (. i cases)
+      (: lowered-body
+        (if (nil? (. 1 case))
+          (lower lower compile (. 2 case))
+          (# "let" (. 1 case) (# "name" "(payload)") (lower lower compile (. 2 case))))
+        (#
+          "if"
+          (# "call" (# "object" str=) (# (# "name" "(variant)") (# "object" (. 0 case))))
+          lowered-body
+          (rec rec lower compile cases (+ i 1) default))))))
+lower-call-args-rec (\ (rec lower compile array i captured)
+  (if (= i (size array))
+    (# captured nil)
+    (# (lower lower compile (. i array)) (rec rec lower compile array (+ i 1) captured))))
+lower-call-args (\ (lower compile array captured)
+  (lower-call-args-rec lower-call-args-rec lower compile array 0 captured))
+build-captured-type (\ (vars) (list-to-array (# "struct" vars)))
+build-captured-refs-rec (\ (rec vars) (if (nil? vars) nil (# (# "name" (head vars)) (rec rec (tail vars)))))
+build-captured-refs (\ (vars) (build-captured-refs-rec build-captured-refs-rec vars))
+lower-rec (\ (rec compile jam)
+  (: tag (. 0 jam)
+    (if (str= tag "name")
+      jam
+      (if (str= tag "let")
+        (# "let" (. 1 jam) (rec rec compile (. 2 jam)) (rec rec compile (. 3 jam)))
+        (if (str= tag "int")
+          (# "object" (pear-int (. 1 jam)))
+          (if (str= tag "string")
+            (# "object" (pear-string (. 1 jam)))
+            (if (str= tag "struct")
+              (# "new-inner"
+                (list-to-array (# (build-struct-meta-object (. 1 jam)) (lower-struct-values rec compile (. 1 jam)))))
+              (if (str= tag "field")
+                (#
+                  "call"
+                  (# "object" get-field)
+                  (# (rec rec compile (. 1 jam)) (# "object" (. 2 jam))))
+                (if (str= tag "enum")
+                  (# "new-inner" (# "object" (# "enum" (. 1 jam))) (rec rec compile (. 2 jam)))
+                  (if (str= tag "switch")
+                    (: default
+                      (if (nil? (. 3 jam))
+                        (# "crash" (# "object" (pear-string "You don't handle an enum variant.")))
+                        (rec rec compile (. 3 jam)))
+                      (#
+                        "let"
+                        "(condition)"
+                        (rec rec compile (. 1 jam))
+                        (#
+                          "let"
+                          "(type)"
+                          (# "load" (# "name" "(condition)") (# "word" 0))
+                          (#
+                            "if"
+                            (# "subtract" (# "load" (# "name" "(type)") (# "word" 0)) (# "word" (load_word 0 "enum")))
+                            (# "crash" (# "object" (pear-string "You can only switch on enums.")))
+                            (#
+                              "let"
+                              "(variant)"
+                              (# "load" (# "name" "(type)") (# "word" 1))
+                              (#
+                                "let"
+                                "(payload)"
+                                (# "load" (# "name" "(condition)") (# "word" 1))
+                                (lower-switch-cases-rec lower-switch-cases-rec rec compile (. 2 jam) 0 default)))))))
+                    (if (str= tag "array")
+                      (# "new-inner"
+                        (list-to-array (# (# "object" (# "array")) (lower-array-to-list rec compile (. 1 jam)))))
+                      (if (str= tag "function")
+                        (: fvs (free-vars (. 2 jam) (array-to-list (. 1 jam)))
+                          (: lowered-body (rec rec compile (. 2 jam))
+                            (: instrs-obj (compile lowered-body)
+                              (: captured
+                                (# "new-inner"
+                                  (list-to-array (# (# "object" (build-captured-type fvs)) (build-captured-refs fvs))))
+                                (# "new-inner"
+                                  (list-to-array (#
+                                    (# "object" (# "lambda"))
+                                    (# (# "object" instrs-obj)
+                                      (# captured (# (# "object" (. 1 jam)) (# (# "object" jam) nil)))))))))))
+                        (if (str= tag "call")
+                          (#
+                            "let"
+                            "(callee)"
+                            (rec rec compile (. 1 jam))
+                            (#
+                              "let"
+                              "(type)"
+                              (# "load" (# "name" "(callee)") (# "word" 0))
+                              (#
+                                "if"
+                                (# "subtract" (# "load" (# "name" "(type)") (# "word" 0)) (# "word" (load_word 0 "lambda")))
+                                (# "crash" (# "object" (pear-string "not a function")))
+                                (#
+                                  "let"
+                                  "(args-meta)"
+                                  (# "load" (# "name" "(callee)") (# "word" 3))
+                                  (#
+                                    "if"
+                                    (# "subtract" (# "size" (# "name" "(args-meta)")) (# "word" (size (. 2 jam))))
+                                    (# "crash" (# "object" (pear-string "wrong number of arguments")))
+                                    (#
+                                      "let"
+                                      "(instrs)"
+                                      (# "load" (# "name" "(callee)") (# "word" 1))
+                                      (#
+                                        "let"
+                                        "(captured)"
+                                        (# "load" (# "name" "(callee)") (# "word" 2))
+                                        (# "call" (# "name" "(instrs)") (lower-call-args rec compile (. 2 jam) (# "name" "(captured)"))))))))))
+                          (crash "unknown high-level jam node"))))))))))))))
+lower (\ (compile jam) (lower-rec lower-rec compile jam))
+
+do_the_thingy (crash (lower (\ (x) x) (add-semantics (parse-string-to-raw "(: f (\\ (x) (+ x 1)) (f 5))"))))
+
 _ (crash "hi")

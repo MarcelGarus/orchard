@@ -320,7 +320,7 @@ pub fn dump_stats(heap: Heap) void {
     std.debug.print(", {} objects\n", .{num_objects});
 }
 
-const max_nesting = 10;
+const max_nesting = 14;
 pub fn format(heap: Heap, object: Obj, writer: *Writer) !void {
     var nesting = [_]Parent{.{ .first = false, .color = -1 }} ** max_nesting;
     try heap.format_indented(object, writer, &nesting, 0);
