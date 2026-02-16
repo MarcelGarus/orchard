@@ -22,18 +22,27 @@ pub fn main() !void {
 
     // Create the Pear compiler.
     std.debug.print("Creating the Pear compiler...\n", .{});
-    const pear_compiler = @embedFile("pear.olive");
-    const result = try olive_compiler.eval(ally, &vm, pear_compiler);
-    const compile = Val.Lambda.from(result.get("compile").?);
+    const compile = compile: {
+        const pear_compiler = @embedFile("pear.olive");
+        const result = try olive_compiler.eval(ally, &vm, pear_compiler);
+        break :compile Val.from(result.get("compile").?);
+    };
     vm.impl.heap.dump_stats();
 
     // Compile the code.
     std.debug.print("Compiling the code...\n", .{});
     const file = try std.fs.cwd().openFile("../pear/test.pear", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
-    const compiled = try compile.call(&vm, &.{(try Val.String.new(&heap, code)).as_value()});
+    const compiled = try compile.call(&vm, &.{try Val.new_string(&heap, code)});
     std.debug.print("Compiled: {any}\n", .{compiled});
     heap.dump_obj(compiled.obj);
+    vm.impl.heap.dump_stats();
+
+    // Run the code.
+    std.debug.print("Running the code...\n", .{});
+    const result = try compiled.call(&vm, &.{});
+    std.debug.print("Result: {any}\n", .{result});
+    heap.dump_obj(result.obj);
     vm.impl.heap.dump_stats();
 
     if (true) return;

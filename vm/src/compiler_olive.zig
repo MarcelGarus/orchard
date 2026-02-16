@@ -11,9 +11,8 @@ const Word = Heap.Word;
 const Obj = Heap.Obj;
 const Instruction = @import("instruction.zig").Instruction;
 const Val = @import("pear_value.zig");
-const new_empty = Val.new_empty;
-const new_symbol = Val.new_symbol;
-const get_symbol = Val.get_symbol;
+const new_symbol = Heap.new_symbol;
+const get_symbol = Heap.get_symbol;
 const Vm = @import("vm.zig");
 
 const Str = []const u8;

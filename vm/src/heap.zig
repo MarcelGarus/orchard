@@ -276,6 +276,23 @@ fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !Obj {
 //     return mapping.get(address);
 // }
 
+pub fn new_symbol(heap: *Heap, value: []const u8) !Obj {
+    var b = try heap.build_leaf();
+    const num_words = (value.len + 7) / 8;
+    for (0..num_words) |i| {
+        var w: Word = 0;
+        for (0..@min(value.len - i * 8, 8)) |j|
+            w |= @as(Word, value[i * 8 + j]) << @intCast(j * 8);
+        try b.emit(w);
+    }
+    return b.finish();
+}
+pub fn get_symbol(obj: Obj) []const u8 {
+    var chars: []const u8 = @ptrCast(obj.words());
+    while (chars.len > 0 and chars[chars.len - 1] == 0) chars.len -= 1;
+    return chars;
+}
+
 pub fn dump_raw(heap: Heap) void {
     for (0.., heap.memory[0..heap.used]) |i, w| {
         std.debug.print("{x:3} |", .{i});
