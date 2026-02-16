@@ -401,15 +401,11 @@ pub fn eval(ally: Ally, vm: *Vm, code: Str) !StringMap(Obj) {
     const ast = try str_to_ast(ally, code);
     var defs = StringMap(Obj).init(ally);
     for (ast.defs) |def| {
-        std.debug.print("\nRunning {s}\n", .{def.name});
+        // std.debug.print("Running {s}\n", .{def.name});
         const instructions = try function_to_object(ally, vm.get_heap(), &.{}, def.value, &defs);
         try vm.run(instructions);
         const result = Obj{ .address = vm.pop() };
         try defs.put(def.name, result);
-    }
-    var it = defs.iterator();
-    while (it.next()) |entry| {
-        std.debug.print("  {s} = {x}\n", .{ entry.key_ptr.*, entry.value_ptr.address });
     }
     return defs;
 }

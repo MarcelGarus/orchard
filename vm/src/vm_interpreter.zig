@@ -212,7 +212,7 @@ pub fn run_parsed(vm: *Vm, instructions: []const Instruction) !void {
             .eval => try vm.run(Obj{ .address = vm.data_stack.pop() }),
             .crash => {
                 const message = vm.data_stack.pop();
-                std.debug.print("Crashed:\n{f}\n", .{Val.Value.from(Obj{ .address = message })});
+                vm.heap.dump_obj(Obj{ .address = message });
                 std.process.exit(1);
             },
         }

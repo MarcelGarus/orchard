@@ -146,7 +146,6 @@ pub const Lambda = struct {
     }
 
     pub fn call(lambda: Lambda, vm: *Vm, args: []const Value) !Value {
-        vm.impl.heap.dump_stats();
         const instructions = lambda.obj.child(1);
         const closure = lambda.obj.child(2);
         const num_params = lambda.obj.child(3).children().len;

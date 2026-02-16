@@ -1,9 +1,4 @@
 const std = @import("std");
-const pear_compiler = @import("compiler_pear.zig");
-const Ir = pear_compiler.Ir;
-const ir_to_lambda = pear_compiler.ir_to_lambda;
-const ir_to_fun = pear_compiler.ir_to_fun;
-const instructions_to_fun = pear_compiler.instructions_to_fun;
 const olive_compiler = @import("compiler_olive.zig");
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
@@ -25,52 +20,29 @@ pub fn main() !void {
     // const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    // const lambda = try Val.Lambda.new(
-    //     &heap,
-    //     try Instruction.new_instructions(ally, &heap, &[_]Instruction{
-    //       .{ .pop = 3 },
-    //       .{ .word = 2 },
-    //       .{ .@"if" = .{
-    //         .then = &.{ .{ .word = 4 } },
-    //         .else_ = &.{ .{ .word = 42 } },
-    //       } },
-    //       .{ .new = .{ .has_pointers = false, .num_words = 1 } },
-    //     }),
-    //     2,
-    //     try Val.new_empty(&heap),
-    //     null,
-    // );
-    // const two = (try Val.Int.new(&heap, 2)).as_value();
-    // const three = (try Val.Int.new(&heap, 3)).as_value();
-    // const result = try vm.call(lambda, &[_]Val.Value{two, three});
-    // {
-    //     var buffer: [64]u8 = undefined;
-    //     const bw = std.debug.lockStderrWriter(&buffer);
-    //     defer std.debug.unlockStderrWriter();
-    //     try heap.format(result.obj, bw);
-    //     try bw.print("\n", .{});
-    // }
-    // if (true) return;
+    // Create the Pear compiler.
+    std.debug.print("Creating the Pear compiler...\n", .{});
+    const pear_compiler = @embedFile("pear.olive");
+    const result = try olive_compiler.eval(ally, &vm, pear_compiler);
+    const compile = Val.Lambda.from(result.get("compile").?);
+    vm.impl.heap.dump_stats();
 
-    // const common = try compiler.CommonObjects.create(ally, &heap);
-    // const builtins = try compiler.create_builtins(ally, &heap, common);
-    const file = try std.fs.cwd().openFile("../olive/bootstrap.olive", .{});
+    // Compile the code.
+    std.debug.print("Compiling the code...\n", .{});
+    const file = try std.fs.cwd().openFile("../pear/test.pear", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
-    const result = try olive_compiler.eval(ally, &vm, code);
-    // try vm.run(instructions);
-    // const app = try vm.eval(ally, common, .{ .@"@" = builtins }, code);
+    const compiled = try compile.call(&vm, &.{(try Val.String.new(&heap, code)).as_value()});
+    std.debug.print("Compiled: {any}\n", .{compiled});
+    heap.dump_obj(compiled.obj);
+    vm.impl.heap.dump_stats();
+
+    if (true) return;
+
+    // app = try handle_tasks(ally, &vm, app);
     // std.debug.print("Output: {f}\n", .{app});
     // const eval = app.kind().struct_.get_field("eval");
     // const code_str = try Val.String.new(&heap, code);
     // const result = try vm.call(eval.kind().lambda, &.{code_str.as_value()});
-    std.debug.print("Result: {any}\n", .{result});
-    std.debug.print("Compile: {any}\n", .{result.get("compile")});
-    const compile = Val.Lambda.from(result.get("compile").?);
-    const compiled = try compile.call(&vm, &.{(try Val.String.new(&heap, "(& x 1 y 2)")).as_value()});
-    std.debug.print("Compiled: {any}\n", .{compiled});
-    heap.dump_obj(compiled.obj);
-    if (true) return;
-    // app = try handle_tasks(ally, &vm, app);
 
     // var gfx = try Graphics.init(ally);
     // defer gfx.deinit();
