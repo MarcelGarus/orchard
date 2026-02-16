@@ -64,6 +64,11 @@ pub fn main() !void {
     // const code_str = try Val.String.new(&heap, code);
     // const result = try vm.call(eval.kind().lambda, &.{code_str.as_value()});
     std.debug.print("Result: {any}\n", .{result});
+    std.debug.print("Compile: {any}\n", .{result.get("compile")});
+    const compile = Val.Lambda.from(result.get("compile").?);
+    const compiled = try compile.call(&vm, &.{(try Val.String.new(&heap, "(& x 1 y 2)")).as_value()});
+    std.debug.print("Compiled: {any}\n", .{compiled});
+    heap.dump_obj(compiled.obj);
     if (true) return;
     // app = try handle_tasks(ally, &vm, app);
 
