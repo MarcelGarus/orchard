@@ -345,6 +345,13 @@ _ "We allow creating new functions during runtime by compiling the Jam intermedi
 _ "Constructors for Pear values."
 'int (\ (value) (# (# "int") value))
 'str (\ (string) (# (# "string") string))
+&-names-rec (\ (rec arr i) (if (>= i (size arr)) nil (# (. i arr) (rec rec arr (+ i 2)))))
+&-values-rec (\ (rec arr i) (if (>= i (size arr)) nil (# (. i arr) (rec rec arr (+ i 2)))))
+& (\ (pairs)
+  (: names (&-names-rec &-names-rec pairs 0)
+    (: values (&-values-rec &-values-rec pairs 1)
+      (: type-tag (list-to-array (# "struct" names))
+        (list-to-array (# type-tag values))))))
 &1 (\ (k1 v1) (# (# "struct" k1) v1))
 &2 (\ (k1 v1 k2 v2) (# (# "struct" k1 k2) v1 v2))
 &3 (\ (k1 v1 k2 v2 k3 v3) (# (# "struct" k1 k2 k3) v1 v2 v3))
@@ -357,17 +364,117 @@ _ "Constructors for Pear values."
 'true (| "true" 'nil)
 'false (| "false" 'nil)
 
-&-names-rec (\ (rec arr i) (if (>= i (size arr)) nil (# (. i arr) (rec rec arr (+ i 2)))))
-&-values-rec (\ (rec arr i) (if (>= i (size arr)) nil (# (. i arr) (rec rec arr (+ i 2)))))
-& (\ (pairs)
-  (: names (&-names-rec &-names-rec pairs 0)
-    (: values (&-values-rec &-values-rec pairs 1)
-      (: type-tag (list-to-array (# "struct" names))
-        (list-to-array (# type-tag values))))))
-
 _ "Functions for inspecting and working with Pear values."
 kind (\ (obj) (. 0 (. 0 obj)))
 int? (\ (obj) (str= (kind obj) "int"))
+get-field-index-rec (\ (rec type i name)
+  (if (= i (size type)) (crash "This field doesn't exist.") (if (str= (. i type) name) i (rec rec type (+ 1 i) name))))
+get-field (\ (of name)
+  (: type (. 0 of)
+    (if (str= (. 0 type) "struct")
+      (: index (get-field-index-rec get-field-index-rec type 1 name) (. index of))
+      (crash "You can only get the field of structs."))))
+
+_ "Pearify: convert high-level Jam into Pear values."
+pearify-items-rec (\ (rec p arr i)
+  (if (= i (size arr)) nil (# (p p (. i arr)) (rec rec p arr (+ i 1)))))
+pearify-fields-rec (\ (rec p fields i)
+  (if (= i (size fields)) nil
+    (: field (. i fields)
+      (# (&2 "name" ('str (. 0 field)) "value" (p p (. 1 field)))
+        (rec rec p fields (+ i 1))))))
+pearify-cases-rec (\ (rec p cases i)
+  (if (= i (size cases)) nil
+    (: case (. i cases)
+      (# (&3 "variant" ('str (. 0 case))
+              "binding" (if (nil? (. 1 case)) 'none ('some ('str (. 1 case))))
+              "body" (p p (. 2 case)))
+        (rec rec p cases (+ i 1))))))
+pearify-params-rec (\ (rec params i)
+  (if (= i (size params)) nil (# ('str (. i params)) (rec rec params (+ i 1)))))
+pearify-rec (\ (rec jam)
+  (: tag (. 0 jam)
+    (if (str= tag "name")
+      (| "name" ('str (. 1 jam)))
+      (if (str= tag "let")
+        (| "let" (&3 "name" ('str (. 1 jam)) "value" (rec rec (. 2 jam)) "body" (rec rec (. 3 jam))))
+        (if (str= tag "int")
+          (| "int" ('int (. 1 jam)))
+          (if (str= tag "string")
+            (| "string" ('str (. 1 jam)))
+            (if (str= tag "struct")
+              (| "struct" ('array (pearify-fields-rec pearify-fields-rec rec (. 1 jam) 0)))
+              (if (str= tag "field")
+                (| "field" (&2 "value" (rec rec (. 1 jam)) "name" ('str (. 2 jam))))
+                (if (str= tag "enum")
+                  (| "enum" (&2 "variant" ('str (. 1 jam)) "payload" (rec rec (. 2 jam))))
+                  (if (str= tag "switch")
+                    (| "switch" (&3 "value" (rec rec (. 1 jam))
+                      "cases" ('array (pearify-cases-rec pearify-cases-rec rec (. 2 jam) 0))
+                      "default" (if (nil? (. 3 jam)) 'none ('some (rec rec (. 3 jam))))))
+                    (if (str= tag "array")
+                      (| "array" ('array (pearify-items-rec pearify-items-rec rec (. 1 jam) 0)))
+                      (if (str= tag "function")
+                        (| "function"
+                          (&2
+                            "arguments" ('array (pearify-params-rec pearify-params-rec (. 1 jam) 0))
+                            "body" (rec rec (. 2 jam))))
+                        (if (str= tag "call")
+                          (| "call"
+                            (&2
+                              "callee" (rec rec (. 1 jam))
+                              "arguments" ('array (pearify-items-rec pearify-items-rec rec (. 2 jam) 0))))
+                          (crash (# "unknown jam tag in pearify:" tag)))))))))))))))
+pearify (\ (jam) (pearify-rec pearify-rec jam))
+
+_ "Depearify: convert Pear values back into high-level Jam."
+depearify-items-rec (\ (rec dp arr i)
+  (if (= i (size arr)) nil (# (dp dp (. i arr)) (rec rec dp arr (+ i 1)))))
+depearify-fields-rec (\ (rec dp arr i)
+  (if (= i (size arr)) nil
+    (: field (. i arr)
+      (# (# (. 1 (get-field field "name")) (dp dp (get-field field "value")))
+        (rec rec dp arr (+ i 1))))))
+depearify-cases-rec (\ (rec dp arr i)
+  (if (= i (size arr)) nil
+    (: case (. i arr)
+      (: binding (get-field case "binding")
+        (# (# (. 1 (get-field case "variant"))
+              (if (str= (. 1 (. 0 binding)) "none") nil (. 1 (. 1 binding)))
+              (dp dp (get-field case "body")))
+          (rec rec dp arr (+ i 1)))))))
+depearify-params-rec (\ (rec arr i)
+  (if (= i (size arr)) nil (# (. 1 (. i arr)) (rec rec arr (+ i 1)))))
+depearify-rec (\ (rec pear)
+  (: variant (. 1 (. 0 pear))
+    (: payload (. 1 pear)
+      (if (str= variant "name") (# "name" (. 1 payload))
+      (if (str= variant "int") (# "int" (. 1 payload))
+      (if (str= variant "string") (# "string" (. 1 payload))
+      (if (str= variant "let")
+        (# "let" (. 1 (get-field payload "name")) (rec rec (get-field payload "value")) (rec rec (get-field payload "body")))
+      (if (str= variant "call")
+        (# "call" (rec rec (get-field payload "callee"))
+          (list-to-array (depearify-items-rec depearify-items-rec rec (get-field payload "arguments") 1)))
+      (if (str= variant "struct")
+        (# "struct" (list-to-array (depearify-fields-rec depearify-fields-rec rec payload 1)))
+      (if (str= variant "field")
+        (# "field" (rec rec (get-field payload "value")) (. 1 (get-field payload "name")))
+      (if (str= variant "enum")
+        (# "enum" (. 1 (get-field payload "variant")) (rec rec (get-field payload "payload")))
+      (if (str= variant "switch")
+        (: default (get-field payload "default")
+          (# "switch" (rec rec (get-field payload "value"))
+            (list-to-array (depearify-cases-rec depearify-cases-rec rec (get-field payload "cases") 1))
+            (if (str= (. 1 (. 0 default)) "none") nil (rec rec (. 1 default)))))
+      (if (str= variant "function")
+        (# "function"
+          (list-to-array (depearify-params-rec depearify-params-rec (get-field payload "arguments") 1))
+          (rec rec (get-field payload "body")))
+      (if (str= variant "array")
+        (# "array" (list-to-array (depearify-items-rec depearify-items-rec rec payload 1)))
+      (crash (# "unknown pear IR variant in depearify:" variant))))))))))))))))
+depearify (\ (pear) (depearify-rec depearify-rec pear))
 
 _ "Detect free variables"
 free-vars-arr-rec (\ (rec fv arr i bound free)
@@ -426,13 +533,6 @@ lower-struct-values-rec (\ (rec lower compile fields i)
   (if (= i (size fields)) nil (# (lower lower compile (. 1 (. i fields))) (rec rec lower compile fields (+ i 1)))))
 lower-struct-values (\ (lower compile fields)
   (lower-struct-values-rec lower-struct-values-rec lower compile fields 0))
-get-field-index-rec (\ (rec type i name)
-  (if (= i (size type)) (crash "This field doesn't exist.") (if (str= (. i type) name) i (rec rec type (+ 1 i) name))))
-get-field (\ (of name)
-  (: type (. 0 of)
-    (if (str= (. 0 type) "struct")
-      (: index (get-field-index-rec get-field-index-rec type 1 name) (. index of))
-      (crash "You can only get the field of structs."))))
 lower-switch-cases-rec (\ (rec lower compile cases i default)
   (if (= i (size cases))
     default
@@ -443,7 +543,9 @@ lower-switch-cases-rec (\ (rec lower compile cases i default)
           (# "let" (. 1 case) (# "name" "(payload)") (lower lower compile (. 2 case))))
         (#
           "if"
-          (# "load" (# "call" (# "object" str=) (# (# "name" "(variant)") (# "object" (. 0 case)))) (# "word" 0))
+          (#
+            "load"
+            (# "call" (# "object" str=) (# (# "name" "(variant)") (# (# "object" (. 0 case)) nil))) (# "word" 0))
           lowered-body
           (rec rec lower compile cases (+ i 1) default))))))
 lower-call-args-rec (\ (rec lower compile array i captured)
@@ -474,7 +576,9 @@ lower-rec (\ (rec compile jam)
                   (# "object" get-field)
                   (# (rec rec compile (. 1 jam)) (# (# "object" (. 2 jam)) nil)))
                 (if (str= tag "enum")
-                  (# "new-inner" (# "object" (# "enum" (. 1 jam))) (rec rec compile (. 2 jam)))
+                  (#
+                    "new-inner"
+                    (list-to-array (# (# "object" (# "enum" (. 1 jam))) (# (rec rec compile (. 2 jam)) nil))))
                   (if (str= tag "switch")
                     (: default
                       (if (nil? (. 3 jam))
@@ -518,7 +622,7 @@ lower-rec (\ (rec compile jam)
                                   (list-to-array (#
                                     (# "object" (# "lambda"))
                                     (# (# "object" instrs-obj)
-                                      (# captured (# (# "object" (. 1 jam)) (# (# "object" (. 2 jam)) nil)))))))))))
+                                      (# captured (# (# "object" (. 1 jam)) (# (# "object" (pearify (. 2 jam))) nil)))))))))))
                         (if (str= tag "call")
                           (#
                             "let"
@@ -735,6 +839,26 @@ builtin-variant ('\ (# "enum")
 builtin-payload ('\ (# "enum")
   (| "payload" (| "name" ('str "enum")))
   (\ (enum _) (. 1 enum)))
+get-args-rec (\ (rec params i)
+  (if (= i (size params)) nil (# ('str (. i params)) (rec rec params (+ i 1)))))
+builtin-make-function ('\ (# "arguments" "code" "captured")
+  (| "make_function" (&3 "arguments" (| "name" ('str "arguments")) "code" (| "name" ('str "code")) "captured" (| "name" ('str "captured"))))
+  (\ (arguments code captured _)
+    (: jam (depearify code)
+      (: params (list-to-array (depearify-params-rec depearify-params-rec arguments 1))
+        (: fvs (free-vars jam (array-to-list params))
+          (: lowered (lower compile jam)
+            (: instructions (compile params fvs lowered)
+              (# (# "lambda") instructions captured params code))))))))
+builtin-get-arguments ('\ (# "function")
+  (| "get_arguments" (| "name" ('str "function")))
+  (\ (func _) ('array (get-args-rec get-args-rec (. 3 func) 0))))
+builtin-get-code ('\ (# "function")
+  (| "get_code" (| "name" ('str "function")))
+  (\ (func _) (. 4 func)))
+builtin-get-captured ('\ (# "function")
+  (| "get_captured" (| "name" ('str "function")))
+  (\ (func _) (. 2 func)))
 
 builtins (&
   (#
@@ -760,7 +884,11 @@ builtins (&
     "fields" builtin-fields
     "make_enum" builtin-make-enum
     "variant" builtin-variant
-    "payload" builtin-payload))
+    "payload" builtin-payload
+    "make_function" builtin-make-function
+    "get_arguments" builtin-get-arguments
+    "get_code" builtin-get-code
+    "get_captured" builtin-get-captured))
 
 compile (#
   (# "lambda")
@@ -769,7 +897,7 @@ compile (#
       (: jam (string-to-jam (. 1 string))
         (: lowered (lower compile jam)
           (: body (# "let" "@" (# "object" builtins) lowered)
-            (# (# "lambda") (compile (#) (#) body) (#) (#) jam))))
+            (# (# "lambda") (compile (#) (#) body) (#) (#) (pearify jam)))))
       (crash "You can only compile strings.")))
   (#)
   (# "code")
