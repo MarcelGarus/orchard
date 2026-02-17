@@ -22,6 +22,9 @@ pub const Instruction = union(enum) {
     modulo, // a b -> (a%b)
     shl, // a b -> (a<<b). Stands for shift left.
     shr, // a b -> (a>>b). Stands for shift right.
+    @"and", // a b -> (a & b). Bitwise and.
+    @"or", // a b -> (a | b). Bitwise or.
+    xor, // a b -> (a ^ b). Bitwise xor.
     compare, // Pops two words. Stack before: a b. If a == b, pushes 1. If a > b, pushes 1. If a < b, pushes 2.
     @"if": If, // Pops a word. If not 0, runs then instructions. Otherwise, else instructions.
     new: New, // Creates a new heap object.

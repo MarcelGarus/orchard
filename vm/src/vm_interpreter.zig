@@ -130,6 +130,21 @@ pub fn run_parsed(vm: *Vm, instructions: []const Instruction) !void {
                 const result: Word = if (a == b) 0 else if (a > b) 1 else 2;
                 try vm.data_stack.push(result);
             },
+            .@"and" => {
+                const b = vm.data_stack.pop();
+                const a = vm.data_stack.pop();
+                try vm.data_stack.push(a & b);
+            },
+            .@"or" => {
+                const b = vm.data_stack.pop();
+                const a = vm.data_stack.pop();
+                try vm.data_stack.push(a | b);
+            },
+            .xor => {
+                const b = vm.data_stack.pop();
+                const a = vm.data_stack.pop();
+                try vm.data_stack.push(a ^ b);
+            },
             .@"if" => |if_| {
                 const condition = vm.data_stack.pop();
                 const body_to_run = if (condition != 0) if_.then else if_.else_;

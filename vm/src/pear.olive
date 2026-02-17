@@ -39,6 +39,9 @@ $compare (\ () (# "compare"))
 $size (\ () (# "size"))
 $shr (\ () (# "shr"))
 $shl (\ () (# "shl"))
+$and (\ () (# "and"))
+$or (\ () (# "or"))
+$xor (\ () (# "xor"))
 $flatlito (\ () (# "flatlito"))
 $flatptro (\ () (# "flatptro"))
 $pop (\ (amount) (# "pop" amount))
@@ -54,6 +57,9 @@ test ($word 0)
 mod (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($modulo) ($popover 2) ($new 0 1))
 >> (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($shr) ($popover 2) ($new 0 1))
 << (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($shl) ($popover 2) ($new 0 1))
+band (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($and) ($popover 1) ($new 0 1))
+bor (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($or) ($popover 1) ($new 0 1))
+xor (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($xor) ($popover 1) ($new 0 1))
 
 _ "Crashing stuff"
 crash (# ($crash))
@@ -336,83 +342,32 @@ _ "We allow creating new functions during runtime by compiling the Jam intermedi
   To do that from the (memory-safe) Pear language, we need a way to turn the Jam into Pear values and
   vice versa. This 'pearification' and 'unpearification' happens here."
 
-_ "Pear value constructors"
-pear-int (\ (value) (# (# "int") value))
-pear-string (\ (string) (# (# "string") string))
-pear-enum (\ (variant payload) (# (# "enum" variant) payload))
-pear-list-to-array (\ (items) (list-to-array (# (# "array") items)))
-pear-struct-1 (\ (k1 v1) (# (# "struct" k1) v1))
-pear-struct-2 (\ (k1 v1 k2 v2) (# (# "struct" k1 k2) v1 v2))
-pear-struct-3 (\ (k1 v1 k2 v2 k3 v3) (# (# "struct" k1 k2 k3) v1 v2 v3))
-pear-empty-struct (# (# "struct") )
-pear-none (pear-enum "none" pear-empty-struct)
-pear-some (\ (payload) (pear-enum "some" payload))
+_ "Constructors for Pear values."
+'int (\ (value) (# (# "int") value))
+'str (\ (string) (# (# "string") string))
+&1 (\ (k1 v1) (# (# "struct" k1) v1))
+&2 (\ (k1 v1 k2 v2) (# (# "struct" k1 k2) v1 v2))
+&3 (\ (k1 v1 k2 v2 k3 v3) (# (# "struct" k1 k2 k3) v1 v2 v3))
+| (\ (variant payload) (# (# "enum" variant) payload))
+'array (\ (items) (list-to-array (# (# "array") items)))
+'nil (# (# "struct") )
+'\ (\ (args jam instructions) (# (# "lambda") instructions 'nil args jam))
+'none (| "none" 'nil)
+'some (\ (payload) (| "some" payload))
+'true (| "true" 'nil)
+'false (| "false" 'nil)
 
-pearify-params-rec (\ (rec params)
-  (if (nil? params) nil (: p (head params) (# (pear-string p) (rec rec (tail params))))))
-pearify-params (\ (params) (pear-list-to-array (pearify-params-rec pearify-params-rec params)))
-pearify-fields-rec (\ (rec f fields)
-  (if (nil? fields)
-    nil
-    (: field (head fields)
-      (# (pear-struct-2 "name" (pear-string (. 0 field)) "value" (f f (. 1 field))) (rec rec f (tail fields))))))
-pearify-fields (\ (f fields) (pear-list-to-array (pearify-fields-rec pearify-fields-rec f fields)))
-pearify-cases-rec (\ (rec f cases i)
-  (if (= i (size cases))
-    nil
-    (: case (. i cases)
-      (: left (. 0 case)
-        (: binding (if (= (size left) 1) pear-none (pear-some (pear-string (. 1 left))))
-          (#
-            (pear-struct-3 "variant" (pear-string (. 0 left)) "binding" binding "body" (f f (. 1 case)))
-            (rec rec f cases (+ i 1))))))))
-pearify-cases (\ (f cases) (pear-list-to-array (pearify-cases-rec pearify-cases-rec f cases 0)))
-pearify-rec (\ (rec jam)
-  (: tag (. 0 jam)
-    (if (str= tag "int")
-      (pear-enum "int" (pear-int (. 1 jam)))
-      (if (str= tag "name")
-        (pear-enum "name" (pear-string (. 1 jam)))
-        (if (str= tag "string")
-          (pear-enum "string" (pear-string (chars-to-str (. 1 jam))))
-          (if (str= tag "let")
-            (pear-enum
-              "let"
-              (pear-struct-3
-                "name" (pear-string (substr (. 1 jam) (. 2 jam)))
-                "def" (rec rec (. 3 jam))
-                "expr" (rec rec (. 4 jam))))
-            (if (str= tag "call")
-              (pear-enum
-                "call"
-                (pear-struct-2 "callee" (rec rec (. 1 jam)) "args" (pear-list-to-array (list-map rec (. 2 jam)))))
-              (if (str= tag "function")
-                (pear-enum
-                  "function"
-                  (pear-struct-2 "args" (pearify-params (. 1 jam)) "body" (rec rec (. 2 jam))))
-                (if (str= tag "struct")
-                  (pear-enum "struct" (pearify-fields rec (. 1 jam)))
-                  (if (str= tag "member")
-                    (pear-enum
-                      "field"
-                      (pear-struct-2 "of" (rec rec (. 1 jam)) "name" (pear-string (substr (. 2 jam) (. 3 jam)))))
-                    (if (str= tag "enum")
-                      (pear-enum
-                        "enum"
-                        (pear-struct-2
-                          "variant" (pear-string (substr (. 1 jam) (. 2 jam)))
-                          "payload" (rec rec (. 3 jam))))
-                      (if (str= tag "switch")
-                        (pear-enum
-                          "switch"
-                          (pear-struct-3
-                            "condition" (rec rec (. 1 jam))
-                            "cases" (pearify-cases rec (. 2 jam))
-                            "default" (if (nil? (. 3 jam)) pear-none (pear-some (rec rec (. 3 jam))))))
-                        (if (str= tag "array")
-                          (pear-enum "array" (pear-list-to-array (list-map rec (. 1 jam))))
-                          (crash "unknown jam tag"))))))))))))))
-pearify (\ (jam) (pearify-rec pearify-rec jam))
+&-names-rec (\ (rec arr i) (if (>= i (size arr)) nil (# (. i arr) (rec rec arr (+ i 2)))))
+&-values-rec (\ (rec arr i) (if (>= i (size arr)) nil (# (. i arr) (rec rec arr (+ i 2)))))
+& (\ (pairs)
+  (: names (&-names-rec &-names-rec pairs 0)
+    (: values (&-values-rec &-values-rec pairs 1)
+      (: type-tag (list-to-array (# "struct" names))
+        (list-to-array (# type-tag values))))))
+
+_ "Functions for inspecting and working with Pear values."
+kind (\ (obj) (. 0 (. 0 obj)))
+int? (\ (obj) (str= (kind obj) "int"))
 
 _ "Detect free variables"
 free-vars-arr-rec (\ (rec fv arr i bound free)
@@ -507,9 +462,9 @@ lower-rec (\ (rec compile jam)
       (if (str= tag "let")
         (# "let" (. 1 jam) (rec rec compile (. 2 jam)) (rec rec compile (. 3 jam)))
         (if (str= tag "int")
-          (# "object" (pear-int (. 1 jam)))
+          (# "object" ('int (. 1 jam)))
           (if (str= tag "string")
-            (# "object" (pear-string (. 1 jam)))
+            (# "object" ('str (. 1 jam)))
             (if (str= tag "struct")
               (# "new-inner"
                 (list-to-array (# (build-struct-meta-object (. 1 jam)) (lower-struct-values rec compile (. 1 jam)))))
@@ -517,13 +472,13 @@ lower-rec (\ (rec compile jam)
                 (#
                   "call"
                   (# "object" get-field)
-                  (# (rec rec compile (. 1 jam)) (# "object" (. 2 jam))))
+                  (# (rec rec compile (. 1 jam)) (# (# "object" (. 2 jam)) nil)))
                 (if (str= tag "enum")
                   (# "new-inner" (# "object" (# "enum" (. 1 jam))) (rec rec compile (. 2 jam)))
                   (if (str= tag "switch")
                     (: default
                       (if (nil? (. 3 jam))
-                        (# "crash" (# "object" (pear-string "You don't handle an enum variant.")))
+                        (# "crash" (# "object" ('str "You don't handle an enum variant.")))
                         (rec rec compile (. 3 jam)))
                       (#
                         "let"
@@ -535,8 +490,11 @@ lower-rec (\ (rec compile jam)
                           (# "load" (# "name" "(condition)") (# "word" 0))
                           (#
                             "if"
-                            (# "subtract" (# "load" (# "name" "(type)") (# "word" 0)) (# "word" (load_word 0 "enum")))
-                            (# "crash" (# "object" (pear-string "You can only switch on enums.")))
+                            (#
+                              "subtract"
+                              (# "load" (# "load" (# "name" "(type)") (# "word" 0)) (# "word" 0))
+                              (# "word" (load_word 0 "enum")))
+                            (# "crash" (# "object" ('str "You can only switch on enums.")))
                             (#
                               "let"
                               "(variant)"
@@ -572,8 +530,11 @@ lower-rec (\ (rec compile jam)
                               (# "load" (# "name" "(callee)") (# "word" 0))
                               (#
                                 "if"
-                                (# "subtract" (# "load" (# "name" "(type)") (# "word" 0)) (# "word" (load_word 0 "lambda")))
-                                (# "crash" (# "object" (pear-string "not a function")))
+                                (#
+                                  "subtract"
+                                  (# "load" (# "load" (# "name" "(type)") (# "word" 0)) (# "word" 0))
+                                  (# "word" (load_word 0 "lambda")))
+                                (# "crash" (# "object" ('str "not a function")))
                                 (#
                                   "let"
                                   "(args-meta)"
@@ -581,7 +542,7 @@ lower-rec (\ (rec compile jam)
                                   (#
                                     "if"
                                     (# "subtract" (# "size" (# "name" "(args-meta)")) (# "word" (size (. 2 jam))))
-                                    (# "crash" (# "object" (pear-string "wrong number of arguments")))
+                                    (# "crash" (# "object" ('str "wrong number of arguments")))
                                     (#
                                       "let"
                                       "(instrs)"
@@ -678,11 +639,137 @@ compile (\ (params fvs lowered-body)
 
 jam-to-instructions (\ (jam) (compile (#) (#) (lower compile jam)))
 
+_ "Builtins that are passed into Pear."
+builtin-crash ('\ (# "message") (| "crash" (| "name" ('str "message"))) (\ (message _) (crash message)))
+builtin-add ('\ (# "left" "right")
+  (| "add" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (+ (. 1 left) (. 1 right))) (crash "add only works on ints."))))
+builtin-subtract ('\ (# "left" "right")
+  (| "subtract" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (- (. 1 left) (. 1 right))) (crash "Subtract only works on ints."))))
+builtin-multiply ('\ (# "left" "right")
+  (| "multiply" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (* (. 1 left) (. 1 right))) (crash "multiply only works on ints."))))
+builtin-divide ('\ (# "left" "right")
+  (| "divide" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (/ (. 1 left) (. 1 right))) (crash "divide only works on ints."))))
+builtin-modulo ('\ (# "left" "right")
+  (| "modulo" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (mod (. 1 left) (. 1 right))) (crash "modulo only works on ints."))))
+builtin-shift-left ('\ (# "left" "right")
+  (| "shift-left" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (<< (. 1 left) (. 1 right))) (crash "shift-left only works on ints."))))
+builtin-shift-right ('\ (# "left" "right")
+  (| "shift-right" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (>> (. 1 left) (. 1 right))) (crash "shift-right only works on ints."))))
+builtin-and ('\ (# "left" "right")
+  (| "and" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (band (. 1 left) (. 1 right))) (crash "and only works on ints."))))
+builtin-or ('\ (# "left" "right")
+  (| "or" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (bor (. 1 left) (. 1 right))) (crash "or only works on ints."))))
+builtin-xor ('\ (# "left" "right")
+  (| "xor" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _) (if (and (int? left) (int? right)) ('int (xor (. 1 left) (. 1 right))) (crash "xor only works on ints."))))
+builtin-compare ('\ (# "left" "right")
+  (| "compare" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (left right _)
+    (if (and (int? left) (int? right))
+      (.
+        ((# ($compare) ($new 1 1)) (. 1 left) (. 1 right))
+        (# (| "equal" 'nil) (| "greater" 'nil) (| "less" 'nil)))
+      (crash "compare only works on ints."))))
+builtin-array-len ('\ (# "array") (| "array_len" (| "name" ('str "array"))) (\ (array _) ('int (- (size array) 1))))
+builtin-array-get ('\ (# "array" "index")
+  (| "array_get" (&2 "array" (| "name" ('str "array")) "index" (| "name" ('str "index"))))
+  (\ (array index _) (. (+ (. 1 index) 1) array)))
+pear-list-to-olive-rec (\ (rec list)
+  (: type (. 0 list)
+    (if (str= (. 1 type) "empty")
+      nil
+      (: payload (. 1 list)
+        (# (get-field payload "head") (rec rec (get-field payload "tail")))))))
+builtin-array-from-list ('\ (# "list")
+  (| "array_from_list" (| "name" ('str "list")))
+  (\ (list _) (list-to-array (# (# "array") (pear-list-to-olive-rec pear-list-to-olive-rec list)))))
+builtin-string-get ('\ (# "string" "index")
+  (| "string_get" (&2 "string" (| "name" ('str "string")) "index" (| "name" ('str "index"))))
+  (\ (string index _) ('int (str-get (. 1 string) (. 1 index)))))
+pear-chars-to-olive-rec (\ (rec chars i)
+  (if (= i (size chars)) nil
+    (# (. 1 (. i chars)) (rec rec chars (+ i 1)))))
+builtin-string-from-chars ('\ (# "chars")
+  (| "string_from_chars" (| "name" ('str "string")))
+  (\ (chars _) ('str (chars-to-str (pear-chars-to-olive-rec pear-chars-to-olive-rec chars 1)))))
+builtin-string-equals ('\ (# "left" "right")
+  (| "string_equals" (&2 "left" (| "name" ('str "left")) "right" (| "name" ('str "right"))))
+  (\ (a b _) (if (str= (. 1 a) (. 1 b)) 'true 'false)))
+pear-make-struct-names-rec (\ (rec arr i)
+  (if (= i (size arr)) nil
+    (: element (. i arr)
+      (# (. 1 (get-field element "name")) (rec rec arr (+ i 1))))))
+pear-make-struct-values-rec (\ (rec arr i)
+  (if (= i (size arr)) nil
+    (: element (. i arr)
+      (# (get-field element "value") (rec rec arr (+ i 1))))))
+builtin-make-struct ('\ (# "fields")
+  (| "make_struct" (| "name" ('str "fields")))
+  (\ (fields-arr _)
+    (: names (pear-make-struct-names-rec pear-make-struct-names-rec fields-arr 1)
+      (: values (pear-make-struct-values-rec pear-make-struct-values-rec fields-arr 1)
+        (: type-tag (list-to-array (# "struct" names))
+          (list-to-array (# type-tag values)))))))
+pear-struct-fields-rec (\ (rec struct i)
+  (if (= i (size struct)) nil
+    (# (&2 "name" ('str (. i (. 0 struct))) "value" (. i struct))
+      (rec rec struct (+ i 1)))))
+builtin-fields ('\ (# "struct")
+  (| "fields" (| "name" ('str "struct")))
+  (\ (struct _) ('array (pear-struct-fields-rec pear-struct-fields-rec struct 1))))
+builtin-make-enum ('\ (# "variant" "payload")
+  (| "make_enum" (&2 "variant" (| "name" ('str "variant")) "payload" (| "name" ('str "payload"))))
+  (\ (variant payload _) (| (. 1 variant) payload)))
+builtin-variant ('\ (# "enum")
+  (| "variant" (| "name" ('str "enum")))
+  (\ (enum _) ('str (. 1 (. 0 enum)))))
+builtin-payload ('\ (# "enum")
+  (| "payload" (| "name" ('str "enum")))
+  (\ (enum _) (. 1 enum)))
+
+builtins (&
+  (#
+    "crash" builtin-crash
+    "add" builtin-add
+    "subtract" builtin-subtract
+    "multiply" builtin-multiply
+    "divide" builtin-divide
+    "modulo" builtin-modulo
+    "shift_left" builtin-shift-left
+    "shift_right" builtin-shift-right
+    "and" builtin-and
+    "or" builtin-or
+    "xor" builtin-xor
+    "compare" builtin-compare
+    "array_len" builtin-array-len
+    "array_get" builtin-array-get
+    "array_from_list" builtin-array-from-list
+    "string_get" builtin-string-get
+    "string_from_chars" builtin-string-from-chars
+    "string_equals" builtin-string-equals
+    "make_struct" builtin-make-struct
+    "fields" builtin-fields
+    "make_enum" builtin-make-enum
+    "variant" builtin-variant
+    "payload" builtin-payload))
+
 compile (#
   (# "lambda")
   (\ (string closure)
     (if (str= (. 0 (. 0 string)) "string")
-      (: jam (string-to-jam (. 1 string)) (# (# "lambda") (jam-to-instructions jam) (#) (#) jam))
+      (: jam (string-to-jam (. 1 string))
+        (: lowered (lower compile jam)
+          (: body (# "let" "@" (# "object" builtins) lowered)
+            (# (# "lambda") (compile (#) (#) body) (#) (#) jam))))
       (crash "You can only compile strings.")))
   (#)
   (# "code")
