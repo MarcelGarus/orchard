@@ -1,3 +1,201 @@
 (:
-  @
+  # (
+    Welcome to Pear! This is a tiny programming language with Lisp-like syntax that is closely modeled after
+    the untyped lambda calculus. It has the following types of values: ints, strings, structs, enums, arrays,
+    and functions. With each of these types, you can do different things:
+
+    Ints: You can create ints by writing a number in the code like this: 3. Ints are 64-bit signed integers. If
+      a number literal is too big to fit into 64 bits, it will crash with "number too big: {number}".
+      You can do stuff with ints using these builtin functions:
+      - add
+      - subtract
+      - multiply
+      - divide
+      - modulo
+      - and
+      - or
+      - xor
+      - shift_left
+      - shift_right
+      - compare (returns an enum; either (| less), (| greater), or (| equal)).
+
+    Strings: You can create strings using double quotes in your code like this: "hello". Strings can go over
+      multiple lines. Inside strings, you can use a backslash \ followed by a backslash, quote, or "n" to mean
+      a backslash, quote, or newline. You can do stuff with strings using these builtin functions:
+      - string_len
+      - get_char
+      - string_from_chars
+
+    Structs: You can create structs by writing a parenthesized group where the first word is "&", like this:
+      (& x 1 y 4). You can access the fields of structs like this: (. some_struct x). You can also do stuff with
+      structs using these builtin functions:
+      - make_struct: Turns an array of (& name ... value ...) structs into an actual struct.
+      - field: Takes a struct and a string, returns the field.
+
+    Enums: You can create enums by writing a parenthesized group where the first word is "|", like this:
+      (| foo). You can switch on an enum like this: (% some_enum foo 2 bar 5 (baz binding) binding). If you
+      switch on a non-enum, you crash with the value: (| switch_on_non_enum value). You can also do stuff
+      with enums using these builtin functions:
+      - make_enum: Turns a string and a payload value into an enum: (make_enum "foo" 3) is (| foo 3).
+      - variant: Takes an enum, returns the variant as a string: (variant (| foo)) is "foo".
+      - payload: Takes an enum, returns the payload: (payload (| some 4)) is 4.
+
+    Arrays: They exist.
+
+    Functions: They exist.
+  )
+
+  # (Nil is used whenever we don't actually want to provide a useful value. Functions that only have
+    side-effects (aka they may crash but that's all they do) return nil. See the assert function for an
+    example.)
+  nil (&)
+
+  # (Functions related to crashing.)
+  crash (\ (message) ((. @ crash) message))
+  unreachable (\ () (crash "unreachable"))
+  todo (\ (message) (crash (| todo message)))
+  ... (\ () (crash "todo"))
+  assert (\ (check) (% check true nil false (crash "assert failed")))
+
+  # (Your typical boolean values are just enums.)
+  true (| true)
+  false (| false)
+  not (\ (a) (% a true false false true))
+  and (\ (a b) (% a true b false false))
+  or (\ (a b) (% a true true false b))
+  xor (\ (a b) (% a true (not b) false b))
+  _ (assert true)
+  _ (assert (not false))
+  _ (assert (not (not true)))
+  _ (assert (and true true))
+  _ (assert (not (and true false)))
+  _ (assert (not (and false true)))
+  _ (assert (not (and false false)))
+  _ (assert (or true true))
+  _ (assert (or true false))
+  _ (assert (or false true))
+  _ (assert (not (or false false)))
+  _ (assert (not (xor true true)))
+  _ (assert (xor true false))
+  _ (assert (xor false true))
+  _ (assert (not (xor false false)))
+
+  # (Int stuff)
+  + (\ (a b) ((. @ add) a b))
+  - (\ (a b) ((. @ subtract) a b))
+  * (\ (a b) ((. @ multiply) a b))
+  / (\ (a b) ((. @ divide) a b))
+  mod (\ (a b) ((. @ modulo) a b))
+  compare (\ (a b) ((. @ compare) a b))
+  == (\ (a b) (% (compare a b) equal true greater false less false))
+  != (\ (a b) (% (compare a b) equal false greater true less true))
+  < (\ (a b) (% (compare a b) equal false greater false less true))
+  > (\ (a b) (% (compare a b) equal false greater true less false))
+  <= (\ (a b) (% (compare a b) equal true greater false less true))
+  >= (\ (a b) (% (compare a b) equal true greater true less false))
+  _ (assert (== (+ 1 1) 2))
+  _ (assert (== (- 10 1) 9))
+  _ (assert (== (* 3 5) 15))
+  _ (assert (== (/ 8 2) 4))
+  _ (assert (== (mod 10 10) 0))
+  _ (assert (== (mod 12 10) 2))
+  _ (assert (>= 5 4))
+  min (\ (a b) (% (< a b) true a false b))
+  max (\ (a b) (% (> a b) true a false b))
+  abs (\ (a) (% (>= a 0) true a false (- 0 a)))
+  is_even (\ (a) (== (mod a 2) 0))
+  is_odd (\ (a) (== (mod a 2) 1))
+
+  # (A function for making recursive stuff easier.)
+  rec (\ (state fun) (: rec (\ (rec state) (fun (\ (state) (rec rec state)) state)) (rec rec state)))
+  rec_2 (\ (a b fun) (: rec (\ (rec a b) (fun (\ (a b) (rec rec a b)) a b)) (rec rec a b)))
+
+  # (Linked Lists)
+  empty_list (| empty)
+  cons (\ (head tail) (| more (& head head tail tail)))
+  push (\ (list item)
+    (rec list (\ (rec list) (% list empty (cons item empty_list) (more m) (cons (. m head) (rec (. m tail)))))))
+  list_1 (\ (a) (push empty_list a))
+  list_2 (\ (a b) (push (list_1 a) b))
+  list_map (\ (list mapper)
+    (rec list (\ (rec list) (% list empty empty_list (more m) (cons (mapper (. m head)) (rec (. m tail)))))))
+  list_len (\ (list) (rec list (\ (rec list) (% list empty 0 (more m) (+ (rec (. m tail)) 1)))))
+  list_get (\ (list index)
+    (rec_2 list index (\ (get list index)
+      (% list
+        empty (crash "The index is out of bounds.")
+        (more m) (% (== index 0) true (. m head) false (get (. m tail) (- index 1)))))))
+  list_skip (\ (list amount)
+    (rec_2 list amount (\ (rec list amount)
+      (% (== amount 0)
+        true list
+        false (rec (% list empty (crash "bad skip") (more m) (. m tail)) (- amount 1))))))
+  list_find (\ (list check)
+    (rec list (\ (rec list)
+      (% list
+        empty (| none)
+        (more m) (: current (. m head) (% (check current) true (| some current) false (rec (. m tail))))))))
+  list_any (\ (list check)
+    (rec list (\ (rec list) (% list empty false (more m) (% (check (. m head)) true true false (rec (. m tail)))))))
+  list_concat (\ (a b) (rec a (\ (rec a) (% a empty b (more m) (cons (. m head) (rec (. m tail)))))))
+  list_flatten (\ (lists)
+    (rec lists (\ (rec lists) (% lists empty empty_list (more m) (list_concat (. m head) (rec (. m tail)))))))
+
+  # (Arrays)
+  array_len (\ (array) ((. @ array_len) array))
+  array_get (\ (array index) ((. @ array_get) array index))
+  array_from_list (\ (list) ((. @ array_from_list) list))
+  list_from_array (\ (array)
+    (rec 0 (\ (rec i) (% (== i (array_len array)) true empty_list false (cons (array_get array i) (rec (+ i 1)))))))
+  array_map (\ (array mapper)
+    (array_from_list
+      (rec 0 (\ (rec i)
+        (% (== i (array_len array)) true empty_list false (cons (mapper (array_get array i)) (rec (+ i 1))))))))
+  array_all (\ (array check)
+    (rec 0 (\ (all i)
+      (% (== i (array_len array)) true true false (% (check (array_get array i)) true (all (+ i 1)) false false)))))
+  array_any (\ (array check) (not (array_all array (\ (item) (not (check item))))))
+  array_find (\ (array check)
+    (rec 0 (\ (find i)
+      (% (== i (array_len array))
+        true (| none)
+        false (: item (array_get array i) (% (check item) true (| some item) false (find (+ i 1))))))))
+
+  # (String stuff.)
+  get_char (. @ string_get)
+  string_from_chars (\ (chars) ((. @ string_from_chars) chars))
+  substr (\ (str start end)
+    (string_from_chars
+      (array_from_list
+        (rec start (\ (rec i) (% (== i end) true empty_list false (cons (get_char str i) (rec (+ i 1)))))))))
+  str== (\ (a b) ((. @ string_equals) a b))
+  ascii_0 (get_char "0" 0)
+  ascii_9 (get_char "9" 0)
+  ascii_n (get_char "n" 0)
+  ascii_space (get_char " " 0)
+  ascii_newline (get_char "\n" 0)
+  ascii_opening_paren (get_char "(" 0)
+  ascii_closing_paren (get_char ")" 0)
+  ascii_quote (get_char "\"" 0)
+  ascii_backslash (get_char "\\" 0)
+
+  # (Struct stuff.)
+  make_struct (\ (fields) ((. @ make_struct) fields))
+  get_fields (\ (struct) ((. @ fields) struct))
+
+  # (Enum stuff.)
+  make_enum (\ (variant payload) ((. @ make_enum) variant payload))
+  get_variant (\ (enum) ((. @ variant) enum))
+  get_payload (\ (enum) ((. @ payload) enum))
+
+  # (Function stuff.)
+  make_function (\ (args code captured) ((. @ make_function) args code captured))
+  get_arguments (\ (function) ((. @ function_arguments) function))
+  get_body (\ (function) ((. @ function_body) function))
+
+
+  multiplier (\ (n) (\ (m) (* m n)))
+  times4 (multiplier 4)
+
+  1
 )
