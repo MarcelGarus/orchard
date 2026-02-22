@@ -20,14 +20,34 @@ pub fn main() !void {
     // const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    // Create the Pear compiler.
-    std.debug.print("Creating the Pear compiler...\n", .{});
+    // Create the Jam compiler.
+    std.debug.print("Creating the Jam compiler...\n", .{});
     const compile = compile: {
-        const pear_compiler = @embedFile("pear.olive");
-        const result = try olive_compiler.eval(ally, &vm, pear_compiler);
+        const code = @embedFile("code.olive");
+        const result = try olive_compiler.eval(ally, &vm, code);
         break :compile Val.from(result.get("compile").?);
     };
     vm.impl.heap.dump_stats();
+
+    {
+        // Compile the code.
+        std.debug.print("Compiling the code...\n", .{});
+        const code = @embedFile("code.jam");
+        const compiled = try compile.call(&vm, &.{try Val.new_string(&heap, code)});
+        std.debug.print("Compiled: {any}\n", .{compiled});
+        heap.dump_obj(compiled.obj);
+        vm.impl.heap.dump_stats();
+    }
+    if (true) return;
+
+    // // Create the Pear compiler.
+    // std.debug.print("Creating the Pear compiler...\n", .{});
+    // const compile = compile: {
+    //     const pear_compiler = @embedFile("pear.olive");
+    //     const result = try olive_compiler.eval(ally, &vm, pear_compiler);
+    //     break :compile Val.from(result.get("compile").?);
+    // };
+    // vm.impl.heap.dump_stats();
 
     // Compile the code.
     std.debug.print("Compiling the code...\n", .{});
