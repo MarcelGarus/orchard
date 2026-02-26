@@ -412,19 +412,49 @@ add-sems-top-level (\ (rec nodes i)
           (if (str= (. 1 signature) "#")
             (rec rec nodes (+ i 2))
             (#
-              (# "value" (. 1 signature) (add-sem add-sem body))
+              (# (. 1 signature) "value" (add-sem add-sem body))
               (rec rec nodes (+ i 2))))
           (if (has-tag signature "group")
             (: children (. 1 signature)
                 (: name (if (has-tag (. 0 children) "name") (. 1 (. 0 children)) (crash "bad function name"))
                   (: params (list-to-array (extract-params-rec extract-params-rec children 1))
-                    (# (# "function" name params (add-sem add-sem body)) (rec rec nodes (+ i 2))))))
+                    (# (# name "function" params (add-sem add-sem body)) (rec rec nodes (+ i 2))))))
             (rec rec nodes (+ i 1))))))))
 add-semantics (\ (nodes) (add-sems-top-level add-sems-top-level (list-to-array nodes) 0))
 
 string-to-jam (\ (input) (list-to-array (add-semantics (parse-string-to-raw input))))
 
-compile-jam (\ (input) (string-to-jam input))
+lower-new-leaf (\ (rec lower jams i stack instructions defs)
+  (if (= i (size jams))
+    instructions
+    (: new-instructions (lower lower (. i jams) stack instructions defs)
+      (rec rec lower jams (+ i 1) (# "" stack) new-instructions defs))))
+lower-jam-rec (\ (lower jam stack instructions defs)
+  (if (has-tag jam "word")
+    (# (# "push" (. 0 jam)) instructions)
+    (if (has-tag jam "add")
+      (: instructions-after-a (lower lower (. 1 jam) stack instructions defs)
+        (: instructions-after-b (lower lower (. 2 jam) (# "" stack) instructions-after-a defs)
+          (# "add" instructions-after-b)))
+      (if (has-tag jam "new-leaf")
+        (# (# "new-leaf" (size (. 1 jam))) (lower-new-leaf lower-new-leaf lower (. 1 jam) 0 stack instructions defs))
+        (crash (# "unknown node" jam))))))
+lower-jam-top (\ (rec jams i defs)
+  (if (= i (size jams))
+    defs
+    (: jam (. i jams)
+      (: lowered
+        (if (str= (. 1 jam) "value")
+          (# (. 0 jam) "value" (lower-jam-rec lower-jam-rec (. 2 jam) defs))
+          (#
+            (. 0 jam)
+            "function"
+            (. 2 jam)
+            (list-reverse (lower-jam-rec lower-jam-rec (. 3 jam) (list-reverse (array-to-list (. 2 jam))) (#) defs))))
+        (rec rec jams (+ i 1) (# lowered defs))))))
+lower-jam (\ (jams) (lower-jam-top lower-jam-top jams 0 (#)))
+
+compile-jam (\ (input) (lower-jam (string-to-jam input)))
 
 compile (#
   (# "lambda")

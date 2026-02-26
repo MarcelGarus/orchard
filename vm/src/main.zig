@@ -21,7 +21,7 @@ pub fn main() !void {
     var vm = try Vm.init(&heap, ally);
 
     // Create the Jam compiler.
-    std.debug.print("Creating the Jam compiler...\n", .{});
+    std.debug.print("Using Zig to compile Olive...\n", .{});
     const compile = compile: {
         const code = @embedFile("code.olive");
         const result = try olive_compiler.eval(ally, &vm, code);
@@ -31,7 +31,7 @@ pub fn main() !void {
 
     {
         // Compile the code.
-        std.debug.print("Compiling the code...\n", .{});
+        std.debug.print("Using Olive to compile Jam...\n", .{});
         const code = @embedFile("code.jam");
         const compiled = try compile.call(&vm, &.{try Val.new_string(&heap, code)});
         std.debug.print("Compiled: {any}\n", .{compiled});
