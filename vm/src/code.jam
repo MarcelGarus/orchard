@@ -25,9 +25,10 @@
   - flatten-to-leaf object: Takes a list and flattens it into a leaf object.
   - flatten-to-inner object: Takes a list (an object of shape [] or [item list]) and flattens it into an inner object.
   - size obj: Evaluates to the size of the object (not including the header word).
-  - call-jam object args
+  - call-jam name args
   - call-instructions expr args
   - collect-garbage expr: Evaluates the expression, freeing intermediary allocations it made.
+  - rec args: Runs the current function again with new args.
 
   For every node type, a Jam function named @<node> is in scope, e.g. @add.
   This file supports the following syntax:
@@ -106,11 +107,11 @@ nil (@new-leaf)
 (head list) (. 0 list)
 (tail list) (. 1 list)
 (list-len list) (if (nil? list) 0 (+ 1 (@rec (tail list))))
-(list-reverse-rec list acc) (if (nil? list) acc (@rec (tail list) (# (head list) acc)))
+(list-reverse-rec list acc) (if (nil? list) acc (@rec (tail list) (@new-inner (head list) acc)))
 (list-reverse list) (list-reverse-rec list nil)
 (list-get list n) (if (= n 0) (head list) (@rec (tail list) (- n 1)))
-(list-prepend-all from to) (if (nil? from) to (@rec (tail from) (# (head from) to)))
-(list-concat a b) (if (nil? a) b (# (head a) (@rec (tail a) b)))
+(list-prepend-all from to) (if (nil? from) to (@rec (tail from) (@new-inner (head from) to)))
+(list-concat a b) (if (nil? a) b (@new-inner (head a) (@rec (tail a) b)))
 
 # "String stuff"
 (str-get string index)
@@ -119,19 +120,19 @@ nil (@new-leaf)
       0
       (: word (load_word word_index string)
         (mod (>> word (* (mod index 8) 8)) 256))))
-(str=-rec rec a b i limit) (if (= i limit) true (if (= (load_word i a) (load_word i b)) (@rec a b (+ i 1) limit) false))
+(str=-rec a b i limit) (if (= i limit) true (if (= (load_word i a) (load_word i b)) (@rec a b (+ i 1) limit) false))
 (str= a b) (if (= (size a) (size b)) (str=-rec a b 0 (size a)) false)
 (substr-pack-rec s pos end shift acc)
   (if (>= shift 64)
     acc
     (if (>= pos end) acc (@rec s (+ pos 1) end (+ shift 8) (+ acc (* (str-get s pos) (<< 1 shift))))))
-(substr-rec s pos end) (if (>= pos end) nil (# (substr-pack-rec s pos end 0 0) (@rec s (+ pos 8) end)))
+(substr-rec s pos end) (if (>= pos end) nil (@new-inner (substr-pack-rec s pos end 0 0) (@rec s (+ pos 8) end)))
 (substr s start end) (list-to-leaf (substr-rec s start end))
 (chars-to-str-pack-rec chars shift acc)
   (if (>= shift 64)
-    (# acc chars)
-    (if (nil? chars) (# acc chars) (@rec (tail chars) (+ shift 8) (+ acc (* (head chars) (<< 1 shift))))))
-(chars-to-str-rec chars) (if (nil? chars) nil (: r (chars-to-str-pack-rec chars 0 0) (# (head r) (@rec (tail r)))))
+    (@new-inner acc chars)
+    (if (nil? chars) (@new-inner acc chars) (@rec (tail chars) (+ shift 8) (+ acc (* (head chars) (<< 1 shift))))))
+(chars-to-str-rec chars) (if (nil? chars) nil (: r (chars-to-str-pack-rec chars 0 0) (@new-inner (head r) (@rec (tail r)))))
 (chars-to-str chars) (list-to-leaf (chars-to-str-rec chars))
 
 (list-contains list string) (if (nil? list) false (if (str= (head list) string) true (@rec (tail list) string)))
