@@ -1,177 +1,143 @@
-_ "
-  This is Olive, a low-level language for my VM.
-  This file consists of a number of top-level definitions of the form '{name} {expr}' that are executed one
-  after another, resulting in heap objects. Definitions can refer to previous definitions.
+# "
+  This is Olive, a low-level intermediate representation for my VM and a language built on top.
+  This file compiles to Jam. Every expression evaluates to a word. These are the possible nodes:
 
-  Every expression, once evaluated results in a heap object. The following expressions exist:
-  - Number literals: 4. These result in a leaf object with the number inside.
-  - String literals like this comment. These result in a leaf object with the characters inside (See heap.zig's
-    new_symbol function).
-  - Allocations: (# 3). These create inner objects (objects that point to other objects).
-  - Functions: (\\ (a) (+ a a)). These get turned into instruction objects. They can't capture anything from
-    the outer environment (although they can of course refer to previous top-level definitions).
-  - Calls: (+ a a). These evaluate the instructions of the callee.
-  - Let bindings: (: foo 3 foo).
-  - If: (if something then else). Executes then if something is non-zero, otherwise else.
+  - word number: Evaluates to the number.
+  - object address: Evaluates to the address.
+  - let name def expr: Evaluates the definition, then evaluates the expr with name bound to def.
+  - name string: Evaluates to whatever name is bound to.
+  - crash error: Crashes with the error.
+  - add a b
+  - subtract a b
+  - multiply a b
+  - divide a b
+  - modulo a b
+  - shift-left a b: Shifts a left by b.
+  - shift-right a b: Shifts a right by b.
+  - and a b: Bitwise and of a and b.
+  - or a b: Bitwise or of a and b.
+  - xor a b: Bitwise xor of a and b.
+  - compare a b: Evaluates to 0 if a = b, 1 if a > b, 2 if a < b.
+  - if condition then else: Evaluates the condition. If it's != 0, evaluates then, otherwise else.
+  - new-leaf words: Creates a new leaf object with the given words.
+  - new-inner words: Creates a new inner object with the given words.
+  - load object index: Loads the index'th word of the object (not including the header word).
+  - flatten-to-leaf object: Takes a list and flattens it into a leaf object.
+  - flatten-to-inner object: Takes a list (an object of shape [] or [item list]) and flattens it into an inner object.
+  - size obj: Evaluates to the size of the object (not including the header word).
+  - call-jam name args
+  - call-instructions expr args
+  - collect-garbage expr: Evaluates the expression, freeing intermediary allocations it made.
+  - rec args: Runs the current function again with new args.
 
-  You can think of Olive as a low-level companion language to Pear. Pear is memory-safe (the first
-  word of every Pear value points to a meta-object describing the type); operations like calling a
-  function, getting a struct field, etc. check for correct types up front.
-  In the long term, the idea is for the Pear compiler, as well as the Pear-builtin functions to be
-  implemented in Olive. Olive itrec doesn't have any builtin functions. Instead, functions like add are
-  defined in user-space as a series of instructions.
+  For every node type, a Jam function named @<node> is in scope, e.g. @add.
+  This file supports the following syntax:
+
+  - Let: (: name def expr) -> (@let name def expr)
+  - Names: foo -> (@name foo)
+  - Integer literals: 2 -> (@object <address of a leaf object containing 2>)
+  - String literals: \"hi\" -> (@object <address of a leaf object containing \"hi\">)
+  - Calls: (callee a b c) -> (@call-jam callee (@new-inner a b c))
+    Note that this evaluates the callee at compile-time. This means it has to be a function literals or the
+    name of a global definition.
+  - Functions: (\\ (a b) ...)
+    Note that functions can't capture anything.
+  - If: (if condition then else) -> (@if (@load condition 0) then else)
+  - Loop: (loop initial body) -> (@loop initial body)
 "
 
-_ "Instruction constructors"
-$word (\ (word) (# "word" word))
-$stack (\ (offset) (# "stack" offset))
-$add (\ () (# "add"))
-$subtract (\ () (# "subtract"))
-$multiply (\ () (# "multiply"))
-$divide (\ () (# "divide"))
-$modulo (\ () (# "modulo"))
-$load (\ () (# "load"))
-$popover (\ (amount) (# "popover" amount))
-$if (\ (then else) (# "if" then else))
-$crash (\ () (# "crash"))
-$new (\ (has_pointers num_words) (# "new" has_pointers num_words))
-$compare (\ () (# "compare"))
-$size (\ () (# "size"))
-$shr (\ () (# "shr"))
-$shl (\ () (# "shl"))
-$and (\ () (# "and"))
-$or (\ () (# "or"))
-$xor (\ () (# "xor"))
-$flatlito (\ () (# "flatlito"))
-$flatptro (\ () (# "flatptro"))
-$pop (\ (amount) (# "pop" amount))
-$object (\ (obj) (# "address" obj))
-$eval (\ () (# "eval"))
-
-_ "Arithmetic stuff"
-test ($word 0)
-+ (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($add) ($popover 1) ($new 0 1))
-- (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($subtract) ($popover 2) ($new 0 1))
-* (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($multiply) ($popover 1) ($new 0 1))
-/ (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($divide) ($popover 2) ($new 0 1))
-mod (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($modulo) ($popover 2) ($new 0 1))
->> (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($shr) ($popover 2) ($new 0 1))
-<< (# ($stack 1) ($word 0) ($load) ($stack 1) ($word 0) ($load) ($shl) ($popover 2) ($new 0 1))
-band (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($and) ($popover 1) ($new 0 1))
-bor (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($or) ($popover 1) ($new 0 1))
-xor (# ($word 0) ($load) ($stack 1) ($word 0) ($load) ($xor) ($popover 1) ($new 0 1))
-
-_ "Crashing stuff"
-crash (# ($crash))
-unreachable (\ () (crash "unreachable"))
-todo (\ (message) (crash message))
-... (\ () (crash "todo"))
-
-_ "Bool stuff"
+# "Bool stuff"
 false 0
 true 1
-and (\ (a b) (* a b))
-and-3 (\ (a b c) (and (and a b) c))
-and-4 (\ (a b c d) (and (and-3 a b c) d))
-and-5 (\ (a b c d e) (and (and-4 a b c d) e))
-or (\ (a b) (if a true b))
-or-3 (\ (a b c) (or (or a b) c))
-or-4 (\ (a b c d) (or (or-3 a b c) d))
-or-5 (\ (a b c d e) (or (or-4 a b c d) e))
-or-6 (\ (a b c d e f) (or (or-5 a b c d e) f))
-or-7 (\ (a b c d e f g) (or (or-6 a b c d e f) g))
-or-8 (\ (a b c d e f g h) (or (or-7 a b c d e f g) h))
-or-9 (\ (a b c d e f g h i) (or (or-8 a b c d e f g h) i))
-or-10 (\ (a b c d e f g h i j) (or (or-9 a b c d e f g h i) j))
-or-11 (\ (a b c d e f g h i j k) (or (or-10 a b c d e f g h i j) k))
-or-12 (\ (a b c d e f g h i j k l) (or (or-11 a b c d e f g h i j k) l))
-not (\ (a) (- 1 a))
 
-_ "Comparison functions that return raw values (for direct use with 'if')."
-= (#
-  ($word 0) ($load) ($stack 1) ($word 0) ($load) ($subtract) ($if (# ($object false)) (# ($object true))) ($popover 1))
-!= (#
-  ($word 0) ($load) ($stack 1) ($word 0) ($load) ($subtract) ($if (# ($object true)) (# ($object false))) ($popover 1))
-< (#
-  ($stack 1) ($word 0) ($load)
-  ($stack 1) ($word 0) ($load)
-  ($compare) ($word 2) ($subtract)
-  ($if (# ($object false)) (# ($object true))) ($popover 2))
-< (#
-  ($stack 1) ($word 0) ($load)
-  ($stack 1) ($word 0) ($load)
-  ($compare) ($word 1) ($subtract)
-  ($if (# ($object false)) (# ($object true))) ($popover 2))
-<= (#
-  ($stack 1) ($word 0) ($load)
-  ($stack 1) ($word 0) ($load)
-  ($compare) ($word 1) ($subtract)
-  ($if (# ($object true)) (# ($object false))) ($popover 2))
->= (#
-  ($stack 1) ($word 0) ($load)
-  ($stack 1) ($word 0) ($load)
-  ($compare) ($word 2) ($subtract)
-  ($if (# ($object true)) (# ($object false))) ($popover 2))
+# "Arithmetic stuff"
+(+ a b) (@add a b)
+(- a b) (@subtract a b)
+(* a b) (@multiply a b)
+(/ a b) (@divide a b)
+(mod a b) (@modulo a b)
+(>> a b) (@shift-right a b)
+(<< a b) (@shift-left a b)
+(and a b) (@and a b)
+(or a b) (@or a b)
+(xor a b) (@xor a b)
 
-_ "Object stuff"
-size (# ($size) ($new 0 1))
-. (# ($stack 1) ($word 0) ($load) ($load) ($popover 1))
-load_word (\ (index obj) ((# ($new 0 1)) (. index obj)))
-nil (#)
-nil? (\ (obj) (= 0 (size obj)))
-list-to-leaf (# ($flatlito))
-list-to-array (# ($flatptro))
-array-to-list-rec (\ (rec array i) (if (= i (size array)) nil (# (. i array) (rec rec array (+ i 1)))))
-array-to-list (\ (array) (array-to-list-rec array-to-list-rec array 0))
+# "Comparison functions."
+(= a b) (if (- a b) false true)
+(!= a b) (if (- a b) true false)
+(> a b) (= (@compare a b) 1)
+(< a b) (= (@compare a b) 2)
+(>= a b) (!= (@compare a b) 2)
+(<= a b) (!= (@compare a b) 1)
 
-_ "More numbers stuff"
-is-even (\ (a) (= (mod a 2) 0))
-is-odd (\ (a) (= (mod a 2) 1))
+# "Bool ops"
+(and-3 a b c) (and (and a b) c)
+(and-4 a b c d) (and (and-3 a b c) d)
+(and-5 a b c d e) (and (and-4 a b c d) e)
+(not a) (- 1 a)
 
-_ "Linked list stuff"
-head (\ (list) (. 0 list))
-tail (\ (list) (. 1 list))
-list-len-rec (\ (rec list) (if (nil? list) 0 (+ 1 (rec rec (tail list)))))
-list-len (\ (list) (list-len-rec list-len-rec list))
-list-reverse-rec (\ (rec list acc) (if (nil? list) acc (rec rec (tail list) (# (head list) acc))))
-list-reverse (\ (list) (list-reverse-rec list-reverse-rec list nil))
-list-get-rec (\ (rec list n) (if (= n 0) (head list) (rec rec (tail list) (- n 1))))
-list-get (\ (list n) (list-get-rec list-get-rec list n))
-list-map-rec (\ (rec f input list) (if (nil? list) nil (# (f f input (head list)) (rec rec f input (tail list)))))
-list-map (\ (f input list) (list-map-rec list-map-rec f input list))
-list-prepend-all-rec (\ (rec from to) (if (nil? from) to (rec rec (tail from) (# (head from) to))))
-list-prepend-all (\ (from to) (list-prepend-all-rec list-prepend-all-rec from to))
-list-concat-rec (\ (rec a b) (if (nil? a) b (# (head a) (rec rec (tail a) b))))
-list-concat (\ (a b) (list-concat-rec list-concat-rec a b))
+# "Object stuff"
+nil (@new-leaf)
+(size obj) (@new-leaf (@size obj))
+(. index obj) (@load obj index)
+(load_word index obj) (@new-leaf (@load obj index))
+(nil? obj) (= 0 (size obj))
 
-_ "String stuff"
-str-get (\ (string index)
+# "Crashing stuff"
+(crash error) (@crash error)
+(unreachable) (crash "unreachable")
+(todo message) (crash message)
+(...) (crash "todo")
+(assert check) (if check nil (crash "Assert failed"))
+
+# (assert (nil? nil))
+# (assert (== (+ 1 2) 3))
+
+# "Object stuff"
+(list-to-leaf list) (@flatten-to-leaf list)
+(list-to-array list) (@flatten-to-inner list)
+(array-to-list-rec array i) (if (= i (size array)) nil (@new-inner (. i array) (@rec array (+ i 1))))
+(array-to-list array) (array-to-list-rec array 0)
+
+# "More numbers stuff"
+(is-even a) (= (mod a 2) 0)
+(is-odd a) (= (mod a 2) 1)
+
+# "Linked list stuff"
+(head list) (. 0 list)
+(tail list) (. 1 list)
+(list-len list) (if (nil? list) 0 (+ 1 (@rec (tail list))))
+(list-reverse-rec list acc) (if (nil? list) acc (@rec (tail list) (@new-inner (head list) acc)))
+(list-reverse list) (list-reverse-rec list nil)
+(list-get list n) (if (= n 0) (head list) (@rec (tail list) (- n 1)))
+(list-prepend-all from to) (if (nil? from) to (@rec (tail from) (@new-inner (head from) to)))
+(list-concat a b) (if (nil? a) b (@new-inner (head a) (@rec (tail a) b)))
+
+# "String stuff"
+(str-get string index)
   (: word_index (/ index 8)
     (if (>= word_index (size string))
       0
-      (: word ((# ($new 0 1)) (. word_index string))
-        (mod (>> word (* (mod index 8) 8)) 256)))))
-str=-rec (\ (rec a b i limit) (if (= i limit) true (if (= (load_word i a) (load_word i b)) (rec rec a b (+ i 1) limit) false)))
-str= (\ (a b) (if (= (size a) (size b)) (str=-rec str=-rec a b 0 (size a)) false))
-substr-pack-rec (\ (rec s pos end shift acc)
+      (: word (load_word word_index string)
+        (mod (>> word (* (mod index 8) 8)) 256))))
+(str=-rec a b i limit) (if (= i limit) true (if (= (load_word i a) (load_word i b)) (@rec a b (+ i 1) limit) false))
+(str= a b) (if (= (size a) (size b)) (str=-rec a b 0 (size a)) false)
+(substr-pack-rec s pos end shift acc)
   (if (>= shift 64)
     acc
-    (if (>= pos end) acc (rec rec s (+ pos 1) end (+ shift 8) (+ acc (* (str-get s pos) (<< 1 shift)))))))
-substr-rec (\ (rec s pos end)
-  (if (>= pos end) nil (# (substr-pack-rec substr-pack-rec s pos end 0 0) (rec rec s (+ pos 8) end))))
-substr (\ (s start end) (list-to-leaf (substr-rec substr-rec s start end)))
-chars-to-str-pack-rec (\ (rec chars shift acc)
+    (if (>= pos end) acc (@rec s (+ pos 1) end (+ shift 8) (+ acc (* (str-get s pos) (<< 1 shift))))))
+(substr-rec s pos end) (if (>= pos end) nil (@new-inner (substr-pack-rec s pos end 0 0) (@rec s (+ pos 8) end)))
+(substr s start end) (list-to-leaf (substr-rec s start end))
+(chars-to-str-pack-rec chars shift acc)
   (if (>= shift 64)
-    (# acc chars)
-    (if (nil? chars) (# acc chars) (rec rec (tail chars) (+ shift 8) (+ acc (* (head chars) (<< 1 shift)))))))
-chars-to-str-rec (\ (rec chars)
-  (if (nil? chars) nil (: r (chars-to-str-pack-rec chars-to-str-pack-rec chars 0 0) (# (head r) (rec rec (tail r))))))
-chars-to-str (\ (chars) (list-to-leaf (chars-to-str-rec chars-to-str-rec chars)))
+    (@new-inner acc chars)
+    (if (nil? chars) (@new-inner acc chars) (@rec (tail chars) (+ shift 8) (+ acc (* (head chars) (<< 1 shift))))))
+(chars-to-str-rec chars) (if (nil? chars) nil (: r (chars-to-str-pack-rec chars 0 0) (@new-inner (head r) (@rec (tail r)))))
+(chars-to-str chars) (list-to-leaf (chars-to-str-rec chars))
 
-list-contains-rec (\ (rec list string) (if (nil? list) false (if (str= (head list) string) true (rec rec (tail list) string))))
-list-contains (\ (list string) (list-contains-rec list-contains-rec list string))
+(list-contains list string) (if (nil? list) false (if (str= (head list) string) true (@rec (tail list) string)))
 
-_ "Chars"
+# "Chars"
 ascii-newline 10
 ascii-space 32
 ascii-quote 34
@@ -182,433 +148,20 @@ ascii-9 57
 ascii-backslash 92
 ascii-n 110
 
-_ "Parse the string into the intermediate representation (called jam) using a recursive descent parser.
-  The individual parsing functions accept the input and a cursor. They return either:
-    (# cursor) = no match
-    (# cursor value) = match"
-has-result (\ (result) (= (size result) 2))
-result-cursor (\ (result) (. 0 result))
-result-value (\ (result) (. 1 result))
-is-whitespace (\ (char) (or (= char ascii-newline) (= char ascii-space)))
-is-digit (\ (char) (and (>= char ascii-0) (<= char ascii-9)))
-is-name (\ (char)
-  (and-5
-    (not (is-whitespace char))
-    (!= char ascii-open-paren)
-    (!= char ascii-close-paren)
-    (!= char ascii-quote)
-    (!= char 0)))
-consume-whitespace-rec (\ (rec input cursor)
-  (: c (str-get input cursor) (if (is-whitespace c) (rec rec input (+ cursor 1)) cursor)))
-consume-whitespace (\ (input cursor) (consume-whitespace-rec consume-whitespace-rec input cursor))
-parse-int-rec (\ (rec input cursor num)
-  (: c (str-get input cursor)
-    (if (is-digit c) (rec rec input (+ cursor 1) (+ (* num 10) (- c ascii-0))) (# cursor num))))
-parse-int (\ (input cursor)
-  (if (is-digit (str-get input cursor)) (parse-int-rec parse-int-rec input cursor 0) (# cursor)))
-parse-name-end (\ (rec input cursor) (if (is-name (str-get input cursor)) (rec rec input (+ cursor 1)) cursor))
-parse-name (\ (input cursor)
-  (: start (consume-whitespace input cursor)
-    (: end (parse-name-end parse-name-end input start)
-      (if (= start end) (# start) (# end (# "name" (substr input start end)))))))
-parse-string-rec (\ (rec input cursor acc)
-  (: c (str-get input cursor)
-    (if (= c 0) (crash "string does not end")
-      (if (= c ascii-quote) (# (+ cursor 1) acc)
-        (if (= c ascii-backslash)
-          (: escaped (str-get input (+ cursor 1))
-            (if (= escaped ascii-backslash) (rec rec input (+ cursor 2) (# ascii-backslash acc))
-              (if (= escaped ascii-quote) (rec rec input (+ cursor 2) (# ascii-quote acc))
-                (if (= escaped ascii-n) (rec rec input (+ cursor 2) (# ascii-newline acc))
-                  (crash "unknown escape sequence")))))
-          (rec rec input (+ cursor 1) (# c acc)))))))
-parse-string (\ (input cursor)
-  (: cursor (consume-whitespace input cursor)
-    (if (= (str-get input cursor) ascii-quote)
-      (: r (parse-string-rec parse-string-rec input (+ cursor 1) nil)
-        (# (result-cursor r) (chars-to-str (list-reverse (result-value r)))))
-      (# cursor))))
-parse-expr-rec (\ (parse-expr parse-exprs input cursor)
-  (: cursor (consume-whitespace input cursor)
-    (: c (str-get input cursor)
-      (: int-res (parse-int input cursor)
-        (if (has-result int-res)
-          (# (result-cursor int-res) (# "int" (result-value int-res)))
-          (: str-res (parse-string input cursor)
-            (if (has-result str-res)
-              (# (result-cursor str-res) (# "string" (result-value str-res)))
-              (if (= c ascii-open-paren)
-                (: group (parse-exprs parse-expr parse-exprs input (+ cursor 1))
-                  (: cursor (consume-whitespace input (result-cursor group))
-                    (if (= (str-get input cursor) ascii-close-paren)
-                      (# (+ cursor 1) (# "group" (list-to-array (result-value group))))
-                      (crash "expected closing paren"))))
-                (: name-res (parse-name input cursor) (if (has-result name-res) name-res (# cursor)))))))))))
-parse-exprs-rec (\ (parse-expr parse-exprs input cursor)
-  (: r (parse-expr parse-expr parse-exprs input cursor)
-    (if (has-result r)
-      (: rest (parse-exprs parse-expr parse-exprs input (result-cursor r))
-        (# (result-cursor rest) (# (result-value r) (result-value rest))))
-      (# cursor (#)))))
-parse-string-to-raw (\ (input)
-  (: r (parse-exprs-rec parse-expr-rec parse-exprs-rec input 0)
-    (if (has-result r) (result-value r) (crash "failed to parse"))))
+five (+ 2 3)
 
-_ "Convert the raw tree consisting only of number, string, name, and group expressions, into semantic
-  entities like let bindings, functions, calls, etc."
-tag (\ (value) (. 0 value))
-has-tag (\ (value checked) (str= (tag value) checked))
-match-fields (\ (rec sem fields)
-  (if (nil? fields)
-    nil
-    (: first (head fields)
-      (: second (head (tail fields))
-        (: rest (tail (tail fields))
-          (: field
-            (# (if (has-tag first "name") (. 1 first) (crash "bad struct")) (sem sem second))
-            (# field (rec rec sem rest))))))))
-match-cases (\ (rec sem cases)
-  (if (nil? cases)
-    nil
-    (: first (head cases)
-      (: second (head (tail cases))
-        (: rest (tail (tail cases))
-          (#
-            (: left
-              (if (has-tag first "name")
-                (# (. 1 first) nil)
-                (if (has-tag first "group")
-                  (: children (. 1 first)
-                    (if (= (size children) 2)
-                      (#
-                        (if (has-tag (. 0 children) "name") (. 1 (. 0 children)) (crash "bad switch"))
-                        (if (has-tag (. 1 children) "name") (. 1 (. 1 children)) (crash "bad switch")))
-                      (crash "bad switch")))
-                  (crash "bad switch")))
-              (# (. 0 left) (. 1 left) (sem sem second)))
-            (rec rec sem rest)))))))
-extract-default-case (\ (rec cases)
-  (if (nil? cases)
-    (# nil nil)
-    (: case (head cases)
-      (if (str= (. 0 case) "_")
-        (# (tail cases) (. 2 case))
-        (: rest (rec rec (tail cases))
-          (# (# case (. 0 rest)) (. 1 rest)))))))
-add-sems (\ (rec sem nodes) (if (nil? nodes) nil (# (sem sem (head nodes)) (rec rec sem (tail nodes)))))
-add-sem (\ (sem node)
-  (if (str= (. 0 node) "group")
-    (: children (. 1 node)
-      (: name
-        (: first (if (nil? children) (crash "empty group") (. 0 children))
-          (if (str= (. 0 first) "name") (. 1 first) (crash "groups need to start with a name")))
-        (if (str= name ":")
-          (if (!= (size children) 4)
-            (crash "bad let")
-            (# "let"
-              (: first (. 1 children) (if (has-tag first "name") (. 1 first) (crash "bad let")))
-              (sem sem (. 2 children))
-              (sem sem (. 3 children))))
-          (if (str= name "@add")
-            (# "new-leaf"
-              (#
-                (# "add"
-                  (# "load" (sem sem (. 1 children)) (# "word" 0))
-                  (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-            (if (str= name "@subtract")
-              (# "new-leaf"
-                (#
-                  (# "subtract"
-                    (# "load" (sem sem (. 1 children)) (# "word" 0))
-                    (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-              (if (str= name "@multiply")
-                (# "new-leaf"
-                  (#
-                    (# "multiply"
-                      (# "load" (sem sem (. 1 children)) (# "word" 0))
-                      (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-                (if (str= name "@divide")
-                  (# "new-leaf"
-                    (#
-                      (# "divide"
-                        (# "load" (sem sem (. 1 children)) (# "word" 0))
-                        (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-                  (if (str= name "@modulo")
-                    (# "new-leaf"
-                      (#
-                        (# "modulo"
-                          (# "load" (sem sem (. 1 children)) (# "word" 0))
-                          (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-                    (if (str= name "@shift-left")
-                      (# "new-leaf"
-                        (#
-                          (# "shift-left"
-                            (# "load" (sem sem (. 1 children)) (# "word" 0))
-                            (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-                      (if (str= name "@shift-right")
-                        (# "new-leaf"
-                          (#
-                            (# "shift-right"
-                              (# "load" (sem sem (. 1 children)) (# "word" 0))
-                              (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-                        (if (str= name "@and")
-                          (# "new-leaf"
-                            (#
-                              (# "and"
-                                (# "load" (sem sem (. 1 children)) (# "word" 0))
-                                (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-                          (if (str= name "@or")
-                            (# "new-leaf"
-                              (#
-                                (# "or"
-                                  (# "load" (sem sem (. 1 children)) (# "word" 0))
-                                  (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-                            (if (str= name "@xor")
-                              (# "new-leaf"
-                                (#
-                                  (# "xor"
-                                    (# "load" (sem sem (. 1 children)) (# "word" 0))
-                                    (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-                              (if (str= name "@compare")
-                                (# "new-leaf"
-                                  (#
-                                    (# "compare"
-                                      (# "load" (sem sem (. 1 children)) (# "word" 0))
-                                      (# "load" (sem sem (. 2 children)) (# "word" 0)))))
-                                (if (str= name "if")
-                                  (if (= (size children) 4)
-                                    (# "if"
-                                      (# "load" (sem sem (. 1 children)) (# "word" 0))
-                                      (sem sem (. 2 children))
-                                      (sem sem (. 3 children)))
-                                    (crash "bad if"))
-                                  (if (str= name "@new-inner")
-                                    (# "new-inner" (list-to-array (add-sems add-sems sem (tail (array-to-list children)))))
-                                    (if (str= name "@new-leaf")
-                                      (# "new-leaf" (list-to-array (add-sems add-sems sem (tail (array-to-list children)))))
-                                      (if (str= name "@load")
-                                        (# "load"
-                                          (sem sem (. 1 children)) (# "load" (sem sem (. 2 children)) (# "word" 0)))
-                                        (if (str= name "@flatten-to-inner")
-                                          (# "flatten-to-inner" (sem sem (. 1 children)))
-                                          (if (str= name "@flatten-to-leaf")
-                                            (# "flatten-to-leaf" (sem sem (. 1 children)))
-                                            (if (str= name "@crash")
-                                              (# "crash" (sem sem (. 1 children)))
-                                              (if (str= name "@size")
-                                                (# "size" (sem sem (. 1 children)))
-                                                (if (str= name "@rec")
-                                                  (# "rec" (list-to-array (add-sems add-sems sem (tail (array-to-list children)))))
-                                                  (# "call-jam"
-                                                    name
-                                                    (list-to-array
-                                                      (add-sems add-sems sem (tail (array-to-list children))))))))))))))))))))))))))))
-    (if (str= (. 0 node) "name")
-      (# "name" (. 1 node))
-      (if (str= (. 0 node) "int")
-        (# "object" (. 1 node))
-        (if (str= (. 0 node) "string")
-          (# "object" (. 1 node))
-          (crash (# "unknown-node" (. 0 node))))))))
-extract-params-rec (\ (rec nodes i)
-  (if (= i (size nodes)) nil
-    (#
-      (if (has-tag (. i nodes) "name") (. 1 (. i nodes)) (crash (# "bad function param" nodes)))
-      (rec rec nodes (+ i 1)))))
-add-sems-top-level (\ (rec nodes i)
-  (if (= i (size nodes))
-    nil
-    (: signature (. i nodes)
-      (: body (. (+ i 1) nodes)
-        (if (has-tag signature "name")
-          (if (str= (. 1 signature) "#")
-            (rec rec nodes (+ i 2))
-            (#
-              (# (. 1 signature) "value" (add-sem add-sem body))
-              (rec rec nodes (+ i 2))))
-          (if (has-tag signature "group")
-            (: children (. 1 signature)
-                (: name (if (has-tag (. 0 children) "name") (. 1 (. 0 children)) (crash "bad function name"))
-                  (: params (list-to-array (extract-params-rec extract-params-rec children 1))
-                    (# (# name "function" params (add-sem add-sem body)) (rec rec nodes (+ i 2))))))
-            (rec rec nodes (+ i 1))))))))
-add-semantics (\ (nodes) (add-sems-top-level add-sems-top-level (list-to-array nodes) 0))
+(parse_raw code) (todo "parse raw")
 
-string-to-jam (\ (input) (list-to-array (add-semantics (parse-string-to-raw input))))
+(raw_to_olive_ast raw) (todo "add olive semantics")
 
-find-in-stack (\ (rec stack name offset)
-  (if (nil? stack)
-    (crash (# "name not found on stack" name))
-    (if (str= (. 0 stack) name) offset (rec rec (. 1 stack) name (+ offset 1)))))
-binary-op-names (# "add" (# "subtract" (# "multiply" (# "divide" (# "modulo" (# "shift-left" (# "shift-right" (# "and" (# "or" (# "xor" (# "compare" (#))))))))))))
-binary-op-instr-name (\ (tag)
-  (if (str= tag "shift-left") "shl"
-    (if (str= tag "shift-right") "shr"
-      tag)))
-lower-binary-op (\ (lower jam stack instructions defs)
-  (: instructions-after-a (lower lower (. 1 jam) stack instructions defs)
-    (: instructions-after-b (lower lower (. 2 jam) (# "" stack) instructions-after-a defs)
-      (# (# (binary-op-instr-name (. 0 jam))) instructions-after-b))))
-find-in-defs (\ (rec defs name)
-  (if (nil? defs)
-    (crash (# "unknown function" name))
-    (if (str= (. 0 (. 0 defs)) name)
-      (. 0 defs)
-      (rec rec (. 1 defs) name))))
-children (\ (jam)
-  (: tag (. 0 jam)
-    (if (or-3 (str= tag "word") (str= tag "object") (str= tag "name"))
-      (#)
-      (if (str= tag "let")
-        (# (. 2 jam) (# (. 3 jam) (#)))
-        (if
-          (or-5
-            (str= tag "crash")
-            (str= tag "flatten-to-leaf")
-            (str= tag "flatten-to-inner")
-            (str= tag "size")
-            (str= tag "rec"))
-          (# (. 1 jam) (#))
-          (if
-            (or-12
-              (str= tag "add")
-              (str= tag "subtract")
-              (str= tag "multiply")
-              (str= tag "divide")
-              (str= tag "modulo")
-              (str= tag "shift-left")
-              (str= tag "shift-right")
-              (str= tag "and")
-              (str= tag "or")
-              (str= tag "xor")
-              (str= tag "compare")
-              (str= tag "load"))
-            (# (. 1 jam) (# (. 2 jam) (#)))
-            (if (str= tag "if")
-              (# (. 1 jam) (# (. 2 jam) (# (. 3 jam) (#))))
-              (if (or (str= tag "new-leaf") (str= tag "new-inner"))
-                (array-to-list (. 1 jam))
-                (if (str= tag "call-jam")
-                  (array-to-list (. 2 jam))
-                  (if (str= tag "call-instructions")
-                    (# (. 1 jam) (array-to-list (. 2 jam)))
-                    (crash (# "children of unknown node" jam))))))))))))
-jams-have-rec (\ (rec jam-has-rec jams)
-  (if (nil? jams) false (if (jam-has-rec jam-has-rec (head jams)) true (rec rec jam-has-rec (tail jams)))))
-jam-has-rec (\ (rec jam) (if (has-tag jam "rec") true (jams-have-rec jams-have-rec rec (children jam))))
-lower-new-leaf (\ (rec lower jams i stack instructions defs)
-  (if (= i (size jams))
-    instructions
-    (: new-instructions (lower lower (. i jams) stack instructions defs)
-      (rec rec lower jams (+ i 1) (# "" stack) new-instructions defs))))
-lower-rec-call (\ (lower jam stack instructions defs)
-  (: args (. 1 jam)
-    (: rec-offset (find-in-stack find-in-stack stack "(rec)" 0)
-      (: instructions-with-self (# (# "stack" rec-offset) instructions)
-        (: stack-after-self (# "" stack)
-          (: instructions-after-args
-            (lower-new-leaf lower-new-leaf lower args 0 stack-after-self instructions-with-self defs)
-            (: final-rec-offset (+ rec-offset (+ 1 (size args)))
-              (# ($popover (+ 1 (size args))) (# ($eval) (# (# "stack" final-rec-offset) instructions-after-args))))))))))
-lower-jam-rec (\ (lower jam stack instructions defs)
-  (if (has-tag jam "word")
-    (# (# "word" (. 1 jam)) instructions)
-    (if (has-tag jam "object")
-      (# (# "address" (. 1 jam)) instructions)
-      (if (has-tag jam "let")
-        (: instructions-after-def (lower lower (. 2 jam) stack instructions defs)
-          (: instructions-after-body (lower lower (. 3 jam) (# (. 1 jam) stack) instructions-after-def defs)
-            (# (# "popover" 1) instructions-after-body)))
-        (if (has-tag jam "name")
-          (if (list-contains stack (. 1 jam))
-            (# (# "stack" (find-in-stack find-in-stack stack (. 1 jam) 0)) instructions)
-            (: def (find-in-defs find-in-defs defs (. 1 jam))
-              (if (str= (. 1 def) "value")
-                (# (# "address" (. 2 def)) instructions)
-                (crash (# "cannot use function as value" (. 1 jam))))))
-          (if (has-tag jam "crash")
-            (: instructions-after-error (lower lower (. 1 jam) stack instructions defs)
-              (# ($crash) instructions-after-error))
-            (if (list-contains binary-op-names (. 0 jam))
-              (lower-binary-op lower jam stack instructions defs)
-              (if (has-tag jam "if")
-                (: instructions-after-condition (lower lower (. 1 jam) stack instructions defs)
-                  (: then-instructions (list-to-array (list-reverse (lower lower (. 2 jam) stack (#) defs)))
-                    (: else-instructions (list-to-array (list-reverse (lower lower (. 3 jam) stack (#) defs)))
-                      (# (# "if" then-instructions else-instructions) instructions-after-condition))))
-                (if (has-tag jam "new-leaf")
-                  (#
-                    (# "new" false (size (. 1 jam)))
-                    (lower-new-leaf lower-new-leaf lower (. 1 jam) 0 stack instructions defs))
-                  (if (has-tag jam "new-inner")
-                    (#
-                      (# "new" true (size (. 1 jam)))
-                      (lower-new-leaf lower-new-leaf lower (. 1 jam) 0 stack instructions defs))
-                    (if (has-tag jam "load")
-                      (: instructions-after-object (lower lower (. 1 jam) stack instructions defs)
-                        (: instructions-after-index (lower lower (. 2 jam) (# "" stack) instructions-after-object defs)
-                          (# ($load) instructions-after-index)))
-                      (if (has-tag jam "flatten-to-leaf")
-                        (: instructions-after-list (lower lower (. 1 jam) stack instructions defs)
-                          (# ($flatlito) instructions-after-list))
-                        (if (has-tag jam "flatten-to-inner")
-                          (: instructions-after-list (lower lower (. 1 jam) stack instructions defs)
-                            (# ($flatptro) instructions-after-list))
-                          (if (has-tag jam "size")
-                            (: instructions-after-obj (lower lower (. 1 jam) stack instructions defs)
-                              (# ($size) instructions-after-obj))
-                            (if (has-tag jam "rec")
-                              (lower-rec-call lower jam stack instructions defs)
-                              (if (has-tag jam "call-jam")
-                                (: def (find-in-defs find-in-defs defs (. 1 jam))
-                                  (if (str= (. 1 def) "function")
-                                    (if (!= (size (. 2 jam)) (size (. 2 def)))
-                                      (crash (# "arity mismatch calling" (. 1 jam)))
-                                      (if (. 3 def)
-                                        (: instructions-with-self (# (# "address" (. 4 def)) instructions)
-                                          (: stack-after-self (# "" stack)
-                                            (: instructions-after-args
-                                              (lower-new-leaf lower-new-leaf lower (. 2 jam) 0 stack-after-self instructions-with-self defs)
-                                              (# ($popover (+ 1 (size (. 2 jam)))) (# ($eval) (# (# "address" (. 4 def)) instructions-after-args))))))
-                                        (: instructions-after-args
-                                          (lower-new-leaf lower-new-leaf lower (. 2 jam) 0 stack instructions defs)
-                                          (# ($popover (size (. 2 jam))) (# ($eval) (# (# "address" (. 4 def)) instructions-after-args))))))
-                                    (crash (# "callee is not a function" (. 1 jam)))))
-                                (crash (# "unknown node" jam))))))))))))))))))
-lower-jam-top (\ (rec jams i defs)
-  (if (= i (size jams))
-    (list-to-array (list-reverse defs))
-    (: jam (. i jams)
-      (: lowered
-        (if (str= (. 1 jam) "value")
-          (: instrs (list-to-array (list-reverse (lower-jam-rec lower-jam-rec (. 2 jam) (#) (#) defs)))
-            (#
-              (. 0 jam)
-              "value"
-              (instrs)))
-          (: has-rec (jam-has-rec jam-has-rec (. 3 jam))
-            (: initial-stack
-              (if has-rec
-                (list-concat (list-reverse (array-to-list (. 2 jam))) (# "(rec)" (#)))
-                (list-reverse (array-to-list (. 2 jam))))
-              (#
-                (. 0 jam)
-                "function"
-                (. 2 jam)
-                has-rec
-                (list-to-array
-                  (list-reverse (lower-jam-rec lower-jam-rec (. 3 jam) initial-stack (#) defs)))))))
-        (rec rec jams (+ i 1) (# lowered defs))))))
-lower-jam (\ (jams) (lower-jam-top lower-jam-top jams 0 (#)))
+(olive_ast_to_ir ast) (todo "lower olive AST")
 
-compile-jam (\ (input) (lower-jam (string-to-jam input)))
+(ir_to_instructions ir) (todo "lower to instructions")
 
-compile (#
-  (# "lambda")
-  (\ (string closure)
-    (if (str= (. 0 (. 0 string)) "string")
-      (compile-jam (. 1 string))
-      (crash "You can only compile strings.")))
-  (#)
-  (# "code")
-  nil)
+(compile_olive code) (ir_to_instructions (olive_ast_to_ir (raw_to_olive_ast (parse_raw code))))
+
+(raw_to_pear_ast raw) (todo "add pear semantics")
+
+(pear_ast_to_ir ast) (todo "lower pear AST")
+
+(compile_pear code) (ir_to_instructions (pear_ast_to_ir (raw_to_pear_ast (parse_raw code))))

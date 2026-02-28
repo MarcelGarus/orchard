@@ -1,5 +1,5 @@
 const std = @import("std");
-const olive_compiler = @import("compiler_olive.zig");
+const sloe_compiler = @import("sloe_compiler.zig");
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Instruction = @import("instruction.zig").Instruction;
@@ -20,50 +20,48 @@ pub fn main() !void {
     // const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    // Create the Jam compiler.
-    std.debug.print("Using Zig to compile Olive...\n", .{});
-    const compile = compile: {
-        const code = @embedFile("code.olive");
-        const result = try olive_compiler.eval(ally, &vm, code);
-        break :compile Val.from(result.get("compile").?);
-    };
-    vm.impl.heap.dump_stats();
+    std.debug.print("Using Zig to compile Sloe...\n", .{});
+    const sloe_defs = try sloe_compiler.eval(
+        ally,
+        &vm,
+        @embedFile("code.sloe"),
+    );
+    vm.get_heap().dump_stats();
 
-    {
-        // Compile the code.
-        std.debug.print("Using Olive to compile Jam...\n", .{});
-        const code = @embedFile("code.jam");
-        const compiled = try compile.call(&vm, &.{try Val.new_string(&heap, code)});
-        std.debug.print("Compiled: {any}\n", .{compiled});
-        heap.dump_obj(compiled.obj);
-        vm.impl.heap.dump_stats();
-    }
+    std.debug.print("Using Sloe to compile Olive...\n", .{});
+    const olive_defs = try Val.from(sloe_defs.get("compile_olive").?).call(&vm, &.{
+        try Val.new_string(&heap, @embedFile("code.olive")),
+    });
+    // heap.dump_obj(olive_defs.obj);
+    // std.debug.print("Olive defs: {f}\n", .{olive_defs});
+    const compile_olive = olive_defs.get_field("compile_olive");
+    vm.get_heap().dump_stats();
+
+    std.debug.print("Using Olive to compile Olive...\n", .{});
+    const optimized_olive_defs = try compile_olive.call(&vm, &.{
+        try Val.new_string(&heap, @embedFile("test.olive")),
+    });
+    std.debug.print("Optimized Olive defs: {any}\n", .{optimized_olive_defs});
+    heap.dump_obj(optimized_olive_defs.obj);
+    vm.get_heap().dump_stats();
+
     if (true) return;
 
-    // // Create the Pear compiler.
-    // std.debug.print("Creating the Pear compiler...\n", .{});
-    // const compile = compile: {
-    //     const pear_compiler = @embedFile("pear.olive");
-    //     const result = try olive_compiler.eval(ally, &vm, pear_compiler);
-    //     break :compile Val.from(result.get("compile").?);
-    // };
-    // vm.impl.heap.dump_stats();
+    const compile_pear = olive_defs.get_field("compile_pear");
 
-    // Compile the code.
-    std.debug.print("Compiling the code...\n", .{});
+    std.debug.print("Using Olive to compile Pear...\n", .{});
     const file = try std.fs.cwd().openFile("../pear/test.pear", .{});
     const code = try file.readToEndAlloc(ally, 1000000);
-    const compiled = try compile.call(&vm, &.{try Val.new_string(&heap, code)});
+    const compiled = try compile_pear.call(&vm, &.{try Val.new_string(&heap, code)});
     std.debug.print("Compiled: {any}\n", .{compiled});
     heap.dump_obj(compiled.obj);
-    vm.impl.heap.dump_stats();
+    vm.get_heap().dump_stats();
 
-    // Run the code.
-    std.debug.print("Running the code...\n", .{});
+    std.debug.print("Running Pear...\n", .{});
     const result = try compiled.call(&vm, &.{});
     std.debug.print("Result: {any}\n", .{result});
     heap.dump_obj(result.obj);
-    vm.impl.heap.dump_stats();
+    vm.get_heap().dump_stats();
 
     if (true) return;
 

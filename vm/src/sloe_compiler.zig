@@ -1,5 +1,3 @@
-// This file contains the Olive compiler, turning source code into heap objects.
-
 const std = @import("std");
 const Writer = std.io.Writer;
 const Ally = std.mem.Allocator;
