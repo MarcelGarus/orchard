@@ -75,6 +75,10 @@ true 1
 (and-4 a b c d) (and (and-3 a b c) d)
 (and-5 a b c d e) (and (and-4 a b c d) e)
 (not a) (- 1 a)
+(or a b) (if a true b)
+(or-3 a b c) (or (or a b) c)
+(or-4 a b c d) (or (or-3 a b c) d)
+(or-5 a b c d e) (or (or-4 a b c d) e)
 
 # "Object stuff"
 nil (@new-leaf)
@@ -148,17 +152,80 @@ ascii-9 57
 ascii-backslash 92
 ascii-n 110
 
-five (+ 2 3)
+# "Parsing"
+(has-result result) (= 2 (size result))
+(result-cursor result) (. 0 result)
+(result-value result) (. 1 result)
+(is-whitespace char) (or (= char ascii-newline) (= char ascii-space))
+(is-digit char) (and (>= char ascii-0) (<= char ascii-9))
+(is-name char)
+  (and-5
+    (not (is-whitespace char))
+    (!= char ascii-open-paren)
+    (!= char ascii-close-paren)
+    (!= char ascii-quote)
+    (!= char 0))
+(consume-whitespace input cursor) (if (is-whitespace (str-get input cursor)) (@rec input (+ cursor 1)) cursor)
+(parse-int-rec input cursor num)
+  (: c (str-get input cursor)
+    (if (is-digit c) (@rec input (+ cursor 1) (+ (* num 10) (- c ascii-0))) (@new-inner cursor num)))
+(parse-int input cursor) (if (is-digit (str-get input cursor)) (parse-int-rec input cursor 0) nil)
+(parse-name-end input cursor) (if (is-name (str-get input cursor)) (@rec input (+ cursor 1)) cursor)
+(parse-name input cursor)
+  (: start cursor
+    (: end (parse-name-end input start)
+      (if (= start end) nil (@new-inner end (@new-inner "name" (substr input start end))))))
+(parse-string-rec input cursor acc)
+  (: c (str-get input cursor)
+    (if (= c 0) (crash "string does not end")
+      (if (= c ascii-quote) (@new-inner (+ cursor 1) acc)
+        (if (= c ascii-backslash)
+          (: escaped (str-get input (+ cursor 1))
+            (if (= escaped ascii-backslash)
+              (@rec input (+ cursor 2) (@new-inner ascii-backslash acc))
+              (if (= escaped ascii-quote)
+                (@rec input (+ cursor 2) (@new-inner ascii-quote acc))
+                (if (= escaped ascii-n)
+                  (@rec input (+ cursor 2) (@new-inner ascii-newline acc))
+                  (crash "unknown escape sequence")))))
+          (@rec input (+ cursor 1) (@new-inner c acc))))))
+(parse-string input cursor)
+  (if (= (str-get input cursor) ascii-quote)
+    (: r (parse-string-rec input (+ cursor 1) nil)
+      (@new-inner (result-cursor r) (chars-to-str (list-reverse (result-value r)))))
+    nil)
+(parse multiple input cursor)
+  (if multiple
+    (: r (@rec false input cursor)
+      (if (has-result r)
+        (: rest (@rec true input (result-cursor r))
+          (@new-inner (result-cursor rest) (@new-inner (result-value r) (result-value rest))))
+        (@new-inner cursor nil)))
+    (: cursor (consume-whitespace input cursor)
+      (: int-res (parse-int input cursor)
+        (if (has-result int-res)
+          (@new-inner (result-cursor int-res) (@new-inner "int" (result-value int-res)))
+          (: str-res (parse-string input cursor)
+            (if (has-result str-res)
+              (@new-inner (result-cursor str-res) (@new-inner "string" (result-value str-res)))
+              (if (= (str-get input cursor) ascii-open-paren)
+                (: group-res (@rec true input (+ cursor 1))
+                  (: end (consume-whitespace input (result-cursor group-res))
+                    (if (= (str-get input end) ascii-close-paren)
+                      (@new-inner (+ end 1) (@new-inner "group" (list-to-array (result-value group-res))))
+                      (crash "expected closing paren"))))
+                (: name-res (parse-name input cursor) (if (has-result name-res) name-res (@new-inner cursor))))))))))
+(parse_raw_single code) (result-value (parse false s 0))
+(parse_raw_multiple code) (result-value (parse true s 0))
 
-(parse_raw code) (todo "parse raw")
-
-(raw_to_olive_ast raw) (todo "add olive semantics")
+(raw_to_olive_ast raw) (todo (@new-inner "add olive semantics" raw))
 
 (olive_ast_to_ir ast) (todo "lower olive AST")
 
 (ir_to_instructions ir) (todo "lower to instructions")
 
-(compile_olive code) (ir_to_instructions (olive_ast_to_ir (raw_to_olive_ast (parse_raw code))))
+# "This function is exported as a lambda, hence it takes an (unneeded) closure."
+(compile_olive code closure) (ir_to_instructions (olive_ast_to_ir (raw_to_olive_ast (parse_raw_multiple (. 1 code)))))
 
 (raw_to_pear_ast raw) (todo "add pear semantics")
 
