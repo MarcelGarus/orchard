@@ -17,6 +17,7 @@ heap: *Heap,
 data_stack: Stack,
 call_stack: Stack,
 parsed_cache: ObjMap([]const Instruction),
+instruction_count: usize = 0,
 
 const Stack = struct {
     memory: []Word,
@@ -74,6 +75,7 @@ pub fn parse(vm: *Vm, instructions_obj: Obj) ![]const Instruction {
 }
 pub fn run_parsed(vm: *Vm, instructions: []const Instruction) !void {
     for (instructions) |instruction| {
+        vm.instruction_count += 1;
         //std.debug.print("{any}\n", .{vm.data_stack.used});
         //std.debug.print("Running {f}", .{instruction});
 
