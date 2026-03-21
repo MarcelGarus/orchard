@@ -35,10 +35,11 @@ pub fn main() !void {
     };
     const fun = Val.from(obj_defs.get("main-fun").?);
     heap.dump_obj(fun.obj);
-    const int = try Val.new_string(&heap, "hello");
+    const int = try Val.new_string(&heap, @embedFile("test.olive"));
     const res = try fun.call(&vm, &.{int});
     // _ = res;
     heap.dump_obj(res.obj);
+    std.debug.print("amezing\n", .{});
     // std.debug.print("res: {f}\n", res);
 
     // const sloe_defs = step: {

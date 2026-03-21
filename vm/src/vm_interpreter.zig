@@ -90,7 +90,7 @@ pub const Instruction = union(enum) {
 
     pub fn format(instr: Instruction, writer: *std.io.Writer) !void {
         switch (instr) {
-            .word => |word| try writer.print("word {x}", .{word}),
+            .word => |word| try writer.print("word {}", .{word}),
             .address => |object| try writer.print("address {x}", .{object.address}),
             .stack => |offset| try writer.print("stack {}", .{offset}),
             .pop => |amount| try writer.print("pop {}", .{amount}),

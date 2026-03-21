@@ -15,6 +15,7 @@ if "if"
 let "let"
 list "list"
 load "load"
+mode "mode"
 modulo "modulo"
 multiply "multiply"
 name "name"
@@ -34,6 +35,7 @@ xor "xor"
 :1 (word 1)
 :2 (word 2)
 :8 (word 8)
+:10 (word 10)
 :16 (word 16)
 :24 (word 24)
 :32 (word 32)
@@ -47,6 +49,7 @@ xor "xor"
 :c (name c)
 :i (name i)
 :list (name list)
+:mode (name mode)
 :rec (name rec)
 :size (name size)
 :word (name word)
@@ -61,36 +64,98 @@ false 0
 true 1
 not ((a) (subtract :1 a))
 nil ()
-nil? ((a) (call (object =) (:0 (size a))))
-nil-nil? ((a) (call (object !=) (:0 (size a))))
-list-reverse-rec ((list a) (if (call (object nil?) (:list)) a (rec (load :list :1) (new-inner (load :list :0) :a))))
+nil? ((a) (call (object =) (:0 (size :a))))
+nil-nil? ((a) (call (object !=) (:0 (size :a))))
+list-reverse-rec ((list a)
+ (if (call (object nil?) (:list))
+  :a
+  (rec (load :list :1) (new-inner (load :list :0) :a))))
 list-reverse ((list) (call (object list-reverse-rec) (:list nil)))
-array-to-list-rec ((a i) (if (call (object =) (:i (size :a))) (object nil) (new-inner ((load :a :i) (rec (:a (add :i :1)))))))
+array-to-list-rec ((a i)
+ (if (call (object =) (:i (size :a)))
+  (object nil)
+  (new-inner ((load :a :i) (rec (:a (add :i :1)))))))
 array-to-list ((a) (call (object array-to-list-rec) (:a :0)))
-str=-rec ((a b i size) (if (call (object =) (:i :size)) (object true) (if (call (object =) (load :a :i) (load :b :i)) (rec (:a :b (add :i :1) :size)) (object false))))
-str= ((a b) (if (call (object =) ((size :a) (size :b))) (rec (:a :b :0 (size :a))) (object false)))
-chars-to-str-pack-rec ((a b c)
-  (if (call (object >=) (b :64))
-    (new-inner :c :a)
-    (if (call (object nil?) (:a)) (new-inner :c :a) (rec ((load :a :1) (add :b :8) (add :c (multiply (load :a :0) (shift-left :1 :b))))))))
+str=-rec ((a b i size)
+ (if (call (object =) (:i :size))
+  (object true)
+  (if (call (object =) (load :a :i) (load :b :i))
+   (rec (:a :b (add :i :1) :size))
+   (object false))))
+str= ((a b)
+ (if (call (object =) ((size :a) (size :b)))
+  (rec (:a :b :0 (size :a)))
+  (object false)))
+chars-to-str-pack-rec ((c b a)
+ (if (call (object >=) (:b :64))
+  (new-inner ((new-leaf (:a)) :c))
+  (if (call (object nil?) (:c))
+   (new-inner ((new-leaf (:a)) :c))
+   (rec (
+    (load :c :1)
+    (add :b :8)
+    (add :a (multiply (load (load :c :0) :0) (shift-left :1 :b))))))))
 chars-to-str-rec ((c)
-  (if (call (object nil?) (:c)) (object nil) (let a (call (object chars-to-str-pack-rec) (:c :0 :0)) (new-inner ((load :a :0) (rec ((load :a :1))))))))
+ (if (call (object nil?) (:c))
+  (object nil)
+  (let a (call (object chars-to-str-pack-rec) (:c :0 :0))
+   (new-inner ((load :a :0) (rec ((load :a :1))))))))
 chars-to-str ((c) (flatten-to-leaf (call (object chars-to-str-rec) (:c))))
 str-to-chars-rec ((a size i)
-  (if (call (object =) (:i :size))
-    (object nil)
-    (let word (load :a :i)
-      (let c (and :word :255) (if (call (object =) (:c :0)) (object nil) (new-inner ((new-leaf (:c))
-        (let c (and (shift-right :word :8) :255) (if (call (object =) (:c :0)) (object nil) (new-inner ((new-leaf (:c))
-          (let c (and (shift-right :word :16) :255) (if (call (object =) (:c :0)) (object nil) (new-inner ((new-leaf (:c))
-            (let c (and (shift-right :word :24) :255) (if (call (object =) (:c :0)) (object nil) (new-inner ((new-leaf (:c))
-              (let c (and (shift-right :word :32) :255) (if (call (object =) (:c :0)) (object nil) (new-inner ((new-leaf (:c))
-                (let c (and (shift-right :word :40) :255) (if (call (object =) (:c :0)) (object nil) (new-inner ((new-leaf (:c))
-                  (let c (and (shift-right :word :48) :255) (if (call (object =) (:c :0)) (object nil) (new-inner ((new-leaf (:c))
-                    (let c (and (shift-right :word :56) :255) (if (call (object =) (:c :0)) (object nil) (new-inner ((new-leaf (:c))
-                      (rec (:a :size (add :i :1))))))))))))))))))))))))))))))))))))))
+ (if (call (object =) (:i :size))
+  (object nil)
+  (let word (load :a :i)
+   (let c (and :word :255)
+    (if (call (object =) (:c :0))
+     (object nil)
+     (new-inner (
+      (new-leaf (:c))
+      (let c (and (shift-right :word :8) :255)
+       (if (call (object =) (:c :0))
+        (object nil)
+        (new-inner (
+         (new-leaf (:c))
+         (let c (and (shift-right :word :16) :255)
+          (if (call (object =) (:c :0))
+           (object nil)
+           (new-inner (
+            (new-leaf (:c))
+            (let c (and (shift-right :word :24) :255)
+             (if (call (object =) (:c :0))
+              (object nil)
+              (new-inner (
+               (new-leaf (:c))
+               (let c (and (shift-right :word :32) :255)
+                (if (call (object =) (:c :0))
+                 (object nil)
+                 (new-inner (
+                  (new-leaf (:c))
+                  (let c (and (shift-right :word :40) :255)
+                   (if (call (object =) (:c :0))
+                    (object nil)
+                    (new-inner (
+                     (new-leaf (:c))
+                     (let c (and (shift-right :word :48) :255)
+                      (if (call (object =) (:c :0))
+                       (object nil)
+                       (new-inner (
+                        (new-leaf (:c))
+                        (let c (and (shift-right :word :56) :255)
+                         (if (call (object =) (:c :0))
+                          (object nil)
+                          (new-inner (
+                           (new-leaf (:c))
+                           (rec (
+                            :a
+                            :size
+                            (add :i :1))))))))))))))))))))))))))))))))))))))
 str-to-chars ((a) (call (object str-to-chars-rec) (:a (size :a) :0)))
-list-contains ((a b) (if (call (object nil?) (:a)) (object false) (if (call (object str=) (load :a :0) :b) (object true) (rec ((load :a :1) :b)))))
+list-contains ((a b)
+ (if (call (object nil?) (:a))
+  (object false)
+  (if (call (object str=) (load :a :0) :b)
+   (object true)
+   (rec ((load :a :1) :b)))))
 ascii-newline 10
 ascii-space 32
 ascii-quote 34
@@ -102,11 +167,122 @@ ascii-at 64
 ascii-backslash 92
 ascii-n 110
 
-
+# "Parsing"
+is-digit ((c)
+ (and
+  (call (object >=) (:c (word ascii-0)))
+  (call (object <=) (:c (word ascii-9)))))
+is-name ((c)
+ (and (call (object !=) (:c (word ascii-newline)))
+  (and (call (object !=) (:c (word ascii-space)))
+   (and (call (object !=) (:c (word ascii-open-paren)))
+    (and (call (object !=) (:c (word ascii-close-paren)))
+     (call (object !=) (:c (word ascii-quote))))))))
+consume-whitespace ((i)
+ (if (call (object nil?) (:i))
+  (object nil)
+  (let c (load (load :i :0) :0)
+   (if
+    (or
+     (call (object =) (:c (word ascii-newline)))
+     (call (object =) (:c (word ascii-space))))
+    (rec ((load :i :1)))
+    :i))))
+parse-string-rec ((i)
+ (if (call (object nil?) (:i))
+  (crash (object "string doesn't end"))
+  (let c (load (load :i :0) :0)
+   (if (call (object =) (:c (word ascii-quote)))
+    (new-inner ((load :i :1) (object nil)))
+    (if (call (object =) (:c (word ascii-backslash)))
+     (let a (load :i :1)
+      (if (call (object nil?) (:a))
+       (crash (object "expected escape char"))
+       (let b (load (load :a :0) :0)
+        (let b
+         (if (call (object =) (:b (word ascii-backslash)))
+          (word ascii-backslash)
+          (if (call (object =) (:b (word ascii-quote)))
+           (word ascii-quote)
+           (if (call (object =) (:b (word ascii-n)))
+            (word ascii-newline)
+            (crash (object "unknown escape sequence")))))
+         (let c (rec ((load :a :1)))
+          (new-inner ((load :c :0) (new-inner (:b (load :c :1))))))))))
+     (let a (rec ((load :i :1)))
+      (new-inner ((load :a :0) (new-inner ((new-leaf (:c)) (load :a :1)))))))))))
+parse-int-rec ((i a)
+ (if (call (object nil?) (:i))
+  (new-inner ((object nil) :a))
+  (let c (load (load :i :0) :0)
+   (if (call (object is-digit) (:c))
+    (rec ((load :i :1) (add (multiply :a :10) (subtract :c (word ascii-0)))))
+    (new-inner (:i :a))))))
+parse-name-rec ((i)
+ (if (call (object nil?) (:i))
+  (new-inner ((object nil) (object nil)))
+  (let c (load (load :i :0) :0)
+   (if (call (object is-name) (:c))
+    (let a (rec ((load :i :1)))
+     (new-inner ((load :a :0) (new-inner ((new-leaf (:c)) (load :a :1))))))
+    (new-inner (:i (object nil)))))))
+single 0
+multiple 1
+parse ((mode i)
+ (if (call (object =) (:mode (word multiple)))
+  (let a (rec ((word single) :i))
+   (if (call (object nil?) (:a))
+    (new-inner (:i (object nil)))
+    (let b (rec ((word multiple) (load :a :0)))
+     (new-inner ((load :b :0) (new-inner ((load :a :1) (load :b :1))))))))
+  (let i (call (object consume-whitespace) (:i))
+   (if (call (object nil?) (:i))
+    (object nil)
+    (let c (load (load :i :0) :0)
+     (if (call (object is-digit) (:c))
+      (let a (call (object parse-int-rec) (:i :0))
+       (new-inner ((load :a :0) (new-inner ((object "int") (new-leaf ((load :a :1))))))))
+      (if (call (object =) (:c (word ascii-quote)))
+       (let a (call (object parse-string-rec) ((load :i :1)))
+        (new-inner (
+         (load :a :0)
+         (new-inner (
+          (object "string")
+          (call (object chars-to-str) ((load :a :1))))))))
+       (if (call (object =) (:c (word ascii-open-paren)))
+        (let a (rec ((word multiple) (load :i :1)))
+         (let i (call (object consume-whitespace) ((load :a :0)))
+          (if
+           (call (object =) ((load (load :i :0) :0) (word ascii-close-paren)))
+           (new-inner (
+            (load :i :1)
+            (new-inner ((object "group") (flatten-to-inner (load :a :1))))))
+           (crash (object "expected closing paren")))))
+        (if (call (object =) (:c (word ascii-close-paren)))
+         (object nil)
+         (let a (call (object parse-name-rec) (:i))
+          (new-inner (
+           (load :a :0)
+           (new-inner (
+            (object "name")
+            (call (object chars-to-str) ((load :a :1)))))))))))))))))
 
 increment ((a) (add :a :1))
-increment-fun (("function" (a) ((a _) (new-inner ((object ("int")) (new-leaf ((call (object increment) ((load (load :a :1) :0))))))))) nil)
+increment-fun (
+ ("function"
+  (a)
+  ((a _)
+   (new-inner (
+    (object ("int"))
+    (new-leaf ((call (object increment) ((load (load :a :1) :0)))))))))
+ nil)
 
 
-main-fun (("function" (a) ((a _) (call (object str-to-chars) ((load :a :1))))) nil)
-
+main-fun (
+ ("function"
+  (a)
+  ((a _)
+   (call (object parse) (
+    (word multiple)
+    (call (object str-to-chars) ((load :a :1)))))))
+ nil)

@@ -108,7 +108,7 @@ pub const Expr = struct {
     pub fn format_indented(expr: Expr, writer: *Writer, indentation: usize) !void {
         for (0..indentation) |_| try writer.print("  ", .{});
         switch (try expr.kind()) {
-            .word => |word| try writer.print("word {x}\n", .{word}),
+            .word => |word| try writer.print("word {}\n", .{word}),
             .object => |obj| try writer.print("object {x}\n", .{obj.address}),
             .name => |name| try writer.print("name {s}\n", .{name}),
             .let => |let| {
