@@ -4,6 +4,7 @@ const Address = Heap.Address;
 const Word = Heap.Word;
 const Obj = Heap.Obj;
 const Vm = @import("vm.zig");
+const Ir = @import("ir.zig");
 
 obj: Obj,
 
@@ -18,7 +19,7 @@ pub fn from(obj: Obj) Value {
 //     return b.finish();
 // }
 
-pub const Kind = union(enum) { int, string, struct_, enum_, array, lambda };
+pub const Kind = union(enum) { int, string, struct_, enum_, array, function };
 pub fn kind(self: Value) Kind {
     const obj = self.obj;
     const kind_str = Heap.get_symbol(obj.child(0).child(0));
@@ -27,7 +28,7 @@ pub fn kind(self: Value) Kind {
     if (std.mem.eql(u8, kind_str, "struct")) return .struct_;
     if (std.mem.eql(u8, kind_str, "enum")) return .enum_;
     if (std.mem.eql(u8, kind_str, "array")) return .array;
-    if (std.mem.eql(u8, kind_str, "lambda")) return .lambda;
+    if (std.mem.eql(u8, kind_str, "function")) return .function;
     std.debug.print("kind '{s}'\n", .{kind_str});
     @panic("unknown type ");
 }
@@ -98,12 +99,12 @@ pub fn get_items(self: Value) []const Value {
     return @ptrCast(self.obj.children()[1..]);
 }
 
-// Lambda stuff.
+// Function stuff.
 
 pub fn new(heap: *Heap, instructions: Obj, captured: Obj, args: Obj, ir: ?Obj) !Value {
-    const lambda_symbol = try heap.new_symbol("lambda");
-    const ty = try heap.new_inner(&.{lambda_symbol});
-    const lambda_obj = obj: {
+    const function_symbol = try heap.new_symbol("function");
+    const ty = try heap.new_inner(&.{function_symbol});
+    const function_obj = obj: {
         var b = try heap.build_inner();
         try b.emit(ty);
         try b.emit(instructions);
@@ -112,7 +113,7 @@ pub fn new(heap: *Heap, instructions: Obj, captured: Obj, args: Obj, ir: ?Obj) !
         if (ir) |ir_| try b.emit(ir_);
         break :obj b.finish();
     };
-    return .{ .obj = lambda_obj };
+    return .{ .obj = function_obj };
 }
 pub fn get_captured(self: Value) Obj {
     return self.obj.child(2);
@@ -125,15 +126,18 @@ pub fn get_ir(self: Value) ?Obj {
     return self.obj.child(4);
 }
 
-pub fn call(lambda: Value, vm: *Vm, args: []const Value) !Value {
-    const instructions = lambda.obj.child(1);
-    const closure = lambda.obj.child(2);
-    const num_params = lambda.obj.child(3).children().len;
-    if (num_params != args.len) @panic("called function with wrong number of params");
-    for (args) |arg| try vm.impl.push(arg.obj.address);
-    try vm.impl.push(closure.address);
-    try vm.impl.run(instructions);
-    return .{ .obj = .{ .address = vm.impl.pop() } };
+pub fn call(function: Value, vm: *Vm, args: []const Value) !Value {
+    std.debug.assert(function.kind() == .function);
+    const type_ = function.obj.child(0);
+    std.debug.assert(type_.child(1).size() == args.len);
+    const fun = Ir.Fun{ .obj = type_.child(2) };
+    const closure = function.obj.child(1);
+    const all_args = try vm.impl.ally.alloc(Word, args.len + 1);
+    for (args, 0..) |arg, i| all_args[i] = arg.obj.address;
+    for (args) |arg| vm.get_heap().dump_obj(arg.obj);
+    all_args[args.len] = closure.address;
+    const result = try vm.call(fun, all_args);
+    return .{ .obj = .{ .address = result } };
 }
 
 pub fn format(self: Value, writer: *std.io.Writer) !void {
@@ -165,18 +169,18 @@ pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}
             }
             try writer.print(")", .{});
         },
-        .lambda => {
+        .function => {
             try writer.print("(\\ (", .{});
             for (self.get_args().children(), 0..) |arg, i| {
                 if (i > 0) try writer.print(" ", .{});
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
             try writer.print(") ", .{});
-            if (self.get_ir()) |ir| {
-                try Value.from(ir).format_singleline_code(writer);
-            } else {
-                try writer.print("...", .{});
-            }
+            // if (self.get_ir()) |ir| {
+            //     try Value.from(ir).format_singleline_code(writer);
+            // } else {
+            try writer.print("...", .{});
+            // }
             try writer.print(")", .{});
         },
     }
@@ -355,7 +359,7 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
             }
             try writer.print(")", .{});
         },
-        .lambda => {
+        .function => {
             try writer.print("(\\ (", .{});
             for (self.get_args().children(), 0..) |arg, i| {
                 if (i > 0) try writer.print(" ", .{});

@@ -20,15 +20,13 @@ const builtin = @import("builtin");
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Obj = Heap.Obj;
-const Instruction = @import("instruction.zig").Instruction;
+const Ir = @import("ir.zig");
 
 // Depending on the system, choose a different implementation.
 // The implementation should provide the following fields/functions:
 // - init(heap: *Heap, ally: Ally) !Impl
 // - heap: *Heap
-// - push(impl: *Impl, ally: Word) !void
-// - pop(impl: *Impl) Word
-// - run(impl: *Impl, instructions: Obj) Obj
+// - call(impl: *Impl, fun: Fun, args: []const Word) Word
 // - garbage_collect(impl: *Impl, checkpoint: Checkpoint, keep: Obj) Obj
 // - deduplicate(impl: *Impl, checkpoint: Checkpoint, obj: Obj) Obj
 const Impl = switch (builtin.cpu.arch) {
@@ -53,8 +51,8 @@ pub fn pop(vm: *Vm) Word {
     return vm.impl.pop();
 }
 
-pub fn run(vm: *Vm, instructions: Obj) !void {
-    try vm.impl.run(instructions);
+pub fn call(vm: *Vm, fun: Ir.Fun, args: []const Word) !Word {
+    return try vm.impl.run(fun, args);
 }
 
 pub fn garbage_collect(vm: *Vm, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {

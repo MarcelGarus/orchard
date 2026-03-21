@@ -377,7 +377,7 @@ fn ast_to_instructions(
             try ast_to_instructions(ally, heap, if_.then.*, &then_instructions, defs, vars, stack_size);
             var else_instructions = ArrayList(Instruction).empty;
             try ast_to_instructions(ally, heap, if_.else_.*, &else_instructions, defs, vars, stack_size);
-            try instructions.append(ally, .{ .@"if" = .{
+            try instructions.append(ally, .{ .if_ = .{
                 .then = then_instructions.items,
                 .else_ = else_instructions.items,
             } });
@@ -400,8 +400,7 @@ pub fn eval(ally: Ally, vm: *Vm, code: Str) !StringMap(Obj) {
     for (ast.defs) |def| {
         // std.debug.print("Running {s}\n", .{def.name});
         const instructions = try function_to_object(ally, vm.get_heap(), &.{}, def.value, &defs);
-        try vm.run(instructions);
-        const result = Obj{ .address = vm.pop() };
+        const result = Obj{ .address = try vm.run(instructions, &.{}) };
         try defs.put(def.name, result);
     }
     return defs;
