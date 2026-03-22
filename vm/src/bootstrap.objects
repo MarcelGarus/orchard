@@ -159,12 +159,6 @@ str-to-chars-rec ((a size i)
                             :size
                             (add :i :1))))))))))))))))))))))))))))))))))))))
 str-to-chars ((a) (call (object str-to-chars-rec) (:a (size :a) :0)))
-list-contains ((a b)
- (if (call (object nil?) (:a))
-  (object false)
-  (if (call (object str=) (load :a :0) :b)
-   (object true)
-   (rec ((load :a :1) :b)))))
 ascii-newline 10
 ascii-space 32
 ascii-quote 34
@@ -290,6 +284,19 @@ extract-args ((i)
      (load :name :1)
      (crash (object "bad arg"))))
    (rec ((load :i :1)))))))
+list-has? ((list name)
+ (if (call (object nil?) (:list))
+  (word false)
+  (if (call (object str=) ((load :list :0) :name))
+   (word true)
+   (rec ((load :list :1) :name)))))
+globals-lookup ((globals name)
+ (if (call (object nil?) (:globals))
+  (object nil)
+  (let a (load :globals :0)
+   (if (call (object str=) ((load :a :0) :name))
+    (load :a :1)
+    (rec ((load :globals :1) :name))))))
 compile-olive-expr ((mode locals globals i)
  (if (call (object =) (:mode (word multiple)))
   (if (call (object nil?) (:i))
@@ -335,7 +342,8 @@ compile-olive-expr ((mode locals globals i)
            (flatten-to-inner
             (rec (
              (word multiple)
-             :locals :globals
+             :locals
+             :globals
              (load (call (object array-to-list) (:c)) :1))))))
           (if (call (object str=) (:name (object "\\")))
            (new-inner (
@@ -348,18 +356,25 @@ compile-olive-expr ((mode locals globals i)
                 (crash (object "bad args"))))
              (new-inner (
               (flatten-to-inner :a)
-              (rec ((word single) :a (object nil) (load :c :2)))
+              (rec ((word single) :a :globals (load :c :2)))
              )))))
            (new-inner (
             (object "call")
-            (new-inner ((object "name") :name))
+            (rec ((word single) :locals :globals (load :c :0)))
             (flatten-to-inner
              (rec (
               (word multiple)
-              :locals :globals
+              :locals
+              :globals
               (load (call (object array-to-list) (:c)) :1)))))))))))))
     (if (call (object str=) (:tag (object "name")))
-     (new-inner ((object "name") (load :i :1)))
+     (let name (load :i :1)
+      (if (call (object list-has?) (:locals :name))
+       (new-inner ((object "name") :name))
+       (let a (call (object globals-lookup) (:globals :name))
+        (if (call (object nil?) (:a))
+         (crash (new-inner ((object "undefined name") :name)))
+         (new-inner ((object "object") :a))))))
      (if (call (object str=) (:tag (object "int")))
       (new-inner ((object "object") (load :i :1)))
       (if (call (object str=) (:tag (object "string")))
@@ -367,22 +382,23 @@ compile-olive-expr ((mode locals globals i)
        (crash (new-inner ((object "unknown node") :i))))))))))
 compile-olive ((globals i)
  (if (call (object nil?) (:i))
-   (crash (object "get export from globals"))
+  (call (object globals-lookup) (:globals (object "export")))
+  (let name
    (let name (load :i :0)
     (if (call (object str=) ((load :name :0) (object "name")))
      (load :name :1)
-     (crash (object "expected def name")))
-    (let a (load :i :1)
-     (if (call (object nil?) (:a))
-      (crash (object "expected def"))
-      (let b (call (object compile-olive-expr) ((word single) (object nil) globals))
-       (rec ((new-inner (new-inner :name :b) :globals) (load :a :1)))
-      )
-     )
-    )
-    )
-   )
-)
+     (crash (object "expected def name"))))
+   (let a (load :i :1)
+    (if (call (object nil?) (:a))
+     (crash (object "expected def"))
+     (let b
+      (call (object compile-olive-expr) (
+       (word single)
+       (object nil)
+       :globals
+       (load :a :0)))
+      (let c (call (new-inner ((new-inner ()) :b)) ())
+       (rec ((new-inner ((new-inner (:name :c)) :globals)) (load :a :1))))))))))
 
 export (
  ("function"

@@ -38,14 +38,14 @@ pub fn main() !void {
         std.debug.print("Compiling an optimizing Olive compiler.      ", .{});
         var timer = try std.time.Timer.start();
         vm.impl.instruction_count = 0;
-        const olive_defs = try unoptimized_unoptimizing_olive_compiler.call(&vm, &.{
+        const result = try unoptimized_unoptimizing_olive_compiler.call(&vm, &.{
             try Val.new_string(&heap, @embedFile("bootstrap.olive")),
         });
         std.debug.print("{} ms, ", .{timer.read() / std.time.ns_per_ms});
         std.debug.print("{} instructions, ", .{vm.impl.instruction_count});
         vm.get_heap().dump_stats();
-        heap.dump_obj(unoptimized_unoptimizing_olive_compiler.obj);
-        const compile_olive = olive_defs.get_field("compile_olive");
+        heap.dump_obj(result.obj);
+        const compile_olive = result.get_field("compile_olive");
         break :step compile_olive;
     };
     _ = compile_olive;

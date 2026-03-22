@@ -157,8 +157,10 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
         .name => |n| {
             if (find_in_stack(stack, n)) |offset|
                 try instrs.append(ally, .{ .stack = offset })
-            else
+            else {
+                std.debug.print("unknown variable {s}\n", .{n});
                 return error.UnknownVariable;
+            }
         },
         .let => |let| {
             try compile_expr(ally, root, let.def, stack, instrs);
