@@ -134,7 +134,6 @@ pub fn call(function: Value, vm: *Vm, args: []const Value) !Value {
     const closure = function.obj.child(1);
     const all_args = try vm.impl.ally.alloc(Word, args.len + 1);
     for (args, 0..) |arg, i| all_args[i] = arg.obj.address;
-    for (args) |arg| vm.get_heap().dump_obj(arg.obj);
     all_args[args.len] = closure.address;
     const result = try vm.call(fun, all_args);
     return .{ .obj = .{ .address = result } };

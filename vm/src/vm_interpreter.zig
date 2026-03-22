@@ -130,7 +130,7 @@ pub fn compile(vm: *Vm, fun: Ir.Fun) !CompiledFun {
 }
 
 pub fn really_compile(ally: Ally, fun: Ir.Fun) !CompiledFun {
-    std.debug.print("{f}", .{fun});
+    // std.debug.print("{f}", .{fun});
     var stack = std.ArrayList([]const u8).empty;
     defer stack.deinit(ally);
     for (fun.args()) |arg| try stack.append(ally, get_symbol(arg));
@@ -139,7 +139,7 @@ pub fn really_compile(ally: Ally, fun: Ir.Fun) !CompiledFun {
     try compile_expr(ally, fun, fun.body(), &stack, &instrs);
     if (fun.args().len > 0) try instrs.append(ally, .{ .popover = fun.args().len });
     const compiled = CompiledFun{ .instructions = try instrs.toOwnedSlice(ally) };
-    std.debug.print("{f}\n", .{compiled});
+    // std.debug.print("{f}\n", .{compiled});
     return compiled;
 }
 fn find_in_stack(stack: *const std.ArrayList([]const u8), name: []const u8) ?usize {
@@ -285,7 +285,6 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
             .add => {
                 const b: i64 = @bitCast(vm.data_stack.pop());
                 const a: i64 = @bitCast(vm.data_stack.pop());
-                std.debug.print("Adding {d} and {d}\n", .{ a, b });
                 try vm.data_stack.push(@bitCast(a +% b));
             },
             .subtract => {

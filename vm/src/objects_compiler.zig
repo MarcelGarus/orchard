@@ -201,7 +201,7 @@ fn ast_to_object(ally: Ally, heap: *Heap, expr: Ast.Expr, defs: StringMap(Obj)) 
         },
     };
 }
-pub fn create(ally: Ally, heap: *Heap, code: Str) !StringMap(Obj) {
+pub fn create(ally: Ally, heap: *Heap, code: Str) !Obj {
     const ast = try str_to_ast(ally, code);
     var defs = StringMap(Obj).init(ally);
     for (ast.defs) |def| {
@@ -209,5 +209,5 @@ pub fn create(ally: Ally, heap: *Heap, code: Str) !StringMap(Obj) {
         const obj = try ast_to_object(ally, heap, def.expr, defs);
         try defs.put(def.name, obj);
     }
-    return defs;
+    return defs.get("export").?;
 }

@@ -19,8 +19,8 @@ pub fn main() !void {
     // const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    const obj_defs = step: {
-        std.debug.print("Zig loads objects into the heap.                            ", .{});
+    const unoptimized_unoptimizing_olive_compiler = Val.from(step: {
+        std.debug.print("Loading a simple Olive compiler.             ", .{});
         var timer = try std.time.Timer.start();
         vm.impl.instruction_count = 0;
         const obj_defs = try objects_compiler.create(
@@ -32,44 +32,24 @@ pub fn main() !void {
         std.debug.print("{} instructions, ", .{vm.impl.instruction_count});
         vm.get_heap().dump_stats();
         break :step obj_defs;
+    });
+
+    const compile_olive = step: {
+        std.debug.print("Compiling an optimizing Olive compiler.      ", .{});
+        var timer = try std.time.Timer.start();
+        vm.impl.instruction_count = 0;
+        const olive_defs = try unoptimized_unoptimizing_olive_compiler.call(&vm, &.{
+            try Val.new_string(&heap, @embedFile("bootstrap.olive")),
+        });
+        std.debug.print("{} ms, ", .{timer.read() / std.time.ns_per_ms});
+        std.debug.print("{} instructions, ", .{vm.impl.instruction_count});
+        vm.get_heap().dump_stats();
+        heap.dump_obj(unoptimized_unoptimizing_olive_compiler.obj);
+        const compile_olive = olive_defs.get_field("compile_olive");
+        break :step compile_olive;
     };
-    const fun = Val.from(obj_defs.get("main-fun").?);
-    heap.dump_obj(fun.obj);
-    const int = try Val.new_string(&heap, @embedFile("test.olive"));
-    const res = try fun.call(&vm, &.{int});
-    // _ = res;
-    heap.dump_obj(res.obj);
+    _ = compile_olive;
     std.debug.print("amezing\n", .{});
-    // std.debug.print("res: {f}\n", res);
-
-    // const sloe_defs = step: {
-    //     std.debug.print("Zig compiles Sloe into an Olive compiler.                   ", .{});
-    //     var timer = try std.time.Timer.start();
-    //     vm.impl.instruction_count = 0;
-    //     const sloe_defs = try sloe_compiler.eval(
-    //         ally,
-    //         &vm,
-    //         @embedFile("code.sloe"),
-    //     );
-    //     std.debug.print("{} ms, ", .{timer.read() / std.time.ns_per_ms});
-    //     std.debug.print("{} instructions, ", .{vm.impl.instruction_count});
-    //     vm.get_heap().dump_stats();
-    //     break :step sloe_defs;
-    // };
-
-    // const compile_olive = step: {
-    //     std.debug.print("Sloe compiles Olive into an optimizing Olive compiler.      ", .{});
-    //     var timer = try std.time.Timer.start();
-    //     vm.impl.instruction_count = 0;
-    //     const olive_defs = try Val.from(sloe_defs.get("compile_olive").?).call(&vm, &.{
-    //         try Val.new_string(&heap, @embedFile("code.olive")),
-    //     });
-    //     std.debug.print("{} ms, ", .{timer.read() / std.time.ns_per_ms});
-    //     std.debug.print("{} instructions, ", .{vm.impl.instruction_count});
-    //     vm.get_heap().dump_stats();
-    //     const compile_olive = olive_defs.get_field("compile_olive");
-    //     break :step compile_olive;
-    // };
 
     // const optimized_olive_defs = step: {
     //     std.debug.print("Olive compiles Olive into a fast optimizing Olive compiler. ", .{});
