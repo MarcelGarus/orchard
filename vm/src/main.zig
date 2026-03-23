@@ -9,6 +9,24 @@ const Obj = Heap.Obj;
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
+const BootstrapStep = struct {
+    timer: std.time.Timer,
+    vm: *Vm,
+
+    fn start(comptime name: []const u8, vm: *Vm) !BootstrapStep {
+        std.debug.print(name, .{});
+        for (name.len..30) |_| std.debug.print(" ", .{});
+        const timer = try std.time.Timer.start();
+        vm.impl.instruction_count = 0;
+        return .{ .timer = timer, .vm = vm };
+    }
+    fn end(self: *BootstrapStep) void {
+        std.debug.print("{} ms, ", .{self.timer.read() / std.time.ns_per_ms});
+        std.debug.print("{} instructions, ", .{self.vm.impl.instruction_count});
+        self.vm.get_heap().dump_stats();
+    }
+};
+
 pub fn main() !void {
     std.debug.print("Orchard!\n", .{});
 
@@ -19,50 +37,32 @@ pub fn main() !void {
     // const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    const unoptimized_unoptimizing_olive_compiler = Val.from(step: {
-        std.debug.print("Loading a simple Olive compiler.             ", .{});
-        var timer = try std.time.Timer.start();
-        vm.impl.instruction_count = 0;
-        const obj_defs = try objects_compiler.create(
+    const compile_olive = step: {
+        var step = try BootstrapStep.start("Loading the Olive compiler.", &vm);
+        defer step.end();
+        break :step Val.from(try objects_compiler.create(
             ally,
             vm.get_heap(),
             @embedFile("bootstrap.objects"),
-        );
-        std.debug.print("{} ms, ", .{timer.read() / std.time.ns_per_ms});
-        std.debug.print("{} instructions, ", .{vm.impl.instruction_count});
-        vm.get_heap().dump_stats();
-        break :step obj_defs;
-    });
-
-    const compile_olive = step: {
-        std.debug.print("Compiling an optimizing Olive compiler.      ", .{});
-        var timer = try std.time.Timer.start();
-        vm.impl.instruction_count = 0;
-        const result = try unoptimized_unoptimizing_olive_compiler.call(&vm, &.{
+        ));
+    };
+    const olive_code = step: {
+        var step = try BootstrapStep.start("Compiling Olive code.", &vm);
+        defer step.end();
+        break :step try compile_olive.call(&vm, &.{
             try Val.new_string(&heap, @embedFile("bootstrap.olive")),
         });
-        std.debug.print("{} ms, ", .{timer.read() / std.time.ns_per_ms});
-        std.debug.print("{} instructions, ", .{vm.impl.instruction_count});
-        vm.get_heap().dump_stats();
-        heap.dump_obj(result.obj);
-        const compile_olive = result.get_field("compile_olive");
-        break :step compile_olive;
     };
-    _ = compile_olive;
-    std.debug.print("amezing\n", .{});
+    const optimize = olive_code.get_field("optimize");
+    const increment = olive_code.get_field("increment");
+    const stuff = step: {
+        var step = try BootstrapStep.start("Optimizing increment fun.", &vm);
+        defer step.end();
+        break :step try optimize.call(&vm, &.{increment});
+    };
+    heap.dump_obj(stuff.obj);
 
-    // const optimized_olive_defs = step: {
-    //     std.debug.print("Olive compiles Olive into a fast optimizing Olive compiler. ", .{});
-    //     var timer = try std.time.Timer.start();
-    //     const optimized_olive_defs = try compile_olive.call(&vm, &.{
-    //         try Val.new_string(&heap, @embedFile("test.olive")),
-    //     });
-    //     std.debug.print("{} ms, ", .{timer.read() / std.time.ns_per_ms});
-    //     vm.get_heap().dump_stats();
-    //     if (true) return;
-    //     heap.dump_obj(optimized_olive_defs.obj);
-    //     break :step optimized_olive_defs;
-    // };
+    std.debug.print("amezing\n", .{});
 
     // if (true) return;
 
