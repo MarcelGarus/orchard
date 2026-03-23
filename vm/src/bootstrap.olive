@@ -227,12 +227,12 @@ parse (\ (mode input)
           (# (.0 name) (# "name" (chars-to-str (.1 name))))))))))))))
 
 # "Olive Semantics"
-extract-args (\ (i)
- (if (nil? i)
+extract-args (\ (asts)
+ (if (nil? asts)
   nil
   (#
-   (: name (.0 i) (if (str= (.0 name) "name") (.1 name) (crash "bad arg")))
-   (rec (.1 i)))))
+   (: name (.0 asts) (if (str= (.0 name) "name") (.1 name) (crash "bad arg")))
+   (rec (.1 asts)))))
 list-has? (\ (list name)
  (if (nil? list) false (if (str= (.0 list) name) true (rec (.1 list) name))))
 globals-lookup (\ (globals name)
@@ -240,26 +240,29 @@ globals-lookup (\ (globals name)
   (crash (# "unknown name" name))
   (: global (.0 globals)
    (if (str= (.0 global) name) (.1 global) (rec (.1 globals) name)))))
-compile-olive-expr (\ (mode locals globals i)
+compile-olive-expr (\ (mode locals globals ast)
  (if (= mode multiple)
-  (if (nil? i)
+  (if (nil? ast)
    nil
-   (# (rec single locals globals (.0 i)) (rec multiple locals globals (.1 i))))
-  (: tag (.0 i)
+   (#
+    (rec single locals globals (.0 ast))
+    (rec multiple locals globals (.1 ast))))
+  (: tag (.0 ast)
    (if (str= tag "group")
-    (: children (.1 i)
+    (: children (.1 ast)
      (if (= (size children) 0)
       (crash "empty group")
       (: name
-       (: a (.0 children)
-        (if (str= (.0 a) "name")
-         (.1 a)
-         (crash (# "groups need to start with a name" a))))
+       (: first (.0 children)
+        (if (str= (.0 first) "name")
+         (.1 first)
+         (crash (# "groups need to start with a name" first))))
        (if (str= name ":")
         (if (!= (size children) 4)
          (crash "bad let")
          (: name
-          (: a (.1 children) (if (str= (.0 a) "name") (.1 a) (crash "bad let")))
+          (: name-ast (.1 children)
+           (if (str= (.0 name-ast) "name") (.1 name-ast) (crash "bad let")))
           (%let
            name
            (rec single locals globals (.2 children))
@@ -277,12 +280,14 @@ compile-olive-expr (\ (mode locals globals i)
             (rec multiple locals globals (.1 (array-to-list children)))))
           (if (str= name "\\")
            (%object
-            (: a
-             (: a (.1 children)
-              (if (str= (.0 a) "group")
-               (extract-args (array-to-list (.1 a)))
+            (: args
+             (: args-ast (.1 children)
+              (if (str= (.0 args-ast) "group")
+               (extract-args (array-to-list (.1 args-ast)))
                (crash "bad args")))
-             (# (flatten-to-inner a) (rec single a globals (.2 children)))))
+             (#
+              (flatten-to-inner args)
+              (rec single args globals (.2 children)))))
            (if (str= name "rec")
             (%rec
              (flatten-to-inner
@@ -296,27 +301,27 @@ compile-olive-expr (\ (mode locals globals i)
                globals
                (.1 (array-to-list children)))))))))))))
     (if (str= tag "name")
-     (: name (.1 i)
+     (: name (.1 ast)
       (if (list-has? locals name)
        (%name name)
        (%object (globals-lookup globals name))))
      (if (str= tag "int")
-      (%object (.1 i))
+      (%object (.1 ast))
       (if (str= tag "string")
-       (%object (.1 i))
-       (crash (# "unknown node" i)))))))))
-compile-olive (\ (globals i)
- (if (nil? i)
+       (%object (.1 ast))
+       (crash (# "unknown node" ast)))))))))
+compile-olive (\ (globals asts)
+ (if (nil? asts)
   (globals-lookup globals "export")
   (: name
-   (: name (.0 i)
+   (: name (.0 asts)
     (if (str= (.0 name) "name") (.1 name) (crash "expected def name")))
-   (: a (.1 i)
-    (if (nil? a)
+   (: rest (.1 asts)
+    (if (nil? rest)
      (crash "expected def")
-     (: b (compile-olive-expr single nil globals (.0 a))
-      (: c ((# (#) b))
-       (rec (# (# name c) globals) (.1 a)))))))))
+     (: ir (compile-olive-expr single nil globals (.0 rest))
+      (: value ((# (#) ir))
+       (rec (# (# name value) globals) (.1 rest)))))))))
 
 
 
@@ -328,5 +333,11 @@ compile-olive (\ (globals i)
 
 export (#
  (# "struct" "compile_olive")
+ (#
+  (# "function"
+   (# "code")
+   (\ (code _)
+    (compile-olive nil (.1 (parse multiple (str-to-chars (.1 code)))))))
+  nil)
  compile-olive
 )
