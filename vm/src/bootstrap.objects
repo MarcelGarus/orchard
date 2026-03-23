@@ -85,6 +85,8 @@ array-to-list-rec ((a i)
   (object nil)
   (new-inner ((load :a :i) (rec (:a (add :i :1)))))))
 array-to-list ((a) (call (object array-to-list-rec) (:a :0)))
+list-to-array ((a) (flatten-to-inner :a))
+list-to-leaf ((a) (flatten-to-leaf :a))
 str=-rec ((a b i size)
  (if (call (object =) (:i :size))
   (word true)
@@ -109,7 +111,8 @@ chars-to-str-rec ((c)
   (object nil)
   (let a (call (object chars-to-str-pack-rec) (:c :0 :0))
    (new-inner ((load :a :0) (rec ((load :a :1))))))))
-chars-to-str ((c) (flatten-to-leaf (call (object chars-to-str-rec) (:c))))
+chars-to-str ((c)
+ (call (object list-to-leaf) ((call (object chars-to-str-rec) (:c)))))
 str-to-chars-rec ((a size i)
  (if (call (object =) (:i :size))
   (object nil)
@@ -211,7 +214,7 @@ parse-string-rec ((i)
             (word ascii-newline)
             (crash (object "unknown escape sequence")))))
          (let c (rec ((load :a :1)))
-          (new-inner ((load :c :0) (new-inner (:b (load :c :1))))))))))
+          (new-inner ((load :c :0) (new-inner ((new-leaf (:b)) (load :c :1))))))))))
      (let a (rec ((load :i :1)))
       (new-inner (
        (load :a :0)
@@ -222,7 +225,7 @@ parse-int-rec ((i a)
   (let c (load (load :i :0) :0)
    (if (call (object is-digit) (:c))
     (rec ((load :i :1) (add (multiply :a :10) (subtract :c (word ascii-0)))))
-    (new-inner (:i :a))))))
+    (new-inner (:i (new-leaf (:a))))))))
 parse-name-rec ((i)
  (if (call (object nil?) (:i))
   (new-inner ((object nil) (object nil)))
@@ -248,7 +251,7 @@ parse ((mode i)
       (let a (call (object parse-int-rec) (:i :0))
        (new-inner (
         (load :a :0)
-        (new-inner ((object "int") (new-leaf ((load :a :1))))))))
+        (new-inner ((object "int") (load :a :1))))))
       (if (call (object =) (:c (word ascii-quote)))
        (let a (call (object parse-string-rec) ((load :i :1)))
         (new-inner (
@@ -263,7 +266,9 @@ parse ((mode i)
            (call (object =) ((load (load :i :0) :0) (word ascii-close-paren)))
            (new-inner (
             (load :i :1)
-            (new-inner ((object "group") (flatten-to-inner (load :a :1))))))
+            (new-inner (
+             (object "group")
+             (call (object list-to-array) ((load :a :1)))))))
            (crash (object "expected closing paren")))))
         (if (call (object =) (:c (word ascii-close-paren)))
          (object nil)
@@ -292,7 +297,7 @@ list-has? ((list name)
    (rec ((load :list :1) :name)))))
 globals-lookup ((globals name)
  (if (call (object nil?) (:globals))
-  (object nil)
+  (crash (new-inner ((object "unknown name") :name)))
   (let a (load :globals :0)
    (if (call (object str=) ((load :a :0) :name))
     (load :a :1)
@@ -317,14 +322,20 @@ compile-olive-expr ((mode locals globals i)
        (if (call (object str=) (:name (object ":")))
         (if (call (object !=) ((size :c) :4))
          (crash (object "bad let"))
-         (new-inner (
-          (object "let")
+         (let name
           (let a (load :c :1)
            (if (call (object str=) ((load :a :0) (object "name")))
             (load :a :1)
             (crash (object "bad let"))))
-          (rec ((word single) :locals :globals (load :c :2)))
-          (rec ((word single) :locals :globals (load :c :3))))))
+          (new-inner (
+           (object "let")
+           :name
+           (rec ((word single) :locals :globals (load :c :2)))
+           (rec (
+            (word single)
+            (new-inner (:name :locals))
+            :globals
+            (load :c :3)))))))
         (if (call (object str=) (:name (object "if")))
          (if (call (object !=) ((size :c) :4))
           (crash (object "bad if"))
@@ -333,18 +344,18 @@ compile-olive-expr ((mode locals globals i)
            (new-inner (
             (object "load")
             (rec ((word single) :locals :globals (load :c :1)))
-            :0))
+            (new-inner ((object "word") (object :0)))))
            (rec ((word single) :locals :globals (load :c :2)))
            (rec ((word single) :locals :globals (load :c :3))))))
          (if (call (object str=) (:name (object "#")))
           (new-inner (
            (object "new-inner")
-           (flatten-to-inner
+           (call (object list-to-array) (
             (rec (
              (word multiple)
              :locals
              :globals
-             (load (call (object array-to-list) (:c)) :1))))))
+             (load (call (object array-to-list) (:c)) :1)))))))
           (if (call (object str=) (:name (object "\\")))
            (new-inner (
             (object "object")
@@ -355,26 +366,32 @@ compile-olive-expr ((mode locals globals i)
                  (call (object array-to-list) ((load :a :1)))))
                 (crash (object "bad args"))))
              (new-inner (
-              (flatten-to-inner :a)
-              (rec ((word single) :a :globals (load :c :2)))
-             )))))
-           (new-inner (
-            (object "call")
-            (rec ((word single) :locals :globals (load :c :0)))
-            (flatten-to-inner
-             (rec (
-              (word multiple)
-              :locals
-              :globals
-              (load (call (object array-to-list) (:c)) :1)))))))))))))
+              (call (object list-to-array) (:a))
+              (rec ((word single) :a :globals (load :c :2))))))))
+           (if (call (object str=) (:name (object "rec")))
+            (new-inner (
+             (object "rec")
+             (call (object list-to-array) (
+              (rec (
+               (word multiple)
+               :locals
+               :globals
+               (load (call (object array-to-list) (:c)) :1)))))))
+            (new-inner (
+             (object "call")
+             (rec ((word single) :locals :globals (load :c :0)))
+             (call (object list-to-array) (
+              (rec (
+               (word multiple)
+               :locals
+               :globals
+               (load (call (object array-to-list) (:c)) :1)))))))))))))))
     (if (call (object str=) (:tag (object "name")))
      (let name (load :i :1)
       (if (call (object list-has?) (:locals :name))
        (new-inner ((object "name") :name))
        (let a (call (object globals-lookup) (:globals :name))
-        (if (call (object nil?) (:a))
-         (crash (new-inner ((object "undefined name") :name)))
-         (new-inner ((object "object") :a))))))
+        (new-inner ((object "object") :a)))))
      (if (call (object str=) (:tag (object "int")))
       (new-inner ((object "object") (load :i :1)))
       (if (call (object str=) (:tag (object "string")))
