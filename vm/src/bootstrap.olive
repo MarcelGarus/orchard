@@ -389,12 +389,14 @@ has-rec (\ (mode ir)
                             true
                             (rec mode_list (array-to-list (.2 ir))))
                            (if (str= (.0 ir) "rec")
-                            (rec mode_list (array-to-list (.1 ir)))
+                            true
                             (if (str= (.0 ir) "crash")
                              (rec mode_expr (.1 ir))
-                             (crash
-                              (# "unknown node"
-                               (.0 ir)))))))))))))))))))))))))))))
+                             (if (str= (.0 ir) "unreachable")
+                              false
+                              (crash
+                               (# "unknown node"
+                                (.0 ir))))))))))))))))))))))))))))))
    (if (= mode mode_list)
     (if (nil? ir)
      false
@@ -459,7 +461,9 @@ bind (\ (mode name val ir)
                            (# "rec" (flatten-to-inner (rec mode_list name val (array-to-list (.1 ir)))))
                            (if (str= (.0 ir) "crash")
                             (# "crash" (rec mode_expr name val (.1 ir)))
-                            (crash (# "unknown node in bind" (.0 ir)))))))))))))))))))))))))))))
+                            (if (str= (.0 ir) "unreachable")
+                             ir
+                             (crash (# "unknown node in bind" (.0 ir))))))))))))))))))))))))))))))
   (if (= mode mode_list)
    (if (nil? ir) nil
     (# (rec mode_expr name val (.0 ir)) (rec mode_list name val (.1 ir))))
@@ -550,7 +554,7 @@ optimize (\ (mode ir)
                             (: obj (.1 object)
                              (: idx (.1 index)
                               (if (>= idx (size obj))
-                               (# "crash" (# "object" "unreachable"))
+                               (# "unreachable")
                                (if (inner? obj)
                                 (# "object" (. idx obj))
                                 (# "word" (load-word obj idx))))))
@@ -575,9 +579,11 @@ optimize (\ (mode ir)
                             (# "rec" (flatten-to-inner args)))
                            (if (str= (.0 ir) "crash")
                             (: error (rec mode_list (.1 ir)) (# "crash" error))
-                            (crash
-                             (# "unknown node"
-                              (.0 ir)))))))))))))))))))))))))))))
+                            (if (str= (.0 ir) "unreachable")
+                             ir
+                             (crash
+                              (# "unknown node"
+                               (.0 ir))))))))))))))))))))))))))))))
    (if (= mode mode_list)
     (if (nil? ir) nil (# (rec mode_expr (.0 ir)) (rec mode_list (.1 ir))))
     (crash "other mode than fun or expr")))))

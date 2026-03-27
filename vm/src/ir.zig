@@ -60,6 +60,7 @@ pub const Expr = struct {
         call: Call,
         rec: []const Expr,
         crash: Expr,
+        unreachable_,
 
         pub const Let = struct { name: Name, def: Expr, expr: Expr };
         pub const LeftRight = struct { left: Expr, right: Expr };
@@ -83,6 +84,7 @@ pub const Expr = struct {
             };
             if (std.mem.eql(u8, tag, expected_tag)) {
                 const payload: field.type = switch (field.type) {
+                    void => {},
                     Word => self.obj.child(1).word(0),
                     Obj => self.obj.child(1),
                     Name => get_symbol(self.obj.child(1)),
@@ -227,6 +229,7 @@ pub const Expr = struct {
                 try writer.print("crash\n", .{});
                 try error_.format_indented(writer, indentation + 1);
             },
+            .unreachable_ => try writer.print("unreachable\n", .{}),
         }
     }
 };

@@ -261,6 +261,7 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
             try instrs.append(ally, .call);
             for (args) |_| _ = stack.pop();
         },
+        .unreachable_ => {},
     }
 }
 
