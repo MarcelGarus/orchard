@@ -54,11 +54,11 @@ pub fn main() !void {
         });
     };
     const optimize = olive_code.get_field("optimize");
-    const increment = olive_code.get_field("increment");
+    const test_fun = olive_code.get_field("test");
     const stuff = step: {
-        var step = try BootstrapStep.start("Optimizing increment fun.", &vm);
+        var step = try BootstrapStep.start("Optimizing test fun.", &vm);
         defer step.end();
-        break :step try optimize.call(&vm, &.{increment});
+        break :step try optimize.call(&vm, &.{test_fun});
     };
     heap.dump_obj(stuff.obj);
 
