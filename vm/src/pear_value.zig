@@ -101,37 +101,33 @@ pub fn get_items(self: Value) []const Value {
 
 // Function stuff.
 
-pub fn new(heap: *Heap, instructions: Obj, captured: Obj, args: Obj, ir: ?Obj) !Value {
+pub fn new(heap: *Heap, args: Obj, pear_ir: ?Obj, fun: Obj, captured: Obj) !Value {
     const function_symbol = try heap.new_symbol("function");
-    const ty = try heap.new_inner(&.{function_symbol});
-    const function_obj = obj: {
+    const ty = obj: {
         var b = try heap.build_inner();
-        try b.emit(ty);
-        try b.emit(instructions);
-        try b.emit(captured);
+        try b.emit(function_symbol);
         try b.emit(args);
-        if (ir) |ir_| try b.emit(ir_);
+        try b.emit(fun);
+        if (pear_ir) |ir_| try b.emit(ir_);
         break :obj b.finish();
     };
-    return .{ .obj = function_obj };
+    return try heap.new_inner(&.{ ty, captured });
 }
 pub fn get_captured(self: Value) Obj {
-    return self.obj.child(2);
+    return self.obj.child(1);
 }
 pub fn get_args(self: Value) Obj {
-    return self.obj.child(3);
+    return self.obj.child(0).child(1);
 }
-pub fn get_ir(self: Value) ?Obj {
-    if (self.obj.children().len < 5) return null;
-    return self.obj.child(4);
+pub fn get_fun(self: Value) Ir.Fun {
+    return Ir.Fun{ .obj = self.obj.child(0).child(2) };
 }
 
 pub fn call(function: Value, vm: *Vm, args: []const Value) !Value {
     std.debug.assert(function.kind() == .function);
-    const type_ = function.obj.child(0);
-    std.debug.assert(type_.child(1).size() == args.len);
-    const fun = Ir.Fun{ .obj = type_.child(2) };
-    const closure = function.obj.child(1);
+    std.debug.assert(function.get_args().size() == args.len);
+    const fun = function.get_fun();
+    const closure = function.get_captured();
     const all_args = try vm.impl.ally.alloc(Word, args.len + 1);
     for (args, 0..) |arg, i| all_args[i] = arg.obj.address;
     all_args[args.len] = closure.address;

@@ -5,6 +5,7 @@ const Word = Heap.Word;
 const Vm = @import("vm.zig");
 const Graphics = @import("graphics.zig");
 const Val = @import("pear_value.zig");
+const Ir = @import("ir.zig");
 const Obj = Heap.Obj;
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -60,27 +61,10 @@ pub fn main() !void {
         defer step.end();
         break :step try optimize.call(&vm, &.{test_fun});
     };
-    heap.dump_obj(stuff.obj);
+    // heap.dump_obj(stuff.obj);
+    std.debug.print("optimized:\n{f}", .{stuff.get_fun()});
 
     std.debug.print("amezing\n", .{});
-
-    // if (true) return;
-
-    // const compile_pear = optimized_olive_defs.get_field("compile_pear");
-
-    // std.debug.print("Using Olive to compile Pear...\n", .{});
-    // const file = try std.fs.cwd().openFile("../pear/test.pear", .{});
-    // const code = try file.readToEndAlloc(ally, 1000000);
-    // const compiled = try compile_pear.call(&vm, &.{try Val.new_string(&heap, code)});
-    // std.debug.print("Compiled: {any}\n", .{compiled});
-    // heap.dump_obj(compiled.obj);
-    // vm.get_heap().dump_stats();
-
-    // std.debug.print("Running Pear...\n", .{});
-    // const result = try compiled.call(&vm, &.{});
-    // std.debug.print("Result: {any}\n", .{result});
-    // heap.dump_obj(result.obj);
-    // vm.get_heap().dump_stats();
 
     if (true) return;
 
