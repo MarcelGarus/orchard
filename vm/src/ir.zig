@@ -144,22 +144,22 @@ pub const Expr = struct {
                 try args.right.format_indented(writer, indentation + 1);
             },
             .shift_left => |args| {
-                try writer.print("shift_left\n", .{});
+                try writer.print("shift left\n", .{});
                 try args.left.format_indented(writer, indentation + 1);
                 try args.right.format_indented(writer, indentation + 1);
             },
             .shift_right => |args| {
-                try writer.print("shift_right\n", .{});
+                try writer.print("shift right\n", .{});
                 try args.left.format_indented(writer, indentation + 1);
                 try args.right.format_indented(writer, indentation + 1);
             },
             .and_ => |args| {
-                try writer.print("and_\n", .{});
+                try writer.print("and\n", .{});
                 try args.left.format_indented(writer, indentation + 1);
                 try args.right.format_indented(writer, indentation + 1);
             },
             .or_ => |args| {
-                try writer.print("or_\n", .{});
+                try writer.print("or\n", .{});
                 try args.left.format_indented(writer, indentation + 1);
                 try args.right.format_indented(writer, indentation + 1);
             },
@@ -211,7 +211,7 @@ pub const Expr = struct {
                 try load.index.format_indented(writer, indentation + 1);
             },
             .gc => |arg| {
-                try writer.print("garbage collect\n", .{});
+                try writer.print("gc\n", .{});
                 try arg.format_indented(writer, indentation + 1);
             },
             .call => |call| {
