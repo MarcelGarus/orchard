@@ -243,6 +243,11 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
             try instrs.append(ally, .gc);
             _ = stack.pop();
         },
+        .also => |also| {
+            try compile_expr(ally, root, also.ignored, stack, instrs);
+            try instrs.append(ally, .{ .pop = 1 });
+            try compile_expr(ally, root, also.value, stack, instrs);
+        },
         .call => |call| {
             for (call.args) |arg| {
                 try compile_expr(ally, root, arg, stack, instrs);

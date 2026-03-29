@@ -37,6 +37,7 @@ pub const Expr = struct {
         object: Obj,
         name: Name,
         let: Let,
+        also: Also,
         add: LeftRight,
         subtract: LeftRight,
         multiply: LeftRight,
@@ -56,9 +57,9 @@ pub const Expr = struct {
         points: Expr,
         size: Expr,
         load: Load,
-        gc: Expr,
         call: Call,
         rec: []const Expr,
+        gc: Expr,
         crash: Expr,
         unreachable_,
 
@@ -66,6 +67,7 @@ pub const Expr = struct {
         pub const LeftRight = struct { left: Expr, right: Expr };
         pub const If = struct { condition: Expr, then: Expr, else_: Expr };
         pub const Load = struct { object: Expr, index: Expr };
+        pub const Also = struct { ignored: Expr, value: Expr };
         pub const Call = struct { fun: Expr, args: []const Expr };
     };
 
@@ -90,6 +92,7 @@ pub const Expr = struct {
                     Name => get_symbol(self.obj.child(1)),
                     Expr => .{ .obj = self.obj.child(1) },
                     Kind.Let => .{ .name = get_symbol(self.obj.child(1)), .def = .{ .obj = self.obj.child(2) }, .expr = .{ .obj = self.obj.child(3) } },
+                    Kind.Also => .{ .ignored = .{ .obj = self.obj.child(1) }, .value = .{ .obj = self.obj.child(2) } },
                     Kind.LeftRight => .{ .left = .{ .obj = self.obj.child(1) }, .right = .{ .obj = self.obj.child(2) } },
                     Kind.If => .{ .condition = .{ .obj = self.obj.child(1) }, .then = .{ .obj = self.obj.child(2) }, .else_ = .{ .obj = self.obj.child(3) } },
                     Kind.Load => .{ .object = .{ .obj = self.obj.child(1) }, .index = .{ .obj = self.obj.child(2) } },
@@ -213,6 +216,11 @@ pub const Expr = struct {
             .gc => |arg| {
                 try writer.print("gc\n", .{});
                 try arg.format_indented(writer, indentation + 1);
+            },
+            .also => |also| {
+                try writer.print("also\n", .{});
+                try also.ignored.format_indented(writer, indentation + 1);
+                try also.value.format_indented(writer, indentation + 1);
             },
             .call => |call| {
                 try writer.print("call\n", .{});
