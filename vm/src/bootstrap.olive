@@ -540,6 +540,15 @@ pure? (\ (mode ir)
    (if (nil? ir) true (and (rec :expr (.0 ir)) (rec :list (.1 ir))))
    (crash "bad mode in pure?"))))
 list-concat (\ (a b) (if (nil? a) b (# (.0 a) (rec (.1 a) b))))
+wrap-also (\ (list inner)
+ (if (nil? list)
+  inner
+  (%also (.0 list) (rec (.1 list) inner))))
+split-list-at (\ (list n)
+ (if (= n 0)
+  (# (#) (.0 list) (.1 list))
+  (: rest (rec (.1 list) (- n 1))
+   (# (# (.0 list) (.0 rest)) (.1 rest) (.2 rest)))))
 list-append (\ (list item)
  (if (nil? list) (# item nil) (# (.0 list) (rec (.1 list) item))))
 str-append-tick (\ (s) (chars-to-str (list-append (str-to-chars s) 39)))
@@ -748,7 +757,33 @@ optimize (\ (mode ir)
                               (if (inner? obj)
                                (%object (. idx obj))
                                (%word (load-word obj idx))))))
-                           (%load object index))))
+                           (if
+                            (and
+                             (or (new-leaf? object) (new-inner? object))
+                             (word? index))
+                            (: children (.1 object)
+                             (: n (.1 index)
+                              (if (>= n (size children))
+                               (%unreachable)
+                               (: split
+                                (split-list-at (array-to-list children) n)
+                                (: before (.0 split)
+                                 (: extracted (.1 split)
+                                  (: after (.2 split)
+                                   (: fresh
+                                    (fresh-name
+                                     "loaded"
+                                     (all-names :list after))
+                                    (rec :expr
+                                     (wrap-also
+                                      before
+                                      (%let
+                                       fresh
+                                       extracted
+                                       (wrap-also
+                                        after
+                                        (%name fresh)))))))))))))
+                            (%load object index)))))
                         (if (call? ir)
                          (: fun (rec :expr (.1 ir))
                           (: args (rec :list (array-to-list (.2 ir)))
