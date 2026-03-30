@@ -225,10 +225,6 @@ fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !Obj {
         // std.debug.print("read: {x} of {x}\n", .{read, heap_end});
         const header: *Header = @ptrFromInt(read);
         const size = 1 + header.num_words;
-        if (size > 1000) {
-            std.debug.print("sus\n", .{});
-            std.debug.print("size: {}\n", .{size});
-        }
         if (header.marked == 0) {
             read += 8 * size; // We don't need this object. Just overwrite it.
         } else {
