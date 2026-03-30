@@ -83,11 +83,28 @@ fn run() !void {
             try Val.new_string(&heap, @embedFile("bootstrap.olive")),
         });
     };
+    const olive_code_6 = step: {
+        var step = try BootstrapStep.start("Collecting garbage.", &vm);
+        defer step.end();
+        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_code_5.obj));
+    };
+    const olive_code_7 = step: {
+        var step = try BootstrapStep.start("Self-compiling Olive code.", &vm);
+        defer step.end();
+        break :step try olive_code_6.get_field("compile_olive").call(&vm, &.{
+            try Val.new_string(&heap, @embedFile("bootstrap.olive")),
+        });
+    };
+    const olive_code_8 = step: {
+        var step = try BootstrapStep.start("Collecting garbage.", &vm);
+        defer step.end();
+        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_code_7.obj));
+    };
     // _ = olive_code_4;
     // heap.dump_obj(test_code.obj);
 
-    const optimize = olive_code_5.get_field("optimize");
-    const test_fun = olive_code_5.get_field("test");
+    const optimize = olive_code_8.get_field("optimize");
+    const test_fun = olive_code_8.get_field("test");
     const stuff = step: {
         var step = try BootstrapStep.start("Optimizing test fun.", &vm);
         defer step.end();
