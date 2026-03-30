@@ -194,173 +194,6 @@ ascii-at 64
 ascii-backslash 92
 ascii-n 110
 
-# "Parsing"
-is-digit (\ (char) (and (>= char ascii-0) (<= char ascii-9)))
-is-name (\ (char)
- (and (!= char ascii-newline)
-  (and (!= char ascii-space)
-   (and (!= char ascii-open-paren)
-    (and (!= char ascii-close-paren) (!= char ascii-quote))))))
-consume-whitespace (\ (input)
- (if (nil? input)
-  nil
-  (: c (.0 input)
-   (if (or (= c ascii-newline) (= c ascii-space)) (rec (.1 input)) input))))
-parse-string-rec (\ (input)
- (if (nil? input) (crash "string doesn't end")
-  (: c (.0 input)
-   (if (= c ascii-quote) (# (.1 input) nil)
-    (if (= c ascii-backslash)
-     (: t (.1 input)
-      (if (nil? t) (crash "expected escape char")
-       (: escaped (.0 t)
-        (: escaped
-         (if (= escaped ascii-backslash) ascii-backslash
-          (if (= escaped ascii-quote) ascii-quote
-           (if (= escaped ascii-n) ascii-newline
-            (crash "unknown escape sequence"))))
-         (: res (rec (.1 t)) (# (.0 res) (# escaped (.1 res))))))))
-     (: res (rec (.1 input)) (# (.0 res) (# c (.1 res)))))))))
-parse-int-rec (\ (input num)
- (if (nil? input)
-  (# nil num)
-  (: c (.0 input)
-   (if (is-digit c)
-    (rec (.1 input) (+ (* num 10) (- c ascii-0)))
-    (# input num)))))
-parse-name-rec (\ (input)
- (if (nil? input)
-  (# nil nil)
-  (: c (.0 input)
-   (if (is-name c)
-    (: r (rec (.1 input)) (# (.0 r) (# c (.1 r))))
-    (# input nil)))))
-single 0
-multiple 1
-parse (\ (mode input)
- (if (= mode multiple)
-  (: r (rec single input)
-   (if (nil? r)
-    (# input nil)
-    (: rest (rec multiple (.0 r)) (# (.0 rest) (# (.1 r) (.1 rest))))))
-  (: input (consume-whitespace input)
-   (if (nil? input)
-    nil
-    (: c (.0 input)
-     (if (= c 0)
-      nil
-      (if (is-digit c)
-       (: int-res (parse-int-rec input 0)
-        (# (.0 int-res) (# "int" (.1 int-res))))
-       (if (= c ascii-quote)
-        (: r (parse-string-rec (.1 input))
-         (# (.0 r) (# "string" (chars-to-str (.1 r)))))
-        (if (= c ascii-open-paren)
-         (: group-res (rec multiple (.1 input))
-          (: input (consume-whitespace (.0 group-res))
-           (if (= (.0 input) ascii-close-paren)
-            (# (.1 input) (# "group" (flatten-to-inner (.1 group-res))))
-            (crash "expected closing paren"))))
-         (: name (parse-name-rec input)
-          (# (.0 name) (# "name" (chars-to-str (.1 name))))))))))))))
-
-# "Olive Semantics"
-extract-args (\ (asts)
- (if (nil? asts)
-  nil
-  (#
-   (: name (.0 asts) (if (str= (.0 name) "name") (.1 name) (crash "bad arg")))
-   (rec (.1 asts)))))
-list-has? (\ (list name)
- (if (nil? list) false (if (str= (.0 list) name) true (rec (.1 list) name))))
-globals-lookup (\ (globals name)
- (if (nil? globals)
-  (crash (# "unknown name" name))
-  (: global (.0 globals)
-   (if (str= (.0 global) name) (.1 global) (rec (.1 globals) name)))))
-compile-olive-expr (\ (mode locals globals ast)
- (if (= mode multiple)
-  (if (nil? ast)
-   nil
-   (#
-    (rec single locals globals (.0 ast))
-    (rec multiple locals globals (.1 ast))))
-  (: tag (.0 ast)
-   (if (str= tag "group")
-    (: children (.1 ast)
-     (if (= (size children) 0)
-      (crash "empty group")
-      (: name
-       (: first (.0 children)
-        (if (str= (.0 first) "name")
-         (.1 first)
-         (crash (# "groups need to start with a name" first))))
-       (if (str= name ":")
-        (if (!= (size children) 4)
-         (crash "bad let")
-         (: name
-          (: name-ast (.1 children)
-           (if (str= (.0 name-ast) "name") (.1 name-ast) (crash "bad let")))
-          (%let
-           name
-           (rec single locals globals (.2 children))
-           (rec single (# name locals) globals (.3 children)))))
-        (if (str= name "if")
-         (if (!= (size children) 4)
-          (crash "bad if")
-          (%if
-           (%load (rec single locals globals (.1 children)) (%word 0))
-           (rec single locals globals (.2 children))
-           (rec single locals globals (.3 children))))
-         (if (str= name "#")
-          (%new-inner
-           (flatten-to-inner
-            (rec multiple locals globals (.1 (array-to-list children)))))
-          (if (str= name "\\")
-           (%object
-            (: args
-             (: args-ast (.1 children)
-              (if (str= (.0 args-ast) "group")
-               (extract-args (array-to-list (.1 args-ast)))
-               (crash "bad args")))
-             (#
-              (flatten-to-inner args)
-              (rec single args globals (.2 children)))))
-           (if (str= name "rec")
-            (%rec
-             (flatten-to-inner
-              (rec multiple locals globals (.1 (array-to-list children)))))
-            (%call
-             (rec single locals globals (.0 children))
-             (flatten-to-inner
-              (rec
-               multiple
-               locals
-               globals
-               (.1 (array-to-list children)))))))))))))
-    (if (str= tag "name")
-     (: name (.1 ast)
-      (if (list-has? locals name)
-       (%name name)
-       (%object (globals-lookup globals name))))
-     (if (str= tag "int")
-      (%object (.1 ast))
-      (if (str= tag "string")
-       (%object (.1 ast))
-       (crash (# "unknown node" ast)))))))))
-compile-olive (\ (globals asts)
- (if (nil? asts)
-  (globals-lookup globals "export")
-  (: name
-   (: name (.0 asts)
-    (if (str= (.0 name) "name") (.1 name) (crash "expected def name")))
-   (: rest (.1 asts)
-    (if (nil? rest)
-     (crash "expected def")
-     (: ir (compile-olive-expr single nil globals (.0 rest))
-      (: value ((# (#) ir))
-       (rec (# (# name value) globals) (.1 rest)))))))))
-
 # "Optimize IR"
 word? (\ (ir) (str=4 (.0 ir) "word"))
 object? (\ (ir) (str=6 (.0 ir) "object"))
@@ -811,9 +644,189 @@ optimize (\ (mode ir)
     (crash "other mode than fun or expr")))))
 
 
+# "Next up is code that can compile this Olive file. This makes Olive
+ self-hosted. More important, unlike the Olive compiler written in raw objects
+ (bootstrap.olive), this compiler is optimizing, so it can compile itself into
+ a faster compiler."
 
-test (\ (a)
- (str=5 a "abcde")
+# "Parsing"
+is-digit (\ (char) (and (>= char ascii-0) (<= char ascii-9)))
+is-name (\ (char)
+ (and (!= char ascii-newline)
+  (and (!= char ascii-space)
+   (and (!= char ascii-open-paren)
+    (and (!= char ascii-close-paren) (!= char ascii-quote))))))
+consume-whitespace (\ (input)
+ (if (nil? input)
+  nil
+  (: c (.0 input)
+   (if (or (= c ascii-newline) (= c ascii-space)) (rec (.1 input)) input))))
+parse-string-rec (\ (input)
+ (if (nil? input) (crash "string doesn't end")
+  (: c (.0 input)
+   (if (= c ascii-quote) (# (.1 input) nil)
+    (if (= c ascii-backslash)
+     (: t (.1 input)
+      (if (nil? t) (crash "expected escape char")
+       (: escaped (.0 t)
+        (: escaped
+         (if (= escaped ascii-backslash) ascii-backslash
+          (if (= escaped ascii-quote) ascii-quote
+           (if (= escaped ascii-n) ascii-newline
+            (crash "unknown escape sequence"))))
+         (: res (rec (.1 t)) (# (.0 res) (# escaped (.1 res))))))))
+     (: res (rec (.1 input)) (# (.0 res) (# c (.1 res)))))))))
+parse-int-rec (\ (input num)
+ (if (nil? input)
+  (# nil num)
+  (: c (.0 input)
+   (if (is-digit c)
+    (rec (.1 input) (+ (* num 10) (- c ascii-0)))
+    (# input num)))))
+parse-name-rec (\ (input)
+ (if (nil? input)
+  (# nil nil)
+  (: c (.0 input)
+   (if (is-name c)
+    (: r (rec (.1 input)) (# (.0 r) (# c (.1 r))))
+    (# input nil)))))
+single 0
+multiple 1
+parse (\ (mode input)
+ (if (= mode multiple)
+  (: r (rec single input)
+   (if (nil? r)
+    (# input nil)
+    (: rest (rec multiple (.0 r)) (# (.0 rest) (# (.1 r) (.1 rest))))))
+  (: input (consume-whitespace input)
+   (if (nil? input)
+    nil
+    (: c (.0 input)
+     (if (= c ascii-close-paren)
+      nil
+      (if (is-digit c)
+       (: r (parse-int-rec input 0) (# (.0 r) (# "int" (.1 r))))
+       (if (= c ascii-quote)
+        (: r (parse-string-rec (.1 input))
+         (# (.0 r) (# "string" (chars-to-str (.1 r)))))
+        (if (= c ascii-open-paren)
+         (: group-res (rec multiple (.1 input))
+          (: input (consume-whitespace (.0 group-res))
+           (if (= (.0 input) ascii-close-paren)
+            (# (.1 input) (# "group" (flatten-to-inner (.1 group-res))))
+            (crash "expected closing paren"))))
+         (: name (parse-name-rec input)
+          (# (.0 name) (# "name" (chars-to-str (.1 name))))))))))))))
+
+# "Olive Semantics"
+extract-args (\ (asts)
+ (if (nil? asts)
+  nil
+  (#
+   (: name (.0 asts) (if (str= (.0 name) "name") (.1 name) (crash "bad arg")))
+   (rec (.1 asts)))))
+list-has? (\ (list name)
+ (if (nil? list) false (if (str= (.0 list) name) true (rec (.1 list) name))))
+globals-lookup (\ (globals name)
+ (if (nil? globals)
+  (crash (# "unknown name" name))
+  (: global (.0 globals)
+   (if (str= (.0 global) name) (.1 global) (rec (.1 globals) name)))))
+compile-olive-expr (\ (mode locals globals ast)
+ (if (= mode multiple)
+  (if (nil? ast)
+   nil
+   (#
+    (rec single locals globals (.0 ast))
+    (rec multiple locals globals (.1 ast))))
+  (: tag (.0 ast)
+   (if (str= tag "group")
+    (: children (.1 ast)
+     (if (= (size children) 0)
+      (crash "empty group")
+      (: name
+       (: first (.0 children)
+        (if (str= (.0 first) "name")
+         (.1 first)
+         (crash (# "groups need to start with a name" first))))
+       (if (str= name ":")
+        (if (!= (size children) 4)
+         (crash "bad let")
+         (: name
+          (: name-ast (.1 children)
+           (if (str= (.0 name-ast) "name") (.1 name-ast) (crash "bad let")))
+          (%let
+           name
+           (rec single locals globals (.2 children))
+           (rec single (# name locals) globals (.3 children)))))
+        (if (str= name "if")
+         (if (!= (size children) 4)
+          (crash "bad if")
+          (%if
+           (%load (rec single locals globals (.1 children)) (%word 0))
+           (rec single locals globals (.2 children))
+           (rec single locals globals (.3 children))))
+         (if (str= name "#")
+          (%new-inner
+           (flatten-to-inner
+            (rec multiple locals globals (.1 (array-to-list children)))))
+          (if (str= name "\\")
+           (%object
+            (: args
+             (: args-ast (.1 children)
+              (if (str= (.0 args-ast) "group")
+               (extract-args (array-to-list (.1 args-ast)))
+               (crash "bad args")))
+             (optimize :fun
+              (#
+               (flatten-to-inner args)
+               (rec single args globals (.2 children))))))
+           (if (str= name "rec")
+            (%rec
+             (flatten-to-inner
+              (rec multiple locals globals (.1 (array-to-list children)))))
+            (%call
+             (rec single locals globals (.0 children))
+             (flatten-to-inner
+              (rec
+               multiple
+               locals
+               globals
+               (.1 (array-to-list children)))))))))))))
+    (if (str= tag "name")
+     (: name (.1 ast)
+      (if (list-has? locals name)
+       (%name name)
+       (%object (globals-lookup globals name))))
+     (if (str= tag "int")
+      (%object (.1 ast))
+      (if (str= tag "string")
+       (%object (.1 ast))
+       (crash (# "unknown node" ast)))))))))
+compile-olive (\ (globals asts)
+ (if (nil? asts)
+  (globals-lookup globals "export")
+  (: name
+   (: name (.0 asts)
+    (if (str= (.0 name) "name") (.1 name) (crash "expected def name")))
+   (: rest (.1 asts)
+    (if (nil? rest)
+     (crash "expected def")
+     (: ir (compile-olive-expr single nil globals (.0 rest))
+      (: value ((# (#) ir))
+       (rec (# (# name value) globals) (.1 rest)))))))))
+
+
+
+
+test (\ (mode ir)
+ (if (= mode :expr)
+  (crash "optimize expr")
+  (if (= mode :fun)
+   (# (.0 ir) (rec :expr (.1 ir)))
+   (if (= mode :list)
+    (if (nil? ir) nil (# (rec :expr (.0 ir)) (rec :list (.1 ir))))
+    (crash "other mode than fun or expr"))))
  )
 
 export (#
@@ -822,7 +835,7 @@ export (#
   (# "function"
    (# "code")
    (\ (code _)
-    (compile-olive nil (.1 (parse multiple (str-to-chars (.1 code)))))))
+    (crash (compile-olive nil (.1 (parse multiple (str-to-chars (.1 code))))))))
   nil)
  (#
   (# "function"
@@ -831,5 +844,5 @@ export (#
     (: type (.0 fun)
      (# (# "function" (.1 type) (optimize :fun (.2 type))) nil))))
   nil)
- (# (# "function" (# "a") (\ (a _) (test a))) nil)
+ (# (# "function" (# "a") (\ (a _) (optimize :fun a))) nil)
 )

@@ -54,6 +54,16 @@ pub fn main() !void {
             try Val.new_string(&heap, @embedFile("bootstrap.olive")),
         });
     };
+    const compile_olive_2 = olive_code.get_field("compile_olive");
+    const test_code = step: {
+        var step = try BootstrapStep.start("Compiling test code.", &vm);
+        defer step.end();
+        break :step try compile_olive_2.call(&vm, &.{
+            try Val.new_string(&heap, @embedFile("test.olive")),
+        });
+    };
+    heap.dump_obj(test_code.obj);
+
     const optimize = olive_code.get_field("optimize");
     const test_fun = olive_code.get_field("test");
     const stuff = step: {
@@ -61,8 +71,9 @@ pub fn main() !void {
         defer step.end();
         break :step try optimize.call(&vm, &.{test_fun});
     };
+    _ = stuff;
     // heap.dump_obj(stuff.obj);
-    std.debug.print("optimized:\n{f}", .{stuff.get_fun()});
+    //std.debug.print("optimized:\n{f}", .{stuff.get_fun()});
 
     std.debug.print("amezing\n", .{});
 
