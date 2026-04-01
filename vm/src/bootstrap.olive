@@ -103,6 +103,8 @@ compare (# (# "a" "b")
 != (\ (a b) (not (= a b)))
 >= (\ (a b) (not (< a b)))
 <= (\ (a b) (not (> a b)))
+is-odd (\ (a) (and a 1))
+is-even (\ (a) (not (is-odd a)))
 size (# (# "object") (%new-leaf (# (%size (%name "object")))))
 inner? (# (# "object") (%new-leaf (# (%points (%name "object")))))
 . (# (# "index" "object")
@@ -154,6 +156,7 @@ str=13 (\ (a b) (str=2words a b))
 str=14 (\ (a b) (str=2words a b))
 str=15 (\ (a b) (str=2words a b))
 str=16 (\ (a b) (str=2words a b))
+first-char (\ (string) (and (load-word string 0) 255))
 chars-to-str-pack-rec (\ (chars shift acc)
  (if (>= shift 64)
   (# acc chars)
@@ -689,14 +692,14 @@ parse-name-rec (\ (input)
    (if (is-name c)
     (: r (rec (.1 input)) (# (.0 r) (# c (.1 r))))
     (# input nil)))))
-single 0
-multiple 1
+:single 0
+:multiple 1
 parse (\ (mode input)
- (if (= mode multiple)
-  (: r (rec single input)
+ (if (= mode :multiple)
+  (: r (rec :single input)
    (if (nil? r)
     (# input nil)
-    (: rest (rec multiple (.0 r)) (# (.0 rest) (# (.1 r) (.1 rest))))))
+    (: rest (rec :multiple (.0 r)) (# (.0 rest) (# (.1 r) (.1 rest))))))
   (: input (consume-whitespace input)
    (if (nil? input)
     nil
@@ -709,20 +712,24 @@ parse (\ (mode input)
         (: r (parse-string-rec (.1 input))
          (# (.0 r) (# "string" (chars-to-str (.1 r)))))
         (if (= c ascii-open-paren)
-         (: group-res (rec multiple (.1 input))
+         (: group-res (rec :multiple (.1 input))
           (: input (consume-whitespace (.0 group-res))
            (if (= (.0 input) ascii-close-paren)
             (# (.1 input) (# "group" (flatten-to-inner (.1 group-res))))
             (crash "expected closing paren"))))
          (: name (parse-name-rec input)
           (# (.0 name) (# "name" (chars-to-str (.1 name))))))))))))))
+int? (\ (ast) (str=3 (.0 ast) "int"))
+string? (\ (ast) (str=6 (.0 ast) "string"))
+group? (\ (ast) (str=5 (.0 ast) "group"))
+# "Note that name? is already defined for the IR, and it also works on ASTs."
 
 # "Olive Semantics"
 extract-args (\ (asts)
  (if (nil? asts)
   nil
   (#
-   (: name (.0 asts) (if (str= (.0 name) "name") (.1 name) (crash "bad arg")))
+   (: name (.0 asts) (if (name? name) (.1 name) (crash "bad arg")))
    (rec (.1 asts)))))
 list-has? (\ (list name)
  (if (nil? list) false (if (str= (.0 list) name) true (rec (.1 list) name))))
@@ -732,81 +739,76 @@ globals-lookup (\ (globals name)
   (: global (.0 globals)
    (if (str= (.0 global) name) (.1 global) (rec (.1 globals) name)))))
 compile-olive-expr (\ (mode locals globals ast)
- (if (= mode multiple)
+ (if (= mode :multiple)
   (if (nil? ast)
    nil
    (#
-    (rec single locals globals (.0 ast))
-    (rec multiple locals globals (.1 ast))))
-  (: tag (.0 ast)
-   (if (str= tag "group")
-    (: children (.1 ast)
-     (if (= (size children) 0)
-      (crash "empty group")
-      (if (str= (.0 (.0 children)) "name")
-       (: name
-        (: first (.0 children)
-         (if (str= (.0 first) "name")
-          (.1 first)
-          (crash (# "groups need to start with a name" first))))
-        (if (str= name ":")
+    (rec :single locals globals (.0 ast))
+    (rec :multiple locals globals (.1 ast))))
+  (if (group? ast)
+   (: children (.1 ast)
+    (if (= (size children) 0)
+     (crash "empty group")
+     (if (name? (.0 children))
+      (: name (.1 (.0 children))
+       (if (str=1 name ":")
+        (if (!= (size children) 4)
+         (crash "bad let")
+         (: name
+          (: name-ast (.1 children)
+           (if (str= (.0 name-ast) "name") (.1 name-ast) (crash "bad let")))
+          (%let
+           name
+           (rec :single locals globals (.2 children))
+           (rec :single (# name locals) globals (.3 children)))))
+        (if (str=2 name "if")
          (if (!= (size children) 4)
-          (crash "bad let")
-          (: name
-           (: name-ast (.1 children)
-            (if (str= (.0 name-ast) "name") (.1 name-ast) (crash "bad let")))
-           (%let
-            name
-            (rec single locals globals (.2 children))
-            (rec single (# name locals) globals (.3 children)))))
-         (if (str= name "if")
-          (if (!= (size children) 4)
-           (crash "bad if")
-           (%if
-            (%load (rec single locals globals (.1 children)) (%word 0))
-            (rec single locals globals (.2 children))
-            (rec single locals globals (.3 children))))
-          (if (str= name "#")
-           (%new-inner
-            (flatten-to-inner
-             (rec multiple locals globals (.1 (array-to-list children)))))
-           (if (str= name "\\")
-            (%object
-             (: args
-              (: args-ast (.1 children)
-               (if (str= (.0 args-ast) "group")
-                (extract-args (array-to-list (.1 args-ast)))
-                (crash "bad args")))
-              (optimize :fun
-               (#
-                (flatten-to-inner args)
-                (rec single args globals (.2 children))))))
-            (if (str= name "rec")
-             (%rec
-              (flatten-to-inner
-               (rec multiple locals globals (.1 (array-to-list children)))))
-             (%call
-              (rec single locals globals (.0 children))
-              (flatten-to-inner
-               (rec
-                multiple
-                locals
-                globals
-                (.1 (array-to-list children)))))))))))
-       (%call
-        (rec single locals globals (.0 children))
-        (flatten-to-inner
-         (rec multiple locals globals (.1 (array-to-list children))))))))
-    (if (str= tag "name")
-     (: name (.1 ast)
-      (if (list-has? locals name)
-       (%name name)
-       (%object (globals-lookup globals name))))
-     (if (str= tag "int")
+          (crash "bad if")
+          (%if
+           (%load (rec :single locals globals (.1 children)) (%word 0))
+           (rec :single locals globals (.2 children))
+           (rec :single locals globals (.3 children))))
+         (if (str=1 name "#")
+          (%new-inner
+           (flatten-to-inner
+            (rec :multiple locals globals (.1 (array-to-list children)))))
+          (if (str=1 name "\\")
+           (%object
+            (: args
+             (: args-ast (.1 children)
+              (if (str= (.0 args-ast) "group")
+               (extract-args (array-to-list (.1 args-ast)))
+               (crash "bad args")))
+             (optimize :fun
+              (#
+               (flatten-to-inner args)
+               (rec :single args globals (.2 children))))))
+           (if (str=3 name "rec")
+            (%rec
+             (flatten-to-inner
+              (rec :multiple locals globals (.1 (array-to-list children)))))
+            (%call
+             (rec :single locals globals (.0 children))
+             (flatten-to-inner
+              (rec
+               :multiple
+               locals
+               globals
+               (.1 (array-to-list children)))))))))))
+      (%call
+       (rec :single locals globals (.0 children))
+       (flatten-to-inner
+        (rec :multiple locals globals (.1 (array-to-list children))))))))
+   (if (name? ast)
+    (: name (.1 ast)
+     (if (list-has? locals name)
+      (%name name)
+      (%object (globals-lookup globals name))))
+    (if (int? ast)
+     (%object (.1 ast))
+     (if (string? ast)
       (%object (.1 ast))
-      (if (str= tag "string")
-       (%object (.1 ast))
-       (crash (# "unknown node" ast)))))))))
+      (crash (# "unknown node" ast))))))))
 compile-olive (\ (globals asts)
  (if (nil? asts)
   (globals-lookup globals "export")
@@ -816,12 +818,178 @@ compile-olive (\ (globals asts)
    (: rest (.1 asts)
     (if (nil? rest)
      (crash "expected def")
-     (: ir (compile-olive-expr single nil globals (.0 rest))
+     (: ir (compile-olive-expr :single nil globals (.0 rest))
       (: value ((# (#) ir))
        (rec (# (# name value) globals) (.1 rest)))))))))
 
+# "Constructors for Pear values."
+'int (\ (value) (# (# "int") value))
+'string (\ (string) (# (# "string") string))
+&-names-rec (\ (rec arr i) (if (>= i (size arr)) nil (# (. i arr) (rec rec arr (+ i 2)))))
+&-values-rec (\ (rec arr i) (if (>= i (size arr)) nil (# (. i arr) (rec rec arr (+ i 2)))))
+& (\ (pairs)
+  (: names (&-names-rec &-names-rec pairs 0)
+    (: values (&-values-rec &-values-rec pairs 1)
+      (: type-tag (flatten-to-inner (# "struct" names))
+        (flatten-to-inner (# type-tag values))))))
+&1 (\ (k1 v1) (# (# "struct" k1) v1))
+&2 (\ (k1 v1 k2 v2) (# (# "struct" k1 k2) v1 v2))
+&3 (\ (k1 v1 k2 v2 k3 v3) (# (# "struct" k1 k2 k3) v1 v2 v3))
+| (\ (variant payload) (# (# "enum" variant) payload))
+'array (\ (items) (flatten-to-inner (# (# "array") items)))
+'nil (# (# "struct") )
+'\ (\ (args jam instructions) (# (# "lambda") instructions 'nil args jam))
+'none (| "none" 'nil)
+'some (\ (payload) (| "some" payload))
+'true (| "true" 'nil)
+'false (| "false" 'nil)
 
-
+# "Pear semantics"
+:let 2
+:fields 3
+:cases 4
+:params 5
+compile-pear (\ (mode ast)
+ (if (= mode :single)
+  (if (group? ast)
+   (: children (. 1 ast)
+    (: first (if (nil? children) (crash "empty group") (. 0 children))
+     (: rest (.1 (array-to-list children))
+      (if (name? first)
+       (: name (. 1 first)
+        (if (str=1 name ":")
+         (if (is-odd (size children)) (crash "bad let") (rec :let rest))
+         (if (str=2 name "[]")
+          (| "array" ('array (flatten-to-inner (rec :multiple rest))))
+          (if (str=1 name "&")
+           (| "struct" ('array (flatten-to-inner (rec :fields rest))))
+           (if (= (first-char name) ".")
+            (if (!= (size children) 2)
+             (crash "bad field")
+             (| "field"
+              (&2
+               "of" (rec :single (. 1 children))
+               "name" ('string (chars-to-str (.1 (str-to-chars name)))))))
+            (if (str=1 name "|")
+             (| "enum"
+              (if (< (size children) 2)
+               (crash "bad enum")
+               (: variant
+                (if (name? (. 1 children))
+                 (. 1 (. 1 children))
+                 (crash "bad enum"))
+                (if (= (size children) 2)
+                 (&2 "variant" variant "payload" 'nil)
+                 (if (= (size children) 3)
+                  (&2
+                   "variant" variant
+                   "payload" (rec :single (.0 (.1 rest))))
+                  (crash "bad enum"))))))
+             (if (str= name "%")
+              (if (is-odd (size children))
+               (crash "bad switch")
+               (: condition (rec :single (.1 children))
+                (: cases (rec :cases (.1 rest))
+                 (| "switch"
+                  (&2
+                   "condition" condition
+                   "cases" (flatten-to-inner (.0 cases))
+                   "default"
+                    (if (nil? (.1 cases)) 'none ('some (.1 cases))))))))
+              (if (str=1 name "\\")
+               (if (!= (size children) 3)
+                (crash "bad function")
+                (: params
+                 (if (group? (. 1 children))
+                  (flatten-to-inner (rec :params (array-to-list (. 1 (. 1 children)))))
+                  (crash "bad function"))
+                 (: body (rec :single (. 2 children)) (| "function" (&2 "params" params "body" body)))))
+               (| "call"
+                (&2
+                 "function" (rec :single first)
+                 "arguments" ('array (flatten-to-inner (rec :multiple rest)))))))))))))
+       (| "call"
+        (&2
+         "function" (rec :single first)
+         "arguments" ('array (flatten-to-inner (rec :multiple rest)))))))))
+   (if (int? ast)
+    (| "value" ('int (.1 ast)))
+    (if (string? ast)
+     (| "value" ('string (.1 ast)))
+     (if (name? ast)
+      (| "name" ('string (.1 ast)))
+      (crash (# "unknown ast node" ast))))))
+  (if (= mode :multiple)
+   (if (nil? ast) nil (# (rec :single (.0 ast)) (rec :multiple (.1 ast))))
+   (if (= mode :let)
+    (if (nil? (.1 ast))
+     (rec :single (.0 ast))
+     (: first (.0 ast)
+      (: second (.0 (.1 ast))
+       (: rest (.1 (.1 ast))
+        (: name (if (name? first) (.1 first) (crash "bad let"))
+         (if (str=1 name "#")
+          (rec :multiple rest)
+          (: def (rec :single second)
+           (| "let"
+            (&3
+             "name" ('string name)
+             "definition" def
+             "body" (rec :multiple rest))))))))))
+    (if (= mode :fields)
+     (if (nil? ast)
+      nil
+      (: first (.0 ast)
+       (: second (.0 (.1 ast))
+        (: rest (.1 (.1 ast))
+         (#
+          (&2
+           "name" ('string (if (name? first) (. 1 first) (crash "bad struct")))
+           "value" (rec :single second))
+          (rec :fields rest))))))
+     (if (= mode :cases)
+      (if (nil? ast)
+       (# nil nil)
+       (: left (.0 ast)
+        (: body (.0 (.1 ast))
+         (: rest (.1 (.1 ast))
+          (: name
+           (if (name? left)
+            (.1 left)
+            (if (group? left)
+             (if (!= (size (.1 left)) 2)
+              (crash "bad switch")
+              (: name_ast (.0 (.1 left))
+               (if (name? name_ast) (.1 name_ast) (crash "bad switch"))))
+             (crash "bad switch")))
+           (: payload
+            (if (name? left)
+             'none
+             (: payload_ast (.1 (.1 left))
+              (if (name? payload_ast)
+               ('some ('string (.1 payload_ast)))
+               (crash "bad switch"))))
+            (if (str=1 name "_")
+             (: rest (rec :cases rest)
+              (if (not-nil? (.1 rest))
+               (crash "multiple default cases")
+               (# (.0 rest) (rec :single body))))
+             (: rest (rec :cases rest)
+              (#
+               (#
+                (&3
+                 "variant" ('string (. 1 left))
+                 "payload" payload
+                 "body" (rec :single body))
+                (.0 rest))
+               (.1 rest))))))))))
+      (if (= mode :params)
+       (if (nil? ast)
+        nil
+        (#
+         (if (name? (.0 ast)) (. 1 (.0 ast)) (crash "bad function"))
+         (rec :params (.1 ast))))
+       (crash (# "unknown mode" mode)))))))))
 
 test (\ (mode ir)
  (if (= mode :expr)
@@ -830,8 +998,7 @@ test (\ (mode ir)
    (# (.0 ir) (rec :expr (.1 ir)))
    (if (= mode :list)
     (if (nil? ir) nil (# (rec :expr (.0 ir)) (rec :list (.1 ir))))
-    (crash "other mode than fun or expr"))))
- )
+    (crash "other mode than fun or expr")))))
 
 export (#
  (# "struct" "compile_olive" "optimize" "test")
@@ -839,7 +1006,7 @@ export (#
   (# "function"
    (# "code")
    (\ (code _)
-    (compile-olive nil (.1 (parse multiple (str-to-chars (.1 code)))))))
+    (compile-olive nil (.1 (parse :multiple (str-to-chars (.1 code)))))))
   nil)
  (#
   (# "function"
