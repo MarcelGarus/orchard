@@ -33,6 +33,18 @@ pub fn main() !void {
     thread.join();
 }
 
+fn is_same(a: Obj, b: Obj) bool {
+    if (a.address == b.address) return true;
+    if (a.is_inner() != b.is_inner()) return false;
+    if (a.size() != b.size()) return false;
+    if (a.is_inner()) {
+        for (a.children(), b.children()) |ac, bc| if (!is_same(ac, bc)) return false;
+    } else {
+        for (a.words(), b.words()) |aw, bw| if (aw != bw) return false;
+    }
+    return true;
+}
+
 fn run() !void {
     std.debug.print("Orchard!\n", .{});
 
@@ -52,65 +64,62 @@ fn run() !void {
             @embedFile("bootstrap.objects"),
         ));
     };
-    const olive_code = step: {
-        var step = try BootstrapStep.start("Compiling Olive code.", &vm);
+    const olive = step: {
+        var step = try BootstrapStep.start("Compiling Olive.", &vm);
         defer step.end();
-        break :step try compile_olive.call(&vm, &.{
+        const result = try compile_olive.call(&vm, &.{
+            try Val.new_string(&heap, @embedFile("bootstrap.olive")),
+        });
+        break :step Val.from(try vm.garbage_collect(start_of_heap, result.obj));
+    };
+    const olive_self_hosted = step: {
+        var step = try BootstrapStep.start("Self-compiling Olive.", &vm);
+        defer step.end();
+        break :step try olive.get_field("compile_olive").call(&vm, &.{
             try Val.new_string(&heap, @embedFile("bootstrap.olive")),
         });
     };
-    const olive_code_2 = step: {
-        var step = try BootstrapStep.start("Collecting garbage.", &vm);
+    const olive_self_hosted_2 = step: {
+        var step = try BootstrapStep.start("Self-compiling Olive.", &vm);
         defer step.end();
-        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_code.obj));
-    };
-    const olive_code_3 = step: {
-        var step = try BootstrapStep.start("Self-compiling Olive code.", &vm);
-        defer step.end();
-        break :step try olive_code_2.get_field("compile_olive").call(&vm, &.{
+        break :step try olive_self_hosted.get_field("compile_olive").call(&vm, &.{
             try Val.new_string(&heap, @embedFile("bootstrap.olive")),
         });
     };
-    const olive_code_4 = step: {
-        var step = try BootstrapStep.start("Collecting garbage.", &vm);
+    const better_olive = step: {
+        var step = try BootstrapStep.start("Confirming self-hosting. GC.", &vm);
         defer step.end();
-        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_code_3.obj));
+        if (!is_same(olive_self_hosted.obj, olive_self_hosted_2.obj)) {
+            @panic("Not the same.");
+        }
+        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_self_hosted.obj));
     };
-    const olive_code_5 = step: {
-        var step = try BootstrapStep.start("Self-compiling Olive code.", &vm);
+    const test_code = step: {
+        var step = try BootstrapStep.start("Compiling test.", &vm);
         defer step.end();
-        break :step try olive_code_4.get_field("compile_olive").call(&vm, &.{
-            try Val.new_string(&heap, @embedFile("bootstrap.olive")),
+        const result =
+            try better_olive.get_field("compile_olive").call(&vm, &.{
+                try Val.new_string(&heap, @embedFile("test.olive")),
+            });
+        break :step Val.from(try vm.garbage_collect(start_of_heap, result.obj));
+    };
+    _ = step: {
+        var step = try BootstrapStep.start("Running test.", &vm);
+        defer step.end();
+        break :step try test_code.get_field("compile_olive").call(&vm, &.{
+            try Val.new_string(&heap, @embedFile("test.olive")),
         });
     };
-    const olive_code_6 = step: {
-        var step = try BootstrapStep.start("Collecting garbage.", &vm);
-        defer step.end();
-        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_code_5.obj));
-    };
-    const olive_code_7 = step: {
-        var step = try BootstrapStep.start("Self-compiling Olive code.", &vm);
-        defer step.end();
-        break :step try olive_code_6.get_field("compile_olive").call(&vm, &.{
-            try Val.new_string(&heap, @embedFile("bootstrap.olive")),
-        });
-    };
-    const olive_code_8 = step: {
-        var step = try BootstrapStep.start("Collecting garbage.", &vm);
-        defer step.end();
-        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_code_7.obj));
-    };
-    // _ = olive_code_4;
     // heap.dump_obj(test_code.obj);
 
-    const optimize = olive_code_8.get_field("optimize");
-    const test_fun = olive_code_8.get_field("test");
-    const stuff = step: {
-        var step = try BootstrapStep.start("Optimizing test fun.", &vm);
-        defer step.end();
-        break :step try optimize.call(&vm, &.{test_fun});
-    };
-    _ = stuff;
+    // const optimize = olive_8.get_field("optimize");
+    // const test_fun = olive_8.get_field("test");
+    // const stuff = step: {
+    //     var step = try BootstrapStep.start("Optimizing test fun.", &vm);
+    //     defer step.end();
+    //     break :step try optimize.call(&vm, &.{test_fun});
+    // };
+    // _ = stuff;
     // heap.dump_obj(stuff.obj);
     //std.debug.print("optimized:\n{f}", .{stuff.get_fun()});
 
