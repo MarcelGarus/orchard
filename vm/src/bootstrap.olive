@@ -822,7 +822,7 @@ compile-olive (\ (globals asts)
       (: value ((# (#) ir))
        (rec (# (# name value) globals) (.1 rest)))))))))
 
-# "Constructors for Pear values."
+# "Stuff for working with Pear values."
 'int (\ (value) (# (# "int") value))
 'string (\ (string) (# (# "string") string))
 &-names-rec (\ (rec arr i) (if (>= i (size arr)) nil (# (. i arr) (rec rec arr (+ i 2)))))
@@ -843,40 +843,117 @@ compile-olive (\ (globals asts)
 'some (\ (payload) (| "some" payload))
 'true (| "true" 'nil)
 'false (| "false" 'nil)
+kind (\ (value) (.0 (.0 value)))
+'int? (\ (value) (str=3 (kind value) "int"))
+'string? (\ (value) (str=6 (kind value) "string"))
+'struct? (\ (value) (str=6 (kind value) "struct"))
+'enum? (\ (value) (str=4 (kind value) "enum"))
+'array? (\ (value) (str=5 (kind value) "array"))
+'function? (\ (value) (str=8 (kind value) "function"))
+field-rec (\ (fields i limit name)
+ (if (= i limit)
+  (crash
+   ('string
+    (chars-to-str
+     (list-concat
+      (str-to-chars "Expected field ")
+      (list-concat (str-to-chars name) (str-to-chars "."))))))
+  (if (str= (. i fields) name) i (rec fields (+ i 1) limit name))))
+field (\ (struct name)
+ (. (field-rec (.0 struct) 1 (size (.0 struct)) name) struct))
+.body (\ (struct) (field struct "body"))
+.captured (\ (struct) (field struct "captured"))
+.cases (\ (struct) (field struct "cases"))
+.condition (\ (struct) (field struct "condition"))
+.definition (\ (struct) (field struct "definition"))
+.index (\ (struct) (field struct "index"))
+.left (\ (struct) (field struct "left") struct)
+.name (\ (struct) (field struct "name"))
+.of (\ (struct) (field struct "of"))
+.payload (\ (struct) (field struct "payload"))
+.right (\ (struct) (field struct "right"))
+.value (\ (struct) (field struct "value"))
+.variant (\ (struct) (field struct "variant"))
+variant (\ (enum) (.1 (.0 enum)))
+payload (\ (enum) (.1 enum))
+unwrap (\ (result) (.1 result))
 
-# "Pear semantics"
+# "Pear code is first converted into a Pear value that represents the code.
+ Every expression is an enum with one of the following shapes:
+ | value value
+ | name string
+ | let (& name string definition expr body expr)
+ | struct ([] (& field string value expr) ...)
+ | field (& of expr name expr)
+ | enum (& variant expr payload expr)
+ | switch (& condition expr cases ([] (& variant string payload (| some string) body expr)))
+ | array ([] expr ...)
+ | get (& array expr index expr)
+ | function (& arguments ([] string ...) body ir captured expr)
+ | arguments expr
+ | body expr
+ | captured expr
+"
 :let 2
 :fields 3
 :cases 4
 :params 5
-compile-pear (\ (mode ast)
+free-vars (\ (mode ir bound free)
+ (if (= mode :single)
+  (: tag (variant ir)
+   (: payload (payload ir)
+    (if (str= tag "value")
+     free
+     (if (str= tag "name")
+      (: name (unwrap payload)
+       (if (list-contains bound name)
+        free
+        (if (list-contains free name) free (# name free))))
+      (if (str= tag "let")
+       (rec :single (.definition payload) bound
+        (rec :single (.body payload) bound free))
+       (if (str= tag "struct")
+        (rec :fields payload bound free)
+        (if (str= tag "field")
+         (rec :single (.of payload) bound
+          (rec :single (.name payload) bound free))
+         (if (str= tag "enum")
+          (rec :single (.variant payload) bound
+           (rec :single (.payload payload)))
+          (if (str= tag "switch")
+           (rec :cases payload bound free)
+           (crash "todo")
+          )))))))))
+  (crash "bad free vars mode")))
+analyze-pear (\ (mode ast)
  (if (= mode :single)
   (if (group? ast)
-   (: children (. 1 ast)
-    (: first (if (nil? children) (crash "empty group") (. 0 children))
+   (: children (.1 ast)
+    (: first (if (nil? children) (crash "empty group") (.0 children))
      (: rest (.1 (array-to-list children))
       (if (name? first)
-       (: name (. 1 first)
+       (: name (.1 first)
         (if (str=1 name ":")
          (if (is-odd (size children)) (crash "bad let") (rec :let rest))
          (if (str=2 name "[]")
-          (| "array" ('array (flatten-to-inner (rec :multiple rest))))
+          (| "array" ('array (rec :multiple rest)))
           (if (str=1 name "&")
-           (| "struct" ('array (flatten-to-inner (rec :fields rest))))
+           (| "struct" ('array (rec :fields rest)))
            (if (= (first-char name) ".")
             (if (!= (size children) 2)
              (crash "bad field")
              (| "field"
               (&2
-               "of" (rec :single (. 1 children))
-               "name" ('string (chars-to-str (.1 (str-to-chars name)))))))
+               "of" (rec :single (.1 children))
+               "name"
+                (| "value" ('string (chars-to-str (.1 (str-to-chars name))))))))
             (if (str=1 name "|")
              (| "enum"
               (if (< (size children) 2)
                (crash "bad enum")
                (: variant
-                (if (name? (. 1 children))
-                 (. 1 (. 1 children))
+                (if (name? (.1 children))
+                 ('string (.1 (.1 children)))
                  (crash "bad enum"))
                 (if (= (size children) 2)
                  (&2 "variant" variant "payload" 'nil)
@@ -885,33 +962,54 @@ compile-pear (\ (mode ast)
                    "variant" variant
                    "payload" (rec :single (.0 (.1 rest))))
                   (crash "bad enum"))))))
-             (if (str= name "%")
+             (if (str=1 name "%")
               (if (is-odd (size children))
                (crash "bad switch")
                (: condition (rec :single (.1 children))
                 (: cases (rec :cases (.1 rest))
                  (| "switch"
-                  (&2
+                  (&3
                    "condition" condition
-                   "cases" (flatten-to-inner (.0 cases))
+                   "cases" ('array (.0 cases))
                    "default"
                     (if (nil? (.1 cases)) 'none ('some (.1 cases))))))))
               (if (str=1 name "\\")
                (if (!= (size children) 3)
                 (crash "bad function")
                 (: params
-                 (if (group? (. 1 children))
-                  (flatten-to-inner (rec :params (array-to-list (. 1 (. 1 children)))))
+                 (if (group? (.1 children))
+                  ('array (rec :params (array-to-list (.1 (.1 children)))))
                   (crash "bad function"))
-                 (: body (rec :single (. 2 children)) (| "function" (&2 "params" params "body" body)))))
-               (| "call"
-                (&2
-                 "function" (rec :single first)
-                 "arguments" ('array (flatten-to-inner (rec :multiple rest)))))))))))))
+                 (: body (rec :single (.2 children))
+                  (| "make_function"
+                   (&3
+                    "params" params
+                    "body" body
+                    "captured" (| "name" ('string "todo")))))))
+               (if (= (first-char name) "@")
+                (if (str= name "@add")
+                 (| "add"
+                  (if (!= (size children) 3)
+                   (crash "bad add")
+                   (&2
+                    "left" (rec :single (.1 children))
+                    "right" (rec :single (.2 children)))))
+                 (if (str= name "@subtract")
+                  (| "subtract"
+                   (if (!= (size children) 3)
+                    (crash "bad subtract")
+                    (&2
+                     "left" (rec :single (.1 children))
+                     "right" (rec :single (.2 children)))))
+                  (crash (# "unknown builtin" name))))
+                (| "call"
+                 (&2
+                  "function" (rec :single first)
+                  "arguments" ('array (rec :multiple rest)))))))))))))
        (| "call"
         (&2
          "function" (rec :single first)
-         "arguments" ('array (flatten-to-inner (rec :multiple rest)))))))))
+         "arguments" ('array (rec :multiple rest))))))))
    (if (int? ast)
     (| "value" ('int (.1 ast)))
     (if (string? ast)
@@ -929,13 +1027,13 @@ compile-pear (\ (mode ast)
        (: rest (.1 (.1 ast))
         (: name (if (name? first) (.1 first) (crash "bad let"))
          (if (str=1 name "#")
-          (rec :multiple rest)
+          (rec :let rest)
           (: def (rec :single second)
            (| "let"
             (&3
              "name" ('string name)
              "definition" def
-             "body" (rec :multiple rest))))))))))
+             "body" (rec :let rest))))))))))
     (if (= mode :fields)
      (if (nil? ast)
       nil
@@ -944,7 +1042,7 @@ compile-pear (\ (mode ast)
         (: rest (.1 (.1 ast))
          (#
           (&2
-           "name" ('string (if (name? first) (. 1 first) (crash "bad struct")))
+           "name" ('string (if (name? first) (.1 first) (crash "bad struct")))
            "value" (rec :single second))
           (rec :fields rest))))))
      (if (= mode :cases)
@@ -953,14 +1051,14 @@ compile-pear (\ (mode ast)
        (: left (.0 ast)
         (: body (.0 (.1 ast))
          (: rest (.1 (.1 ast))
-          (: name
+          (: variant
            (if (name? left)
             (.1 left)
             (if (group? left)
              (if (!= (size (.1 left)) 2)
               (crash "bad switch")
-              (: name_ast (.0 (.1 left))
-               (if (name? name_ast) (.1 name_ast) (crash "bad switch"))))
+              (: variant_ast (.0 (.1 left))
+               (if (name? variant_ast) (.1 variant_ast) (crash "bad switch"))))
              (crash "bad switch")))
            (: payload
             (if (name? left)
@@ -969,7 +1067,7 @@ compile-pear (\ (mode ast)
               (if (name? payload_ast)
                ('some ('string (.1 payload_ast)))
                (crash "bad switch"))))
-            (if (str=1 name "_")
+            (if (str=1 variant "_")
              (: rest (rec :cases rest)
               (if (not-nil? (.1 rest))
                (crash "multiple default cases")
@@ -978,7 +1076,7 @@ compile-pear (\ (mode ast)
               (#
                (#
                 (&3
-                 "variant" ('string (. 1 left))
+                 "variant" ('string variant)
                  "payload" payload
                  "body" (rec :single body))
                 (.0 rest))
@@ -987,21 +1085,75 @@ compile-pear (\ (mode ast)
        (if (nil? ast)
         nil
         (#
-         (if (name? (.0 ast)) (. 1 (.0 ast)) (crash "bad function"))
+         (if (name? (.0 ast)) ('string (.1 (.0 ast))) (crash "bad function"))
          (rec :params (.1 ast))))
        (crash (# "unknown mode" mode)))))))))
+lower-pear (\ (mode ir locals)
+ (if (= mode :single)
+  (if ('enum? ir)
+   (: tag (variant ir)
+    (: payload (payload ir)
+     (if (str=5 tag "value")
+      (%object payload)
+      (if (str=4 tag "name")
+       (%name
+        (if ('string? payload)
+         (.1 payload)
+         (crash ('string "Name needs a string."))))
+       (if (str=3 tag "let")
+        (if ('struct? payload)
+         (%let
+          (: name (.name payload)
+           (if ('string? name)
+            (.1 name)
+            (crash ('string "Let needs a name."))))
+          (rec :single (.definition payload) locals)
+          (rec :single (.body payload) locals))
+         (crash ('string "Let needs a struct.")))
+        (if (str=5 tag "struct")
+         (rec :fields ir locals)
+         (if (str=5 tag "field")
+          (if ('array? payload)
+           (crash "todo")
+           (crash ('string "Struct needs an array.")))
+          (if (str=4 tag "enum")
+           (crash "todo")
+           (if (str=5 tag "switch")
+            (crash "todo")
+            (if (str=3 tag "add")
+             (%let "(left)" (rec :single (.left payload) locals)
+              (%let "(right)" (rec :single (.right payload) locals)
+               (%if
+                (%and
+                 (%and
+                  (%compare
+                   (%load (%load (%load (%name "(left)") (%word 0)) (%word 0)) (%word 0))
+                   (%word "int"))
+                  (%compare
+                   (%load (%load (%load (%name "(right)") (%word 0)) (%word 0)) (%word 0))
+                   (%word "int")))
+                 (%word 1))
+                (%new-inner (#
+                 (%object (# "int"))
+                 (%new-leaf (#
+                  (%add
+                   (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                   (%load (%load (%name "(right)") (%word 1)) (%word 0)))))))
+                (%crash (%object ('string "You can only add ints."))))
+              )
+             )
+             (crash "todo")
+            )
+           )))))))))
+   (crash ('string "IR nodes should be enums.")))
+  (if (= mode :multiple)
+   (crash "todo")
+   (crash "todo")
+  )))
 
-test (\ (mode ir)
- (if (= mode :expr)
-  (crash "optimize expr")
-  (if (= mode :fun)
-   (# (.0 ir) (rec :expr (.1 ir)))
-   (if (= mode :list)
-    (if (nil? ir) nil (# (rec :expr (.0 ir)) (rec :list (.1 ir))))
-    (crash "other mode than fun or expr")))))
 
 export (#
- (# "struct" "compile_olive" "optimize" "test")
+ (# "struct" "compile_olive" "compile_pear")
  (#
   (# "function"
    (# "code")
@@ -1010,10 +1162,17 @@ export (#
   nil)
  (#
   (# "function"
-   (# "fun")
-   (\ (fun _)
-    (: type (.0 fun)
-     (# (# "function" (.1 type) (optimize :fun (.2 type))) nil))))
-  nil)
- (# (# "function" (# "a") (\ (a _) (optimize :fun a))) nil)
-)
+   (# "code")
+   (\ (code _)
+    (: pear-ir
+     (analyze-pear :single (.1 (parse :single (str-to-chars (.1 code)))))
+     (#
+      (# "function"
+       (#)
+       (optimize :expr (lower-pear :single pear-ir nil))
+       pear-ir)
+      nil
+     )
+    )
+    ))
+  nil))

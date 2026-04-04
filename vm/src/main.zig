@@ -87,41 +87,30 @@ fn run() !void {
         });
     };
     const better_olive = step: {
-        var step = try BootstrapStep.start("Confirming self-hosting. GC.", &vm);
+        var step = try BootstrapStep.start("Confirming self-hosting.", &vm);
         defer step.end();
         if (!is_same(olive_self_hosted.obj, olive_self_hosted_2.obj)) {
             @panic("Not the same.");
         }
         break :step Val.from(try vm.garbage_collect(start_of_heap, olive_self_hosted.obj));
     };
-    const test_code = step: {
-        var step = try BootstrapStep.start("Compiling test.", &vm);
+    const compile_pear = step: {
+        var step = try BootstrapStep.start("Keeping only Pear compiler.", &vm);
+        defer step.end();
+        break :step Val.from(try vm.garbage_collect(start_of_heap, better_olive.get_field("compile_pear").obj));
+    };
+    const pear = step: {
+        var step = try BootstrapStep.start("Compiling Pear.", &vm);
         defer step.end();
         const result =
-            try better_olive.get_field("compile_olive").call(&vm, &.{
-                try Val.new_string(&heap, @embedFile("test.olive")),
+            try compile_pear.call(&vm, &.{
+                try Val.new_string(&heap, @embedFile("bootstrap.pear")),
             });
         break :step Val.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
-    _ = step: {
-        var step = try BootstrapStep.start("Running test.", &vm);
-        defer step.end();
-        break :step try test_code.get_field("compile_olive").call(&vm, &.{
-            try Val.new_string(&heap, @embedFile("test.olive")),
-        });
-    };
-    // heap.dump_obj(test_code.obj);
 
-    // const optimize = olive_8.get_field("optimize");
-    // const test_fun = olive_8.get_field("test");
-    // const stuff = step: {
-    //     var step = try BootstrapStep.start("Optimizing test fun.", &vm);
-    //     defer step.end();
-    //     break :step try optimize.call(&vm, &.{test_fun});
-    // };
-    // _ = stuff;
-    // heap.dump_obj(stuff.obj);
-    //std.debug.print("optimized:\n{f}", .{stuff.get_fun()});
+    heap.dump_obj(pear.obj);
+    std.debug.print("result:\n{f}\n", .{pear});
 
     std.debug.print("amezing\n", .{});
 

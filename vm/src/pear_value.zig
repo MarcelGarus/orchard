@@ -113,14 +113,18 @@ pub fn new(heap: *Heap, args: Obj, pear_ir: ?Obj, fun: Obj, captured: Obj) !Valu
     };
     return try heap.new_inner(&.{ ty, captured });
 }
-pub fn get_captured(self: Value) Obj {
-    return self.obj.child(1);
-}
 pub fn get_args(self: Value) Obj {
     return self.obj.child(0).child(1);
 }
+pub fn get_ir(self: Value) ?Obj {
+    const type_ = self.obj.child(0);
+    return if (type_.size() == 4) type_.child(3) else null;
+}
 pub fn get_fun(self: Value) Ir.Fun {
     return Ir.Fun{ .obj = self.obj.child(0).child(2) };
+}
+pub fn get_captured(self: Value) Obj {
+    return self.obj.child(1);
 }
 
 pub fn call(function: Value, vm: *Vm, args: []const Value) !Value {
@@ -171,11 +175,11 @@ pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
             try writer.print(") ", .{});
-            // if (self.get_ir()) |ir| {
-            //     try Value.from(ir).format_singleline_code(writer);
-            // } else {
-            try writer.print("...", .{});
-            // }
+            if (self.get_ir()) |ir| {
+                try Value.from(ir).format_singleline_code(writer);
+            } else {
+                try writer.print("...", .{});
+            }
             try writer.print(")", .{});
         },
     }
@@ -183,7 +187,7 @@ pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}
 pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
     const variant = self.get_variant();
     const payload = self.get_payload();
-    if (std.mem.eql(u8, variant, "object")) {
+    if (std.mem.eql(u8, variant, "value")) {
         try payload.format_singleline(writer);
         return;
     }
@@ -311,7 +315,7 @@ fn singleline_len(self: Value) !usize {
 }
 const WIDTH_LIMIT = 120;
 pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) !void {
-    if (2 * indentation + try self.singleline_len() <= WIDTH_LIMIT) {
+    if (indentation + try self.singleline_len() <= WIDTH_LIMIT) {
         try self.format_singleline(writer);
         return;
     }
@@ -326,13 +330,13 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
                 const name = Heap.get_symbol(field_name);
                 const value = Value{ .obj = field_value };
                 try writer.print("\n", .{});
-                for (0..indentation + 1) |_| try writer.writeAll("  ");
+                for (0..indentation + 1) |_| try writer.writeAll(" ");
                 try writer.print("{s} ", .{name});
                 if (2 * (indentation + 1) + name.len + 1 + try value.singleline_len() <= WIDTH_LIMIT) {
                     try value.format_singleline(writer);
                 } else {
                     try writer.print("\n", .{});
-                    for (0..indentation + 2) |_| try writer.writeAll("  ");
+                    for (0..indentation + 2) |_| try writer.writeAll(" ");
                     try value.format_indented(writer, indentation + 2);
                 }
             }
@@ -341,7 +345,7 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
         .enum_ => {
             try writer.print("(| {s}", .{self.get_variant()});
             try writer.print("\n", .{});
-            for (0..indentation + 1) |_| try writer.writeAll("  ");
+            for (0..indentation + 1) |_| try writer.writeAll(" ");
             try self.get_payload().format_indented(writer, indentation + 1);
             try writer.print(")", .{});
         },
@@ -349,7 +353,7 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
             try writer.print("([]", .{});
             for (self.get_items()) |item| {
                 try writer.print("\n", .{});
-                for (0..indentation + 1) |_| try writer.writeAll("  ");
+                for (0..indentation + 1) |_| try writer.writeAll(" ");
                 try item.format_indented(writer, indentation + 1);
             }
             try writer.print(")", .{});
@@ -361,11 +365,11 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
             try writer.print(") ", .{});
-            if (self.get_ir()) |ir| {
-                try Value.from(ir).format_singleline_code(writer);
-            } else {
-                try writer.print("...", .{});
-            }
+            // if (self.get_ir()) |ir| {
+            //     try Value.from(ir).format_singleline_code(writer);
+            // } else {
+            try writer.print("...", .{});
+            // }
             try writer.print(")", .{});
         },
     }
