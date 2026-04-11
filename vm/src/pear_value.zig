@@ -199,9 +199,9 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
     }
     if (std.mem.eql(u8, variant, "let")) {
         try writer.print("(: {s} ", .{payload.get_field("name").get_string()});
-        try payload.get_field("def").format_singleline_code(writer);
+        try payload.get_field("definition").format_singleline_code(writer);
         try writer.print(" ", .{});
-        try payload.get_field("expr").format_singleline_code(writer);
+        try payload.get_field("body").format_singleline_code(writer);
         try writer.print(")", .{});
         return;
     }

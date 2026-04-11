@@ -882,297 +882,36 @@ unwrap (\ (result) (.1 result))
 
 # "Pear code is first converted into a Pear value that represents the code.
  Every expression is an enum with one of the following shapes:
- | value value
- | name string
- | let (& name string definition expr body expr)
- | add (& left expr right expr)
- | subtract (& left expr right expr)
- | multiply (& left expr right expr)
- | divide (& left expr right expr)
- | modulo (& left expr right expr)
- | shift_left (& left expr right expr)
- | shift_right (& left expr right expr)
- | and (& left expr right expr)
- | or (& left expr right expr)
- | xor (& left expr right expr)
- | compare (& left expr right expr)
- | struct ([] (& field string value expr) ...)
- | field (& of expr name expr)
- | enum (& variant string payload expr)
- | switch (& condition expr cases ([] (& variant string payload (| some string) body expr)))
- | array ([] expr ...)
- | get (& array expr index expr)
- | function (& arguments ([] string ...) body ir captured expr)
- | arguments expr
- | body expr
- | captured expr
+ | value Value
+ | name String
+ | let (& name String definition Expr body Expr)
+ | add (& left Expr right Expr)
+ | subtract (& left Expr right Expr)
+ | multiply (& left Expr right Expr)
+ | divide (& left Expr right Expr)
+ | modulo (& left Expr right Expr)
+ | shift_left (& left Expr right Expr)
+ | shift_right (& left Expr right Expr)
+ | and (& left Expr right Expr)
+ | or (& left Expr right Expr)
+ | xor (& left Expr right Expr)
+ | compare (& left Expr right Expr)
+ | struct ([] (& field String value Expr) ...)
+ | field (& of Expr name Expr)
+ | enum (& variant String payload Expr)
+ | switch
+    (&
+     condition Expr
+     cases ([] (& variant String payload (| some String) body Expr))
+     default (| some Expr))
+ | array ([] Expr ...)
+ | get (& array Expr index Expr)
+ | function (& arguments ([] String ...) body Expr captured Expr)
+ | arguments Expr
+ | body Expr
+ | captured Expr
+ | kind Expr
 "
-:let 2
-:fields 3
-:field-keys 4
-:field-values 5
-:cases 6
-:params 7
-free-vars (\ (mode ir bound free)
- (if (= mode :single)
-  (: tag (variant ir)
-   (: payload (payload ir)
-    (if (str= tag "value")
-     free
-     (if (str= tag "name")
-      (: name (unwrap payload)
-       (if (list-contains bound name)
-        free
-        (if (list-contains free name) free (# name free))))
-      (if (str= tag "let")
-       (rec :single (.definition payload) bound
-        (rec :single (.body payload) bound free))
-       (if (str= tag "struct")
-        (rec :fields payload bound free)
-        (if (str= tag "field")
-         (rec :single (.of payload) bound
-          (rec :single (.name payload) bound free))
-         (if (str= tag "enum")
-          (rec :single (.variant payload) bound
-           (rec :single (.payload payload)))
-          (if (str= tag "switch")
-           (rec :cases payload bound free)
-           (crash "todo")
-          )))))))))
-  (crash "bad free vars mode")))
-analyze-pear (\ (mode ast)
- (if (= mode :single)
-  (if (group? ast)
-   (: children (.1 ast)
-    (: first (if (nil? children) (crash "empty group") (.0 children))
-     (: rest (.1 (array-to-list children))
-      (if (name? first)
-       (: name (.1 first)
-        (if (str=1 name ":")
-         (if (is-odd (size children)) (crash "bad let") (rec :let rest))
-         (if (str=2 name "[]")
-          (| "array" ('array (rec :multiple rest)))
-          (if (str=1 name "&")
-           (| "struct" ('array (rec :fields rest)))
-           (if (= (first-char name) ".")
-            (if (!= (size children) 2)
-             (crash "bad field")
-             (| "field"
-              (&2
-               "of" (rec :single (.1 children))
-               "name"
-                (| "value" ('string (chars-to-str (.1 (str-to-chars name))))))))
-            (if (str=1 name "|")
-             (| "enum"
-              (if (< (size children) 2)
-               (crash "bad enum")
-               (: variant
-                (if (name? (.1 children))
-                 ('string (.1 (.1 children)))
-                 (crash "bad enum"))
-                (if (= (size children) 2)
-                 (&2 "variant" variant "payload" 'nil)
-                 (if (= (size children) 3)
-                  (&2
-                   "variant" variant
-                   "payload" (rec :single (.0 (.1 rest))))
-                  (crash "bad enum"))))))
-             (if (str=1 name "%")
-              (if (is-odd (size children))
-               (crash "bad switch")
-               (: condition (rec :single (.1 children))
-                (: cases (rec :cases (.1 rest))
-                 (| "switch"
-                  (&3
-                   "condition" condition
-                   "cases" ('array (.0 cases))
-                   "default"
-                    (if (nil? (.1 cases)) 'none ('some (.1 cases))))))))
-              (if (str=1 name "\\")
-               (if (!= (size children) 3)
-                (crash "bad function")
-                (: params
-                 (if (group? (.1 children))
-                  ('array (rec :params (array-to-list (.1 (.1 children)))))
-                  (crash "bad function"))
-                 (: body (rec :single (.2 children))
-                  (| "make_function"
-                   (&3
-                    "params" params
-                    "body" body
-                    "captured" (| "name" ('string "todo")))))))
-               (if (= (first-char name) "@")
-                (if (str= name "@add")
-                 (| "add"
-                  (if (!= (size children) 3)
-                   (crash "bad add")
-                   (&2
-                    "left" (rec :single (.1 children))
-                    "right" (rec :single (.2 children)))))
-                 (if (str= name "@subtract")
-                  (| "subtract"
-                   (if (!= (size children) 3)
-                    (crash "bad subtract")
-                    (&2
-                     "left" (rec :single (.1 children))
-                     "right" (rec :single (.2 children)))))
-                  (if (str= name "@multiply")
-                   (| "multiply"
-                    (if (!= (size children) 3)
-                     (crash "bad multiply")
-                     (&2
-                      "left" (rec :single (.1 children))
-                      "right" (rec :single (.2 children)))))
-                   (if (str= name "@divide")
-                    (| "divide"
-                     (if (!= (size children) 3)
-                      (crash "bad divide")
-                      (&2
-                       "left" (rec :single (.1 children))
-                       "right" (rec :single (.2 children)))))
-                    (if (str= name "@modulo")
-                     (| "modulo"
-                      (if (!= (size children) 3)
-                       (crash "bad modulo")
-                       (&2
-                        "left" (rec :single (.1 children))
-                        "right" (rec :single (.2 children)))))
-                     (if (str= name "@shift_left")
-                      (| "shift_left"
-                       (if (!= (size children) 3)
-                        (crash "bad shift_left")
-                        (&2
-                         "left" (rec :single (.1 children))
-                         "right" (rec :single (.2 children)))))
-                      (if (str= name "@shift_right")
-                       (| "shift_right"
-                        (if (!= (size children) 3)
-                         (crash "bad shift_right")
-                         (&2
-                          "left" (rec :single (.1 children))
-                          "right" (rec :single (.2 children)))))
-                       (if (str= name "@and")
-                        (| "and"
-                         (if (!= (size children) 3)
-                          (crash "bad and")
-                          (&2
-                           "left" (rec :single (.1 children))
-                           "right" (rec :single (.2 children)))))
-                        (if (str= name "@or")
-                         (| "or"
-                          (if (!= (size children) 3)
-                           (crash "bad or")
-                           (&2
-                            "left" (rec :single (.1 children))
-                            "right" (rec :single (.2 children)))))
-                         (if (str= name "@xor")
-                          (| "xor"
-                           (if (!= (size children) 3)
-                            (crash "bad xor")
-                            (&2
-                             "left" (rec :single (.1 children))
-                             "right" (rec :single (.2 children)))))
-                          (if (str= name "@compare")
-                           (| "compare"
-                            (if (!= (size children) 3)
-                             (crash "bad compare")
-                             (&2
-                              "left" (rec :single (.1 children))
-                              "right" (rec :single (.2 children)))))
-                           (if (str= name "@get")
-                            (| "get"
-                             (if (!= (size children) 3)
-                              (crash "bad get")
-                              (&2
-                               "array" (rec :single (.1 children))
-                               "index" (rec :single (.2 children)))))
-                            (crash (# "unknown builtin" name))))))))))))))
-                (| "call"
-                 (&2
-                  "function" (rec :single first)
-                  "arguments" ('array (rec :multiple rest)))))))))))))
-       (| "call"
-        (&2
-         "function" (rec :single first)
-         "arguments" ('array (rec :multiple rest))))))))
-   (if (int? ast)
-    (| "value" ('int (.1 ast)))
-    (if (string? ast)
-     (| "value" ('string (.1 ast)))
-     (if (name? ast)
-      (| "name" ('string (.1 ast)))
-      (crash (# "unknown ast node" ast))))))
-  (if (= mode :multiple)
-   (if (nil? ast) nil (# (rec :single (.0 ast)) (rec :multiple (.1 ast))))
-   (if (= mode :let)
-    (if (nil? (.1 ast))
-     (rec :single (.0 ast))
-     (: first (.0 ast)
-      (: second (.0 (.1 ast))
-       (: rest (.1 (.1 ast))
-        (: name (if (name? first) (.1 first) (crash "bad let"))
-         (if (str=1 name "#")
-          (rec :let rest)
-          (: def (rec :single second)
-           (| "let"
-            (&3
-             "name" ('string name)
-             "definition" def
-             "body" (rec :let rest))))))))))
-    (if (= mode :fields)
-     (if (nil? ast)
-      nil
-      (: first (.0 ast)
-       (: second (.0 (.1 ast))
-        (: rest (.1 (.1 ast))
-         (#
-          (&2
-           "name" ('string (if (name? first) (.1 first) (crash "bad struct")))
-           "value" (rec :single second))
-          (rec :fields rest))))))
-     (if (= mode :cases)
-      (if (nil? ast)
-       (# nil nil)
-       (: left (.0 ast)
-        (: body (.0 (.1 ast))
-         (: rest (.1 (.1 ast))
-          (: variant
-           (if (name? left)
-            (.1 left)
-            (if (group? left)
-             (if (!= (size (.1 left)) 2)
-              (crash "bad switch left group")
-              (: variant_ast (.0 (.1 left))
-               (if (name? variant_ast) (.1 variant_ast) (crash "bad switch variant"))))
-             (crash "bad switch left")))
-           (: payload
-            (if (name? left)
-             'none
-             (: payload_ast (.1 (.1 left))
-              (if (name? payload_ast)
-               ('some ('string (.1 payload_ast)))
-               (crash "bad switch payload"))))
-            (if (str=1 variant "_")
-             (: rest (rec :cases rest)
-              (if (not-nil? (.1 rest))
-               (crash "multiple default cases")
-               (# (.0 rest) (rec :single body))))
-             (: rest (rec :cases rest)
-              (#
-               (#
-                (&3
-                 "variant" ('string variant)
-                 "payload" payload
-                 "body" (rec :single body))
-                (.0 rest))
-               (.1 rest))))))))))
-      (if (= mode :params)
-       (if (nil? ast)
-        nil
-        (#
-         (if (name? (.0 ast)) ('string (.1 (.0 ast))) (crash "bad function"))
-         (rec :params (.1 ast))))
-       (crash (# "unknown mode" mode)))))))))
 %equal? (\ (a b) (%and (%compare a b) (%word 1)))
 %greater? (\ (a b) (%and (%shift-right (%compare a b) (%word 1)) (%word 1)))
 %less? (\ (a b) (%and (%shift-right (%compare a b) (%word 2)) (%word 1)))
@@ -1191,6 +930,12 @@ analyze-pear (\ (mode ast)
  (%and (%compare (%load-0 (%kind value)) (%word "array")) (%word 1)))
 %new-int (\ (int) (%new-inner (# (%object (# "int")) (%new-leaf (# int)))))
 %load-int (\ (value) (%load-0 (%load-1 value)))
+:let 2
+:fields 3
+:field-keys 4
+:field-values 5
+:cases 6
+:params 7
 lower-pear (\ (mode ir locals)
  (if (= mode :single)
   (if ('enum? ir)
@@ -1415,7 +1160,11 @@ lower-pear (\ (mode ir locals)
                              (%crash
                               (%object ('string "Getting from non-array."))))))
                           (crash "Get needs a struct."))
-                         (crash ('string "Unknown IR node."))))))))))))))))))))))))
+                         (if (str=8 tag "function")
+                          (crash "function")
+                          (if (str=13 tag "make_function")
+                           (crash "make_function")
+                           (crash ('string (# "Unknown IR node." ir)))))))))))))))))))))))))))
    (crash ('string "IR nodes should be enums.")))
   (if (= mode :multiple)
    (if (nil? ir)
@@ -1480,6 +1229,266 @@ lower-pear (\ (mode ir locals)
                (crash "Case variant must be a string.")))))
            (crash "Switch cases must be structs."))))))
       (crash (# "todo mode" mode))))))))
+free-vars (\ (mode ir bound free)
+ (if (= mode :single)
+  (: tag (variant ir)
+   (: payload (payload ir)
+    (if (str= tag "value")
+     free
+     (if (str= tag "name")
+      (: name (unwrap payload)
+       (if (list-contains bound name)
+        free
+        (if (list-contains free name) free (# name free))))
+      (if (str= tag "let")
+       (rec :single (.definition payload) bound
+        (rec :single (.body payload) bound free))
+       (if (str= tag "struct")
+        (rec :fields payload bound free)
+        (if (str= tag "field")
+         (rec :single (.of payload) bound
+          (rec :single (.name payload) bound free))
+         (if (str= tag "enum")
+          (rec :single (.variant payload) bound
+           (rec :single (.payload payload)))
+          (if (str= tag "switch")
+           (rec :cases payload bound free)
+           (crash "todo")
+          )))))))))
+  (crash "bad free vars mode")))
+analyze-pear (\ (mode ast)
+ (if (= mode :single)
+  (if (group? ast)
+   (: children (.1 ast)
+    (: first (if (nil? children) (crash "empty group") (.0 children))
+     (: rest (.1 (array-to-list children))
+      (if (name? first)
+       (: name (.1 first)
+        (if (str=1 name ":")
+         (if (is-odd (size children)) (crash "bad let") (rec :let rest))
+         (if (str=2 name "[]")
+          (| "array" ('array (rec :multiple rest)))
+          (if (str=1 name "&")
+           (| "struct" ('array (rec :fields rest)))
+           (if (= (first-char name) ".")
+            (if (!= (size children) 2)
+             (crash "bad field")
+             (| "field"
+              (&2
+               "of" (rec :single (.1 children))
+               "name"
+                (| "value" ('string (chars-to-str (.1 (str-to-chars name))))))))
+            (if (str=1 name "|")
+             (| "enum"
+              (if (< (size children) 2)
+               (crash "bad enum")
+               (: variant
+                (if (name? (.1 children))
+                 ('string (.1 (.1 children)))
+                 (crash "bad enum"))
+                (if (= (size children) 2)
+                 (&2 "variant" variant "payload" 'nil)
+                 (if (= (size children) 3)
+                  (&2
+                   "variant" variant
+                   "payload" (rec :single (.0 (.1 rest))))
+                  (crash "bad enum"))))))
+             (if (str=1 name "%")
+              (if (is-odd (size children))
+               (crash "bad switch")
+               (: condition (rec :single (.1 children))
+                (: cases (rec :cases (.1 rest))
+                 (| "switch"
+                  (&3
+                   "condition" condition
+                   "cases" ('array (.0 cases))
+                   "default"
+                    (if (nil? (.1 cases)) 'none ('some (.1 cases))))))))
+              (if (str=1 name "\\")
+               (if (!= (size children) 3)
+                (crash "bad function")
+                (: params
+                 (if (group? (.1 children))
+                  ('array (rec :params (array-to-list (.1 (.1 children)))))
+                  (crash "bad function"))
+                 (: body (rec :single (.2 children))
+                  (| "value"
+                   (&3
+                    "params" params
+                    "body" body
+                    "captured" (| "name" ('string "todo")))))))
+               (if (= (first-char name) "@")
+                (if (str= name "@add")
+                 (| "add"
+                  (if (!= (size children) 3)
+                   (crash "bad add")
+                   (&2
+                    "left" (rec :single (.1 children))
+                    "right" (rec :single (.2 children)))))
+                 (if (str= name "@subtract")
+                  (| "subtract"
+                   (if (!= (size children) 3)
+                    (crash "bad subtract")
+                    (&2
+                     "left" (rec :single (.1 children))
+                     "right" (rec :single (.2 children)))))
+                  (if (str= name "@multiply")
+                   (| "multiply"
+                    (if (!= (size children) 3)
+                     (crash "bad multiply")
+                     (&2
+                      "left" (rec :single (.1 children))
+                      "right" (rec :single (.2 children)))))
+                   (if (str= name "@divide")
+                    (| "divide"
+                     (if (!= (size children) 3)
+                      (crash "bad divide")
+                      (&2
+                       "left" (rec :single (.1 children))
+                       "right" (rec :single (.2 children)))))
+                    (if (str= name "@modulo")
+                     (| "modulo"
+                      (if (!= (size children) 3)
+                       (crash "bad modulo")
+                       (&2
+                        "left" (rec :single (.1 children))
+                        "right" (rec :single (.2 children)))))
+                     (if (str= name "@shift_left")
+                      (| "shift_left"
+                       (if (!= (size children) 3)
+                        (crash "bad shift_left")
+                        (&2
+                         "left" (rec :single (.1 children))
+                         "right" (rec :single (.2 children)))))
+                      (if (str= name "@shift_right")
+                       (| "shift_right"
+                        (if (!= (size children) 3)
+                         (crash "bad shift_right")
+                         (&2
+                          "left" (rec :single (.1 children))
+                          "right" (rec :single (.2 children)))))
+                       (if (str= name "@and")
+                        (| "and"
+                         (if (!= (size children) 3)
+                          (crash "bad and")
+                          (&2
+                           "left" (rec :single (.1 children))
+                           "right" (rec :single (.2 children)))))
+                        (if (str= name "@or")
+                         (| "or"
+                          (if (!= (size children) 3)
+                           (crash "bad or")
+                           (&2
+                            "left" (rec :single (.1 children))
+                            "right" (rec :single (.2 children)))))
+                         (if (str= name "@xor")
+                          (| "xor"
+                           (if (!= (size children) 3)
+                            (crash "bad xor")
+                            (&2
+                             "left" (rec :single (.1 children))
+                             "right" (rec :single (.2 children)))))
+                          (if (str= name "@compare")
+                           (| "compare"
+                            (if (!= (size children) 3)
+                             (crash "bad compare")
+                             (&2
+                              "left" (rec :single (.1 children))
+                              "right" (rec :single (.2 children)))))
+                           (if (str= name "@get")
+                            (| "get"
+                             (if (!= (size children) 3)
+                              (crash "bad get")
+                              (&2
+                               "array" (rec :single (.1 children))
+                               "index" (rec :single (.2 children)))))
+                            (crash (# "unknown builtin" name))))))))))))))
+                (| "call"
+                 (&2
+                  "function" (rec :single first)
+                  "arguments" ('array (rec :multiple rest)))))))))))))
+       (| "call"
+        (&2
+         "function" (rec :single first)
+         "arguments" ('array (rec :multiple rest))))))))
+   (if (int? ast)
+    (| "value" ('int (.1 ast)))
+    (if (string? ast)
+     (| "value" ('string (.1 ast)))
+     (if (name? ast)
+      (| "name" ('string (.1 ast)))
+      (crash (# "unknown ast node" ast))))))
+  (if (= mode :multiple)
+   (if (nil? ast) nil (# (rec :single (.0 ast)) (rec :multiple (.1 ast))))
+   (if (= mode :let)
+    (if (nil? (.1 ast))
+     (rec :single (.0 ast))
+     (: first (.0 ast)
+      (: second (.0 (.1 ast))
+       (: rest (.1 (.1 ast))
+        (: name (if (name? first) (.1 first) (crash "bad let"))
+         (if (str=1 name "#")
+          (rec :let rest)
+          (: def (rec :single second)
+           (| "let"
+            (&3
+             "name" ('string name)
+             "definition" def
+             "body" (rec :let rest))))))))))
+    (if (= mode :fields)
+     (if (nil? ast)
+      nil
+      (: first (.0 ast)
+       (: second (.0 (.1 ast))
+        (: rest (.1 (.1 ast))
+         (#
+          (&2
+           "name" ('string (if (name? first) (.1 first) (crash "bad struct")))
+           "value" (rec :single second))
+          (rec :fields rest))))))
+     (if (= mode :cases)
+      (if (nil? ast)
+       (# nil nil)
+       (: left (.0 ast)
+        (: body (.0 (.1 ast))
+         (: rest (.1 (.1 ast))
+          (: variant
+           (if (name? left)
+            (.1 left)
+            (if (group? left)
+             (if (!= (size (.1 left)) 2)
+              (crash "bad switch left group")
+              (: variant_ast (.0 (.1 left))
+               (if (name? variant_ast) (.1 variant_ast) (crash "bad switch variant"))))
+             (crash "bad switch left")))
+           (: payload
+            (if (name? left)
+             'none
+             (: payload_ast (.1 (.1 left))
+              (if (name? payload_ast)
+               ('some ('string (.1 payload_ast)))
+               (crash "bad switch payload"))))
+            (if (str=1 variant "_")
+             (: rest (rec :cases rest)
+              (if (not-nil? (.1 rest))
+               (crash "multiple default cases")
+               (# (.0 rest) (rec :single body))))
+             (: rest (rec :cases rest)
+              (#
+               (#
+                (&3
+                 "variant" ('string variant)
+                 "payload" payload
+                 "body" (rec :single body))
+                (.0 rest))
+               (.1 rest))))))))))
+      (if (= mode :params)
+       (if (nil? ast)
+        nil
+        (#
+         (if (name? (.0 ast)) ('string (.1 (.0 ast))) (crash "bad function"))
+         (rec :params (.1 ast))))
+       (crash (# "unknown mode" mode)))))))))
 
 export (#
  (# "struct" "compile_olive" "compile_pear")
