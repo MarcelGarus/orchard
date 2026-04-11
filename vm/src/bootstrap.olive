@@ -1079,7 +1079,14 @@ analyze-pear (\ (mode ast)
                              (&2
                               "left" (rec :single (.1 children))
                               "right" (rec :single (.2 children)))))
-                           (crash (# "unknown builtin" name)))))))))))))
+                           (if (str= name "@get")
+                            (| "get"
+                             (if (!= (size children) 3)
+                              (crash "bad get")
+                              (&2
+                               "array" (rec :single (.1 children))
+                               "index" (rec :single (.2 children)))))
+                            (crash (# "unknown builtin" name))))))))))))))
                 (| "call"
                  (&2
                   "function" (rec :single first)
@@ -1542,10 +1549,72 @@ lower-pear (\ (mode ir locals)
                           (%crash
                            (%object ('string "Switching on non-enum.")))))
                         (crash ('string "Switch needs a struct.")))
-                       (crash ('string "Unknown IR node."))))))))))))))))))))))
+                       (if (str=5 tag "array")
+                        (if ('array? payload)
+                         (%new-inner
+                          (flatten-to-inner
+                           (#
+                            (%object (# "array"))
+                            (rec
+                             :multiple
+                             (.1 (array-to-list payload))
+                             locals))))
+                         (crash ('string "Array needs an array.")))
+                        (if (str=3 tag "get")
+                         (if ('struct? payload)
+                          (%let "(array)"
+                           (rec :single (field payload "array") locals)
+                           (%let "(index)"
+                            (rec :single (field payload "index") locals)
+                            (%if
+                             (%and
+                              (%and
+                               (%compare
+                                (%load
+                                 (%load
+                                  (%load (%name "(array)") (%word 0))
+                                  (%word 0))
+                                 (%word 0))
+                                (%word "array"))
+                               (%compare
+                                (%load
+                                 (%load
+                                  (%load (%name "(index)") (%word 0))
+                                  (%word 0))
+                                 (%word 0))
+                                (%word "int")))
+                              (%word 1))
+                             (%let "(index)"
+                              (%add
+                               (%load
+                                (%load (%name "(index)") (%word 1))
+                                (%word 0))
+                               (%word 1))
+                              (%if
+                               (%and
+                                (%and
+                                 (%shift-right
+                                  (%compare
+                                   (%name "(index)")
+                                   (%word 0))
+                                  (%word 1))
+                                 (%shift-right
+                                  (%compare
+                                   (%name "(index)")
+                                   (%size (%name "(array)")))
+                                  (%word 2)))
+                                (%word 1))
+                               (%load (%name "(array)") (%name "(index)"))
+                               (%crash (%object ('string "Out of bounds.")))))
+                             (%crash
+                              (%object ('string "Getting from non-array."))))))
+                          (crash "Get needs a struct."))
+                         (crash ('string "Unknown IR node."))))))))))))))))))))))))
    (crash ('string "IR nodes should be enums.")))
   (if (= mode :multiple)
-   (crash "todo multiple")
+   (if (nil? ir)
+    nil
+    (# (rec :single (.0 ir) locals) (rec :multiple (.1 ir) locals)))
    (if (= mode :field-keys)
     (if (nil? ir)
      nil
