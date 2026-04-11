@@ -848,6 +848,8 @@ kind (\ (value) (.0 (.0 value)))
 'string? (\ (value) (str=6 (kind value) "string"))
 'struct? (\ (value) (str=6 (kind value) "struct"))
 'enum? (\ (value) (str=4 (kind value) "enum"))
+'some? (\ (value) (if ('enum? value) (str=4 (.1 (.0 value)) "some") false))
+'none? (\ (value) (if ('enum? value) (str=4 (.1 (.0 value)) "none") false))
 'array? (\ (value) (str=5 (kind value) "array"))
 'function? (\ (value) (str=8 (kind value) "function"))
 field-rec (\ (fields i limit name)
@@ -883,9 +885,20 @@ unwrap (\ (result) (.1 result))
  | value value
  | name string
  | let (& name string definition expr body expr)
+ | add (& left expr right expr)
+ | subtract (& left expr right expr)
+ | multiply (& left expr right expr)
+ | divide (& left expr right expr)
+ | modulo (& left expr right expr)
+ | shift_left (& left expr right expr)
+ | shift_right (& left expr right expr)
+ | and (& left expr right expr)
+ | or (& left expr right expr)
+ | xor (& left expr right expr)
+ | compare (& left expr right expr)
  | struct ([] (& field string value expr) ...)
  | field (& of expr name expr)
- | enum (& variant expr payload expr)
+ | enum (& variant string payload expr)
  | switch (& condition expr cases ([] (& variant string payload (| some string) body expr)))
  | array ([] expr ...)
  | get (& array expr index expr)
@@ -896,8 +909,10 @@ unwrap (\ (result) (.1 result))
 "
 :let 2
 :fields 3
-:cases 4
-:params 5
+:field-keys 4
+:field-values 5
+:cases 6
+:params 7
 free-vars (\ (mode ir bound free)
  (if (= mode :single)
   (: tag (variant ir)
@@ -1001,7 +1016,70 @@ analyze-pear (\ (mode ast)
                     (&2
                      "left" (rec :single (.1 children))
                      "right" (rec :single (.2 children)))))
-                  (crash (# "unknown builtin" name))))
+                  (if (str= name "@multiply")
+                   (| "multiply"
+                    (if (!= (size children) 3)
+                     (crash "bad multiply")
+                     (&2
+                      "left" (rec :single (.1 children))
+                      "right" (rec :single (.2 children)))))
+                   (if (str= name "@divide")
+                    (| "divide"
+                     (if (!= (size children) 3)
+                      (crash "bad divide")
+                      (&2
+                       "left" (rec :single (.1 children))
+                       "right" (rec :single (.2 children)))))
+                    (if (str= name "@modulo")
+                     (| "modulo"
+                      (if (!= (size children) 3)
+                       (crash "bad modulo")
+                       (&2
+                        "left" (rec :single (.1 children))
+                        "right" (rec :single (.2 children)))))
+                     (if (str= name "@shift_left")
+                      (| "shift_left"
+                       (if (!= (size children) 3)
+                        (crash "bad shift_left")
+                        (&2
+                         "left" (rec :single (.1 children))
+                         "right" (rec :single (.2 children)))))
+                      (if (str= name "@shift_right")
+                       (| "shift_right"
+                        (if (!= (size children) 3)
+                         (crash "bad shift_right")
+                         (&2
+                          "left" (rec :single (.1 children))
+                          "right" (rec :single (.2 children)))))
+                       (if (str= name "@and")
+                        (| "and"
+                         (if (!= (size children) 3)
+                          (crash "bad and")
+                          (&2
+                           "left" (rec :single (.1 children))
+                           "right" (rec :single (.2 children)))))
+                        (if (str= name "@or")
+                         (| "or"
+                          (if (!= (size children) 3)
+                           (crash "bad or")
+                           (&2
+                            "left" (rec :single (.1 children))
+                            "right" (rec :single (.2 children)))))
+                         (if (str= name "@xor")
+                          (| "xor"
+                           (if (!= (size children) 3)
+                            (crash "bad xor")
+                            (&2
+                             "left" (rec :single (.1 children))
+                             "right" (rec :single (.2 children)))))
+                          (if (str= name "@compare")
+                           (| "compare"
+                            (if (!= (size children) 3)
+                             (crash "bad compare")
+                             (&2
+                              "left" (rec :single (.1 children))
+                              "right" (rec :single (.2 children)))))
+                           (crash (# "unknown builtin" name)))))))))))))
                 (| "call"
                  (&2
                   "function" (rec :single first)
@@ -1056,17 +1134,17 @@ analyze-pear (\ (mode ast)
             (.1 left)
             (if (group? left)
              (if (!= (size (.1 left)) 2)
-              (crash "bad switch")
+              (crash "bad switch left group")
               (: variant_ast (.0 (.1 left))
-               (if (name? variant_ast) (.1 variant_ast) (crash "bad switch"))))
-             (crash "bad switch")))
+               (if (name? variant_ast) (.1 variant_ast) (crash "bad switch variant"))))
+             (crash "bad switch left")))
            (: payload
             (if (name? left)
              'none
              (: payload_ast (.1 (.1 left))
               (if (name? payload_ast)
                ('some ('string (.1 payload_ast)))
-               (crash "bad switch"))))
+               (crash "bad switch payload"))))
             (if (str=1 variant "_")
              (: rest (rec :cases rest)
               (if (not-nil? (.1 rest))
@@ -1110,47 +1188,423 @@ lower-pear (\ (mode ir locals)
           (rec :single (.definition payload) locals)
           (rec :single (.body payload) locals))
          (crash ('string "Let needs a struct.")))
-        (if (str=5 tag "struct")
-         (rec :fields ir locals)
-         (if (str=5 tag "field")
-          (if ('array? payload)
-           (crash "todo")
-           (crash ('string "Struct needs an array.")))
-          (if (str=4 tag "enum")
-           (crash "todo")
-           (if (str=5 tag "switch")
-            (crash "todo")
-            (if (str=3 tag "add")
+        (if (str=3 tag "add")
+         (%let "(left)" (rec :single (.left payload) locals)
+          (%let "(right)" (rec :single (.right payload) locals)
+           (%if
+            (%and
+             (%and
+              (%compare
+               (%load
+                (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                (%word 0))
+               (%word "int"))
+              (%compare
+               (%load
+                (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                (%word 0))
+               (%word "int")))
+             (%word 1))
+            (%new-inner (#
+             (%object (# "int"))
+             (%new-leaf (#
+              (%add
+               (%load (%load (%name "(left)") (%word 1)) (%word 0))
+               (%load (%load (%name "(right)") (%word 1)) (%word 0)))))))
+            (%crash (%object ('string "You can only add ints."))))))
+         (if (str=8 tag "subtract")
+          (%let "(left)" (rec :single (.left payload) locals)
+           (%let "(right)" (rec :single (.right payload) locals)
+            (%if
+             (%and
+              (%and
+               (%compare
+                (%load
+                 (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                 (%word 0))
+                (%word "int"))
+               (%compare
+                (%load
+                 (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                 (%word 0))
+                (%word "int")))
+              (%word 1))
+             (%new-inner (#
+              (%object (# "int"))
+              (%new-leaf (#
+               (%subtract
+                (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                (%load (%load (%name "(right)") (%word 1)) (%word 0)))))))
+             (%crash (%object ('string "You can only subtract ints."))))))
+          (if (str=8 tag "multiply")
+           (%let "(left)" (rec :single (.left payload) locals)
+            (%let "(right)" (rec :single (.right payload) locals)
+             (%if
+              (%and
+               (%and
+                (%compare
+                 (%load
+                  (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                  (%word 0))
+                 (%word "int"))
+                (%compare
+                 (%load
+                  (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                  (%word 0))
+                 (%word "int")))
+               (%word 1))
+              (%new-inner (#
+               (%object (# "int"))
+               (%new-leaf (#
+                (%multiply
+                 (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                 (%load (%load (%name "(right)") (%word 1)) (%word 0)))))))
+              (%crash (%object ('string "You can only multiply ints."))))))
+           (if (str=6 tag "divide")
+            (%let "(left)" (rec :single (.left payload) locals)
+             (%let "(right)" (rec :single (.right payload) locals)
+              (%if
+               (%and
+                (%and
+                 (%compare
+                  (%load
+                   (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                   (%word 0))
+                  (%word "int"))
+                 (%compare
+                  (%load
+                   (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                   (%word 0))
+                  (%word "int")))
+                (%word 1))
+               (%let "(left)"
+                (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                (%let "(right)"
+                 (%load (%load (%name "(right)") (%word 1)) (%word 0))
+                 (%if (%name "(right)")
+                  (%new-inner (#
+                   (%object (# "int"))
+                   (%new-leaf (#
+                    (%divide (%name "(left)") (%name "(right)"))))))
+                  (%crash (%object ('string "You can not divide by zero."))))))
+               (%crash (%object ('string "You can only divide ints."))))))
+            (if (str=6 tag "modulo")
              (%let "(left)" (rec :single (.left payload) locals)
               (%let "(right)" (rec :single (.right payload) locals)
                (%if
                 (%and
                  (%and
                   (%compare
-                   (%load (%load (%load (%name "(left)") (%word 0)) (%word 0)) (%word 0))
+                   (%load
+                    (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                    (%word 0))
                    (%word "int"))
                   (%compare
-                   (%load (%load (%load (%name "(right)") (%word 0)) (%word 0)) (%word 0))
+                   (%load
+                    (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                    (%word 0))
                    (%word "int")))
                  (%word 1))
-                (%new-inner (#
-                 (%object (# "int"))
-                 (%new-leaf (#
-                  (%add
-                   (%load (%load (%name "(left)") (%word 1)) (%word 0))
-                   (%load (%load (%name "(right)") (%word 1)) (%word 0)))))))
-                (%crash (%object ('string "You can only add ints."))))
-              )
-             )
-             (crash "todo")
-            )
-           )))))))))
+                (%let "(left)"
+                 (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                 (%let "(right)"
+                  (%load (%load (%name "(right)") (%word 1)) (%word 0))
+                  (%if (%name "(right)")
+                   (%new-inner (#
+                    (%object (# "int"))
+                    (%new-leaf (#
+                     (%modulo (%name "(left)") (%name "(right)"))))))
+                   (%crash (%object ('string "You can not divide by zero."))))))
+                (%crash (%object ('string "You can only modulo ints."))))))
+             (if (str=10 tag "shift_left")
+              (%let "(left)" (rec :single (.left payload) locals)
+               (%let "(right)" (rec :single (.right payload) locals)
+                (%if
+                 (%and
+                  (%and
+                   (%compare
+                    (%load
+                     (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                     (%word 0))
+                    (%word "int"))
+                   (%compare
+                    (%load
+                     (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                     (%word 0))
+                    (%word "int")))
+                  (%word 1))
+                 (%new-inner (#
+                  (%object (# "int"))
+                  (%new-leaf (#
+                   (%shift-left
+                    (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                    (%load (%load (%name "(right)") (%word 1)) (%word 0)))))))
+                 (%crash (%object ('string "You can only shift_left ints."))))))
+              (if (str=11 tag "shift_right")
+               (%let "(left)" (rec :single (.left payload) locals)
+                (%let "(right)" (rec :single (.right payload) locals)
+                 (%if
+                  (%and
+                   (%and
+                    (%compare
+                     (%load
+                      (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                      (%word 0))
+                     (%word "int"))
+                    (%compare
+                     (%load
+                      (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                      (%word 0))
+                     (%word "int")))
+                   (%word 1))
+                  (%new-inner (#
+                   (%object (# "int"))
+                   (%new-leaf (#
+                    (%shift-right
+                     (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                     (%load (%load (%name "(right)") (%word 1)) (%word 0)))))))
+                  (%crash
+                   (%object ('string "You can only shift_right ints."))))))
+               (if (str=3 tag "and")
+                (%let "(left)" (rec :single (.left payload) locals)
+                 (%let "(right)" (rec :single (.right payload) locals)
+                  (%if
+                   (%and
+                    (%and
+                     (%compare
+                      (%load
+                       (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                       (%word 0))
+                      (%word "int"))
+                     (%compare
+                      (%load
+                       (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                       (%word 0))
+                      (%word "int")))
+                    (%word 1))
+                   (%new-inner (#
+                    (%object (# "int"))
+                    (%new-leaf (#
+                     (%and
+                      (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                      (%load (%load (%name "(right)") (%word 1)) (%word 0)))))))
+                   (%crash (%object ('string "You can only and ints."))))))
+                (if (str=2 tag "or")
+                 (%let "(left)" (rec :single (.left payload) locals)
+                  (%let "(right)" (rec :single (.right payload) locals)
+                   (%if
+                    (%and
+                     (%and
+                      (%compare
+                       (%load
+                        (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                        (%word 0))
+                       (%word "int"))
+                      (%compare
+                       (%load
+                        (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                        (%word 0))
+                       (%word "int")))
+                     (%word 1))
+                    (%new-inner (#
+                     (%object (# "int"))
+                     (%new-leaf (#
+                      (%or
+                       (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                       (%load
+                        (%load (%name "(right)") (%word 1))
+                        (%word 0)))))))
+                    (%crash (%object ('string "You can only or ints."))))))
+                 (if (str=3 tag "xor")
+                  (%let "(left)" (rec :single (.left payload) locals)
+                   (%let "(right)" (rec :single (.right payload) locals)
+                    (%if
+                     (%and
+                      (%and
+                       (%compare
+                        (%load
+                         (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                         (%word 0))
+                        (%word "int"))
+                       (%compare
+                        (%load
+                         (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                         (%word 0))
+                        (%word "int")))
+                      (%word 1))
+                     (%new-inner (#
+                      (%object (# "int"))
+                      (%new-leaf (#
+                       (%xor
+                        (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                        (%load
+                         (%load (%name "(right)") (%word 1))
+                         (%word 0)))))))
+                     (%crash (%object ('string "You can only xor ints."))))))
+                  (if (str=7 tag "compare")
+                   (%let "(left)" (rec :single (.left payload) locals)
+                    (%let "(right)" (rec :single (.right payload) locals)
+                     (%if
+                      (%and
+                       (%and
+                        (%compare
+                         (%load
+                          (%load (%load (%name "(left)") (%word 0)) (%word 0))
+                          (%word 0))
+                         (%word "int"))
+                        (%compare
+                         (%load
+                          (%load (%load (%name "(right)") (%word 0)) (%word 0))
+                          (%word 0))
+                         (%word "int")))
+                       (%word 1))
+                      (%let "result"
+                       (%compare
+                        (%load (%load (%name "(left)") (%word 1)) (%word 0))
+                        (%load (%load (%name "(right)") (%word 1)) (%word 0)))
+                       (%if (%and (%name "result") (%word 1))
+                        (%object (| "equal" nil))
+                        (%if
+                         (%and
+                          (%shift-right (%name "result") (%word 1))
+                          (%word 1))
+                         (%object (| "greater" nil))
+                         (%object (| "less" nil)))))
+                      (%crash
+                       (%object ('string "You can only compare ints."))))))
+                   (if (str=6 tag "struct")
+                    (%new-inner
+                     (if ('array? payload)
+                      (: items (.1 (array-to-list payload))
+                       (flatten-to-inner
+                        (#
+                         (%object
+                          (flatten-to-inner
+                           (# "struct" (rec :field-keys items locals))))
+                         (rec :field-values items locals))))
+                      (crash ('string "Struct needs an array of fields."))))
+                    (if (str=5 tag "field")
+                     (if ('struct? payload)
+                      (%let "(of)" (rec :single (field payload "of") locals)
+                       (%let "(name)"
+                        (rec :single (field payload "name") locals)
+                        (%if
+                         (%and
+                          (%and
+                           (%compare
+                            (%load
+                             (%load (%load (%name "(of)") (%word 0)) (%word 0))
+                             (%word 0))
+                            (%word "struct"))
+                           (%compare
+                            (%load
+                             (%load (%load (%name "(name)") (%word 0)) (%word 0))
+                             (%word 0))
+                            (%word "string")))
+                          (%word 1))
+                         (%call (%object field) (#
+                          (%name "(of)")
+                          (%name "(name)")))
+                         (%crash (%object ('string "Field of non-struct."))))))
+                      (crash ('string "Field needs a struct.")))
+                     (if (str=4 tag "enum")
+                      (if ('struct? payload)
+                       (: variant (field payload "variant")
+                        (: payload (field payload "payload")
+                         (if ('string? variant)
+                          (%new-inner (#
+                           (%object (# "enum" (.1 variant)))
+                           (rec :single payload locals)))
+                          (crash ('string "Enum needs a string variant.")))))
+                       (crash ('string "Enum needs a struct.")))
+                      (if (str=6 tag "switch")
+                       (if ('struct? payload)
+                        (%let "(condition)"
+                         (rec :single (field payload "condition") locals)
+                         (%if
+                          (%and
+                           (%compare
+                            (%load
+                             (%load
+                              (%load (%name "(condition)") (%word 0))
+                              (%word 0))
+                             (%word 0))
+                            (%word "enum"))
+                           (%word 1))
+                          (: cases (field payload "cases")
+                           (: default (field payload "default")
+                            (if ('array? cases)
+                             (rec
+                              :cases
+                              (# (.1 (array-to-list cases)) default)
+                              locals)
+                             (crash ('string "Switch needs cases array.")))))
+                          (%crash
+                           (%object ('string "Switching on non-enum.")))))
+                        (crash ('string "Switch needs a struct.")))
+                       (crash ('string "Unknown IR node."))))))))))))))))))))))
    (crash ('string "IR nodes should be enums.")))
   (if (= mode :multiple)
-   (crash "todo")
-   (crash "todo")
-  )))
-
+   (crash "todo multiple")
+   (if (= mode :field-keys)
+    (if (nil? ir)
+     nil
+     (#
+      (: item (.0 ir)
+       (if ('struct? item)
+        (: name (field item "name")
+         (if ('string? name)
+          (.1 name)
+          (crash "Struct field name needs to be a string.")))
+        (crash "Field needs to be a struct.")))
+      (rec :field-keys (.1 ir) locals)))
+    (if (= mode :field-values)
+     (if (nil? ir)
+      nil
+      (#
+       (: item (.0 ir)
+        (if ('struct? item)
+         (rec :single (field item "value") locals)
+         (crash "Field needs to be a struct.")))
+       (rec :field-values (.1 ir) locals)))
+     (if (= mode :cases)
+      (: cases (.0 ir)
+       (: default (.1 ir)
+        (if (nil? cases)
+         (if ('some? default)
+          (rec :single (.1 default) locals)
+          (if ('none? default)
+           (%crash (%object ('string "Unhandled variant.")))
+           (crash "Switch default should be some or none.")))
+         (: case (.0 cases)
+          (if ('struct? case)
+           (: variant (field case "variant")
+            (: payload (field case "payload")
+             (: body (field case "body")
+              (if ('string? variant)
+               (if ('some? payload)
+                (: payload
+                 (if ('string? (.1 payload))
+                  (.1 (.1 payload))
+                  (crash ('string "Case needs a string as a payload.")))
+                 (%if
+                  (%call (%object str=) (#
+                   (%load (%load (%name "(condition)") (%word 0)) (%word 1))
+                   (%object (.1 variant))))
+                  (%let payload (%load (%name "(condition)") (%word 1))
+                   (rec :single body locals))
+                  (rec :cases (# (.1 cases) default) locals)))
+                (if ('none? payload)
+                 (%if
+                  (%call (%object str=) (#
+                   (%load (%load (%name "(condition)") (%word 0)) (%word 1))
+                   (%object (.1 variant))))
+                  (rec :single body locals)
+                  (rec :cases (# (.1 cases) default) locals))
+                 (crash "Case payload must be some or none.")))
+               (crash "Case variant must be a string.")))))
+           (crash "Switch cases must be structs."))))))
+      (crash (# "todo mode" mode))))))))
 
 export (#
  (# "struct" "compile_olive" "compile_pear")

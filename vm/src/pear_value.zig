@@ -247,9 +247,19 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
         return;
     }
     if (std.mem.eql(u8, variant, "field")) {
-        try writer.print("(. ", .{});
-        try payload.get_field("of").format_singleline_code(writer);
-        try writer.print(" {s})", .{payload.get_field("name").get_string()});
+        const of = payload.get_field("of");
+        const name = payload.get_field("name");
+        if (name.kind() == .enum_ and std.mem.eql(u8, name.get_variant(), "value") and name.get_payload().kind() == .string) {
+            try writer.print("(.{s} ", .{name.get_payload().get_string()});
+            try of.format_singleline_code(writer);
+            try writer.print(")", .{});
+        } else {
+            try writer.print("(@field ", .{});
+            try of.format_singleline_code(writer);
+            try writer.print(" ", .{});
+            try name.format_singleline_code(writer);
+            try writer.print(")", .{});
+        }
         return;
     }
     if (std.mem.eql(u8, variant, "enum")) {
@@ -265,7 +275,7 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
         try payload.get_field("condition").format_singleline_code(writer);
         for (payload.get_field("cases").get_items()) |case| {
             const case_variant = case.get_field("variant").get_string();
-            const binding_val = case.get_field("binding");
+            const binding_val = case.get_field("payload");
             const binding = bind: {
                 const bind = binding_val.get_variant();
                 if (std.mem.eql(u8, bind, "none")) break :bind null;
@@ -365,11 +375,11 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
             try writer.print(") ", .{});
-            // if (self.get_ir()) |ir| {
-            //     try Value.from(ir).format_singleline_code(writer);
-            // } else {
-            try writer.print("...", .{});
-            // }
+            if (self.get_ir()) |ir| {
+                try Value.from(ir).format_singleline_code(writer);
+            } else {
+                try writer.print("...", .{});
+            }
             try writer.print(")", .{});
         },
     }
