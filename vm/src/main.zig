@@ -109,7 +109,7 @@ fn run() !void {
         break :step Val.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
 
-    heap.dump_obj(pear.obj);
+    pear.obj.dump();
     std.debug.print("result:\n{f}\n", .{pear});
 
     std.debug.print("amezing\n", .{});

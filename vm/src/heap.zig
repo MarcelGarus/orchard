@@ -80,6 +80,84 @@ pub const Obj = packed struct {
     pub fn child(self: Obj, index: usize) Obj {
         return self.children()[index];
     }
+
+    const max_nesting = 14;
+    pub fn format(object: Obj, writer: *Writer) !void {
+        var nesting = [_]Parent{.{ .first = false, .color = -1 }} ** max_nesting;
+        try object.format_indented(writer, &nesting, 0);
+    }
+    const Parent = struct { first: bool, color: i8 };
+    fn print_indentation(writer: *Writer, parents: *[max_nesting]Parent, indentation: usize) !void {
+        for (parents[0..indentation]) |p| {
+            try writer.print("{c}[{d}m", .{ 27, @as(usize, switch (p.color) {
+                0 => 93,
+                1 => 91,
+                2 => 94,
+                3 => 92,
+                else => unreachable,
+            }) });
+            try if (p.first) writer.print("𜸖", .{}) else writer.print("│", .{});
+            try writer.print("{c}[0m", .{27});
+        }
+        for (0..indentation) |j| parents[j].first = false;
+        for (indentation..max_nesting + 1) |_| try writer.print(" ", .{});
+        for (indentation..max_nesting) |j| parents[j].color = -1;
+    }
+    pub fn format_indented(
+        obj: Obj,
+        writer: *Writer,
+        parents: *[max_nesting]Parent,
+        indentation: usize,
+    ) error{WriteFailed}!void {
+        parents[indentation] = .{
+            .first = true,
+            .color = find_color: {
+                if (indentation == 0) break :find_color 0;
+                const top = parents[indentation].color;
+                const left = parents[indentation - 1].color;
+                break :find_color if (top != left and parents[indentation - 1].first) left else @mod(top + 1, 4);
+            },
+        };
+        const indent = indentation + 1;
+
+        if (indent == max_nesting) {
+            try print_indentation(writer, parents, indent);
+            try writer.print("...", .{});
+            return;
+        }
+
+        if (obj.size() == 0) {
+            try print_indentation(writer, parents, indent);
+            try writer.print("nothing", .{});
+            return;
+        }
+
+        if (obj.is_inner()) {
+            for (0.., obj.children()) |i, child_| {
+                if (i > 0) try writer.print("\n", .{});
+                try child_.format_indented(writer, parents, indent);
+            }
+        } else {
+            for (0.., obj.words()) |i, literal| {
+                if (i > 0) try writer.print("\n", .{});
+                try print_indentation(writer, parents, indent);
+                try writer.print("{:<19} | {x:<16} | ", .{ literal, literal });
+                for (0..8) |j| {
+                    const c: u8 = @truncate(literal >> @intCast(j * 8));
+                    if (c == 0) break;
+                    try writer.print("{c}", .{if (c >= 32 and c <= 126) c else '.'});
+                }
+            }
+        }
+    }
+
+    pub fn dump(obj: Obj) void {
+        var buffer: [64]u8 = undefined;
+        const bw = std.debug.lockStderrWriter(&buffer);
+        defer std.debug.unlockStderrWriter();
+        obj.format(bw) catch return;
+        bw.print("\n", .{}) catch return;
+    }
 };
 
 memory: []Word,
@@ -331,83 +409,4 @@ pub fn dump_stats(heap: Heap) void {
         i += 1 + header.num_words;
     }
     std.debug.print(", {} objects\n", .{num_objects});
-}
-
-const max_nesting = 14;
-pub fn format(heap: Heap, object: Obj, writer: *Writer) !void {
-    var nesting = [_]Parent{.{ .first = false, .color = -1 }} ** max_nesting;
-    try heap.format_indented(object, writer, &nesting, 0);
-}
-const Parent = struct { first: bool, color: i8 };
-fn print_indentation(writer: *Writer, parents: *[max_nesting]Parent, indentation: usize) !void {
-    for (parents[0..indentation]) |p| {
-        try writer.print("{c}[{d}m", .{ 27, @as(usize, switch (p.color) {
-            0 => 93,
-            1 => 91,
-            2 => 94,
-            3 => 92,
-            else => unreachable,
-        }) });
-        try if (p.first) writer.print("𜸖", .{}) else writer.print("│", .{});
-        try writer.print("{c}[0m", .{27});
-    }
-    for (0..indentation) |j| parents[j].first = false;
-    for (indentation..max_nesting + 1) |_| try writer.print(" ", .{});
-    for (indentation..max_nesting) |j| parents[j].color = -1;
-}
-pub fn format_indented(
-    heap: Heap,
-    obj: Obj,
-    writer: *Writer,
-    parents: *[max_nesting]Parent,
-    indentation: usize,
-) error{WriteFailed}!void {
-    parents[indentation] = .{
-        .first = true,
-        .color = find_color: {
-            if (indentation == 0) break :find_color 0;
-            const top = parents[indentation].color;
-            const left = parents[indentation - 1].color;
-            break :find_color if (top != left and parents[indentation - 1].first) left else @mod(top + 1, 4);
-        },
-    };
-    const indent = indentation + 1;
-
-    if (indent == max_nesting) {
-        try print_indentation(writer, parents, indent);
-        try writer.print("...", .{});
-        return;
-    }
-
-    if (obj.size() == 0) {
-        try print_indentation(writer, parents, indent);
-        try writer.print("nothing", .{});
-        return;
-    }
-
-    if (obj.is_inner()) {
-        for (0.., obj.children()) |i, child| {
-            if (i > 0) try writer.print("\n", .{});
-            try heap.format_indented(child, writer, parents, indent);
-        }
-    } else {
-        for (0.., obj.words()) |i, literal| {
-            if (i > 0) try writer.print("\n", .{});
-            try print_indentation(writer, parents, indent);
-            try writer.print("{:<19} | {x:<16} | ", .{ literal, literal });
-            for (0..8) |j| {
-                const c: u8 = @truncate(literal >> @intCast(j * 8));
-                if (c == 0) break;
-                try writer.print("{c}", .{if (c >= 32 and c <= 126) c else '.'});
-            }
-        }
-    }
-}
-
-pub fn dump_obj(heap: Heap, obj: Obj) void {
-    var buffer: [64]u8 = undefined;
-    const bw = std.debug.lockStderrWriter(&buffer);
-    defer std.debug.unlockStderrWriter();
-    heap.format(obj, bw) catch return;
-    bw.print("\n", .{}) catch return;
 }

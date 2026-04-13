@@ -1160,11 +1160,17 @@ lower-pear (\ (mode ir locals)
                              (%crash
                               (%object ('string "Getting from non-array."))))))
                           (crash "Get needs a struct."))
-                         (if (str=8 tag "function")
-                          (crash "function")
-                          (if (str=13 tag "make_function")
-                           (crash "make_function")
-                           (crash ('string (# "Unknown IR node." ir)))))))))))))))))))))))))))
+                         (if (str=13 tag "make_function")
+                          (%new-inner (#
+                           (%new-inner (#
+                            (%object "function")
+                            (%object "arguments")
+                            (%object "compiled")
+                            (%object "pear ir")
+                           ))
+                           (%object "closure-struct")
+                          ))
+                          (crash ('string (# "Unknown IR node." ir))))))))))))))))))))))))))
    (crash ('string "IR nodes should be enums.")))
   (if (= mode :multiple)
    (if (nil? ir)
@@ -1229,33 +1235,48 @@ lower-pear (\ (mode ir locals)
                (crash "Case variant must be a string.")))))
            (crash "Switch cases must be structs."))))))
       (crash (# "todo mode" mode))))))))
-free-vars (\ (mode ir bound free)
+find-captured (\ (mode ir bound captured)
  (if (= mode :single)
   (: tag (variant ir)
    (: payload (payload ir)
     (if (str= tag "value")
-     free
+     captured
      (if (str= tag "name")
       (: name (unwrap payload)
        (if (list-contains bound name)
-        free
-        (if (list-contains free name) free (# name free))))
+        captured
+        (if (list-contains captured name) captured (# name captured))))
       (if (str= tag "let")
        (rec :single (.definition payload) bound
-        (rec :single (.body payload) bound free))
+        (rec :single (.body payload) bound captured))
        (if (str= tag "struct")
-        (rec :fields payload bound free)
+        (rec :fields payload bound captured)
         (if (str= tag "field")
          (rec :single (.of payload) bound
-          (rec :single (.name payload) bound free))
+          (rec :single (.name payload) bound captured))
          (if (str= tag "enum")
           (rec :single (.variant payload) bound
            (rec :single (.payload payload)))
           (if (str= tag "switch")
-           (rec :cases payload bound free)
+           (rec :cases payload bound captured)
            (crash "todo")
           )))))))))
-  (crash "bad free vars mode")))
+  (crash "bad captured vars mode")))
+create-captured-values (\ (captured)
+ (if (nil? captured)
+  nil
+  (#
+   (&2
+    "name" ('string (.0 captured))
+    "value" (| "name" ('string (.0 captured))))
+   (rec (.1 captured)))))
+create-captured-struct (\ (captured)
+ (| "struct"
+  (flatten-to-inner (#
+   (# "array")
+   (create-captured-values captured)))
+ )
+)
 analyze-pear (\ (mode ast)
  (if (= mode :single)
   (if (group? ast)
@@ -1309,14 +1330,16 @@ analyze-pear (\ (mode ast)
                 (crash "bad function")
                 (: params
                  (if (group? (.1 children))
-                  ('array (rec :params (array-to-list (.1 (.1 children)))))
+                  (rec :params (array-to-list (.1 (.1 children))))
                   (crash "bad function"))
                  (: body (rec :single (.2 children))
-                  (| "value"
-                   (&3
-                    "params" params
-                    "body" body
-                    "captured" (| "name" ('string "todo")))))))
+                  (: captured (find-captured :single body params (#))
+                   (| "make_function"
+                    (&3
+                     "arguments" (| "value" (flatten-to-inner (# (# "array") params)))
+                     "body" (| "value" body)
+                     "captured" (create-captured-struct captured)
+                    ))))))
                (if (= (first-char name) "@")
                 (if (str= name "@add")
                  (| "add"
@@ -1497,7 +1520,7 @@ export (#
    (# "code")
    (\ (code _)
     (compile-olive nil (.1 (parse :multiple (str-to-chars (.1 code)))))))
-  nil)
+  'nil)
  (#
   (# "function"
    (# "code")
@@ -1509,8 +1532,5 @@ export (#
        (#)
        (optimize :expr (lower-pear :single pear-ir nil))
        pear-ir)
-      nil
-     )
-    )
-    ))
-  nil))
+      'nil))))
+  'nil))

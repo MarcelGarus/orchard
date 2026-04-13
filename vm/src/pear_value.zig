@@ -174,7 +174,10 @@ pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}
                 if (i > 0) try writer.print(" ", .{});
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
-            try writer.print(") ", .{});
+            try writer.print(") [", .{});
+            try self.get_captured().format(writer);
+            // try Value.from(self.get_captured()).format_singleline(writer);
+            try writer.print("] ", .{});
             if (self.get_ir()) |ir| {
                 try Value.from(ir).format_singleline_code(writer);
             } else {
@@ -293,13 +296,12 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
         try writer.print(")", .{});
         return;
     }
-    if (std.mem.eql(u8, variant, "function")) {
-        try writer.print("(\\ (", .{});
-        for (payload.get_field("args").get_items(), 0..) |arg, i| {
-            if (i > 0) try writer.print(" ", .{});
-            try writer.print("{s}", .{arg.get_string()});
-        }
-        try writer.print(") ", .{});
+    if (std.mem.eql(u8, variant, "make_function")) {
+        try writer.print("(@function ", .{});
+        try payload.get_field("arguments").format_singleline_code(writer);
+        try writer.print(" ", .{});
+        try payload.get_field("captured").format_singleline_code(writer);
+        try writer.print(" ", .{});
         try payload.get_field("body").format_singleline_code(writer);
         try writer.print(")", .{});
         return;

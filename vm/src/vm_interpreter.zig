@@ -435,7 +435,7 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
             .crash => {
                 const message = vm.data_stack.pop();
                 std.debug.print("\n", .{});
-                vm.heap.dump_obj(Obj{ .address = message });
+                (Obj{ .address = message }).dump();
                 std.process.exit(1);
             },
         }
