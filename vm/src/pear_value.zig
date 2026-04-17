@@ -101,14 +101,14 @@ pub fn get_items(self: Value) []const Value {
 
 // Function stuff.
 
-pub fn new(heap: *Heap, args: Obj, pear_ir: ?Obj, fun: Obj, captured: Obj) !Value {
+pub fn new(heap: *Heap, args: Obj, ir: Obj, compiled: Obj, captured: Obj) !Value {
     const function_symbol = try heap.new_symbol("function");
     const ty = obj: {
         var b = try heap.build_inner();
         try b.emit(function_symbol);
         try b.emit(args);
-        try b.emit(fun);
-        if (pear_ir) |ir_| try b.emit(ir_);
+        try b.emit(ir);
+        try b.emit(compiled);
         break :obj b.finish();
     };
     return try heap.new_inner(&.{ ty, captured });
@@ -116,22 +116,21 @@ pub fn new(heap: *Heap, args: Obj, pear_ir: ?Obj, fun: Obj, captured: Obj) !Valu
 pub fn get_args(self: Value) Obj {
     return self.obj.child(0).child(1);
 }
-pub fn get_ir(self: Value) ?Obj {
-    const type_ = self.obj.child(0);
-    return if (type_.size() == 4) type_.child(3) else null;
+pub fn get_ir(self: Value) Obj {
+    return self.obj.child(0).child(2);
 }
 pub fn get_fun(self: Value) Ir.Fun {
-    return Ir.Fun{ .obj = self.obj.child(0).child(2) };
+    return Ir.Fun{ .obj = self.obj.child(0).child(3) };
 }
-pub fn get_captured(self: Value) Obj {
-    return self.obj.child(1);
+pub fn get_captured(self: Value) Value {
+    return Value.from(self.obj.child(1));
 }
 
 pub fn call(function: Value, vm: *Vm, args: []const Value) !Value {
     std.debug.assert(function.kind() == .function);
     std.debug.assert(function.get_args().size() == args.len);
     const fun = function.get_fun();
-    const closure = function.get_captured();
+    const closure = function.get_captured().obj;
     const all_args = try vm.impl.ally.alloc(Word, args.len + 1);
     for (args, 0..) |arg, i| all_args[i] = arg.obj.address;
     all_args[args.len] = closure.address;
@@ -178,7 +177,8 @@ pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}
             try self.get_captured().format(writer);
             // try Value.from(self.get_captured()).format_singleline(writer);
             try writer.print("] ", .{});
-            if (self.get_ir()) |ir| {
+            const ir = self.get_ir();
+            if (ir.size() > 0) {
                 try Value.from(ir).format_singleline_code(writer);
             } else {
                 try writer.print("...", .{});
@@ -377,7 +377,8 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
             try writer.print(") ", .{});
-            if (self.get_ir()) |ir| {
+            const ir = self.get_ir();
+            if (ir.size() > 0) {
                 try Value.from(ir).format_singleline_code(writer);
             } else {
                 try writer.print("...", .{});
