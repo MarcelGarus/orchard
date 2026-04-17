@@ -182,6 +182,7 @@ str-to-chars-rec (\ (string size i)
           (: c (and (>> word 56) 255) (if (= c 0) nil (# c
            (rec string size (+ i 1)))))))))))))))))))))))))))))
 str-to-chars (\ (string) (str-to-chars-rec string (size string) 0))
+list-concat (\ (a b) (if (nil? a) b (# (.0 a) (rec (.1 a) b))))
 list-contains (\ (list string)
  (if (nil? list)
   false
@@ -192,6 +193,13 @@ list-remove (\ (list string)
   (if (str= (.0 list) string)
    (rec (.1 list) string)
    (# (.0 list) (rec (.1 list) string)))))
+str-concat (\ (a b)
+ (chars-to-str (list-concat (str-to-chars a) (str-to-chars b))))
+str-concat-3 (\ (a b c)
+ (chars-to-str
+  (list-concat
+   (str-to-chars a)
+   (list-concat (str-to-chars b) (str-to-chars c)))))
 ascii-newline 10
 ascii-space 32
 ascii-quote 34
@@ -381,7 +389,6 @@ pure? (\ (mode ir)
   (if (= mode :list)
    (if (nil? ir) true (and (rec :expr (.0 ir)) (rec :list (.1 ir))))
    (crash "bad mode in pure?"))))
-list-concat (\ (a b) (if (nil? a) b (# (.0 a) (rec (.1 a) b))))
 wrap-also (\ (list inner)
  (if (nil? list)
   inner
@@ -865,12 +872,7 @@ kind (\ (value) (.0 (.0 value)))
 'function? (\ (value) (str=8 (kind value) "function"))
 field-rec (\ (fields i limit name)
  (if (= i limit)
-  (crash
-   ('string
-    (chars-to-str
-     (list-concat
-      (str-to-chars "Expected field ")
-      (list-concat (str-to-chars name) (str-to-chars "."))))))
+  (crash ('string (str-concat-3 "Expected field " name ".")))
   (if (str= (. i fields) name) i (rec fields (+ i 1) limit name))))
 field (\ (struct name)
  (. (field-rec (.0 struct) 1 (size (.0 struct)) name) struct))
@@ -1106,16 +1108,73 @@ lower-pear (\ (mode ir locals)
                       (crash ('string "Struct needs an array of fields."))))
                     (if (str=5 tag "field")
                      (if ('struct? payload)
-                      (%let "@of" (rec :single (.of payload) locals)
-                       (%let "@name" (rec :single (.name payload) locals)
-                        (%if
-                         (%and
-                          (%'struct? (%name "@of"))
-                          (%'string? (%name "@name")))
-                         (%call (%object field) (#
-                          (%name "@of")
-                          (%name "@name")))
-                         (%crash (%object ('string "Field of non-struct."))))))
+                      (: of (rec :single (.of payload) locals)
+                       (: name (rec :single (.name payload) locals)
+                        (%let "@of" of
+                         (if (object? name)
+                          (%if (%'struct? (%name "@of"))
+                           (if (%'string? (.1 name))
+                            (: name (.1 (.1 name))
+                             (: make-str-cmp
+                              (\ (name i)
+                               (if (= i 0)
+                                (%object 1)
+                                (%and
+                                 (rec name (- i 1))
+                                 (%compare
+                                  (%load (%name "item") (%word (- i 1)))
+                                  (%word (load-word name (- i 1)))))))
+                              (: finder-rec
+                               (# (# "fields" "i" "limit")
+                                (%if (%equal? (%name "i") (%name "limit"))
+                                 (%crash
+                                  (%object
+                                   ('string
+                                    (str-concat-3
+                                     "Struct has no field "
+                                     name
+                                     "."))))
+                                 (%let "item"
+                                  (%load (%name "fields") (%name "i"))
+                                  (%if
+                                   (%equal?
+                                    (%size (%name "a"))
+                                    (%word (size name)))
+                                   (%if (make-str-cmp name (size name))
+                                    (%name "i")
+                                    (%rec (#
+                                     (%name "fields")
+                                     (%add (%name "i") (%word 1))
+                                     (%name "limit"))))
+                                   (%rec (#
+                                    (%name "fields")
+                                    (%add (%name "i") (%word 1))
+                                    (%name "limit")))))))
+                               (%load
+                                (%name "@of")
+                                (%call (%object finder-rec) (#
+                                 (%load-0 (%name "@of"))
+                                 (%word 1)
+                                 (%size (%load-0 (%name "@of")))))))))
+                            (%crash
+                             (%object
+                              ('string "The field name has to be a string."))))
+                           (%crash
+                            (%object
+                             ('string "You can only get fields of structs."))))
+                          (%let "@name" name
+                           (%if (%'struct? (%name "@of"))
+                            (%if (%'string? (%name "@name"))
+                             (%call (%object field) (#
+                              (%name "@of")
+                              (%load-1 (%name "@name"))))
+                             (%crash
+                              (%object
+                               ('string "The field name has to be a string."))))
+                            (%crash
+                             (%object
+                              ('string
+                               "You can only get fields of structs.")))))))))
                       (crash ('string "Field needs a struct.")))
                      (if (str=4 tag "enum")
                       (if ('struct? payload)

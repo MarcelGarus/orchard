@@ -174,8 +174,7 @@ pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
             try writer.print(") [", .{});
-            try self.get_captured().format(writer);
-            // try Value.from(self.get_captured()).format_singleline(writer);
+            try self.get_captured().format_singleline(writer);
             try writer.print("] ", .{});
             const ir = self.get_ir();
             if (ir.size() > 0) {
@@ -376,7 +375,9 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
                 if (i > 0) try writer.print(" ", .{});
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
-            try writer.print(") ", .{});
+            try writer.print(") [", .{});
+            try self.get_captured().format_singleline(writer);
+            try writer.print("] ", .{});
             const ir = self.get_ir();
             if (ir.size() > 0) {
                 try Value.from(ir).format_singleline_code(writer);
