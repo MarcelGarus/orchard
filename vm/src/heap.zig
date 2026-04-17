@@ -81,76 +81,79 @@ pub const Obj = packed struct {
         return self.children()[index];
     }
 
-    const max_nesting = 14;
-    pub fn format(object: Obj, writer: *Writer) !void {
-        var nesting = [_]Parent{.{ .first = false, .color = -1 }} ** max_nesting;
-        try object.format_indented(writer, &nesting, 0);
+    pub fn format_string(chars: []const u8, colored: bool, writer: *std.io.Writer) error{WriteFailed}!void {
+        if (colored) try writer.print("\x1b[48;5;222m", .{});
+        for (chars) |char| {
+            if (char == 0) break;
+            try writer.print("{c}", .{char});
+        }
+        if (colored) try writer.print("\x1b[0m", .{});
     }
-    const Parent = struct { first: bool, color: i8 };
-    fn print_indentation(writer: *Writer, parents: *[max_nesting]Parent, indentation: usize) !void {
-        for (parents[0..indentation]) |p| {
-            try writer.print("{c}[{d}m", .{ 27, @as(usize, switch (p.color) {
-                0 => 93,
-                1 => 91,
-                2 => 94,
-                3 => 92,
-                else => unreachable,
-            }) });
-            try if (p.first) writer.print("𜸖", .{}) else writer.print("│", .{});
-            try writer.print("{c}[0m", .{27});
-        }
-        for (0..indentation) |j| parents[j].first = false;
-        for (indentation..max_nesting + 1) |_| try writer.print(" ", .{});
-        for (indentation..max_nesting) |j| parents[j].color = -1;
+    pub fn format_number(word_: Word, colored: bool, writer: *std.io.Writer) error{WriteFailed}!void {
+        if (colored) try writer.print("\x1b[48;5;153m", .{});
+        try writer.print("{d}", .{word_});
+        if (colored) try writer.print("\x1b[0m", .{});
     }
-    pub fn format_indented(
-        obj: Obj,
-        writer: *Writer,
-        parents: *[max_nesting]Parent,
-        indentation: usize,
-    ) error{WriteFailed}!void {
-        parents[indentation] = .{
-            .first = true,
-            .color = find_color: {
-                if (indentation == 0) break :find_color 0;
-                const top = parents[indentation].color;
-                const left = parents[indentation - 1].color;
-                break :find_color if (top != left and parents[indentation - 1].first) left else @mod(top + 1, 4);
-            },
-        };
-        const indent = indentation + 1;
-
-        if (indent == max_nesting) {
-            try print_indentation(writer, parents, indent);
-            try writer.print("...", .{});
-            return;
-        }
-
-        if (obj.size() == 0) {
-            try print_indentation(writer, parents, indent);
-            try writer.print("nothing", .{});
-            return;
-        }
-
-        if (obj.is_inner()) {
-            for (0.., obj.children()) |i, child_| {
-                if (i > 0) try writer.print("\n", .{});
-                try child_.format_indented(writer, parents, indent);
+    pub fn format_leaf(words_: []const Word, colored: bool, writer: *std.io.Writer) error{WriteFailed}!void {
+        if (words_.len == 1) {
+            var only_ascii = true;
+            for (@as([]const u8, @ptrCast(words_))) |char| {
+                if (char == 0) break;
+                if (!(char >= 32 and char <= 126)) only_ascii = false;
+            }
+            if (words_[0] == 0) only_ascii = false;
+            if (only_ascii) {
+                try format_string(@as([]const u8, @ptrCast(words_)), colored, writer);
+            } else {
+                try format_number(words_[0], colored, writer);
             }
         } else {
-            for (0.., obj.words()) |i, literal| {
-                if (i > 0) try writer.print("\n", .{});
-                try print_indentation(writer, parents, indent);
-                try writer.print("{:<19} | {x:<16} | ", .{ literal, literal });
-                for (0..8) |j| {
-                    const c: u8 = @truncate(literal >> @intCast(j * 8));
-                    if (c == 0) break;
-                    try writer.print("{c}", .{if (c >= 32 and c <= 126) c else '.'});
-                }
-            }
+            try format_string(@as([]const u8, @ptrCast(words_)), colored, writer);
         }
     }
+    pub fn format_singleline(self: Obj, colored: bool, writer: *std.io.Writer) error{WriteFailed}!void {
+        if (self.is_leaf()) {
+            try format_leaf(self.words(), colored, writer);
+        } else {
+            try writer.print("(", .{});
+            for (self.children(), 0..) |c, i| {
+                if (i > 0) {
+                    try writer.print(" ", .{});
+                }
+                try c.format_singleline(colored, writer);
+            }
+            try writer.print(")", .{});
+        }
+    }
+    fn singleline_len(self: Obj) !usize {
+        var len_tracker = std.Io.Writer.Discarding.init(&[_]u8{});
+        try self.format_singleline(false, &len_tracker.writer);
+        return len_tracker.count;
+    }
+    const WIDTH_LIMIT = 120;
+    pub fn format_indented(self: Obj, writer: *std.io.Writer, indentation: usize) !void {
+        if (indentation + try self.singleline_len() <= WIDTH_LIMIT) {
+            try self.format_singleline(true, writer);
+            return;
+        }
 
+        if (self.is_leaf()) {
+            try format_leaf(self.words(), true, writer);
+        } else {
+            try writer.print("(", .{});
+            for (self.children(), 0..) |c, i| {
+                if (i > 0) {
+                    try writer.print("\n", .{});
+                    for (0..indentation + 1) |_| try writer.print(" ", .{});
+                }
+                try c.format_indented(writer, indentation + 1);
+            }
+            try writer.print(")", .{});
+        }
+    }
+    pub fn format(obj: Obj, writer: *Writer) !void {
+        try obj.format_indented(writer, 0);
+    }
     pub fn dump(obj: Obj) void {
         var buffer: [64]u8 = undefined;
         const bw = std.debug.lockStderrWriter(&buffer);

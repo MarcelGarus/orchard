@@ -308,8 +308,8 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
     }
     if (std.mem.eql(u8, variant, "call")) {
         try writer.print("(", .{});
-        try payload.get_field("callee").format_singleline_code(writer);
-        for (payload.get_field("args").get_items()) |arg| {
+        try payload.get_field("function").format_singleline_code(writer);
+        for (payload.get_field("arguments").get_items()) |arg| {
             try writer.print(" ", .{});
             try arg.format_singleline_code(writer);
         }

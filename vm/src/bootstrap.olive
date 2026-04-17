@@ -308,7 +308,7 @@ bind (\ (mode name val ir)
           (%call
            (rec :expr name val (.1 ir))
            (flatten-to-inner (rec :list name val (array-to-list (.2 ir)))))
-          (crash (# "unknown node in bind" (.0 ir)))))))))))
+          (crash (# "unknown node in bind" ir))))))))))
   (if (= mode :list)
    (if (nil? ir)
     nil
@@ -619,16 +619,21 @@ optimize (\ (mode ir)
                          (: fun (rec :expr (.1 ir))
                           (: args (rec :list (array-to-list (.2 ir)))
                            (if (object? fun)
-                            (if (has-rec :fun (.1 fun))
-                             (%call fun (flatten-to-inner args))
-                             (: renamed
-                              (rename-for-capture
-                               (array-to-list (.0 (.1 fun)))
-                               (.1 (.1 fun))
-                               (all-names :list args))
-                              (rec
-                               :expr
-                               (wrap-lets (.0 renamed) args (.1 renamed)))))
+                            (: fun (.1 fun)
+                             (if (= (size fun) 2)
+                              (if (!= (size (.2 ir)) (size (.0 fun)))
+                               (%unreachable)
+                               (if (has-rec :fun fun)
+                                (%call (%object fun) (flatten-to-inner args))
+                                (: renamed
+                                 (rename-for-capture
+                                  (array-to-list (.0 fun))
+                                  (.1 fun)
+                                  (all-names :list args))
+                                 (rec
+                                  :expr
+                                  (wrap-lets (.0 renamed) args (.1 renamed))))))
+                              (%unreachable)))
                             (%call fun (flatten-to-inner args)))))
                          (if (rec? ir)
                           (: args (rec :list (array-to-list (.1 ir)))
@@ -917,6 +922,7 @@ unwrap (\ (result) (.1 result))
 %less? (\ (a b) (%and (%shift-right (%compare a b) (%word 2)) (%word 1)))
 %load-0 (\ (obj) (%load obj (%word 0)))
 %load-1 (\ (obj) (%load obj (%word 1)))
+%load-2 (\ (obj) (%load obj (%word 2)))
 %kind (\ (value) (%load-0 (%load-0 value)))
 %'int? (\ (value)
  (%and (%compare (%load-0 (%kind value)) (%word "int")) (%word 1)))
@@ -928,14 +934,28 @@ unwrap (\ (result) (.1 result))
  (%and (%compare (%load-0 (%kind value)) (%word "enum")) (%word 1)))
 %'array? (\ (value)
  (%and (%compare (%load-0 (%kind value)) (%word "array")) (%word 1)))
+%'function? (\ (value)
+ (%and (%compare (%load-0 (%kind value)) (%word "function")) (%word 1)))
 %new-int (\ (int) (%new-inner (# (%object (# "int")) (%new-leaf (# int)))))
 %load-int (\ (value) (%load-0 (%load-1 value)))
+unwrap-args-rec (\ (items)
+ (if (nil? items)
+  nil
+  (: item (.0 items)
+   (if ('string? item)
+    (# (.1 item) (rec (.1 items)))
+    (crash ('string "make_function needs string arguments."))))))
+unwrap-args (\ (value)
+ (if ('array? value)
+  (flatten-to-inner (unwrap-args-rec (.1 (array-to-list value))))
+  (crash ('string "make_function needs an arguments array."))))
 :let 2
 :fields 3
 :field-keys 4
 :field-values 5
 :cases 6
 :params 7
+lower-pear (\ (mode ir locals) (crash (# "lower pear" ir)))
 lower-pear (\ (mode ir locals)
  (if (= mode :single)
   (if ('enum? ir)
@@ -1162,15 +1182,53 @@ lower-pear (\ (mode ir locals)
                           (crash "Get needs a struct."))
                          (if (str=13 tag "make_function")
                           (%new-inner (#
-                           (%new-inner (#
-                            (%object "function")
-                            (%object "arguments")
-                            (%object "compiled")
-                            (%object "pear ir")
-                           ))
-                           (%object "closure-struct")
-                          ))
-                          (crash ('string (# "Unknown IR node." ir))))))))))))))))))))))))))
+                           (: args
+                            (: args (rec :single (field payload "arguments") locals)
+                             (if (object? args)
+                              (%object (unwrap-args (.1 args)))
+                              (%call (%object unwrap-args) (# args))))
+                            (: body (rec :single (field payload "body") locals)
+                             (if (object? body)
+                              (%new-inner (#
+                               (%object "function")
+                               args
+                               (%object (rec :single (.1 body) nil))
+                               body))
+                              (crash "todo call lower-pear at runtime (whatever that is)")
+                             )
+                            )
+                           )
+                           (rec :single (field payload "captured") locals)))
+                          (if (str=4 tag "call")
+                           (if ('struct? payload)
+                            (: fun (field payload "function")
+                             (: args (field payload "arguments")
+                              (if ('array? args)
+                               (%let "@a" (rec :single fun locals)
+                                (%if (%'function? (%name "@a"))
+                                 (%if
+                                  (%equal?
+                                   (%size (%load-1 (%load-0 (%name "@a"))))
+                                   (%word (- (size args) 1)))
+                                  (%call
+                                   (%load-2 (%load-0 (%name "@a")))
+                                   (flatten-to-inner
+                                    (list-concat
+                                     (rec
+                                      :multiple
+                                      (.1 (array-to-list args))
+                                      locals)
+                                     (# (%load-1 (%name "@a")) nil))))
+                                  (%crash
+                                   (%object
+                                    ('string "Wrong number of arguments."))))
+                                 (%crash
+                                  (%object
+                                   ('string "You can only call functions.")))))
+                               (crash
+                                ('string "Call needs arguments array.")))))
+                            (crash ('string "Call needs a struct.")))
+                           (crash ('string (# "Unknown IR node." ir)))))))))))))))))))))))))))
    (crash ('string "IR nodes should be enums.")))
   (if (= mode :multiple)
    (if (nil? ir)
@@ -1259,7 +1317,7 @@ find-captured (\ (mode ir bound captured)
            (rec :single (.payload payload)))
           (if (str= tag "switch")
            (rec :cases payload bound captured)
-           (crash "todo")
+           (crash (# "todo find-captured" ir))
           )))))))))
   (crash "bad captured vars mode")))
 create-captured-values (\ (captured)
@@ -1514,7 +1572,7 @@ analyze-pear (\ (mode ast)
        (crash (# "unknown mode" mode)))))))))
 
 export (#
- (# "struct" "compile_olive" "compile_pear")
+ (# "struct" "compile_olive" "compile_pear" "unwrap_args")
  (#
   (# "function"
    (# "code")
@@ -1533,4 +1591,5 @@ export (#
        (optimize :expr (lower-pear :single pear-ir nil))
        pear-ir)
       'nil))))
-  'nil))
+  'nil)
+ str=1word)
