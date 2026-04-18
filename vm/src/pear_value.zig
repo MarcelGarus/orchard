@@ -235,6 +235,30 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
         try writer.print(")", .{});
         return;
     }
+    if (std.mem.eql(u8, variant, "divide")) {
+        try writer.print("(@divide ", .{});
+        try payload.get_field("left").format_singleline_code(writer);
+        try writer.print(" ", .{});
+        try payload.get_field("right").format_singleline_code(writer);
+        try writer.print(")", .{});
+        return;
+    }
+    if (std.mem.eql(u8, variant, "modulo")) {
+        try writer.print("(@modulo ", .{});
+        try payload.get_field("left").format_singleline_code(writer);
+        try writer.print(" ", .{});
+        try payload.get_field("right").format_singleline_code(writer);
+        try writer.print(")", .{});
+        return;
+    }
+    if (std.mem.eql(u8, variant, "compare")) {
+        try writer.print("(@compare ", .{});
+        try payload.get_field("left").format_singleline_code(writer);
+        try writer.print(" ", .{});
+        try payload.get_field("right").format_singleline_code(writer);
+        try writer.print(")", .{});
+        return;
+    }
     if (std.mem.eql(u8, variant, "string")) {
         try payload.format_singleline(writer);
         return;

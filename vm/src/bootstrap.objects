@@ -1,3 +1,133 @@
+# "From a small seed, an Orchard grew.
+
+   This file is the entry point of Pear's bootstrapping process. Generally, the
+   process works like this:
+
+   1. You write a VM. The VM should have a heap of immutable objects of two
+      kinds:
+      - Leaf objects contain 64-bit words.
+      - Inner objects contain 64-bit words, which point to previously created
+        objects.
+      The VM then allows execution of functions allocated on its heap in a
+      particular encoding, described below.
+   2. bootstrap.objects (this file) describes the compiler of a low-level,
+      memory-unsafe language to run in the VM.
+   3. bootstrap.olive contains two compilers: An Olive compiler (so that the
+      file can compile itself) and a Pear compiler.
+
+   This file defines an Olive compiler using only object literals. It contains
+   alternating names and values (first a name, then a value, repeated). Every
+   name-value pair binds a value to a name. This explanatory comment is actually
+   the value of the name #.
+
+   A value describes how to create an object. It can be either:
+   - a number like 42, which tells you to create a leaf object with a single
+     word as payload
+   - a string like this one, which tells you to create a leaf object with words
+     that encode the characters (a string with up to 8 bytes only has a single
+     payload word, a string up to 16 bytes has two words, etc.)
+   - a parenthesized expression like (1 2), which tells you to create an inner
+     object that points to the parenthesized objects
+   - a name like foo, which refers to a previously defined name of the global
+     name-value
+   The final value named export is the result of this entire file.
+
+   Now, on to functions: A function is an inner heap object with two children,
+   which are the arguments and its body. The arguments are an inner heap object
+   of strings objects. The body is an expression, which can be run to produce a
+   word (I use single quotes to not break this comment):
+   - ('word' word): Assumes that word is a leaf object with a single word as
+     payload. Results in that word. 
+   - ('object' object): Results in the address of the object.
+   - ('name' name): Assumes that the name is a leaf object. Results in the value
+     of the name that is in scope, either through being available as a function
+     argument, or using a let-expression.
+   - ('let' name definition body): Assumes that the name is a leaf object and
+     that definition and body are expressions. Runs the definition. Then runs
+     the body with the result of definition being available as the name.
+   - ('also' ignored body): Assumes that ignored and body are expressions. Runs
+     ignored. Then runs the body and returns its result. Useful to have
+     side-effects of the ignored expression (non-terimation, crashes) without
+     binding it to a name.
+   - ('add' a b): Assumes that a and b are expressions. Runs a, runs b. Adds
+     them (overflow wraps around).
+   - ('subtract' a b): Analogous.
+   - ('multiply' a b): Analogous.
+   - ('divide' a b): Assumes that a and b are expressions. Assumes that the
+     result of b is not 0. Analogous.
+   - ('modulo' a b): Assumes that a and b are expressions. Assumes that the
+     result of b is not 0. Analogous.
+   - ('shift-left' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Shifts a left by b.
+   - ('shift-right' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Shifts a right by b.
+   - ('and' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Bitwise-ands them.
+   - ('or' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Bitwise-ors them.
+   - ('xor' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Bitwise-xors them.
+   - ('compare' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Compares them as i64s. If a = b, results in 1. If a > b, results in 2. If
+     a < b, results in 4. Because the result is always a power of two, it's
+     pretty easy to use the result with bit shifts to do branchless comparisons.
+   - ('if' condition then else): Assumes that condition, then, and else are
+     expressions. Runs the condition. If it's non-zero, runs then. Else, else.
+   - ('new-leaf' children): Assumes that children is an inner object that points
+     to expressions. Runs them in order. Then creates a new inner object of the
+     results.
+   - ('new-inner' children): Assumes that children is an inner object that
+     points to expressions that evaluate to addresses of leaf objects, each
+     containing a single word. Runs the children in order, then creates a leaf
+     object with the resulting words.
+   - ('flatten-to-leaf' list): Assumes that list is an expression that evaluates
+     to a linked list: It's either an empty object or a two-word object of an
+     item and the rest of the list. Assumes that all items are single-word leaf
+     objects. Walks that linked list and puts all those objects into a single
+     leaf object.
+   - ('flatten-to-inner' list): Analogous.
+   - ('points' obj): Assumes that obj is an expression that evaluates to an
+     address. If it's a leaf object, results in 0. If it's an inner object,
+     results in 1.
+   - ('size' obj): Assumes that obj is an expression that evaluates to an
+     address. Results in the number of payload words inside the object.
+   - ('load' obj index): Assumes that obj, and index and expressions and that
+     obj results in an address. Runs obj, then index. Assumes that the index
+     result is between 0 (inclusive) and the size of the obj result (exclusive).
+     Results in the index'th word of the object.
+   - ('call' function arguments): Assumes that fun is an expression and
+     arguments is an inner object that contains other expressions. Runs the
+     function expression, then the arguments in order. Assumes that the function
+     address points to a function (an object containing arguments and a body).
+     Assumes that the number of function arguments matches the number of call
+     arguments. Evaluates the function body with the call arguments bound to the
+     function arguments.
+   - ('rec' arguments): Analogous to 'call', but calls the current function.
+   - ('gc' expr): Assumes that expr is an expression. Runs it. Assumes that the
+     result is an address. Then does a garbage collection, where it frees all
+     allocations made while evaluating the expression that are not referenced by
+     its result.
+   - ('crash' error): Assumes that error is an expression. Runs it. Then crashes
+     with the error.
+   - ('unreachable'): Assumes that this expression is unreachable.
+   All the assumptions in the descriptions are undefined behavior if not
+   fulfilled. This enables the VM to do more optimizations.
+   TODO: Write a safe VM that catches all undefined behavior.
+
+
+   2026-04-17 Wrote this comment.
+   2026-04-18 Note: Historically, the VM worked differently. Instead of encoding
+              functions as a tree of expressions, it would encode them as a list
+              of instructions meant to execute on a data stack (think push, pop,
+              add, etc.). You could also think about having more dense byte-code
+              a la Smalltalk. However, I want to give more freedom to the VM.
+              The current higher-level encoding doesn't prescribe even a data
+              stack, so the VM can JIT-compile subtrees into machine code
+              instruction sequences that keep everything in registers. If the
+              encoding was stack-based, you'd have to undo that to re-discover
+              the data flow, which is quite ugly."
+
+# "First, I define a couple of string literals to make my life a bit easier."
 _ "_"
 a "a"
 add "add"
@@ -18,7 +148,6 @@ list "list"
 load "load"
 locals "locals"
 mode "mode"
-modulo "modulo"
 multiply "multiply"
 name "name"
 new-inner "new-inner"
@@ -34,6 +163,9 @@ tag "tag"
 unreachable "unreachable"
 word "word"
 xor "xor"
+
+# "In the code below, we often need expressions that evaluate to word literals.
+   To make that more concise, I define number literals."
 :0 (word 0)
 :1 (word 1)
 :2 (word 2)
@@ -49,6 +181,8 @@ xor "xor"
 :56 (word 56)
 :64 (word 64)
 :255 (word 255)
+
+# "Same for names."
 :a (name a)
 :b (name b)
 :c (name c)
@@ -58,35 +192,42 @@ xor "xor"
 :locals (name locals)
 :mode (name mode)
 :name (name name)
-:rec (name rec)
 :size (name size)
 :tag (name tag)
 :word (name word)
-nil ()
-= ((a b) (and (compare :a :b) :1))
-> ((a b) (and (shift-right (compare :a :b) :1) :1))
-< ((a b) (and (shift-right (compare :a :b) :2) :1))
-!= ((a b) (subtract :1 (and (compare :a :b) :1)))
->= ((a b) (subtract :1 (and (shift-right (compare :a :b) :2) :1)))
-<= ((a b) (subtract :1 (and (shift-right (compare :a :b) :1) :1)))
+
+# "Bool stuff.
+   By representing bools as 0 and 1, I can use branchless arithmetics such as
+   subtraction and the bitwise and/or operations to work with bools."
 false 0
 true 1
 not ((a) (subtract :1 :a))
+
+# "Comparisons.
+   Branchless using shifts."
+= ((a b) (and (compare :a :b) :1))
+!= ((a b) (subtract :1 (and (compare :a :b) :1)))
+>= ((a b) (subtract :1 (and (shift-right (compare :a :b) :2) :1)))
+<= ((a b) (subtract :1 (and (shift-right (compare :a :b) :1) :1)))
+
+# "Nil is just an empty object."
 nil ()
 nil? ((a) (call (object =) (:0 (size :a))))
-nil-nil? ((a) (call (object !=) (:0 (size :a))))
-list-reverse-rec ((list a)
- (if (call (object nil?) (:list))
-  :a
-  (rec (load :list :1) (new-inner (load :list :0) :a))))
-list-reverse ((list) (call (object list-reverse-rec) (:list nil)))
+
+# "List stuff."
 array-to-list-rec ((a i)
  (if (call (object =) (:i (size :a)))
   (object nil)
   (new-inner ((load :a :i) (rec (:a (add :i :1)))))))
 array-to-list ((a) (call (object array-to-list-rec) (:a :0)))
-list-to-array ((a) (flatten-to-inner :a))
-list-to-leaf ((a) (flatten-to-leaf :a))
+list-to-array flatten-to-inner
+list-to-leaf flatten-to-leaf
+
+# "String stuff.
+   Because strings are stored as leaf objects of words, I need to cross the
+   abstraction from byte-based addressing to word-based storage. Comparisons
+   become faster because we compare 8 bytes at once. For converting characters
+   to strings however, there's a lot of heavy work I need to do."
 str=-rec ((a b i size)
  (if (call (object =) (:i :size))
   (word true)
@@ -111,8 +252,7 @@ chars-to-str-rec ((c)
   (object nil)
   (let a (call (object chars-to-str-pack-rec) (:c :0 :0))
    (new-inner ((load :a :0) (rec ((load :a :1))))))))
-chars-to-str ((c)
- (call (object list-to-leaf) ((call (object chars-to-str-rec) (:c)))))
+chars-to-str ((c) (list-to-leaf (call (object chars-to-str-rec) (:c))))
 str-to-chars-rec ((a size i)
  (if (call (object =) (:i :size))
   (object nil)
@@ -162,6 +302,8 @@ str-to-chars-rec ((a size i)
                             :size
                             (add :i :1))))))))))))))))))))))))))))))))))))))
 str-to-chars ((a) (call (object str-to-chars-rec) (:a (size :a) :0)))
+
+# "A couple of characters."
 ascii-newline 10
 ascii-space 32
 ascii-quote 34
@@ -169,11 +311,10 @@ ascii-open-paren 40
 ascii-close-paren 41
 ascii-0 48
 ascii-9 57
-ascii-at 64
 ascii-backslash 92
 ascii-n 110
 
-# "Parsing"
+# "Parsing."
 is-digit ((c)
  (and
   (call (object >=) (:c (word ascii-0)))
@@ -266,9 +407,7 @@ parse ((mode i)
            (call (object =) ((load (load :i :0) :0) (word ascii-close-paren)))
            (new-inner (
             (load :i :1)
-            (new-inner (
-             (object "group")
-             (call (object list-to-array) ((load :a :1)))))))
+            (new-inner ((object "group") (list-to-array (load :a :1))))))
            (crash (object "expected closing paren")))))
         (if (call (object =) (:c (word ascii-close-paren)))
          (object nil)
@@ -347,12 +486,12 @@ compile-olive-expr ((mode locals globals i)
           (if (call (object str=) (:name (object "#")))
            (new-inner (
             (object "new-inner")
-            (call (object list-to-array) (
+            (list-to-array
              (rec (
               (word multiple)
               :locals
               :globals
-              (load (call (object array-to-list) (:c)) :1)))))))
+              (load (call (object array-to-list) (:c)) :1))))))
            (if (call (object str=) (:name (object "\\")))
             (new-inner (
              (object "object")
@@ -363,35 +502,35 @@ compile-olive-expr ((mode locals globals i)
                   (call (object array-to-list) ((load :a :1)))))
                  (crash (object "bad args"))))
               (new-inner (
-               (call (object list-to-array) (:a))
+               (list-to-array :a)
                (rec ((word single) :a :globals (load :c :2))))))))
             (if (call (object str=) (:name (object "rec")))
              (new-inner (
               (object "rec")
-              (call (object list-to-array) (
+              (list-to-array
                (rec (
                 (word multiple)
                 :locals
                 :globals
-                (load (call (object array-to-list) (:c)) :1)))))))
+                (load (call (object array-to-list) (:c)) :1))))))
              (new-inner (
               (object "call")
               (rec ((word single) :locals :globals (load :c :0)))
-              (call (object list-to-array) (
+              (list-to-array
                (rec (
                 (word multiple)
                 :locals
                 :globals
-                (load (call (object array-to-list) (:c)) :1)))))))))))))
+                (load (call (object array-to-list) (:c)) :1))))))))))))
        (new-inner (
         (object "call")
         (rec ((word single) :locals :globals (load :c :0)))
-        (call (object list-to-array) (
+        (list-to-array
          (rec (
           (word multiple)
           :locals
           :globals
-          (load (call (object array-to-list) (:c)) :1))))))))))
+          (load (call (object array-to-list) (:c)) :1)))))))))
     (if (call (object str=) (:tag (object "name")))
      (let name (load :i :1)
       (if (call (object list-has?) (:locals :name))
