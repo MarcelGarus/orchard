@@ -193,10 +193,8 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
         try payload.format_singleline(writer);
         return;
     }
-    if (std.mem.eql(u8, variant, "crash")) {
-        try writer.print("(@crash ", .{});
-        try payload.format_singleline_code(writer);
-        try writer.print(")", .{});
+    if (std.mem.eql(u8, variant, "name")) {
+        try writer.print("{s}", .{payload.get_string()});
         return;
     }
     if (std.mem.eql(u8, variant, "let")) {
@@ -207,60 +205,18 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
         try writer.print(")", .{});
         return;
     }
-    if (std.mem.eql(u8, variant, "name")) {
-        try writer.print("{s}", .{payload.get_string()});
-        return;
-    }
-    if (std.mem.eql(u8, variant, "add")) {
-        try writer.print("(@add ", .{});
+    if (std.mem.eql(u8, variant, "add") or
+        std.mem.eql(u8, variant, "subtract") or
+        std.mem.eql(u8, variant, "multiply") or
+        std.mem.eql(u8, variant, "divide") or
+        std.mem.eql(u8, variant, "modulo") or
+        std.mem.eql(u8, variant, "compare"))
+    {
+        try writer.print("(@{s} ", .{variant});
         try payload.get_field("left").format_singleline_code(writer);
         try writer.print(" ", .{});
         try payload.get_field("right").format_singleline_code(writer);
         try writer.print(")", .{});
-        return;
-    }
-    if (std.mem.eql(u8, variant, "subtract")) {
-        try writer.print("(@subtract ", .{});
-        try payload.get_field("left").format_singleline_code(writer);
-        try writer.print(" ", .{});
-        try payload.get_field("right").format_singleline_code(writer);
-        try writer.print(")", .{});
-        return;
-    }
-    if (std.mem.eql(u8, variant, "multiply")) {
-        try writer.print("(@multiply ", .{});
-        try payload.get_field("left").format_singleline_code(writer);
-        try writer.print(" ", .{});
-        try payload.get_field("right").format_singleline_code(writer);
-        try writer.print(")", .{});
-        return;
-    }
-    if (std.mem.eql(u8, variant, "divide")) {
-        try writer.print("(@divide ", .{});
-        try payload.get_field("left").format_singleline_code(writer);
-        try writer.print(" ", .{});
-        try payload.get_field("right").format_singleline_code(writer);
-        try writer.print(")", .{});
-        return;
-    }
-    if (std.mem.eql(u8, variant, "modulo")) {
-        try writer.print("(@modulo ", .{});
-        try payload.get_field("left").format_singleline_code(writer);
-        try writer.print(" ", .{});
-        try payload.get_field("right").format_singleline_code(writer);
-        try writer.print(")", .{});
-        return;
-    }
-    if (std.mem.eql(u8, variant, "compare")) {
-        try writer.print("(@compare ", .{});
-        try payload.get_field("left").format_singleline_code(writer);
-        try writer.print(" ", .{});
-        try payload.get_field("right").format_singleline_code(writer);
-        try writer.print(")", .{});
-        return;
-    }
-    if (std.mem.eql(u8, variant, "string")) {
-        try payload.format_singleline(writer);
         return;
     }
     if (std.mem.eql(u8, variant, "struct")) {
@@ -355,6 +311,12 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
         try writer.print(")", .{});
         return;
     }
+    if (std.mem.eql(u8, variant, "crash")) {
+        try writer.print("(@crash ", .{});
+        try payload.format_singleline_code(writer);
+        try writer.print(")", .{});
+        return;
+    }
     try writer.print("(@ir ", .{});
     try self.format_singleline(writer);
     try writer.print(")", .{});
@@ -364,7 +326,7 @@ fn singleline_len(self: Value) !usize {
     try self.format_singleline(&len_tracker.writer);
     return len_tracker.count;
 }
-const WIDTH_LIMIT = 120;
+const WIDTH_LIMIT = 100;
 pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) !void {
     if (indentation + try self.singleline_len() <= WIDTH_LIMIT) {
         try self.format_singleline(writer);
@@ -415,9 +377,13 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
                 if (i > 0) try writer.print(" ", .{});
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
-            try writer.print(") [", .{});
-            try self.get_captured().format_singleline(writer);
-            try writer.print("] ", .{});
+            try writer.print(")", .{});
+            try writer.print("\n", .{});
+            for (0..indentation + 1) |_| try writer.print(" ", .{});
+            try writer.print("[", .{});
+            try self.get_captured().format_indented(writer, indentation + 1);
+            try writer.print("]\n", .{});
+            for (0..indentation + 1) |_| try writer.print(" ", .{});
             const ir = self.get_ir();
             if (ir.size() > 0) {
                 try Value.from(ir).format_singleline_code(writer);

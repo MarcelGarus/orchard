@@ -1119,7 +1119,7 @@ lower-pear (\ (mode ir locals)
                              (: make-str-cmp
                               (\ (name i)
                                (if (= i 0)
-                                (%object 1)
+                                (%word 1)
                                 (%and
                                  (rec name (- i 1))
                                  (%compare
@@ -1139,7 +1139,7 @@ lower-pear (\ (mode ir locals)
                                   (%load (%name "fields") (%name "i"))
                                   (%if
                                    (%equal?
-                                    (%size (%name "a"))
+                                    (%size (%name "item"))
                                     (%word (size name)))
                                    (%if (make-str-cmp name (size name))
                                     (%name "i")
@@ -1389,130 +1389,24 @@ find-captured (\ (mode ir bound captured)
              (crash (# "todo find-captured" ir)))))))))))))
   (if (= mode :list)
    (if (nil? ir)
-    nil
+    captured
     (rec :expr (.0 ir) bound (rec :list (.1 ir) bound captured)))
    (crash (# "bad captured vars mode" mode)))))
 wrap-params (\ (params)
  (if (nil? params) nil (# ('string (.0 params)) (rec (.1 params)))))
-wrap-captured (\ (mode ir captured)
- (if (= mode :expr)
-  (: tag (variant ir)
-   (: payload (payload ir)
-    (if (str= tag "value")
-     ir
-     (if (str= tag "name")
-      (: name (unwrap payload)
-       (if (list-contains captured name)
-        (| "field"
-         (&2
-          "of" (| "name" ('string "@captured"))
-          "name" (| "value" ('string name))))
-        ir))
-      (if (str= tag "let")
-       (| "let"
-        (&3
-         "name" (.name payload)
-         "definition" (rec :expr (.definition payload) captured)
-         "body"
-          (rec
-           :expr
-           (.body payload)
-           (list-remove
-            captured
-            (: name (.name payload)
-             (if ('string? name)
-              (.1 name)
-              (crash "Let needs a string as name.")))))))
-       (if (str= tag "add")
-        (| "add"
-         (&2
-          "left" (rec :expr (.left payload) captured)
-          "right" (rec :expr (.right payload) captured)))
-        (if (str= tag "subtract")
-         (| "subtract"
-          (&2
-           "left" (rec :expr (.left payload) captured)
-           "right" (rec :expr (.right payload) captured)))
-         (if (str= tag "multiply")
-          (| "multiply"
-           (&2
-            "left" (rec :expr (.left payload) captured)
-            "right" (rec :expr (.right payload) captured)))
-          (if (str= tag "divide")
-           (| "divide"
-            (&2
-             "left" (rec :expr (.left payload) captured)
-             "right" (rec :expr (.right payload) captured)))
-           (if (str= tag "modulo")
-            (| "modulo"
-             (&2
-              "left" (rec :expr (.left payload) captured)
-              "right" (rec :expr (.right payload) captured)))
-            (if (str= tag "shift_left")
-             (| "shift_left"
-              (&2
-               "left" (rec :expr (.left payload) captured)
-               "right" (rec :expr (.right payload) captured)))
-             (if (str= tag "shift_right")
-              (| "shift_right"
-               (&2
-                "left" (rec :expr (.left payload) captured)
-                "right" (rec :expr (.right payload) captured)))
-              (if (str= tag "and")
-               (| "and"
-                (&2
-                 "left" (rec :expr (.left payload) captured)
-                 "right" (rec :expr (.right payload) captured)))
-               (if (str= tag "or")
-                (| "or"
-                 (&2
-                  "left" (rec :expr (.left payload) captured)
-                  "right" (rec :expr (.right payload) captured)))
-                (if (str= tag "xor")
-                 (| "xor"
-                  (&2
-                   "left" (rec :expr (.left payload) captured)
-                   "right" (rec :expr (.right payload) captured)))
-                 (if (str= tag "compare")
-                  (| "compare"
-                   (&2
-                    "left" (rec :expr (.left payload) captured)
-                    "right" (rec :expr (.right payload) captured)))
-                  (if (str= tag "struct")
-                   (| "struct"
-                    (rec :fields payload captured)
-                   )
-                   (if (str= tag "field")
-                    (| "field"
-                     (&2
-                      "of" (rec :expr (.of payload) captured)
-                      "name" (rec :expr (.name payload) captured)))
-                    (if (str= tag "enum")
-                     (| "enum"
-                      (&2
-                       "variant" (.variant payload)
-                       "payload" (rec :expr (.payload payload) captured)))
-                     (if (str= tag "switch")
-                      (rec :cases payload captured)
-                      (if (str= tag "call")
-                       (| "call"
-                        (&2
-                         "function" (rec :expr (.function payload) captured)
-                         "arguments"
-                          (flatten-to-inner
-                           (#
-                            (# "array")
-                            (rec
-                             :list
-                             (.1 (array-to-list (.arguments payload)))
-                             captured)))))
-                       (crash (# "todo wrap-captured" ir))
-                       )))))))))))))))))))))
-  (if (= mode :list)
-   (if (nil? ir)
-    nil
-    (# (rec :expr (.0 ir) captured) (rec :list (.1 ir) captured)))
-   (crash (# "bad wrap-captured mode" mode)))))
+wrap-with-captured (\ (ir captured)
+ (if (nil? captured)
+  ir
+  (: name (.0 captured)
+   (| "let"
+    (&3
+     "name" ('string name)
+     "definition"
+      (| "field"
+       (&2
+        "of" (| "name" ('string "@captured"))
+        "name" (| "value" ('string name))))
+     "body" (rec ir (.1 captured)))))))
 create-captured-values (\ (captured)
  (if (nil? captured)
   nil
@@ -1590,7 +1484,7 @@ analyze-pear (\ (mode ast)
                      "arguments"
                       (| "value"
                        (flatten-to-inner (# (# "array") (wrap-params params))))
-                     "body" (| "value" (wrap-captured :expr body captured))
+                     "body" (| "value" (wrap-with-captured body captured))
                      "captured" (create-captured-struct captured)))))))
                (if (= (first-char name) "@")
                 (if (str= name "@add")

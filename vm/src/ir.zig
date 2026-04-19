@@ -20,10 +20,11 @@ pub const Fun = struct {
     }
 
     pub fn format(fun: Fun, writer: *Writer) !void {
-        try writer.print("fun", .{});
-        for (fun.args()) |arg| try writer.print(" {s}", .{get_symbol(arg)});
-        try writer.print("\n", .{});
-        (Expr{ .obj = fun.obj.child(1) }).format_indented(writer, 1) catch return error.WriteFailed;
+        try writer.print("fun\n", .{});
+        try writer.print("{f}", .{fun.obj});
+        // for (fun.args()) |arg| try writer.print(" {s}", .{get_symbol(arg)});
+        // try writer.print("\n", .{});
+        // (Expr{ .obj = fun.obj.child(1) }).format_indented(writer, 1) catch return error.WriteFailed;
     }
 };
 
