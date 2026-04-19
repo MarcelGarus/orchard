@@ -55,20 +55,20 @@ fn run() !void {
     const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
+    const objects_code = try std.fs.cwd().readFileAlloc(ally, "src/bootstrap.objects", 100000000000);
+    const olive_code = try std.fs.cwd().readFileAlloc(ally, "src/bootstrap.olive", 100000000000);
+    const pear_code = try std.fs.cwd().readFileAlloc(ally, "src/bootstrap.pear", 100000000000);
+
     const compile_olive = step: {
         var step = try BootstrapStep.start("Loading the Olive compiler.", &vm);
         defer step.end();
-        break :step Val.from(try objects_compiler.create(
-            ally,
-            vm.get_heap(),
-            @embedFile("bootstrap.objects"),
-        ));
+        break :step Val.from(try objects_compiler.create(ally, vm.get_heap(), objects_code));
     };
     const olive = step: {
         var step = try BootstrapStep.start("Compiling Olive.", &vm);
         defer step.end();
         const result = try compile_olive.call(&vm, &.{
-            try Val.new_string(&heap, @embedFile("bootstrap.olive")),
+            try Val.new_string(&heap, olive_code),
         });
         break :step Val.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
@@ -76,36 +76,32 @@ fn run() !void {
         var step = try BootstrapStep.start("Self-compiling Olive.", &vm);
         defer step.end();
         break :step try olive.get_field("compile_olive").call(&vm, &.{
-            try Val.new_string(&heap, @embedFile("bootstrap.olive")),
+            try Val.new_string(&heap, olive_code),
         });
     };
     const olive_self_hosted_2 = step: {
         var step = try BootstrapStep.start("Self-compiling Olive.", &vm);
         defer step.end();
         break :step try olive_self_hosted.get_field("compile_olive").call(&vm, &.{
-            try Val.new_string(&heap, @embedFile("bootstrap.olive")),
+            try Val.new_string(&heap, olive_code),
         });
     };
-    const better_olive = step: {
+    _ = {
         var step = try BootstrapStep.start("Confirming self-hosting.", &vm);
         defer step.end();
         if (!is_same(olive_self_hosted.obj, olive_self_hosted_2.obj)) {
             @panic("Not the same.");
         }
-        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_self_hosted.obj));
     };
     const compile_pear = step: {
         var step = try BootstrapStep.start("Keeping only Pear compiler.", &vm);
         defer step.end();
-        break :step Val.from(try vm.garbage_collect(start_of_heap, better_olive.get_field("compile_pear").obj));
+        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_self_hosted_2.get_field("compile_pear").obj));
     };
     const pear = step: {
         var step = try BootstrapStep.start("Compiling Pear.", &vm);
         defer step.end();
-        const result =
-            try compile_pear.call(&vm, &.{
-                try Val.new_string(&heap, @embedFile("bootstrap.pear")),
-            });
+        const result = try compile_pear.call(&vm, &.{try Val.new_string(&heap, pear_code)});
         break :step Val.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
 

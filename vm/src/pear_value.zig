@@ -320,13 +320,29 @@ pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
         return;
     }
     if (std.mem.eql(u8, variant, "make_function")) {
-        try writer.print("(@function ", .{});
-        try payload.get_field("arguments").format_singleline_code(writer);
-        try writer.print(" ", .{});
-        try payload.get_field("captured").format_singleline_code(writer);
-        try writer.print(" ", .{});
-        try payload.get_field("body").format_singleline_code(writer);
-        try writer.print(")", .{});
+        const arguments = payload.get_field("arguments");
+        const captured = payload.get_field("captured");
+        const body = payload.get_field("body");
+        if (std.mem.eql(u8, arguments.get_variant(), "value") and std.mem.eql(u8, body.get_variant(), "value")) {
+            try writer.print("(\\ (", .{});
+            for (arguments.get_payload().get_items(), 0..) |arg, i| {
+                if (i > 0) try writer.print(" ", .{});
+                try writer.print("{s}", .{arg.get_string()});
+            }
+            try writer.print(") [", .{});
+            try captured.format_singleline_code(writer);
+            try writer.print("] ", .{});
+            try body.get_payload().format_singleline_code(writer);
+            try writer.print(")", .{});
+        } else {
+            try writer.print("(@function ", .{});
+            try arguments.format_singleline_code(writer);
+            try writer.print(" ", .{});
+            try captured.format_singleline_code(writer);
+            try writer.print(" ", .{});
+            try body.format_singleline_code(writer);
+            try writer.print(")", .{});
+        }
         return;
     }
     if (std.mem.eql(u8, variant, "call")) {

@@ -1,4 +1,12 @@
-# "Olive: Optimizable Lisp Implementing Various Expressions"
+# "Olive: Optimizable Lisp Implementing Various Expressions
+
+ TODO:
+ - have validate-pear-ir function so that the lowering doesn't need to handle
+   edge cases
+ - accept optimize-pear function to optimize on the level of pear-ir? would
+   enable self-hosted optimizations
+ - make optimization cheaper: keeping subtrees optimized, shallow optimizations,
+   no inlining if pear had the chance to optimize, etc."
 
 %word (\ (w) (# "word" w))
 %object (\ (o) (# "object" o))
@@ -236,10 +244,20 @@ rec? (\ (ir) (str=3 (.0 ir) "rec"))
 gc? (\ (ir) (str=2 (.0 ir) "gc"))
 crash? (\ (ir) (str=5 (.0 ir) "crash"))
 unreachable? (\ (ir) (str=11 (.0 ir) "unreachable"))
-_ "Some recursive functions can operate in one of multiple modes."
-:fun 0
-:expr 1
-:list 2
+
+# "Some recursive functions can operate in one of multiple modes. These are the
+   modes."
+:fun "fun"
+:expr "expr"
+:list "list"
+:let "let"
+:fields "fields"
+:field-keys "keys"
+:field-values "values"
+:cases "cases"
+:params "params"
+
+# ""
 has-rec (\ (mode ir)
  (if (= mode :expr)
   (if (or-4 (word? ir) (object? ir) (name? ir) (unreachable? ir))
@@ -708,14 +726,12 @@ parse-name-rec (\ (input)
    (if (is-name c)
     (: r (rec (.1 input)) (# (.0 r) (# c (.1 r))))
     (# input nil)))))
-:single 0
-:multiple 1
 parse (\ (mode input)
- (if (= mode :multiple)
-  (: r (rec :single input)
+ (if (= mode :list)
+  (: r (rec :expr input)
    (if (nil? r)
     (# input nil)
-    (: rest (rec :multiple (.0 r)) (# (.0 rest) (# (.1 r) (.1 rest))))))
+    (: rest (rec :list (.0 r)) (# (.0 rest) (# (.1 r) (.1 rest))))))
   (: input (consume-whitespace input)
    (if (nil? input)
     nil
@@ -728,7 +744,7 @@ parse (\ (mode input)
         (: r (parse-string-rec (.1 input))
          (# (.0 r) (# "string" (chars-to-str (.1 r)))))
         (if (= c ascii-open-paren)
-         (: group-res (rec :multiple (.1 input))
+         (: group-res (rec :list (.1 input))
           (: input (consume-whitespace (.0 group-res))
            (if (= (.0 input) ascii-close-paren)
             (# (.1 input) (# "group" (flatten-to-inner (.1 group-res))))
@@ -755,12 +771,12 @@ globals-lookup (\ (globals name)
   (: global (.0 globals)
    (if (str= (.0 global) name) (.1 global) (rec (.1 globals) name)))))
 compile-olive-expr (\ (mode locals globals ast)
- (if (= mode :multiple)
+ (if (= mode :list)
   (if (nil? ast)
    nil
    (#
-    (rec :single locals globals (.0 ast))
-    (rec :multiple locals globals (.1 ast))))
+    (rec :expr locals globals (.0 ast))
+    (rec :list locals globals (.1 ast))))
   (if (group? ast)
    (: children (.1 ast)
     (if (= (size children) 0)
@@ -775,19 +791,19 @@ compile-olive-expr (\ (mode locals globals ast)
            (if (str= (.0 name-ast) "name") (.1 name-ast) (crash "bad let")))
           (%let
            name
-           (rec :single locals globals (.2 children))
-           (rec :single (# name locals) globals (.3 children)))))
+           (rec :expr locals globals (.2 children))
+           (rec :expr (# name locals) globals (.3 children)))))
         (if (str=2 name "if")
          (if (!= (size children) 4)
           (crash "bad if")
           (%if
-           (%load-0 (rec :single locals globals (.1 children)))
-           (rec :single locals globals (.2 children))
-           (rec :single locals globals (.3 children))))
+           (%load-0 (rec :expr locals globals (.1 children)))
+           (rec :expr locals globals (.2 children))
+           (rec :expr locals globals (.3 children))))
          (if (str=1 name "#")
           (%new-inner
            (flatten-to-inner
-            (rec :multiple locals globals (.1 (array-to-list children)))))
+            (rec :list locals globals (.1 (array-to-list children)))))
           (if (str=1 name "\\")
            (%object
             (: args
@@ -798,23 +814,23 @@ compile-olive-expr (\ (mode locals globals ast)
              (optimize :fun
               (#
                (flatten-to-inner args)
-               (rec :single args globals (.2 children))))))
+               (rec :expr args globals (.2 children))))))
            (if (str=3 name "rec")
             (%rec
              (flatten-to-inner
-              (rec :multiple locals globals (.1 (array-to-list children)))))
+              (rec :list locals globals (.1 (array-to-list children)))))
             (%call
-             (rec :single locals globals (.0 children))
+             (rec :expr locals globals (.0 children))
              (flatten-to-inner
               (rec
-               :multiple
+               :list
                locals
                globals
                (.1 (array-to-list children)))))))))))
       (%call
-       (rec :single locals globals (.0 children))
+       (rec :expr locals globals (.0 children))
        (flatten-to-inner
-        (rec :multiple locals globals (.1 (array-to-list children))))))))
+        (rec :list locals globals (.1 (array-to-list children))))))))
    (if (name? ast)
     (: name (.1 ast)
      (if (list-has? locals name)
@@ -834,7 +850,7 @@ compile-olive (\ (globals asts)
    (: rest (.1 asts)
     (if (nil? rest)
      (crash "expected def")
-     (: ir (compile-olive-expr :single nil globals (.0 rest))
+     (: ir (compile-olive-expr :expr nil globals (.0 rest))
       (: value ((# (#) ir))
        (rec (# (# name value) globals) (.1 rest)))))))))
 
@@ -953,15 +969,9 @@ unwrap-args (\ (value)
  (if ('array? value)
   (flatten-to-inner (unwrap-args-rec (.1 (array-to-list value))))
   (crash ('string "make_function needs an arguments array."))))
-:let 2
-:fields 3
-:field-keys 4
-:field-values 5
-:cases 6
-:params 7
 lower-pear (\ (mode ir locals) (crash (# "lower pear" ir)))
 lower-pear (\ (mode ir locals)
- (if (= mode :single)
+ (if (= mode :expr)
   (if ('enum? ir)
    (: tag (variant ir)
     (: payload (payload ir)
@@ -979,33 +989,33 @@ lower-pear (\ (mode ir locals)
            (if ('string? name)
             (.1 name)
             (crash ('string "Let needs a name."))))
-          (rec :single (.definition payload) locals)
-          (rec :single (.body payload) locals))
+          (rec :expr (.definition payload) locals)
+          (rec :expr (.body payload) locals))
          (crash ('string "Let needs a struct.")))
         (if (str=3 tag "add")
-         (%let "@a" (rec :single (.left payload) locals)
-          (%let "@b" (rec :single (.right payload) locals)
+         (%let "@a" (rec :expr (.left payload) locals)
+          (%let "@b" (rec :expr (.right payload) locals)
            (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
             (%new-int
              (%add (%load-int (%name "@a")) (%load-int (%name "@b"))))
             (%crash (%object ('string "You can only add ints."))))))
          (if (str=8 tag "subtract")
-          (%let "@a" (rec :single (.left payload) locals)
-           (%let "@b" (rec :single (.right payload) locals)
+          (%let "@a" (rec :expr (.left payload) locals)
+           (%let "@b" (rec :expr (.right payload) locals)
             (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
              (%new-int
               (%subtract (%load-int (%name "@a")) (%load-int (%name "@b"))))
              (%crash (%object ('string "You can only subtract ints."))))))
           (if (str=8 tag "multiply")
-           (%let "@a" (rec :single (.left payload) locals)
-            (%let "@b" (rec :single (.right payload) locals)
+           (%let "@a" (rec :expr (.left payload) locals)
+            (%let "@b" (rec :expr (.right payload) locals)
              (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
               (%new-int
                (%multiply (%load-int (%name "@a")) (%load-int (%name "@b"))))
               (%crash (%object ('string "You can only multiply ints."))))))
            (if (str=6 tag "divide")
-            (%let "@a" (rec :single (.left payload) locals)
-             (%let "@b" (rec :single (.right payload) locals)
+            (%let "@a" (rec :expr (.left payload) locals)
+             (%let "@b" (rec :expr (.right payload) locals)
               (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                (%let "@a" (%load-int (%name "@a"))
                 (%let "@b" (%load-int (%name "@b"))
@@ -1014,8 +1024,8 @@ lower-pear (\ (mode ir locals)
                   (%crash (%object ('string "You can not divide by zero."))))))
                (%crash (%object ('string "You can only divide ints."))))))
             (if (str=6 tag "modulo")
-             (%let "@a" (rec :single (.left payload) locals)
-              (%let "@b" (rec :single (.right payload) locals)
+             (%let "@a" (rec :expr (.left payload) locals)
+              (%let "@b" (rec :expr (.right payload) locals)
                (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                 (%let "@a" (%load-int (%name "@a"))
                  (%let "@b" (%load-int (%name "@b"))
@@ -1024,8 +1034,8 @@ lower-pear (\ (mode ir locals)
                    (%crash (%object ('string "You can not divide by zero."))))))
                 (%crash (%object ('string "You can only modulo ints."))))))
              (if (str=10 tag "shift_left")
-              (%let "@a" (rec :single (.left payload) locals)
-               (%let "@b" (rec :single (.right payload) locals)
+              (%let "@a" (rec :expr (.left payload) locals)
+               (%let "@b" (rec :expr (.right payload) locals)
                 (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                  (%new-int
                   (%shift-left
@@ -1033,8 +1043,8 @@ lower-pear (\ (mode ir locals)
                    (%load-int (%name "@b"))))
                  (%crash (%object ('string "You can only shift_left ints."))))))
               (if (str=11 tag "shift_right")
-               (%let "@a" (rec :single (.left payload) locals)
-                (%let "@b" (rec :single (.right payload) locals)
+               (%let "@a" (rec :expr (.left payload) locals)
+                (%let "@b" (rec :expr (.right payload) locals)
                  (%if
                   (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                   (%new-int
@@ -1044,32 +1054,32 @@ lower-pear (\ (mode ir locals)
                   (%crash
                    (%object ('string "You can only shift_right ints."))))))
                (if (str=3 tag "and")
-                (%let "@a" (rec :single (.left payload) locals)
-                 (%let "@b" (rec :single (.right payload) locals)
+                (%let "@a" (rec :expr (.left payload) locals)
+                 (%let "@b" (rec :expr (.right payload) locals)
                   (%if
                    (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                    (%new-int
                     (%and (%load-int (%name "@a")) (%load-int (%name "@b"))))
                    (%crash (%object ('string "You can only and ints."))))))
                 (if (str=2 tag "or")
-                 (%let "@a" (rec :single (.left payload) locals)
-                  (%let "@b" (rec :single (.right payload) locals)
+                 (%let "@a" (rec :expr (.left payload) locals)
+                  (%let "@b" (rec :expr (.right payload) locals)
                    (%if
                     (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                     (%new-int
                      (%or (%load-int (%name "@a")) (%load-int (%name "@b"))))
                     (%crash (%object ('string "You can only or ints."))))))
                  (if (str=3 tag "xor")
-                  (%let "@a" (rec :single (.left payload) locals)
-                   (%let "@b" (rec :single (.right payload) locals)
+                  (%let "@a" (rec :expr (.left payload) locals)
+                   (%let "@b" (rec :expr (.right payload) locals)
                     (%if
                      (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                      (%new-int
                       (%xor (%load-int (%name "@a")) (%load-int (%name "@b"))))
                      (%crash (%object ('string "You can only xor ints."))))))
                   (if (str=7 tag "compare")
-                   (%let "@a" (rec :single (.left payload) locals)
-                    (%let "@b" (rec :single (.right payload) locals)
+                   (%let "@a" (rec :expr (.left payload) locals)
+                    (%let "@b" (rec :expr (.right payload) locals)
                      (%if
                       (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                       (%let "result"
@@ -1099,8 +1109,8 @@ lower-pear (\ (mode ir locals)
                       (crash ('string "Struct needs an array of fields."))))
                     (if (str=5 tag "field")
                      (if ('struct? payload)
-                      (: of (rec :single (.of payload) locals)
-                       (: name (rec :single (.name payload) locals)
+                      (: of (rec :expr (.of payload) locals)
+                       (: name (rec :expr (.name payload) locals)
                         (%let "@of" of
                          (if (object? name)
                           (%if (%'struct? (%name "@of"))
@@ -1174,13 +1184,13 @@ lower-pear (\ (mode ir locals)
                          (if ('string? variant)
                           (%new-inner (#
                            (%object (# "enum" (.1 variant)))
-                           (rec :single payload locals)))
+                           (rec :expr payload locals)))
                           (crash ('string "Enum needs a string variant.")))))
                        (crash ('string "Enum needs a struct.")))
                       (if (str=6 tag "switch")
                        (if ('struct? payload)
                         (%let "(condition)"
-                         (rec :single (.condition payload) locals)
+                         (rec :expr (.condition payload) locals)
                          (%if
                           (%'enum? (%name "(condition)"))
                           (: cases (.cases payload)
@@ -1201,14 +1211,14 @@ lower-pear (\ (mode ir locals)
                            (#
                             (%object (# "array"))
                             (rec
-                             :multiple
+                             :list
                              (.1 (array-to-list payload))
                              locals))))
                          (crash ('string "Array needs an array.")))
                         (if (str=3 tag "get")
                          (if ('struct? payload)
-                          (%let "(array)" (rec :single (.array payload) locals)
-                           (%let "(index)" (rec :single (.index payload) locals)
+                          (%let "(array)" (rec :expr (.array payload) locals)
+                           (%let "(index)" (rec :expr (.index payload) locals)
                             (%if
                              (%and
                               (%'array? (%name "(array)"))
@@ -1229,11 +1239,11 @@ lower-pear (\ (mode ir locals)
                          (if (str=13 tag "make_function")
                           (%new-inner (#
                            (: args
-                            (: args (rec :single (.arguments payload) locals)
+                            (: args (rec :expr (.arguments payload) locals)
                              (if (object? args)
                               (%object (unwrap-args (.1 args)))
                               (%call (%object unwrap-args) (# args))))
-                            (: body (rec :single (.body payload) locals)
+                            (: body (rec :expr (.body payload) locals)
                              (if (and (object? args) (object? body))
                               (%new-inner (#
                                (%object "function")
@@ -1244,15 +1254,15 @@ lower-pear (\ (mode ir locals)
                                  (list-concat
                                   (array-to-list (.1 args))
                                   (# "@captured" nil)))
-                                (rec :single (.1 body) nil)))))
+                                (rec :expr (.1 body) nil)))))
                               (crash "todo call lower-pear at so-called runtime"))))
-                           (rec :single (.captured payload) locals)))
+                           (rec :expr (.captured payload) locals)))
                           (if (str=4 tag "call")
                            (if ('struct? payload)
                             (: fun (.function payload)
                              (: args (.arguments payload)
                               (if ('array? args)
-                               (%let "@a" (rec :single fun locals)
+                               (%let "@a" (rec :expr fun locals)
                                 (%if (%'function? (%name "@a"))
                                  (%if
                                   (%equal?
@@ -1263,7 +1273,7 @@ lower-pear (\ (mode ir locals)
                                    (flatten-to-inner
                                     (list-concat
                                      (rec
-                                      :multiple
+                                      :list
                                       (.1 (array-to-list args))
                                       locals)
                                      (# (%load-1 (%name "@a")) nil))))
@@ -1278,10 +1288,10 @@ lower-pear (\ (mode ir locals)
                             (crash ('string "Call needs a struct.")))
                            (crash ('string (# "Unknown IR node." ir)))))))))))))))))))))))))))
    (crash ('string (# "IR nodes should be enums." ir))))
-  (if (= mode :multiple)
+  (if (= mode :list)
    (if (nil? ir)
     nil
-    (# (rec :single (.0 ir) locals) (rec :multiple (.1 ir) locals)))
+    (# (rec :expr (.0 ir) locals) (rec :list (.1 ir) locals)))
    (if (= mode :field-keys)
     (if (nil? ir)
      nil
@@ -1300,7 +1310,7 @@ lower-pear (\ (mode ir locals)
       (#
        (: item (.0 ir)
         (if ('struct? item)
-         (rec :single (.value item) locals)
+         (rec :expr (.value item) locals)
          (crash "Field needs to be a struct.")))
        (rec :field-values (.1 ir) locals)))
      (if (= mode :cases)
@@ -1308,7 +1318,7 @@ lower-pear (\ (mode ir locals)
        (: default (.1 ir)
         (if (nil? cases)
          (if ('some? default)
-          (rec :single (.1 default) locals)
+          (rec :expr (.1 default) locals)
           (if ('none? default)
            (%crash (%object ('string "Unhandled variant.")))
            (crash "Switch default should be some or none.")))
@@ -1328,21 +1338,21 @@ lower-pear (\ (mode ir locals)
                    (%load-1 (%load-0 (%name "(condition)")))
                    (%object (.1 variant))))
                   (%let payload (%load-1 (%name "(condition)"))
-                   (rec :single body locals))
+                   (rec :expr body locals))
                   (rec :cases (# (.1 cases) default) locals)))
                 (if ('none? payload)
                  (%if
                   (%call (%object str=) (#
                    (%load-1 (%load-0 (%name "(condition)")))
                    (%object (.1 variant))))
-                  (rec :single body locals)
+                  (rec :expr body locals)
                   (rec :cases (# (.1 cases) default) locals))
                  (crash "Case payload must be some or none.")))
                (crash "Case variant must be a string.")))))
            (crash "Switch cases must be structs."))))))
       (crash (# "todo mode" mode))))))))
 find-captured (\ (mode ir bound captured)
- (if (= mode :single)
+ (if (= mode :expr)
   (: tag (variant ir)
    (: payload (payload ir)
     (if (str= tag "value")
@@ -1353,23 +1363,39 @@ find-captured (\ (mode ir bound captured)
         captured
         (if (list-contains captured name) captured (# name captured))))
       (if (str= tag "let")
-       (rec :single (.definition payload) bound
-        (rec :single (.body payload) bound captured))
-       (if (str= tag "struct")
-        (rec :fields payload bound captured)
-        (if (str= tag "field")
-         (rec :single (.of payload) bound
-          (rec :single (.name payload) bound captured))
-         (if (str= tag "enum")
-          (rec :single (.variant payload) bound
-           (rec :single (.payload payload)))
-          (if (str= tag "switch")
-           (rec :cases payload bound captured)
-           (crash (# "todo find-captured" ir))
-          )))))))))
-  (crash "bad captured vars mode")))
+       (rec :expr (.definition payload) bound
+        (rec :expr (.body payload) bound captured))
+       (if
+        (or-11
+         (str= tag "add") (str= tag "subtract") (str= tag "multiply")
+         (str= tag "divide") (str= tag "modulo") (str= tag "shift_left")
+         (str= tag "shift_right") (str= tag "and") (str= tag "or")
+         (str= tag "xor") (str= tag "compare"))
+        (rec :expr (.left payload) bound
+         (rec :expr (.right payload) bound captured))
+        (if (str= tag "struct")
+         (rec :fields payload bound captured)
+         (if (str= tag "field")
+          (rec :expr (.of payload) bound
+           (rec :expr (.name payload) bound captured))
+          (if (str= tag "enum")
+           (rec :expr (.variant payload) bound
+            (rec :expr (.payload payload)))
+           (if (str= tag "switch")
+            (rec :cases payload bound captured)
+            (if (str= tag "call")
+             (rec :expr (.function payload) bound
+              (rec :list (.1 (array-to-list (.arguments payload))) bound captured))
+             (crash (# "todo find-captured" ir)))))))))))))
+  (if (= mode :list)
+   (if (nil? ir)
+    nil
+    (rec :expr (.0 ir) bound (rec :list (.1 ir) bound captured)))
+   (crash (# "bad captured vars mode" mode)))))
+wrap-params (\ (params)
+ (if (nil? params) nil (# ('string (.0 params)) (rec (.1 params)))))
 wrap-captured (\ (mode ir captured)
- (if (= mode :single)
+ (if (= mode :expr)
   (: tag (variant ir)
    (: payload (payload ir)
     (if (str= tag "value")
@@ -1386,10 +1412,10 @@ wrap-captured (\ (mode ir captured)
        (| "let"
         (&3
          "name" (.name payload)
-         "definition" (rec :single (.definition payload) captured)
+         "definition" (rec :expr (.definition payload) captured)
          "body"
           (rec
-           :single
+           :expr
            (.body payload)
            (list-remove
             captured
@@ -1397,25 +1423,96 @@ wrap-captured (\ (mode ir captured)
              (if ('string? name)
               (.1 name)
               (crash "Let needs a string as name.")))))))
-       (if (str= tag "struct")
-        (| "struct"
-         (rec :fields payload captured)
-        )
-        (if (str= tag "field")
-         (| "field"
+       (if (str= tag "add")
+        (| "add"
+         (&2
+          "left" (rec :expr (.left payload) captured)
+          "right" (rec :expr (.right payload) captured)))
+        (if (str= tag "subtract")
+         (| "subtract"
           (&2
-           "of" (rec :single (.of payload) captured)
-           "name" (rec :single (.name payload) captured)))
-         (if (str= tag "enum")
-          (| "enum"
+           "left" (rec :expr (.left payload) captured)
+           "right" (rec :expr (.right payload) captured)))
+         (if (str= tag "multiply")
+          (| "multiply"
            (&2
-            "variant" (.variant payload)
-            "payload" (rec :single (.payload payload) captured)))
-          (if (str= tag "switch")
-           (rec :cases payload captured)
-           (crash (# "todo wrap-captured" ir))
-           )))))))))
-  (crash "bad wrap-captured mode")))
+            "left" (rec :expr (.left payload) captured)
+            "right" (rec :expr (.right payload) captured)))
+          (if (str= tag "divide")
+           (| "divide"
+            (&2
+             "left" (rec :expr (.left payload) captured)
+             "right" (rec :expr (.right payload) captured)))
+           (if (str= tag "modulo")
+            (| "modulo"
+             (&2
+              "left" (rec :expr (.left payload) captured)
+              "right" (rec :expr (.right payload) captured)))
+            (if (str= tag "shift_left")
+             (| "shift_left"
+              (&2
+               "left" (rec :expr (.left payload) captured)
+               "right" (rec :expr (.right payload) captured)))
+             (if (str= tag "shift_right")
+              (| "shift_right"
+               (&2
+                "left" (rec :expr (.left payload) captured)
+                "right" (rec :expr (.right payload) captured)))
+              (if (str= tag "and")
+               (| "and"
+                (&2
+                 "left" (rec :expr (.left payload) captured)
+                 "right" (rec :expr (.right payload) captured)))
+               (if (str= tag "or")
+                (| "or"
+                 (&2
+                  "left" (rec :expr (.left payload) captured)
+                  "right" (rec :expr (.right payload) captured)))
+                (if (str= tag "xor")
+                 (| "xor"
+                  (&2
+                   "left" (rec :expr (.left payload) captured)
+                   "right" (rec :expr (.right payload) captured)))
+                 (if (str= tag "compare")
+                  (| "compare"
+                   (&2
+                    "left" (rec :expr (.left payload) captured)
+                    "right" (rec :expr (.right payload) captured)))
+                  (if (str= tag "struct")
+                   (| "struct"
+                    (rec :fields payload captured)
+                   )
+                   (if (str= tag "field")
+                    (| "field"
+                     (&2
+                      "of" (rec :expr (.of payload) captured)
+                      "name" (rec :expr (.name payload) captured)))
+                    (if (str= tag "enum")
+                     (| "enum"
+                      (&2
+                       "variant" (.variant payload)
+                       "payload" (rec :expr (.payload payload) captured)))
+                     (if (str= tag "switch")
+                      (rec :cases payload captured)
+                      (if (str= tag "call")
+                       (| "call"
+                        (&2
+                         "function" (rec :expr (.function payload) captured)
+                         "arguments"
+                          (flatten-to-inner
+                           (#
+                            (# "array")
+                            (rec
+                             :list
+                             (.1 (array-to-list (.arguments payload)))
+                             captured)))))
+                       (crash (# "todo wrap-captured" ir))
+                       )))))))))))))))))))))
+  (if (= mode :list)
+   (if (nil? ir)
+    nil
+    (# (rec :expr (.0 ir) captured) (rec :list (.1 ir) captured)))
+   (crash (# "bad wrap-captured mode" mode)))))
 create-captured-values (\ (captured)
  (if (nil? captured)
   nil
@@ -1432,7 +1529,7 @@ create-captured-struct (\ (captured)
  )
 )
 analyze-pear (\ (mode ast)
- (if (= mode :single)
+ (if (= mode :expr)
   (if (group? ast)
    (: children (.1 ast)
     (: first (if (nil? children) (crash "empty group") (.0 children))
@@ -1442,7 +1539,7 @@ analyze-pear (\ (mode ast)
         (if (str=1 name ":")
          (if (is-odd (size children)) (crash "bad let") (rec :let rest))
          (if (str=2 name "[]")
-          (| "array" ('array (rec :multiple rest)))
+          (| "array" ('array (rec :list rest)))
           (if (str=1 name "&")
            (| "struct" ('array (rec :fields rest)))
            (if (= (first-char name) ".")
@@ -1450,7 +1547,7 @@ analyze-pear (\ (mode ast)
              (crash "bad field")
              (| "field"
               (&2
-               "of" (rec :single (.1 children))
+               "of" (rec :expr (.1 children))
                "name"
                 (| "value" ('string (chars-to-str (.1 (str-to-chars name))))))))
             (if (str=1 name "|")
@@ -1466,12 +1563,12 @@ analyze-pear (\ (mode ast)
                  (if (= (size children) 3)
                   (&2
                    "variant" variant
-                   "payload" (rec :single (.0 (.1 rest))))
+                   "payload" (rec :expr (.0 (.1 rest))))
                   (crash "bad enum"))))))
              (if (str=1 name "%")
               (if (is-odd (size children))
                (crash "bad switch")
-               (: condition (rec :single (.1 children))
+               (: condition (rec :expr (.1 children))
                 (: cases (rec :cases (.1 rest))
                  (| "switch"
                   (&3
@@ -1486,109 +1583,109 @@ analyze-pear (\ (mode ast)
                  (if (group? (.1 children))
                   (rec :params (array-to-list (.1 (.1 children))))
                   (crash "bad function"))
-                 (: body (rec :single (.2 children))
-                  (: captured (find-captured :single body params (#))
+                 (: body (rec :expr (.2 children))
+                  (: captured (find-captured :expr body params (#))
                    (| "make_function"
                     (&3
                      "arguments"
-                      (| "value" (flatten-to-inner (# (# "array") params)))
-                     "body" (| "value" (wrap-captured :single body captured))
-                     "captured" (create-captured-struct captured)
-                    ))))))
+                      (| "value"
+                       (flatten-to-inner (# (# "array") (wrap-params params))))
+                     "body" (| "value" (wrap-captured :expr body captured))
+                     "captured" (create-captured-struct captured)))))))
                (if (= (first-char name) "@")
                 (if (str= name "@add")
                  (| "add"
                   (if (!= (size children) 3)
                    (crash "bad add")
                    (&2
-                    "left" (rec :single (.1 children))
-                    "right" (rec :single (.2 children)))))
+                    "left" (rec :expr (.1 children))
+                    "right" (rec :expr (.2 children)))))
                  (if (str= name "@subtract")
                   (| "subtract"
                    (if (!= (size children) 3)
                     (crash "bad subtract")
                     (&2
-                     "left" (rec :single (.1 children))
-                     "right" (rec :single (.2 children)))))
+                     "left" (rec :expr (.1 children))
+                     "right" (rec :expr (.2 children)))))
                   (if (str= name "@multiply")
                    (| "multiply"
                     (if (!= (size children) 3)
                      (crash "bad multiply")
                      (&2
-                      "left" (rec :single (.1 children))
-                      "right" (rec :single (.2 children)))))
+                      "left" (rec :expr (.1 children))
+                      "right" (rec :expr (.2 children)))))
                    (if (str= name "@divide")
                     (| "divide"
                      (if (!= (size children) 3)
                       (crash "bad divide")
                       (&2
-                       "left" (rec :single (.1 children))
-                       "right" (rec :single (.2 children)))))
+                       "left" (rec :expr (.1 children))
+                       "right" (rec :expr (.2 children)))))
                     (if (str= name "@modulo")
                      (| "modulo"
                       (if (!= (size children) 3)
                        (crash "bad modulo")
                        (&2
-                        "left" (rec :single (.1 children))
-                        "right" (rec :single (.2 children)))))
+                        "left" (rec :expr (.1 children))
+                        "right" (rec :expr (.2 children)))))
                      (if (str= name "@shift_left")
                       (| "shift_left"
                        (if (!= (size children) 3)
                         (crash "bad shift_left")
                         (&2
-                         "left" (rec :single (.1 children))
-                         "right" (rec :single (.2 children)))))
+                         "left" (rec :expr (.1 children))
+                         "right" (rec :expr (.2 children)))))
                       (if (str= name "@shift_right")
                        (| "shift_right"
                         (if (!= (size children) 3)
                          (crash "bad shift_right")
                          (&2
-                          "left" (rec :single (.1 children))
-                          "right" (rec :single (.2 children)))))
+                          "left" (rec :expr (.1 children))
+                          "right" (rec :expr (.2 children)))))
                        (if (str= name "@and")
                         (| "and"
                          (if (!= (size children) 3)
                           (crash "bad and")
                           (&2
-                           "left" (rec :single (.1 children))
-                           "right" (rec :single (.2 children)))))
+                           "left" (rec :expr (.1 children))
+                           "right" (rec :expr (.2 children)))))
                         (if (str= name "@or")
                          (| "or"
                           (if (!= (size children) 3)
                            (crash "bad or")
                            (&2
-                            "left" (rec :single (.1 children))
-                            "right" (rec :single (.2 children)))))
+                            "left" (rec :expr (.1 children))
+                            "right" (rec :expr (.2 children)))))
                          (if (str= name "@xor")
                           (| "xor"
                            (if (!= (size children) 3)
                             (crash "bad xor")
                             (&2
-                             "left" (rec :single (.1 children))
-                             "right" (rec :single (.2 children)))))
+                             "left" (rec :expr (.1 children))
+                             "right" (rec :expr (.2 children)))))
                           (if (str= name "@compare")
                            (| "compare"
                             (if (!= (size children) 3)
                              (crash "bad compare")
                              (&2
-                              "left" (rec :single (.1 children))
-                              "right" (rec :single (.2 children)))))
+                              "left" (rec :expr (.1 children))
+                              "right" (rec :expr (.2 children)))))
                            (if (str= name "@get")
                             (| "get"
                              (if (!= (size children) 3)
                               (crash "bad get")
                               (&2
-                               "array" (rec :single (.1 children))
-                               "index" (rec :single (.2 children)))))
+                               "array" (rec :expr (.1 children))
+                               "index" (rec :expr (.2 children)))))
                             (crash (# "unknown builtin" name))))))))))))))
                 (| "call"
                  (&2
-                  "function" (rec :single first)
-                  "arguments" ('array (rec :multiple rest)))))))))))))
+                  "function" (rec :expr first)
+                  "arguments" ('array (rec :list rest)))))))))))))
        (| "call"
         (&2
-         "function" (rec :single first)
-         "arguments" ('array (rec :multiple rest))))))))
+         "function" (rec :expr first)
+         "arguments" ('array (rec :list rest))))))))
    (if (int? ast)
     (| "value" ('int (.1 ast)))
     (if (string? ast)
@@ -1596,18 +1693,18 @@ analyze-pear (\ (mode ast)
      (if (name? ast)
       (| "name" ('string (.1 ast)))
       (crash (# "unknown ast node" ast))))))
-  (if (= mode :multiple)
-   (if (nil? ast) nil (# (rec :single (.0 ast)) (rec :multiple (.1 ast))))
+  (if (= mode :list)
+   (if (nil? ast) nil (# (rec :expr (.0 ast)) (rec :list (.1 ast))))
    (if (= mode :let)
     (if (nil? (.1 ast))
-     (rec :single (.0 ast))
+     (rec :expr (.0 ast))
      (: first (.0 ast)
       (: second (.0 (.1 ast))
        (: rest (.1 (.1 ast))
         (: name (if (name? first) (.1 first) (crash "bad let"))
          (if (str=1 name "#")
           (rec :let rest)
-          (: def (rec :single second)
+          (: def (rec :expr second)
            (| "let"
             (&3
              "name" ('string name)
@@ -1622,7 +1719,7 @@ analyze-pear (\ (mode ast)
          (#
           (&2
            "name" ('string (if (name? first) (.1 first) (crash "bad struct")))
-           "value" (rec :single second))
+           "value" (rec :expr second))
           (rec :fields rest))))))
      (if (= mode :cases)
       (if (nil? ast)
@@ -1652,21 +1749,21 @@ analyze-pear (\ (mode ast)
              (: rest (rec :cases rest)
               (if (not-nil? (.1 rest))
                (crash "multiple default cases")
-               (# (.0 rest) (rec :single body))))
+               (# (.0 rest) (rec :expr body))))
              (: rest (rec :cases rest)
               (#
                (#
                 (&3
                  "variant" ('string variant)
                  "payload" payload
-                 "body" (rec :single body))
+                 "body" (rec :expr body))
                 (.0 rest))
                (.1 rest))))))))))
       (if (= mode :params)
        (if (nil? ast)
         nil
         (#
-         (if (name? (.0 ast)) ('string (.1 (.0 ast))) (crash "bad function"))
+         (if (name? (.0 ast)) (.1 (.0 ast)) (crash "bad function"))
          (rec :params (.1 ast))))
        (crash (# "unknown mode" mode)))))))))
 
@@ -1677,7 +1774,7 @@ export (#
    (# "code")
    nil
    (\ (code _)
-    (compile-olive nil (.1 (parse :multiple (str-to-chars (.1 code)))))))
+    (compile-olive nil (.1 (parse :list (str-to-chars (.1 code)))))))
   'nil)
  (#
   (# "function"
@@ -1685,13 +1782,13 @@ export (#
    nil
    (\ (code _)
     (: pear-ir
-     (analyze-pear :single (.1 (parse :single (str-to-chars (.1 code)))))
+     (analyze-pear :expr (.1 (parse :expr (str-to-chars (.1 code)))))
      (#
       (# "function"
        (#)
        pear-ir
        (#
         (# "@captured")
-        (optimize :expr (lower-pear :single pear-ir nil))))
+        (optimize :expr (lower-pear :expr pear-ir nil))))
       'nil))))
   'nil))
