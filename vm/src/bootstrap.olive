@@ -249,6 +249,7 @@ unreachable? (\ (ir) (str=11 (.0 ir) "unreachable"))
    modes."
 :fun "fun"
 :expr "expr"
+:maybe-expr "maybe-expr"
 :list "list"
 :let "let"
 :fields "fields"
@@ -969,6 +970,10 @@ unwrap-args (\ (value)
  (if ('array? value)
   (flatten-to-inner (unwrap-args-rec (.1 (array-to-list value))))
   (crash ('string "make_function needs an arguments array."))))
+args-to-array-rec (\ (args)
+ (if (nil? args) nil (# ('string (.0 args)) (.1 args))))
+args-to-array (\ (args)
+ (flatten-to-inner (# (# "array") (args-to-array-rec (array-to-list args)))))
 lower-pear (\ (mode ir locals) (crash (# "lower pear" ir)))
 lower-pear (\ (mode ir locals)
  (if (= mode :expr)
@@ -1189,10 +1194,10 @@ lower-pear (\ (mode ir locals)
                        (crash ('string "Enum needs a struct.")))
                       (if (str=6 tag "switch")
                        (if ('struct? payload)
-                        (%let "(condition)"
+                        (%let "@condition"
                          (rec :expr (.condition payload) locals)
                          (%if
-                          (%'enum? (%name "(condition)"))
+                          (%'enum? (%name "@condition"))
                           (: cases (.cases payload)
                            (: default (.default payload)
                             (if ('array? cases)
@@ -1286,7 +1291,30 @@ lower-pear (\ (mode ir locals)
                                (crash
                                 ('string "Call needs arguments array.")))))
                             (crash ('string "Call needs a struct.")))
-                           (crash ('string (# "Unknown IR node." ir)))))))))))))))))))))))))))
+                           (if (str=9 tag "arguments")
+                            (%let "@fun" (rec :expr payload locals)
+                             (%if (%'function? (%name "@fun"))
+                              (%call (%object args-to-array) (#
+                               (%load-1 (%load-0 (%name "@fun")))))
+                              (%crash
+                               (%object
+                                ('string "Arguments needs a function.")))))
+                            (if (str=4 tag "captured")
+                             (%let "@fun" (rec :expr payload locals)
+                              (%if (%'function? (%name "@fun"))
+                               (%load-1 (%name "@fun"))
+                               (%crash
+                                (%object
+                                 ('string "Captured needs a function.")))))
+                             (if (str=4 tag "body")
+                              (%let "@fun" (rec :expr payload locals)
+                               (%if (%'function? (%name "@fun"))
+                                (%load-2 (%load-0 (%name "@fun")))
+                                (%crash
+                                 (%object ('string "Body needs a function.")))))
+                              (if (str=5 tag "crash")
+                               (%crash (rec :expr payload locals))
+                               (crash ('string (# "Unknown IR node." ir)))))))))))))))))))))))))))))))
    (crash ('string (# "IR nodes should be enums." ir))))
   (if (= mode :list)
    (if (nil? ir)
@@ -1328,26 +1356,22 @@ lower-pear (\ (mode ir locals)
             (: payload (.payload case)
              (: body (.body case)
               (if ('string? variant)
-               (if ('some? payload)
-                (: payload
-                 (if ('string? (.1 payload))
-                  (.1 (.1 payload))
-                  (crash ('string "Case needs a string as a payload.")))
-                 (%if
-                  (%call (%object str=) (#
-                   (%load-1 (%load-0 (%name "(condition)")))
-                   (%object (.1 variant))))
-                  (%let payload (%load-1 (%name "(condition)"))
-                   (rec :expr body locals))
-                  (rec :cases (# (.1 cases) default) locals)))
-                (if ('none? payload)
-                 (%if
-                  (%call (%object str=) (#
-                   (%load-1 (%load-0 (%name "(condition)")))
-                   (%object (.1 variant))))
+               (%if
+                (%load-0
+                 (%call (%object str=) (#
+                  (%load-1 (%load-0 (%name "@condition")))
+                  (%object (.1 variant)))))
+                (if ('some? payload)
+                 (: payload
+                  (if ('string? (.1 payload))
+                   (.1 (.1 payload))
+                   (crash ('string "Case needs a string as a payload.")))
+                  (%let payload (%load-1 (%name "@condition"))
+                   (rec :expr body locals)))
+                 (if ('none? payload)
                   (rec :expr body locals)
-                  (rec :cases (# (.1 cases) default) locals))
-                 (crash "Case payload must be some or none.")))
+                  (crash "Case payload must be some or none.")))
+                (rec :cases (# (.1 cases) default) locals))
                (crash "Case variant must be a string.")))))
            (crash "Switch cases must be structs."))))))
       (crash (# "todo mode" mode))))))))
@@ -1364,7 +1388,7 @@ find-captured (\ (mode ir bound captured)
         (if (list-contains captured name) captured (# name captured))))
       (if (str= tag "let")
        (rec :expr (.definition payload) bound
-        (rec :expr (.body payload) bound captured))
+        (rec :expr (.body payload) (# (.1 (.1 ir)) bound) captured))
        (if
         (or-11
          (str= tag "add") (str= tag "subtract") (str= tag "multiply")
@@ -1374,24 +1398,49 @@ find-captured (\ (mode ir bound captured)
         (rec :expr (.left payload) bound
          (rec :expr (.right payload) bound captured))
         (if (str= tag "struct")
-         (rec :fields payload bound captured)
+         (rec :fields (.1 (array-to-list payload)) bound captured)
          (if (str= tag "field")
           (rec :expr (.of payload) bound
            (rec :expr (.name payload) bound captured))
           (if (str= tag "enum")
-           (rec :expr (.variant payload) bound
-            (rec :expr (.payload payload)))
+           (rec :expr (.payload payload))
            (if (str= tag "switch")
-            (rec :cases payload bound captured)
+            (rec :expr (.condition payload) bound
+             (rec :cases (.1 (array-to-list (.cases payload))) bound
+              (rec :maybe-expr (.default payload) bound captured)))
             (if (str= tag "call")
              (rec :expr (.function payload) bound
-              (rec :list (.1 (array-to-list (.arguments payload))) bound captured))
-             (crash (# "todo find-captured" ir)))))))))))))
-  (if (= mode :list)
-   (if (nil? ir)
-    captured
-    (rec :expr (.0 ir) bound (rec :list (.1 ir) bound captured)))
-   (crash (# "bad captured vars mode" mode)))))
+              (rec
+               :list
+               (.1 (array-to-list (.arguments payload)))
+               bound
+               captured))
+             (if
+              (or-3
+               (str= tag "arguments") (str= tag "captured") (str= tag "body"))
+              (rec :expr payload bound captured)
+              (if (str= tag "crash")
+               (rec :expr payload bound captured)
+               (crash (# "todo find-captured" ir)))))))))))))))
+  (if (= mode :maybe-expr)
+   (if ('some? ir) (rec :expr (.1 ir) bound captured) captured)
+   (if (= mode :list)
+    (if (nil? ir)
+     captured
+     (rec :expr (.0 ir) bound (rec :list (.1 ir) bound captured)))
+    (if (= mode :fields)
+     (if (nil? ir)
+      captured
+      (rec :expr (.value (.0 ir)) bound (rec :fields (.1 ir) bound captured)))
+     (if (= mode :cases)
+      (if (nil? ir)
+       captured
+       (: case (.0 ir)
+        (rec :cases (.1 ir) bound
+         (if ('some? (.payload case))
+          (rec :expr (.body case) (# (.1 (.1 (.payload case))) bound) captured)
+          (rec :expr (.body case) bound captured)))))
+      (crash (# "bad find-captured mode" mode))))))))
 wrap-params (\ (params)
  (if (nil? params) nil (# ('string (.0 params)) (rec (.1 params)))))
 wrap-with-captured (\ (ir captured)
@@ -1453,7 +1502,7 @@ analyze-pear (\ (mode ast)
                  ('string (.1 (.1 children)))
                  (crash "bad enum"))
                 (if (= (size children) 2)
-                 (&2 "variant" variant "payload" 'nil)
+                 (&2 "variant" variant "payload" (| "value" 'nil))
                  (if (= (size children) 3)
                   (&2
                    "variant" variant
@@ -1571,7 +1620,27 @@ analyze-pear (\ (mode ast)
                               (&2
                                "array" (rec :expr (.1 children))
                                "index" (rec :expr (.2 children)))))
-                            (crash (# "unknown builtin" name))))))))))))))
+                            (if (str= name "@arguments")
+                             (| "arguments"
+                              (if (!= (size children) 2)
+                               (crash "bad arguments")
+                               (rec :expr (.1 children))))
+                             (if (str= name "@captured")
+                              (| "captured"
+                               (if (!= (size children) 2)
+                                (crash "bad captured")
+                                (rec :expr (.1 children))))
+                              (if (str= name "@body")
+                               (| "body"
+                                (if (!= (size children) 2)
+                                 (crash "bad body")
+                                 (rec :expr (.1 children))))
+                               (if (str= name "@crash")
+                                (| "crash"
+                                 (if (!= (size children) 2)
+                                  (crash "bad crash")
+                                  (rec :expr (.1 children))))
+                                (crash (# "unknown builtin" name))))))))))))))))))
                 (| "call"
                  (&2
                   "function" (rec :expr first)

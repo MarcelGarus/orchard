@@ -104,13 +104,14 @@ fn run() !void {
         const result = try compile_pear.call(&vm, &.{try Val.new_string(&heap, pear_code)});
         break :step Val.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
+    std.debug.print("pear:\n{f}\n", .{pear.obj});
     const pear_export = try pear.call(&vm, &.{});
 
     pear_export.obj.dump();
     std.debug.print("pear export:\n{f}\n", .{pear_export});
 
-    const result = try pear_export.call(&vm, &.{try Val.new_int(&heap, 2)});
-    std.debug.print("result:\n{f}\n", .{result});
+    // const result = try pear_export.call(&vm, &.{try Val.new_int(&heap, 2)});
+    // std.debug.print("result:\n{f}\n", .{result});
 
     std.debug.print("amezing\n", .{});
 
