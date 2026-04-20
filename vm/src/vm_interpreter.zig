@@ -151,29 +151,41 @@ fn find_in_stack(stack: *const std.ArrayList([]const u8), name: []const u8) ?usi
     return null;
 }
 fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *std.ArrayList([]const u8), instrs: *std.ArrayList(Instruction)) !void {
+    const stack_size_before = stack.items.len;
     switch (try expr.kind()) {
-        .word => |w| try instrs.append(ally, .{ .word = w }),
-        .object => |obj| try instrs.append(ally, .{ .address = obj }),
+        .word => |w| {
+            try instrs.append(ally, .{ .word = w });
+            try stack.append(ally, "");
+        },
+        .object => |obj| {
+            try instrs.append(ally, .{ .address = obj });
+            try stack.append(ally, "");
+        },
         .name => |n| {
-            if (find_in_stack(stack, n)) |offset|
-                try instrs.append(ally, .{ .stack = offset })
-            else {
+            if (find_in_stack(stack, n)) |offset| {
+                try instrs.append(ally, .{ .stack = offset });
+                try stack.append(ally, n);
+            } else {
                 std.debug.print("unknown variable {s}\n", .{n});
+                std.debug.print("stack:", .{});
+                for (stack.items) |st| std.debug.print(" {s}", .{st});
+                std.debug.print("\n", .{});
                 return error.UnknownVariable;
             }
         },
         .let => |let| {
             try compile_expr(ally, root, let.def, stack, instrs);
+            _ = stack.pop();
             try stack.append(ally, let.name);
             try compile_expr(ally, root, let.expr, stack, instrs);
-            _ = stack.pop();
             try instrs.append(ally, .{ .popover = 1 });
+            _ = stack.pop();
+            _ = stack.pop();
+            try stack.append(ally, "");
         },
         .add, .subtract, .multiply, .divide, .modulo, .shift_left, .shift_right, .and_, .or_, .xor, .compare => |args| {
             try compile_expr(ally, root, args.left, stack, instrs);
-            try stack.append(ally, "");
             try compile_expr(ally, root, args.right, stack, instrs);
-            _ = stack.pop();
             try instrs.append(ally, switch (try expr.kind()) {
                 .add => .add,
                 .subtract => .subtract,
@@ -188,35 +200,42 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
                 .compare => .compare,
                 else => unreachable,
             });
+            _ = stack.pop();
+            _ = stack.pop();
+            try stack.append(ally, "");
         },
         .if_ => |if_| {
             try compile_expr(ally, root, if_.condition, stack, instrs);
             const after_condition = instrs.items.len;
-            try instrs.append(ally, .crash); // placeholder
+            try instrs.append(ally, .crash); // placeholder jump_if
+            _ = stack.pop();
             try compile_expr(ally, root, if_.else_, stack, instrs);
             const after_else = instrs.items.len;
-            try instrs.append(ally, .crash); // placeholder
+            try instrs.append(ally, .crash); // placeholder jump
             const before_then = instrs.items.len;
+            _ = stack.pop();
             try compile_expr(ally, root, if_.then, stack, instrs);
             const after_if = instrs.items.len;
             instrs.items[after_condition] = .{ .jump_if = before_then };
             instrs.items[after_else] = .{ .jump = after_if };
+            _ = stack.pop();
+            try stack.append(ally, "");
         },
         .new_leaf => |args| {
             for (args) |arg| {
                 try compile_expr(ally, root, arg, stack, instrs);
-                try stack.append(ally, "");
             }
-            for (args) |_| _ = stack.pop();
             try instrs.append(ally, .{ .new_leaf = args.len });
+            for (args) |_| _ = stack.pop();
+            try stack.append(ally, "");
         },
         .new_inner => |args| {
             for (args) |arg| {
                 try compile_expr(ally, root, arg, stack, instrs);
-                try stack.append(ally, "");
             }
-            for (args) |_| _ = stack.pop();
             try instrs.append(ally, .{ .new_inner = args.len });
+            for (args) |_| _ = stack.pop();
+            try stack.append(ally, "");
         },
         .flatten_to_leaf, .flatten_to_inner, .points, .size, .crash => |inner| {
             try compile_expr(ally, root, inner, stack, instrs);
@@ -228,13 +247,16 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
                 .crash => .crash,
                 else => unreachable,
             });
+            _ = stack.pop();
+            try stack.append(ally, "");
         },
         .load => |load| {
             try compile_expr(ally, root, load.object, stack, instrs);
-            try stack.append(ally, "");
             try compile_expr(ally, root, load.index, stack, instrs);
             try instrs.append(ally, .load);
             _ = stack.pop();
+            _ = stack.pop();
+            try stack.append(ally, "");
         },
         .gc => |inner| {
             try instrs.append(ally, .heap_size);
@@ -246,28 +268,32 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
         .also => |also| {
             try compile_expr(ally, root, also.ignored, stack, instrs);
             try instrs.append(ally, .{ .pop = 1 });
+            _ = stack.pop();
             try compile_expr(ally, root, also.value, stack, instrs);
         },
         .call => |call| {
             for (call.args) |arg| {
                 try compile_expr(ally, root, arg, stack, instrs);
-                try stack.append(ally, "");
             }
             try compile_expr(ally, root, call.fun, stack, instrs);
             try instrs.append(ally, .call);
+            _ = stack.pop();
             for (call.args) |_| _ = stack.pop();
+            try stack.append(ally, "");
         },
         .rec => |args| {
             for (args) |arg| {
                 try compile_expr(ally, root, arg, stack, instrs);
-                try stack.append(ally, "");
             }
             try instrs.append(ally, .{ .address = root.obj });
             try instrs.append(ally, .call);
             for (args) |_| _ = stack.pop();
+            try stack.append(ally, "");
         },
         .unreachable_ => {},
     }
+    const stack_size_after = stack.items.len;
+    std.debug.assert(stack_size_after == stack_size_before + 1);
 }
 
 pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
