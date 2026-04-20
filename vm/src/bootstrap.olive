@@ -46,6 +46,10 @@
 %load-2 (\ (obj) (%load obj (%word 2)))
 %load-3 (\ (obj) (%load obj (%word 3)))
 
+also (\ (a b) b)
+also-3 (\ (a b c) c)
+also-4 (\ (a b c d) d)
+
 + (# (# "a" "b")
  (%new-leaf (# (%add (%load-0 (%name "a")) (%load-0 (%name "b"))))))
 - (# (# "a" "b")
@@ -974,249 +978,438 @@ args-to-array-rec (\ (args)
  (if (nil? args) nil (# ('string (.0 args)) (.1 args))))
 args-to-array (\ (args)
  (flatten-to-inner (# (# "array") (args-to-array-rec (array-to-list args)))))
-lower-pear (\ (mode ir locals) (crash (# "lower pear" ir)))
-lower-pear (\ (mode ir locals)
+validate-pear (\ (mode ir vars)
  (if (= mode :expr)
   (if ('enum? ir)
-   (: tag (variant ir)
-    (: payload (payload ir)
+   (: tag (.1 (.0 ir))
+    (: payload (.1 ir)
      (if (str=5 tag "value")
-      (%object payload)
+      nil
       (if (str=4 tag "name")
-       (%name
-        (if ('string? payload)
-         (.1 payload)
-         (crash ('string "Name needs a string."))))
+       (if ('string? payload)
+        (if (list-contains vars (.1 payload))
+         nil
+         (crash
+          ('string (str-concat-3 "Name " (.1 payload) " is not in scope."))))
+        (crash ('string "A name needs a string.")))
        (if (str=3 tag "let")
         (if ('struct? payload)
-         (%let
-          (: name (.name payload)
-           (if ('string? name)
-            (.1 name)
-            (crash ('string "Let needs a name."))))
-          (rec :expr (.definition payload) locals)
-          (rec :expr (.body payload) locals))
-         (crash ('string "Let needs a struct.")))
+         (also-3
+          (if ('string? (.name payload))
+           nil
+           (crash ('string "A let needs a name string.")))
+          (rec :expr (.definition payload) vars)
+          (rec :expr (.body payload) vars))
+         (crash ('string "A let needs a struct.")))
         (if (str=4 tag "kind")
-         (%new-inner (#
-          (%new-inner (#
-           (%object "enum")
-           (%load-0 (%load-0 (rec :expr payload locals)))))
-          (%object 'nil)))
+         nil
          (if (str=3 tag "add")
-          (%let "@a" (rec :expr (.left payload) locals)
-           (%let "@b" (rec :expr (.right payload) locals)
+          (if ('struct? payload)
+           (also
+            (rec :expr (.left payload) vars)
+            (rec :expr (.right payload) vars))
+           (crash ('string "An add needs a struct.")))
+          (if (str=8 tag "subtract")
+           (if ('struct? payload)
+            (also
+             (rec :expr (.left payload) vars)
+             (rec :expr (.right payload) vars))
+            (crash ('string "A subtract needs a struct.")))
+           (if (str=8 tag "multiply")
+            (if ('struct? payload)
+             (also
+              (rec :expr (.left payload) vars)
+              (rec :expr (.right payload) vars))
+             (crash ('string "A multiply needs a struct.")))
+            (if (str=6 tag "divide")
+             (if ('struct? payload)
+              (also
+               (rec :expr (.left payload) vars)
+               (rec :expr (.right payload) vars))
+              (crash ('string "A divide needs a struct.")))
+             (if (str=6 tag "modulo")
+              (if ('struct? payload)
+               (also
+                (rec :expr (.left payload) vars)
+                (rec :expr (.right payload) vars))
+               (crash ('string "A modulo needs a struct.")))
+              (if (str=10 tag "shift_left")
+               (if ('struct? payload)
+                (also
+                 (rec :expr (.left payload) vars)
+                 (rec :expr (.right payload) vars))
+                (crash ('string "A shift_left needs a struct.")))
+               (if (str=11 tag "shift_right")
+                (if ('struct? payload)
+                 (also
+                  (rec :expr (.left payload) vars)
+                  (rec :expr (.right payload) vars))
+                 (crash ('string "A shift_right needs a struct.")))
+                (if (str=3 tag "and")
+                 (if ('struct? payload)
+                  (also
+                   (rec :expr (.left payload) vars)
+                   (rec :expr (.right payload) vars))
+                  (crash ('string "An and needs a struct.")))
+                 (if (str=2 tag "or")
+                  (if ('struct? payload)
+                   (also
+                    (rec :expr (.left payload) vars)
+                    (rec :expr (.right payload) vars))
+                   (crash ('string "An or needs a struct.")))
+                  (if (str=3 tag "xor")
+                   (if ('struct? payload)
+                    (also
+                     (rec :expr (.left payload) vars)
+                     (rec :expr (.right payload) vars))
+                    (crash ('string "An xor needs a struct.")))
+                   (if (str=7 tag "compare")
+                    (if ('struct? payload)
+                     (also
+                      (rec :expr (.left payload) vars)
+                      (rec :expr (.right payload) vars))
+                     (crash ('string "A compare needs a struct.")))
+                    (if (str=6 tag "struct")
+                     (if ('array? payload)
+                      (rec :fields (.1 (array-to-list payload)) vars)
+                      (crash ('string "A struct needs an array of fields.")))
+                     (if (str=5 tag "field")
+                      (if ('struct? payload)
+                       (also
+                        (rec :expr (.of payload) vars)
+                        (rec :expr (.name payload) vars))
+                       (crash ('string "A field needs a struct.")))
+                      (if (str=6 tag "fields")
+                       (rec :expr payload vars)
+                       (if (str=4 tag "enum")
+                        (if ('struct? payload)
+                         (also
+                          (if ('string? (.variant payload))
+                           nil
+                           (crash ('string "An enum needs a string variant.")))
+                          (rec :expr (.payload payload) vars))
+                         (crash ('string "Enum needs a struct.")))
+                        (if (str=6 tag "switch")
+                         (if ('struct? payload)
+                          (also-3
+                           (rec :expr (.condition payload) vars)
+                           (: cases (.cases payload)
+                            (if ('array? cases)
+                             (rec :cases (.1 (array-to-list cases)) vars)
+                             (crash ('string "Switch needs cases array."))))
+                           (: default (.default payload)
+                            (if ('some? default)
+                             (rec :expr (.1 default) vars)
+                             (if ('none? default)
+                              nil
+                              (crash
+                               ('string
+                                "Switch default should be some or none."))))))
+                          (crash ('string "Switch needs a struct.")))
+                         (if (str=7 tag "variant")
+                          (rec :expr payload vars)
+                          (if (str=7 tag "payload")
+                           (rec :expr payload vars)
+                           (if (str=5 tag "array")
+                            (if ('array? payload)
+                             (rec :list (.1 (array-to-list payload)) vars)
+                             (crash ('string "Array needs an array.")))
+                            (if (str=3 tag "get")
+                             (if ('struct? payload)
+                              (also
+                               (rec :expr (.array payload) vars)
+                               (rec :expr (.index payload) vars))
+                              (crash ('string "Get needs a struct.")))
+                             (if (str=13 tag "make_function")
+                              (if ('struct? payload)
+                               (also-3
+                                (rec :expr (.arguments payload) vars)
+                                (rec :expr (.body payload) vars)
+                                (rec :expr (.captured payload) vars))
+                               (crash
+                                ('string "A make_function needs a struct.")))
+                              (if (str=4 tag "call")
+                               (if ('struct? payload)
+                                (also
+                                 (rec :expr (.function payload) vars)
+                                 (: args (.arguments payload)
+                                  (if ('array? args)
+                                   (rec :list (.1 (array-to-list args)) vars)
+                                   (crash
+                                    ('string "Call needs arguments array.")))))
+                                (crash ('string "Call needs a struct.")))
+                               (if (str=9 tag "arguments")
+                                (rec :expr payload vars)
+                                (if (str=4 tag "captured")
+                                 (rec :expr payload vars)
+                                 (if (str=4 tag "body")
+                                  (rec :expr payload vars)
+                                  (if (str=5 tag "crash")
+                                   (rec :expr payload vars)
+                                   (crash
+                                    ('string
+                                     (str-concat-3
+                                      "Unknown expression "
+                                      tag
+                                      ".")))))))))))))))))))))))))))))))))))
+   (crash ('string (# "Expressions should be enums." ir))))
+  (if (= mode :list)
+   (if (nil? ir)
+    nil
+    (also (rec :expr (.0 ir) vars) (rec :list (.1 ir) vars)))
+   (if (= mode :fields)
+    (if (nil? ir)
+     nil
+     (also
+      (: item (.0 ir)
+       (if ('struct? item)
+        (also
+         (if ('string? (.name item))
+          nil
+          (crash ('string "Field name needs to be a string.")))
+         (rec :expr (.value item) vars))
+        (crash ('string "Field needs to be a struct."))))
+      (rec :fields (.1 ir) vars)))
+    (if (= mode :cases)
+     (if (nil? ir)
+      nil  
+      (: case (.0 ir)
+       (if ('struct? case)
+        (also-4
+         (if ('string? (.variant case))
+          nil
+          (crash ('string "A case variant has to be a string.")))
+         (: payload (.payload case)
+          (if ('some? payload)
+           (if ('string? (.1 payload))
+            nil
+            (crash ('string "A case needs a string as a payload.")))
+           (if ('none? payload)
+            nil
+            (crash "Case payload must be some or none."))))
+         (rec :expr (.body case) vars)
+         (rec :cases (.1 ir) vars))
+        (crash "Switch cases must be structs."))))
+     (crash (# "Unknown validate mode" mode)))))))
+lower-pear (\ (mode ir) (crash (# "lower pear" ir)))
+lower-pear (\ (mode ir)
+ (if (= mode :expr)
+  (: tag (variant ir)
+   (: payload (payload ir)
+    (if (str=5 tag "value")
+     (%object payload)
+     (if (str=4 tag "name")
+      (%name (.1 payload))
+      (if (str=3 tag "let")
+       (%let
+        (.1 (.name payload))
+        (rec :expr (.definition payload))
+        (rec :expr (.body payload)))
+       (if (str=4 tag "kind")
+        (%new-inner (#
+         (%new-inner (#
+          (%object "enum")
+          (%load-0 (%load-0 (rec :expr payload)))))
+         (%object 'nil)))
+        (if (str=3 tag "add")
+         (%let "@a" (rec :expr (.left payload))
+          (%let "@b" (rec :expr (.right payload))
+           (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
+            (%'int
+             (%add (%load-int (%name "@a")) (%load-int (%name "@b"))))
+            (%crash (%object ('string "You can only add ints."))))))
+         (if (str=8 tag "subtract")
+          (%let "@a" (rec :expr (.left payload))
+           (%let "@b" (rec :expr (.right payload))
             (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
              (%'int
-              (%add (%load-int (%name "@a")) (%load-int (%name "@b"))))
-             (%crash (%object ('string "You can only add ints."))))))
-          (if (str=8 tag "subtract")
-           (%let "@a" (rec :expr (.left payload) locals)
-            (%let "@b" (rec :expr (.right payload) locals)
+              (%subtract (%load-int (%name "@a")) (%load-int (%name "@b"))))
+             (%crash (%object ('string "You can only subtract ints."))))))
+          (if (str=8 tag "multiply")
+           (%let "@a" (rec :expr (.left payload))
+            (%let "@b" (rec :expr (.right payload))
              (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
               (%'int
-               (%subtract (%load-int (%name "@a")) (%load-int (%name "@b"))))
-              (%crash (%object ('string "You can only subtract ints."))))))
-           (if (str=8 tag "multiply")
-            (%let "@a" (rec :expr (.left payload) locals)
-             (%let "@b" (rec :expr (.right payload) locals)
+               (%multiply (%load-int (%name "@a")) (%load-int (%name "@b"))))
+              (%crash (%object ('string "You can only multiply ints."))))))
+           (if (str=6 tag "divide")
+            (%let "@a" (rec :expr (.left payload))
+             (%let "@b" (rec :expr (.right payload))
               (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
-               (%'int
-                (%multiply (%load-int (%name "@a")) (%load-int (%name "@b"))))
-               (%crash (%object ('string "You can only multiply ints."))))))
-            (if (str=6 tag "divide")
-             (%let "@a" (rec :expr (.left payload) locals)
-              (%let "@b" (rec :expr (.right payload) locals)
+               (%let "@a" (%load-int (%name "@a"))
+                (%let "@b" (%load-int (%name "@b"))
+                 (%if (%name "@b")
+                  (%'int (%divide (%name "@a") (%name "@b")))
+                  (%crash (%object ('string "You can not divide by zero."))))))
+               (%crash (%object ('string "You can only divide ints."))))))
+            (if (str=6 tag "modulo")
+             (%let "@a" (rec :expr (.left payload))
+              (%let "@b" (rec :expr (.right payload))
                (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                 (%let "@a" (%load-int (%name "@a"))
                  (%let "@b" (%load-int (%name "@b"))
                   (%if (%name "@b")
-                   (%'int (%divide (%name "@a") (%name "@b")))
+                   (%'int (%modulo (%name "@a") (%name "@b")))
                    (%crash (%object ('string "You can not divide by zero."))))))
-                (%crash (%object ('string "You can only divide ints."))))))
-             (if (str=6 tag "modulo")
-              (%let "@a" (rec :expr (.left payload) locals)
-               (%let "@b" (rec :expr (.right payload) locals)
+                (%crash (%object ('string "You can only modulo ints."))))))
+             (if (str=10 tag "shift_left")
+              (%let "@a" (rec :expr (.left payload))
+               (%let "@b" (rec :expr (.right payload))
                 (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
-                 (%let "@a" (%load-int (%name "@a"))
-                  (%let "@b" (%load-int (%name "@b"))
-                   (%if (%name "@b")
-                    (%'int (%modulo (%name "@a") (%name "@b")))
-                    (%crash (%object ('string "You can not divide by zero."))))))
-                 (%crash (%object ('string "You can only modulo ints."))))))
-              (if (str=10 tag "shift_left")
-               (%let "@a" (rec :expr (.left payload) locals)
-                (%let "@b" (rec :expr (.right payload) locals)
-                 (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
+                 (%'int
+                  (%shift-left
+                   (%load-int (%name "@a"))
+                   (%load-int (%name "@b"))))
+                 (%crash (%object ('string "You can only shift_left ints."))))))
+              (if (str=11 tag "shift_right")
+               (%let "@a" (rec :expr (.left payload))
+                (%let "@b" (rec :expr (.right payload))
+                 (%if
+                  (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                   (%'int
-                   (%shift-left
+                   (%shift-right
                     (%load-int (%name "@a"))
                     (%load-int (%name "@b"))))
-                  (%crash (%object ('string "You can only shift_left ints."))))))
-               (if (str=11 tag "shift_right")
-                (%let "@a" (rec :expr (.left payload) locals)
-                 (%let "@b" (rec :expr (.right payload) locals)
+                  (%crash
+                   (%object ('string "You can only shift_right ints."))))))
+               (if (str=3 tag "and")
+                (%let "@a" (rec :expr (.left payload))
+                 (%let "@b" (rec :expr (.right payload))
                   (%if
                    (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                    (%'int
-                    (%shift-right
-                     (%load-int (%name "@a"))
-                     (%load-int (%name "@b"))))
-                   (%crash
-                    (%object ('string "You can only shift_right ints."))))))
-                (if (str=3 tag "and")
-                 (%let "@a" (rec :expr (.left payload) locals)
-                  (%let "@b" (rec :expr (.right payload) locals)
+                    (%and (%load-int (%name "@a")) (%load-int (%name "@b"))))
+                   (%crash (%object ('string "You can only and ints."))))))
+                (if (str=2 tag "or")
+                 (%let "@a" (rec :expr (.left payload))
+                  (%let "@b" (rec :expr (.right payload))
                    (%if
                     (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                     (%'int
-                     (%and (%load-int (%name "@a")) (%load-int (%name "@b"))))
-                    (%crash (%object ('string "You can only and ints."))))))
-                 (if (str=2 tag "or")
-                  (%let "@a" (rec :expr (.left payload) locals)
-                   (%let "@b" (rec :expr (.right payload) locals)
+                     (%or (%load-int (%name "@a")) (%load-int (%name "@b"))))
+                    (%crash (%object ('string "You can only or ints."))))))
+                 (if (str=3 tag "xor")
+                  (%let "@a" (rec :expr (.left payload))
+                   (%let "@b" (rec :expr (.right payload))
                     (%if
                      (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
                      (%'int
-                      (%or (%load-int (%name "@a")) (%load-int (%name "@b"))))
-                     (%crash (%object ('string "You can only or ints."))))))
-                  (if (str=3 tag "xor")
-                   (%let "@a" (rec :expr (.left payload) locals)
-                    (%let "@b" (rec :expr (.right payload) locals)
-                     (%if
-                      (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
-                      (%'int
-                       (%xor (%load-int (%name "@a")) (%load-int (%name "@b"))))
-                      (%crash (%object ('string "You can only xor ints."))))))
-                   (if (str=7 tag "compare")
-                    (%let "@a" (rec :expr (.left payload) locals)
-                     (%let "@b" (rec :expr (.right payload) locals)
-                      (%if
-                       (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
-                       (%let "result"
-                        (%compare
-                         (%load-int (%name "@a"))
-                         (%load-int (%name "@b")))
-                        (%if (%and (%name "result") (%word 1))
-                         (%object (| "equal" nil))
-                         (%if
-                          (%and
-                           (%shift-right (%name "result") (%word 1))
-                           (%word 1))
-                          (%object (| "greater" nil))
-                          (%object (| "less" nil)))))
-                       (%crash
-                        (%object ('string "You can only compare ints."))))))
-                    (if (str=6 tag "struct")
-                     (%new-inner
-                      (if ('array? payload)
-                       (: items (.1 (array-to-list payload))
-                        (flatten-to-inner
-                         (#
-                          (%object
-                           (flatten-to-inner
-                            (# "struct" (rec :field-keys items locals))))
-                          (rec :field-values items locals))))
-                       (crash ('string "Struct needs an array of fields."))))
-                     (if (str=5 tag "field")
-                      (if ('struct? payload)
-                       (: of (rec :expr (.of payload) locals)
-                        (: name (rec :expr (.name payload) locals)
-                         (%let "@of" of
-                          (if (object? name)
-                           (%if (%'struct? (%name "@of"))
-                            (if (%'string? (.1 name))
-                             (: name (.1 (.1 name))
-                              (: make-str-cmp
-                               (\ (name i)
-                                (if (= i 0)
-                                 (%word 1)
-                                 (%and
-                                  (rec name (- i 1))
-                                  (%compare
-                                   (%load (%name "item") (%word (- i 1)))
-                                   (%word (load-word name (- i 1)))))))
-                               (: finder-rec
-                                (# (# "fields" "i" "limit")
-                                 (%if (%equal? (%name "i") (%name "limit"))
-                                  (%crash
-                                   (%object
-                                    ('string
-                                     (str-concat-3
-                                      "Struct has no field "
-                                      name
-                                      "."))))
-                                  (%let "item"
-                                   (%load (%name "fields") (%name "i"))
-                                   (%if
-                                    (%equal?
-                                     (%size (%name "item"))
-                                     (%word (size name)))
-                                    (%if (make-str-cmp name (size name))
-                                     (%name "i")
-                                     (%rec (#
-                                      (%name "fields")
-                                      (%add (%name "i") (%word 1))
-                                      (%name "limit"))))
-                                    (%rec (#
-                                     (%name "fields")
-                                     (%add (%name "i") (%word 1))
-                                     (%name "limit")))))))
-                                (%load
-                                 (%name "@of")
-                                 (%call (%object finder-rec) (#
-                                  (%load-0 (%name "@of"))
-                                  (%word 1)
-                                  (%size (%load-0 (%name "@of")))))))))
-                             (%crash
-                              (%object
-                               ('string "The field name has to be a string."))))
+                      (%xor (%load-int (%name "@a")) (%load-int (%name "@b"))))
+                     (%crash (%object ('string "You can only xor ints."))))))
+                  (if (str=7 tag "compare")
+                   (%let "@a" (rec :expr (.left payload))
+                    (%let "@b" (rec :expr (.right payload))
+                     (%if (%and (%'int? (%name "@a")) (%'int? (%name "@b")))
+                      (%let "result"
+                       (%compare
+                        (%load-int (%name "@a"))
+                        (%load-int (%name "@b")))
+                       (%if (%and (%name "result") (%word 1))
+                        (%object (| "equal" nil))
+                        (%if
+                         (%and
+                          (%shift-right (%name "result") (%word 1))
+                          (%word 1))
+                         (%object (| "greater" nil))
+                         (%object (| "less" nil)))))
+                      (%crash
+                       (%object ('string "You can only compare ints."))))))
+                   (if (str=6 tag "struct")
+                    (%new-inner
+                     (: items (.1 (array-to-list payload))
+                      (flatten-to-inner
+                       (#
+                        (%object
+                         (flatten-to-inner
+                          (# "struct" (rec :field-keys items))))
+                        (rec :field-values items)))))
+                    (if (str=5 tag "field")
+                     (: of (rec :expr (.of payload))
+                      (: name (rec :expr (.name payload))
+                       (%let "@of" of
+                        (if (object? name)
+                         (%if (%'struct? (%name "@of"))
+                          (if (%'string? (.1 name))
+                           (: name (.1 (.1 name))
+                            (: make-str-cmp
+                             (\ (name i)
+                              (if (= i 0)
+                               (%word 1)
+                               (%and
+                                (rec name (- i 1))
+                                (%compare
+                                 (%load (%name "item") (%word (- i 1)))
+                                 (%word (load-word name (- i 1)))))))
+                             (: finder-rec
+                              (# (# "fields" "i" "limit")
+                               (%if (%equal? (%name "i") (%name "limit"))
+                                (%crash
+                                 (%object
+                                  ('string
+                                   (str-concat-3
+                                    "Struct has no field "
+                                    name
+                                    "."))))
+                                (%let "item"
+                                 (%load (%name "fields") (%name "i"))
+                                 (%if
+                                  (%equal?
+                                   (%size (%name "item"))
+                                   (%word (size name)))
+                                  (%if (make-str-cmp name (size name))
+                                   (%name "i")
+                                   (%rec (#
+                                    (%name "fields")
+                                    (%add (%name "i") (%word 1))
+                                    (%name "limit"))))
+                                  (%rec (#
+                                   (%name "fields")
+                                   (%add (%name "i") (%word 1))
+                                   (%name "limit")))))))
+                              (%load
+                               (%name "@of")
+                               (%call (%object finder-rec) (#
+                                (%load-0 (%name "@of"))
+                                (%word 1)
+                                (%size (%load-0 (%name "@of")))))))))
+                           (%crash
+                            (%object
+                             ('string "The field name has to be a string."))))
+                          (%crash
+                           (%object
+                            ('string "You can only get fields of structs."))))
+                         (%let "@name" name
+                          (%if (%'struct? (%name "@of"))
+                           (%if (%'string? (%name "@name"))
+                            (%call (%object field) (#
+                             (%name "@of")
+                             (%load-1 (%name "@name"))))
                             (%crash
                              (%object
-                              ('string "You can only get fields of structs."))))
-                           (%let "@name" name
-                            (%if (%'struct? (%name "@of"))
-                             (%if (%'string? (%name "@name"))
-                              (%call (%object field) (#
-                               (%name "@of")
-                               (%load-1 (%name "@name"))))
-                              (%crash
-                               (%object
-                                ('string "The field name has to be a string."))))
-                             (%crash
-                              (%object
-                               ('string
-                                "You can only get fields of structs.")))))))))
-                       (crash ('string "Field needs a struct.")))
-                      (if (str=4 tag "enum")
-                       (if ('struct? payload)
-                        (: variant (.variant payload)
-                         (: payload (.payload payload)
-                          (if ('string? variant)
-                           (%new-inner (#
-                            (%object (# "enum" (.1 variant)))
-                            (rec :expr payload locals)))
-                           (crash ('string "Enum needs a string variant.")))))
-                        (crash ('string "Enum needs a struct.")))
-                       (if (str=6 tag "switch")
-                        (if ('struct? payload)
-                         (%let "@condition"
-                          (rec :expr (.condition payload) locals)
-                          (%if
-                           (%'enum? (%name "@condition"))
-                           (: cases (.cases payload)
-                            (: default (.default payload)
-                             (if ('array? cases)
-                              (rec
-                               :cases
-                               (# (.1 (array-to-list cases)) default)
-                               locals)
-                              (crash ('string "Switch needs cases array.")))))
+                              ('string "The field name has to be a string."))))
                            (%crash
-                            (%object ('string "Switching on non-enum.")))))
-                         (crash ('string "Switch needs a struct.")))
+                            (%object
+                             ('string
+                              "You can only get fields of structs.")))))))))
+                     (if (str=6 tag "fields")
+                      (crash "fields")
+                      (if (str=4 tag "enum")
+                       (%new-inner (#
+                        (%object (# "enum" (.1 (.variant payload))))
+                        (rec :expr (.payload payload))))
+                       (if (str=6 tag "switch")
+                        (%let "@condition" (rec :expr (.condition payload))
+                         (%if
+                          (%'enum? (%name "@condition"))
+                          (rec
+                           :cases
+                           (#
+                            (.1 (array-to-list (.cases payload)))
+                            (.default payload)))
+                          (%crash
+                           (%object ('string "Switching on non-enum.")))))
                         (if (str=7 tag "variant")
-                         (%let "@enum" (rec :expr payload locals)
+                         (%let "@enum" (rec :expr payload)
                           (%if (%'enum? (%name "@enum"))
                            (%new-inner (#
                             (%object (# "string"))
@@ -1226,7 +1419,7 @@ lower-pear (\ (mode ir locals)
                              ('string
                               "You can only get the variant of enums.")))))
                          (if (str=7 tag "payload")
-                          (%let "@enum" (rec :expr payload locals)
+                          (%let "@enum" (rec :expr payload)
                            (%if (%'enum? (%name "@enum"))
                             (%load-1 (%name "@enum"))
                             (%crash
@@ -1234,45 +1427,39 @@ lower-pear (\ (mode ir locals)
                               ('string
                                "You can only get the payload of enums.")))))
                           (if (str=5 tag "array")
-                           (if ('array? payload)
-                            (%new-inner
-                             (flatten-to-inner
-                              (#
-                               (%object (# "array"))
-                               (rec
-                                :list
-                                (.1 (array-to-list payload))
-                                locals))))
-                            (crash ('string "Array needs an array.")))
+                           (%new-inner
+                            (flatten-to-inner
+                             (#
+                              (%object (# "array"))
+                              (rec :list (.1 (array-to-list payload))))))
                            (if (str=3 tag "get")
-                            (if ('struct? payload)
-                             (%let "(array)" (rec :expr (.array payload) locals)
-                              (%let "(index)" (rec :expr (.index payload) locals)
-                               (%if
-                                (%and
-                                 (%'array? (%name "(array)"))
-                                 (%'int? (%name "(index)")))
-                                (%let "(index)"
-                                 (%add (%load-int (%name "(index)")) (%word 1))
-                                 (%if
-                                  (%and
-                                   (%greater? (%name "(index)") (%word 0))
-                                   (%less?
-                                    (%name "(index)")
-                                    (%size (%name "(array)"))))
-                                  (%load (%name "(array)") (%name "(index)"))
-                                  (%crash (%object ('string "Out of bounds.")))))
-                                (%crash
-                                 (%object ('string "Getting from non-array."))))))
-                             (crash "Get needs a struct."))
+                            (%let "(array)" (rec :expr (.array payload))
+                             (%let "(index)" (rec :expr (.index payload))
+                              (%if
+                               (%and
+                                (%'array? (%name "(array)"))
+                                (%'int? (%name "(index)")))
+                               (%let "(index)"
+                                (%add (%load-int (%name "(index)")) (%word 1))
+                                (%if
+                                 (%and
+                                  (%greater? (%name "(index)") (%word 0))
+                                  (%less?
+                                   (%name "(index)")
+                                   (%size (%name "(array)"))))
+                                 (%load (%name "(array)") (%name "(index)"))
+                                 (%crash (%object ('string "Out of bounds.")))))
+                               (%crash
+                                (%object
+                                 ('string "Getting from non-array."))))))
                             (if (str=13 tag "make_function")
                              (%new-inner (#
                               (: args
-                               (: args (rec :expr (.arguments payload) locals)
+                               (: args (rec :expr (.arguments payload))
                                 (if (object? args)
                                  (%object (unwrap-args (.1 args)))
                                  (%call (%object unwrap-args) (# args))))
-                               (: body (rec :expr (.body payload) locals)
+                               (: body (rec :expr (.body payload))
                                 (if (and (object? args) (object? body))
                                  (%new-inner (#
                                   (%object "function")
@@ -1283,40 +1470,31 @@ lower-pear (\ (mode ir locals)
                                     (list-concat
                                      (array-to-list (.1 args))
                                      (# "@captured" nil)))
-                                   (rec :expr (.1 body) nil)))))
+                                   (rec :expr (.1 body))))))
                                  (crash "todo call lower-pear at so-called runtime"))))
-                              (rec :expr (.captured payload) locals)))
+                              (rec :expr (.captured payload))))
                              (if (str=4 tag "call")
-                              (if ('struct? payload)
-                               (: fun (.function payload)
-                                (: args (.arguments payload)
-                                 (if ('array? args)
-                                  (%let "@a" (rec :expr fun locals)
-                                   (%if (%'function? (%name "@a"))
-                                    (%if
-                                     (%equal?
-                                      (%size (%load-1 (%load-0 (%name "@a"))))
-                                      (%word (- (size args) 1)))
-                                     (%call
-                                      (%load-3 (%load-0 (%name "@a")))
-                                      (flatten-to-inner
-                                       (list-concat
-                                        (rec
-                                         :list
-                                         (.1 (array-to-list args))
-                                         locals)
-                                        (# (%load-1 (%name "@a")) nil))))
-                                     (%crash
-                                      (%object
-                                       ('string "Wrong number of arguments."))))
-                                    (%crash
-                                     (%object
-                                      ('string "You can only call functions.")))))
-                                  (crash
-                                   ('string "Call needs arguments array.")))))
-                               (crash ('string "Call needs a struct.")))
+                              (: args (.arguments payload)
+                               (%let "@a" (rec :expr (.function payload))
+                                (%if (%'function? (%name "@a"))
+                                 (%if
+                                  (%equal?
+                                   (%size (%load-1 (%load-0 (%name "@a"))))
+                                   (%word (- (size args) 1)))
+                                  (%call
+                                   (%load-3 (%load-0 (%name "@a")))
+                                   (flatten-to-inner
+                                    (list-concat
+                                     (rec :list (.1 (array-to-list args)))
+                                     (# (%load-1 (%name "@a")) nil))))
+                                  (%crash
+                                   (%object
+                                    ('string "Wrong number of arguments."))))
+                                 (%crash
+                                  (%object
+                                   ('string "You can only call functions."))))))
                               (if (str=9 tag "arguments")
-                               (%let "@fun" (rec :expr payload locals)
+                               (%let "@fun" (rec :expr payload)
                                 (%if (%'function? (%name "@fun"))
                                  (%call (%object args-to-array) (#
                                   (%load-1 (%load-0 (%name "@fun")))))
@@ -1324,26 +1502,24 @@ lower-pear (\ (mode ir locals)
                                   (%object
                                    ('string "Arguments needs a function.")))))
                                (if (str=4 tag "captured")
-                                (%let "@fun" (rec :expr payload locals)
+                                (%let "@fun" (rec :expr payload)
                                  (%if (%'function? (%name "@fun"))
                                   (%load-1 (%name "@fun"))
                                   (%crash
                                    (%object
                                     ('string "Captured needs a function.")))))
                                 (if (str=4 tag "body")
-                                 (%let "@fun" (rec :expr payload locals)
+                                 (%let "@fun" (rec :expr payload)
                                   (%if (%'function? (%name "@fun"))
                                    (%load-2 (%load-0 (%name "@fun")))
                                    (%crash
                                     (%object ('string "Body needs a function.")))))
                                  (if (str=5 tag "crash")
-                                  (%crash (rec :expr payload locals))
-                                  (crash ('string (# "Unknown IR node." ir))))))))))))))))))))))))))))))))))
-   (crash ('string (# "IR nodes should be enums." ir))))
+                                  (%crash (rec :expr payload))
+                                  (crash (# "Unknown IR node." ir
+                                  ))))))))))))))))))))))))))))))))))
   (if (= mode :list)
-   (if (nil? ir)
-    nil
-    (# (rec :expr (.0 ir) locals) (rec :list (.1 ir) locals)))
+   (if (nil? ir) nil (# (rec :expr (.0 ir)) (rec :list (.1 ir))))
    (if (= mode :field-keys)
     (if (nil? ir)
      nil
@@ -1355,22 +1531,22 @@ lower-pear (\ (mode ir locals)
           (.1 name)
           (crash "Struct field name needs to be a string.")))
         (crash "Field needs to be a struct.")))
-      (rec :field-keys (.1 ir) locals)))
+      (rec :field-keys (.1 ir))))
     (if (= mode :field-values)
      (if (nil? ir)
       nil
       (#
        (: item (.0 ir)
         (if ('struct? item)
-         (rec :expr (.value item) locals)
+         (rec :expr (.value item))
          (crash "Field needs to be a struct.")))
-       (rec :field-values (.1 ir) locals)))
+       (rec :field-values (.1 ir))))
      (if (= mode :cases)
       (: cases (.0 ir)
        (: default (.1 ir)
         (if (nil? cases)
          (if ('some? default)
-          (rec :expr (.1 default) locals)
+          (rec :expr (.1 default))
           (if ('none? default)
            (%crash (%object ('string "Unhandled variant.")))
            (crash "Switch default should be some or none.")))
@@ -1391,11 +1567,11 @@ lower-pear (\ (mode ir locals)
                    (.1 (.1 payload))
                    (crash ('string "Case needs a string as a payload.")))
                   (%let payload (%load-1 (%name "@condition"))
-                   (rec :expr body locals)))
+                   (rec :expr body)))
                  (if ('none? payload)
-                  (rec :expr body locals)
+                  (rec :expr body)
                   (crash "Case payload must be some or none.")))
-                (rec :cases (# (.1 cases) default) locals))
+                (rec :cases (# (.1 cases) default)))
                (crash "Case variant must be a string.")))))
            (crash "Switch cases must be structs."))))))
       (crash (# "todo mode" mode))))))))
@@ -1649,44 +1825,54 @@ analyze-pear (\ (mode ast)
                                (&2
                                 "of" (rec :expr (.1 children))
                                 "name" (rec :expr (.2 children)))))
-                             (if (str= name "@variant")
-                              (| "variant"
+                             (if (str= name "@fields")
+                              (| "fields"
                                (if (!= (size children) 2)
-                                (crash "bad variant")
+                                (crash "bad field")
                                 (rec :expr (.1 children))))
-                              (if (str= name "@payload")
-                               (| "payload"
+                              (if (str= name "@variant")
+                               (| "variant"
                                 (if (!= (size children) 2)
-                                 (crash "bad payload")
+                                 (crash "bad variant")
                                  (rec :expr (.1 children))))
-                               (if (str= name "@get")
-                                (| "get"
-                                 (if (!= (size children) 3)
-                                  (crash "bad get")
-                                  (&2
-                                   "array" (rec :expr (.1 children))
-                                   "index" (rec :expr (.2 children)))))
-                                (if (str= name "@arguments")
-                                 (| "arguments"
-                                  (if (!= (size children) 2)
-                                   (crash "bad arguments")
-                                   (rec :expr (.1 children))))
-                                 (if (str= name "@captured")
-                                  (| "captured"
+                               (if (str= name "@payload")
+                                (| "payload"
+                                 (if (!= (size children) 2)
+                                  (crash "bad payload")
+                                  (rec :expr (.1 children))))
+                                (if (str= name "@get")
+                                 (| "get"
+                                  (if (!= (size children) 3)
+                                   (crash "bad get")
+                                   (&2
+                                    "array" (rec :expr (.1 children))
+                                    "index" (rec :expr (.2 children)))))
+                                 (if (str= name "@arguments")
+                                  (| "arguments"
                                    (if (!= (size children) 2)
-                                    (crash "bad captured")
+                                    (crash "bad arguments")
                                     (rec :expr (.1 children))))
-                                  (if (str= name "@body")
-                                   (| "body"
+                                  (if (str= name "@captured")
+                                   (| "captured"
                                     (if (!= (size children) 2)
-                                     (crash "bad body")
+                                     (crash "bad captured")
                                      (rec :expr (.1 children))))
-                                   (if (str= name "@crash")
-                                    (| "crash"
+                                   (if (str= name "@body")
+                                    (| "body"
                                      (if (!= (size children) 2)
-                                      (crash "bad crash")
+                                      (crash "bad body")
                                       (rec :expr (.1 children))))
-                                    (crash (# "unknown builtin" name))))))))))))))))))))))
+                                    (if (str= name "@crash")
+                                     (| "crash"
+                                      (if (!= (size children) 2)
+                                       (crash "bad crash")
+                                       (rec :expr (.1 children))))
+                                     (crash
+                                      ('string
+                                       (str-concat-3
+                                        "Unknown builtin "
+                                        name
+                                        "."))))))))))))))))))))))))
                 (| "call"
                  (&2
                   "function" (rec :expr first)
@@ -1782,22 +1968,20 @@ export (#
   (# "function"
    (# "code")
    nil
-   (\ (code _)
-    (compile-olive nil (.1 (parse :list (str-to-chars (.1 code)))))))
+   (\ (code _) (compile-olive nil (.1 (parse :list (str-to-chars (.1 code)))))))
   'nil)
  (#
   (# "function"
    (# "code")
    nil
    (\ (code _)
-    (: pear-ir
-     (analyze-pear :expr (.1 (parse :expr (str-to-chars (.1 code)))))
-     (#
-      (# "function"
-       (#)
-       pear-ir
-       (#
-        (# "@captured")
-        (optimize :expr (lower-pear :expr pear-ir nil))))
-      'nil))))
+    (: pear-ir (analyze-pear :expr (.1 (parse :expr (str-to-chars (.1 code)))))
+     (also
+      (validate-pear :expr pear-ir (#))
+      (#
+       (# "function"
+        (#)
+        pear-ir
+        (# (# "@captured") (optimize :expr (lower-pear :expr pear-ir))))
+       'nil)))))
   'nil))
