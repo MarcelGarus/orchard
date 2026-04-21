@@ -155,8 +155,14 @@ pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}
             try writer.print(")", .{});
         },
         .enum_ => {
-            try writer.print("(| {s} ", .{self.get_variant()});
-            try self.get_payload().format_singleline(writer);
+            try writer.print("(| {s}", .{self.get_variant()});
+            const payload = self.get_payload();
+            if (payload.kind() == .struct_ and payload.obj.size() == 1) {
+                // The payload is (&), don't print it.
+            } else {
+                try writer.print(" ", .{});
+                try payload.format_singleline(writer);
+            }
             try writer.print(")", .{});
         },
         .array => {
@@ -357,9 +363,14 @@ pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) 
         },
         .enum_ => {
             try writer.print("(| {s}", .{self.get_variant()});
-            try writer.print("\n", .{});
-            for (0..indentation + 1) |_| try writer.writeAll(" ");
-            try self.get_payload().format_indented(writer, indentation + 1);
+            const payload = self.get_payload();
+            if (payload.kind() == .struct_ and payload.obj.size() == 1) {
+                // The payload is (&), don't print it.
+            } else {
+                try writer.print("\n", .{});
+                for (0..indentation + 1) |_| try writer.writeAll(" ");
+                try self.get_payload().format_indented(writer, indentation + 1);
+            }
             try writer.print(")", .{});
         },
         .array => {

@@ -129,7 +129,7 @@ flatten-to-leaf (# (# "obj") (%flatten-to-leaf (%name "obj")))
 flatten-to-inner (# (# "obj") (%flatten-to-inner (%name "obj")))
 array-to-list-rec (\ (array i)
  (if (= i (size array)) nil (# (. i array) (rec array (+ i 1)))))
-array-to-list (\ (array) (array-to-list-rec array 0))
+array-to-list (\ @array (array-to-list-rec array 0))
 str=-rec (\ (a b i limit)
  (if (= i limit)
   true
@@ -1432,11 +1432,17 @@ lower-pear (\ (mode ir)
                            (%call
                             (%object
                              (\ (struct)
-                              ((\ (fields)
-                                (if (nil? fields)
+                              ((\ (struct fields i)
+                                (if (= i (size struct))
                                  nil
-                                 (# ('string (.0 fields)) (rec (.1 fields)))))
-                               (.1 (array-to-list (.0 struct))))))
+                                 (#
+                                  (&2
+                                   "name" ('string (. i fields))
+                                   "value" (. i struct))
+                                  (rec struct fields (+ i 1)))))
+                               struct
+                               (.0 struct)
+                               1)))
                             (# (%name "@struct"))))))
                          (%crash
                           (%object
@@ -1482,21 +1488,21 @@ lower-pear (\ (mode ir)
                                (%object (# "array"))
                                (rec :list (.1 (array-to-list payload))))))
                             (if (str=3 tag "get")
-                             (%let "(array)" (rec :expr (.array payload))
-                              (%let "(index)" (rec :expr (.index payload))
+                             (%let "@array" (rec :expr (.array payload))
+                              (%let "@index" (rec :expr (.index payload))
                                (%if
                                 (%and
-                                 (%'array? (%name "(array)"))
-                                 (%'int? (%name "(index)")))
-                                (%let "(index)"
-                                 (%add (%load-int (%name "(index)")) (%word 1))
+                                 (%'array? (%name "@array"))
+                                 (%'int? (%name "@index")))
+                                (%let "@index"
+                                 (%add (%load-int (%name "@index")) (%word 1))
                                  (%if
                                   (%and
-                                   (%greater? (%name "(index)") (%word 0))
+                                   (%greater? (%name "@index") (%word 0))
                                    (%less?
-                                    (%name "(index)")
-                                    (%size (%name "(array)"))))
-                                  (%load (%name "(array)") (%name "(index)"))
+                                    (%name "@index")
+                                    (%size (%name "@array"))))
+                                  (%load (%name "@array") (%name "@index"))
                                   (%crash
                                    (%object ('string "Out of bounds.")))))
                                 (%crash
