@@ -1003,182 +1003,97 @@ validate-pear (\ (mode ir vars)
           (rec :expr (.definition payload) vars)
           (rec :expr (.body payload) vars))
          (crash ('string "A let needs a struct.")))
-        (if (str=6 tag "equal")
+        (if
+         (or-12
+          (str=6 tag "equal") (str=3 tag "add") (str=8 tag "subtract")
+          (str=8 tag "multiply") (str=6 tag "divide") (str=6 tag "modulo")
+          (str=10 tag "shift-left") (str=11 tag "shift-right") (str=3 tag "and")
+          (str=2 tag "or") (str=3 tag "xor") (str=7 tag "compare"))
          (if ('struct? payload)
           (also
            (rec :expr (.left payload) vars)
            (rec :expr (.right payload) vars))
-          (crash ('string "An equal needs a struct.")))
-         (if (str=4 tag "kind")
-          nil
-          (if (str=3 tag "add")
-           (if ('struct? payload)
-            (also
-             (rec :expr (.left payload) vars)
-             (rec :expr (.right payload) vars))
-            (crash ('string "An add needs a struct.")))
-           (if (str=8 tag "subtract")
+          (crash ('string "Expected a struct.")))
+         (if
+          (or-11
+           (str=4 tag "kind") (str=11 tag "make-struct") (str=6 tag "fields")
+           (str=7 tag "variant") (str=7 tag "payload")
+           (str=13 tag "array-to-list") (str=13 tag "list-to-array")
+           (str=9 tag "arguments") (str=8 tag "captured") (str=4 tag "body")
+           (str=5 tag "crash"))
+          (rec :expr payload vars)
+          (if (str=6 tag "struct")
+           (if ('array? payload)
+            (rec :fields (.1 (array-to-list payload)) vars)
+            (crash ('string "A struct needs an array of fields.")))
+           (if (str=5 tag "field")
             (if ('struct? payload)
              (also
-              (rec :expr (.left payload) vars)
-              (rec :expr (.right payload) vars))
-             (crash ('string "A subtract needs a struct.")))
-            (if (str=8 tag "multiply")
+              (rec :expr (.of payload) vars)
+              (rec :expr (.name payload) vars))
+             (crash ('string "A field needs a struct.")))
+            (if (str=4 tag "enum")
              (if ('struct? payload)
               (also
-               (rec :expr (.left payload) vars)
-               (rec :expr (.right payload) vars))
-              (crash ('string "A multiply needs a struct.")))
-             (if (str=6 tag "divide")
+               (if ('string? (.variant payload))
+                nil
+                (crash ('string "An enum needs a string variant.")))
+               (rec :expr (.payload payload) vars))
+              (crash ('string "Enum needs a struct.")))
+             (if (str=9 tag "make-enum")
               (if ('struct? payload)
                (also
-                (rec :expr (.left payload) vars)
-                (rec :expr (.right payload) vars))
-               (crash ('string "A divide needs a struct.")))
-              (if (str=6 tag "modulo")
+                (rec :expr (.variant payload) vars)
+                (rec :expr (.payload payload) vars))
+               (crash ('string "Enum needs a struct.")))
+              (if (str=6 tag "switch")
                (if ('struct? payload)
-                (also
-                 (rec :expr (.left payload) vars)
-                 (rec :expr (.right payload) vars))
-                (crash ('string "A modulo needs a struct.")))
-               (if (str=10 tag "shift-left")
-                (if ('struct? payload)
-                 (also
-                  (rec :expr (.left payload) vars)
-                  (rec :expr (.right payload) vars))
-                 (crash ('string "A shift-left needs a struct.")))
-                (if (str=11 tag "shift-right")
+                (also-3
+                 (rec :expr (.condition payload) vars)
+                 (: cases (.cases payload)
+                  (if ('array? cases)
+                   (rec :cases (.1 (array-to-list cases)) vars)
+                   (crash ('string "Switch needs cases array."))))
+                 (: default (.default payload)
+                  (if ('some? default)
+                   (rec :expr (.1 default) vars)
+                   (if ('none? default)
+                    nil
+                    (crash
+                     ('string "Switch default should be some or none."))))))
+                (crash ('string "Switch needs a struct.")))
+               (if (str=5 tag "array")
+                (if ('array? payload)
+                 (rec :list (.1 (array-to-list payload)) vars)
+                 (crash ('string "Array needs an array.")))
+                (if (str=9 tag "array-get")
                  (if ('struct? payload)
                   (also
-                   (rec :expr (.left payload) vars)
-                   (rec :expr (.right payload) vars))
-                  (crash ('string "A shift-right needs a struct.")))
-                 (if (str=3 tag "and")
+                   (rec :expr (.array payload) vars)
+                   (rec :expr (.index payload) vars))
+                  (crash ('string "array-get needs a struct.")))
+                 (if (str=13 tag "make-function")
                   (if ('struct? payload)
-                   (also
-                    (rec :expr (.left payload) vars)
-                    (rec :expr (.right payload) vars))
-                   (crash ('string "An and needs a struct.")))
-                  (if (str=2 tag "or")
+                   (also-3
+                    (rec :expr (.arguments payload) vars)
+                    (rec :expr (.body payload) vars)
+                    (rec :expr (.captured payload) vars))
+                   (crash ('string "A make-function needs a struct.")))
+                  (if (str=4 tag "call")
                    (if ('struct? payload)
                     (also
-                     (rec :expr (.left payload) vars)
-                     (rec :expr (.right payload) vars))
-                    (crash ('string "An or needs a struct.")))
-                   (if (str=3 tag "xor")
-                    (if ('struct? payload)
-                     (also
-                      (rec :expr (.left payload) vars)
-                      (rec :expr (.right payload) vars))
-                     (crash ('string "An xor needs a struct.")))
-                    (if (str=7 tag "compare")
-                     (if ('struct? payload)
-                      (also
-                       (rec :expr (.left payload) vars)
-                       (rec :expr (.right payload) vars))
-                      (crash ('string "A compare needs a struct.")))
-                     (if (str=6 tag "struct")
-                      (if ('array? payload)
-                       (rec :fields (.1 (array-to-list payload)) vars)
-                       (crash ('string "A struct needs an array of fields.")))
-                      (if (str=11 tag "make-struct")
-                       (rec :expr payload vars)
-                       (if (str=5 tag "field")
-                        (if ('struct? payload)
-                         (also
-                          (rec :expr (.of payload) vars)
-                          (rec :expr (.name payload) vars))
-                         (crash ('string "A field needs a struct.")))
-                        (if (str=6 tag "fields")
-                         (rec :expr payload vars)
-                         (if (str=4 tag "enum")
-                          (if ('struct? payload)
-                           (also
-                            (if ('string? (.variant payload))
-                             nil
-                             (crash
-                              ('string "An enum needs a string variant.")))
-                            (rec :expr (.payload payload) vars))
-                           (crash ('string "Enum needs a struct.")))
-                          (if (str=9 tag "make-enum")
-                           (if ('struct? payload)
-                            (also
-                             (rec :expr (.variant payload) vars)
-                             (rec :expr (.payload payload) vars))
-                            (crash ('string "Enum needs a struct.")))
-                           (if (str=6 tag "switch")
-                            (if ('struct? payload)
-                             (also-3
-                              (rec :expr (.condition payload) vars)
-                              (: cases (.cases payload)
-                               (if ('array? cases)
-                                (rec :cases (.1 (array-to-list cases)) vars)
-                                (crash ('string "Switch needs cases array."))))
-                              (: default (.default payload)
-                               (if ('some? default)
-                                (rec :expr (.1 default) vars)
-                                (if ('none? default)
-                                 nil
-                                 (crash
-                                  ('string
-                                   "Switch default should be some or none."))))))
-                             (crash ('string "Switch needs a struct.")))
-                            (if (str=7 tag "variant")
-                             (rec :expr payload vars)
-                             (if (str=7 tag "payload")
-                              (rec :expr payload vars)
-                              (if (str=5 tag "array")
-                               (if ('array? payload)
-                                (rec :list (.1 (array-to-list payload)) vars)
-                                (crash ('string "Array needs an array.")))
-                               (if (str=9 tag "array-get")
-                                (if ('struct? payload)
-                                 (also
-                                  (rec :expr (.array payload) vars)
-                                  (rec :expr (.index payload) vars))
-                                 (crash ('string "array-get needs a struct.")))
-                                (if (str=13 tag "array-to-list")
-                                 (rec :expr payload vars)
-                                 (if (str=13 tag "list-to-array")
-                                  (rec :expr payload vars)
-                                  (if (str=13 tag "make-function")
-                                   (if ('struct? payload)
-                                    (also-3
-                                     (rec :expr (.arguments payload) vars)
-                                     (rec :expr (.body payload) vars)
-                                     (rec :expr (.captured payload) vars))
-                                    (crash
-                                     ('string
-                                      "A make-function needs a struct.")))
-                                   (if (str=4 tag "call")
-                                    (if ('struct? payload)
-                                     (also
-                                      (rec :expr (.function payload) vars)
-                                      (: args (.arguments payload)
-                                       (if ('array? args)
-                                        (rec
-                                         :list
-                                         (.1 (array-to-list args))
-                                         vars)
-                                        (crash
-                                         ('string
-                                          "Call needs arguments array.")))))
-                                     (crash ('string "Call needs a struct.")))
-                                    (if (str=9 tag "arguments")
-                                     (rec :expr payload vars)
-                                     (if (str=4 tag "captured")
-                                      (rec :expr payload vars)
-                                      (if (str=4 tag "body")
-                                       (rec :expr payload vars)
-                                       (if (str=5 tag "crash")
-                                        (rec :expr payload vars)
-                                        (crash
-                                         ('string
-                                          (str-concat-3
-                                           "Unknown expression "
-                                           tag
-                                           "."
-                                           ))))))))))))))))))))))))))))))))))))))))
+                     (rec :expr (.function payload) vars)
+                     (: args (.arguments payload)
+                      (if ('array? args)
+                       (rec :list (.1 (array-to-list args)) vars)
+                       (crash ('string "Call needs arguments array.")))))
+                    (crash ('string "Call needs a struct.")))
+                   (crash
+                    ('string
+                     (str-concat-3
+                      "Unknown expression "
+                      tag
+                      ".")))))))))))))))))))
    (crash ('string (# "Expressions should be enums." ir))))
   (if (= mode :list)
    (if (nil? ir)

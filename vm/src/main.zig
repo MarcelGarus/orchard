@@ -51,7 +51,7 @@ fn run() !void {
     var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
     const ally = debug_ally.allocator();
 
-    var heap = try Heap.init(ally, 100_000_000);
+    var heap = try Heap.init(ally, 200_000_000);
     const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
