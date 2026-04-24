@@ -64,6 +64,31 @@ pub fn get_string(self: Value) []const u8 {
 
 // Struct stuff.
 
+pub fn new_struct(heap: *Heap, data: anytype) !Value {
+    const struct_symbol = try heap.new_symbol("struct");
+    const info = @typeInfo(@TypeOf(data));
+    @compileLog(info);
+    var keys: [info.@"struct".fields.len]Obj = undefined;
+    for (info.@"struct".fields, 0..) |f, i| {
+        keys[i] = try heap.new_symbol(f.name);
+    }
+    const ty = obj: {
+        var b = try heap.build_inner();
+        try b.emit(struct_symbol);
+        for (keys) |k| try b.emit(k);
+        break :obj b.finish();
+    };
+    const val = obj: {
+        var b = try heap.build_inner();
+        try b.emit(ty);
+        for (info.@"struct".fields) |f| {
+            try b.emit(@field(data, f.name));
+        }
+        break :obj b.finish();
+    };
+    return Value{ .obj = val };
+}
+
 pub fn get_field(self: Value, name: []const u8) Value {
     std.debug.assert(self.kind() == .struct_);
     const ty = self.obj.child(0).children();
@@ -77,10 +102,11 @@ pub fn get_field(self: Value, name: []const u8) Value {
 
 // Enum stuff.
 
-pub fn new_enum(heap: *Heap, variant: []const u8) !Value {
-    _ = heap;
-    _ = variant;
-    @panic("todo: new_enum");
+pub fn new_enum(heap: *Heap, variant: []const u8, payload: Value) !Value {
+    const enum_symbol = try heap.new_symbol("enum");
+    const variant_symbol = try heap.new_symbol(variant);
+    const ty = try heap.new_inner(&.{ enum_symbol, variant_symbol });
+    return try heap.new_inner(&.{ ty, payload });
 }
 
 pub fn get_variant(self: Value) []const u8 {
@@ -101,7 +127,7 @@ pub fn get_items(self: Value) []const Value {
 
 // Function stuff.
 
-pub fn new(heap: *Heap, args: Obj, ir: Obj, compiled: Obj, captured: Obj) !Value {
+pub fn new_function(heap: *Heap, args: Obj, ir: Obj, compiled: Obj, captured: Obj) !Value {
     const function_symbol = try heap.new_symbol("function");
     const ty = obj: {
         var b = try heap.build_inner();
@@ -127,13 +153,16 @@ pub fn get_captured(self: Value) Value {
 }
 
 pub fn call(function: Value, vm: *Vm, args: []const Value) !Value {
+    // std.debug.print("calling {f}\n", .{function.obj});
     std.debug.assert(function.kind() == .function);
     std.debug.assert(function.get_args().size() == args.len);
+    // std.debug.print("flup\n", .{});
     const fun = function.get_fun();
     const closure = function.get_captured().obj;
     const all_args = try vm.impl.ally.alloc(Word, args.len + 1);
     for (args, 0..) |arg, i| all_args[i] = arg.obj.address;
     all_args[args.len] = closure.address;
+    // std.debug.print("calling {f}\n", .{fun.obj});
     const result = try vm.call(fun, all_args);
     return .{ .obj = .{ .address = result } };
 }
