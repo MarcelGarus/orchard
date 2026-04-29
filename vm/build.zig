@@ -64,7 +64,6 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
 
     // On https://github.com/fabioarnold/nanovg-zig, it says:
     // > For an example on how to use nanovg-zig in your project's build.zig,
@@ -74,7 +73,7 @@ pub fn build(b: *std.Build) void {
     const nanovg = b.addModule("nanovg", .{
         .root_source_file = b.path("nanovg/nanovg.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = .ReleaseFast,
         .link_libc = !target.result.cpu.arch.isWasm(),
     });
     nanovg.addIncludePath(b.path("nanovg"));
@@ -88,7 +87,7 @@ pub fn build(b: *std.Build) void {
     const orchard = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = .ReleaseSafe,
     });
     //orchard.linkLibrary(raylib.artifact("raylib"));
     orchard.addImport("nanovg", nanovg);
