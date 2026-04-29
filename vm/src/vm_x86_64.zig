@@ -22,9 +22,11 @@ const Ally = std.mem.Allocator;
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Obj = Heap.Obj;
-const Instruction = @import("instruction.zig").Instruction;
 const ObjMap = @import("obj_map.zig").ObjMap;
 const Val = @import("pear_value.zig");
+const Interpreter = @import("vm_interpreter.zig");
+const Instruction = Interpreter.Instruction;
+const Ir = @import("ir.zig");
 
 const Vm = @This();
 
@@ -126,10 +128,11 @@ pub fn pop(vm: *Vm) Word {
     return vm.data_stack.pop();
 }
 
-pub fn run(vm: *Vm, instructions: Obj) !void {
-    try vm.run_jitted(try vm.compile(instructions));
+pub fn run(vm: *Vm, fun: Ir.Fun, args: []const Word) !Word {
+    return try vm.run_jitted(try vm.compile(fun), args);
 }
-pub fn run_jitted(vm: *Vm, jitted: []const u8) !void {
+pub fn run_jitted(vm: *Vm, jitted: []const u8, args: []const Word) !Word {
+    _ = args;
     std.debug.print("data stack:", .{});
     for (vm.data_stack.memory[vm.data_stack.cursor..]) |byte| std.debug.print(" {x:02}", .{byte});
     std.debug.print("\n", .{});
@@ -148,20 +151,16 @@ pub fn run_jitted(vm: *Vm, jitted: []const u8) !void {
     std.debug.print("data stack:", .{});
     for (vm.data_stack.memory[vm.data_stack.cursor..]) |word| std.debug.print(" {x:02}", .{word});
     std.debug.print("\n", .{});
+    return 0;
 }
-
-pub fn compile(vm: *Vm, instructions: Obj) ![]const u8 {
-    if (vm.jit_cache.get(instructions)) |machine_code| return machine_code;
-    const parsed = try Instruction.parse_instructions(vm.ally, instructions);
-
-    std.debug.print("Instructions:\n", .{});
-    std.debug.print("\x1b[92m", .{});
-    for (parsed) |instr| std.debug.print("{f}", .{instr});
-    std.debug.print("\x1b[0m", .{});
-
-    const jitted = try compile_instructions(vm.ally, parsed);
-    try vm.jit_cache.put(vm.ally, instructions, jitted);
-    return jitted;
+pub fn compile(vm: *Vm, fun: Ir.Fun) ![]const u8 {
+    if (vm.jit_cache.get(fun.obj)) |machine_code| return machine_code;
+    const machine_code = try compile_instructions(
+        vm.ally,
+        (try Interpreter.really_compile(vm.ally, fun)).instructions,
+    );
+    try vm.jit_cache.put(vm.ally, fun.obj, machine_code);
+    return machine_code;
 }
 // Turns the instructions into x86 machine code bytes.
 pub fn compile_instructions(ally: Ally, instructions: []const Instruction) ![]const u8 {
@@ -477,14 +476,14 @@ fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemor
             @panic("mod rax, rbx");
             // try code.emit("push rax", .{});
         },
-        .shl => {
+        .shift_left => {
             try code.emit("pop rbx", .{});
             try code.emit("pop rax", .{});
             @panic("shl");
             // try code.emit("shl rax, rbx", .{});
             // try code.emit("push rax", .{});
         },
-        .shr => {
+        .shift_right => {
             try code.emit("pop rbx", .{});
             try code.emit("pop rax", .{});
             @panic("shr");
@@ -492,54 +491,60 @@ fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemor
             // try code.emit("push rax", .{});
         },
         .compare => @panic("JIT compare"), // equal: 0, greater: 1, less: 2
-        .@"if" => |if_| {
-            try code.emit("pop rax", .{});
-            try code.emit("cmp rax, 0", .{});
-            const jump_to_else_placeholder = try code.emit_placeholder("jz {:32}", .{@as(i32, 0)});
-            const after_jump_to_else = code.len();
-            try compile_all(code, if_.then);
-            const jump_to_after_if_placeholder = try code.emit_placeholder("jmp {:32}", .{@as(i32, 0)});
-            const after_jump_to_after_if = code.len();
-            const else_ = code.len();
-            try compile_all(code, if_.else_);
-            const after_if = code.len();
-            // Patch the placeholders (these are relative jumps).
-            code.patch(jump_to_else_placeholder, "jz {:32}", .{@as(i32, @intCast(else_ - after_jump_to_else))});
-            code.patch(jump_to_after_if_placeholder, "jmp {:32}", .{@as(i32, @intCast(after_if - after_jump_to_after_if))});
+        .and_ => @panic("JIT and"),
+        .or_ => @panic("JIT or"),
+        .xor => @panic("JIT xor"),
+        // .if_ => |if_| {
+        //     try code.emit("pop rax", .{});
+        //     try code.emit("cmp rax, 0", .{});
+        //     const jump_to_else_placeholder = try code.emit_placeholder("jz {:32}", .{@as(i32, 0)});
+        //     const after_jump_to_else = code.len();
+        //     try compile_all(code, if_.then);
+        //     const jump_to_after_if_placeholder = try code.emit_placeholder("jmp {:32}", .{@as(i32, 0)});
+        //     const after_jump_to_after_if = code.len();
+        //     const else_ = code.len();
+        //     try compile_all(code, if_.else_);
+        //     const after_if = code.len();
+        //     // Patch the placeholders (these are relative jumps).
+        //     code.patch(jump_to_else_placeholder, "jz {:32}", .{@as(i32, @intCast(else_ - after_jump_to_else))});
+        //     code.patch(jump_to_after_if_placeholder, "jmp {:32}", .{@as(i32, @intCast(after_if - after_jump_to_after_if))});
+        // },
+        .new_leaf => @panic("JIT new_leaf"),
+        .new_inner => |new| {
+            _ = new;
+            @panic("Jit new inner");
+            // const header_word = @as(u64, @bitCast(Heap.Header{
+            //     .num_words = @intCast(new.num_words),
+            //     .is_inner = if (new.has_pointers) 1 else 0,
+            // }));
+            // if (new.num_words == 1) {
+            //     try code.emit("mov rbx, {:64}", .{header_word});
+            //     try code.emit("mov [r8], rbx", .{});
+            //     try code.emit("pop rax", .{});
+            //     try code.emit("mov [r8 + 8], rax", .{});
+            //     try code.emit("push r8", .{});
+            //     try code.emit("add r8, 16", .{});
+            // } else {
+            //     try code.emit("mov rax, r8", .{});
+            //     // rax = start of object; r8 = start of object; rsp = top of stack
+            //     try code.emit("mov rbx, {:64}", .{header_word});
+            //     try code.emit("mov [r8], rbx", .{});
+            //     try code.emit("add r8, 8", .{});
+            //     // The header word has now been allocated on the heap.
+            //     try code.emit("mov rbx, {:64}", .{@as(u64, @intCast(new.num_words * 8))});
+            //     try code.emit("add rsp, rbx", .{});
+            //     try code.emit("mov rbx, rsp", .{});
+            //     for (0..new.num_words) |_| {
+            //         try code.emit("sub rbx, 8", .{});
+            //         try code.emit("mov rcx, [rbx]", .{});
+            //         try code.emit("mov [r8], rcx", .{});
+            //         try code.emit("add r8, 8", .{});
+            //     }
+            //     try code.emit("push rax", .{});
+            // }
         },
-        .new => |new| {
-            const header_word = @as(u64, @bitCast(Heap.Header{
-                .num_words = @intCast(new.num_words),
-                .is_inner = if (new.has_pointers) 1 else 0,
-            }));
-            if (new.num_words == 1) {
-                try code.emit("mov rbx, {:64}", .{header_word});
-                try code.emit("mov [r8], rbx", .{});
-                try code.emit("pop rax", .{});
-                try code.emit("mov [r8 + 8], rax", .{});
-                try code.emit("push r8", .{});
-                try code.emit("add r8, 16", .{});
-            } else {
-                try code.emit("mov rax, r8", .{});
-                // rax = start of object; r8 = start of object; rsp = top of stack
-                try code.emit("mov rbx, {:64}", .{header_word});
-                try code.emit("mov [r8], rbx", .{});
-                try code.emit("add r8, 8", .{});
-                // The header word has now been allocated on the heap.
-                try code.emit("mov rbx, {:64}", .{@as(u64, @intCast(new.num_words * 8))});
-                try code.emit("add rsp, rbx", .{});
-                try code.emit("mov rbx, rsp", .{});
-                for (0..new.num_words) |_| {
-                    try code.emit("sub rbx, 8", .{});
-                    try code.emit("mov rcx, [rbx]", .{});
-                    try code.emit("mov [r8], rcx", .{});
-                    try code.emit("add r8, 8", .{});
-                }
-                try code.emit("push rax", .{});
-            }
-        },
-        .flatptro => @panic("JIT flatptro"),
-        .flatlito => @panic("JIT flatlito"),
+        .flatten_to_inner => @panic("JIT flatten to inner"),
+        .flatten_to_leaf => @panic("JIT flatten to leaf"),
         .points => @panic("JIT points"),
         .size => {
             try code.emit("pop rax", .{});
@@ -556,36 +561,37 @@ fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemor
             try code.emit("add rax, rbx", .{});
             try code.emit("push [rax]", .{});
         },
-        .heapsize => {
+        .heap_size => {
             try code.emit("push r8", .{});
         },
         .gc => @panic("JIT gc"),
-        .eval => {
-            try code.emit("pop rdx", .{});
+        .call => {
+            @panic("JIT call");
+            // try code.emit("pop rdx", .{});
 
-            // Swap from the Orchard to the C calling convention.
-            try code.emit("mov [rdi], r8", .{}); // heap
-            try code.emit("mov [rdi + 8], rsp", .{}); // data stack
-            try code.emit("mov [rdi + 16], r9", .{}); // call stack
-            try code.emit("mov rsp, r15", .{});
+            // // Swap from the Orchard to the C calling convention.
+            // try code.emit("mov [rdi], r8", .{}); // heap
+            // try code.emit("mov [rdi + 8], rsp", .{}); // data stack
+            // try code.emit("mov [rdi + 16], r9", .{}); // call stack
+            // try code.emit("mov rsp, r15", .{});
 
-            try code.emit("push rdi", .{});
-            try code.emit("push rsi", .{});
-            try code.emit("push rax", .{}); // align stack to 16 bytes
+            // try code.emit("push rdi", .{});
+            // try code.emit("push rsi", .{});
+            // try code.emit("push rax", .{}); // align stack to 16 bytes
 
-            // Call the Zig function.
-            try code.emit("mov rax, {:64}", .{@as(u64, @intCast(@intFromPtr(&hook_eval)))});
-            try code.emit("call rax", .{});
+            // // Call the Zig function.
+            // try code.emit("mov rax, {:64}", .{@as(u64, @intCast(@intFromPtr(&hook_eval)))});
+            // try code.emit("call rax", .{});
 
-            try code.emit("pop rax", .{}); // remove garbage from stack
-            try code.emit("pop rsi", .{});
-            try code.emit("pop rdi", .{});
+            // try code.emit("pop rax", .{}); // remove garbage from stack
+            // try code.emit("pop rsi", .{});
+            // try code.emit("pop rdi", .{});
 
-            // Swap from the C to the Orchard calling convention.
-            try code.emit("mov r15, rsp", .{});
-            try code.emit("mov r8, [rdi]", .{}); // heap
-            try code.emit("mov rsp, [rdi + 8]", .{}); // data stack
-            try code.emit("mov r9, [rdi + 16]", .{}); // call stack
+            // // Swap from the C to the Orchard calling convention.
+            // try code.emit("mov r15, rsp", .{});
+            // try code.emit("mov r8, [rdi]", .{}); // heap
+            // try code.emit("mov rsp, [rdi + 8]", .{}); // data stack
+            // try code.emit("mov r9, [rdi + 16]", .{}); // call stack
 
             // try code.emit("hlt", .{});
         },
@@ -593,6 +599,7 @@ fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemor
             try code.emit("mov rax, {:64}", .{@as(u64, @bitCast(@intFromPtr(&hook_crash)))});
             try code.emit("call rax", .{});
         },
+        else => @panic("JIT other"),
     }
 }
 

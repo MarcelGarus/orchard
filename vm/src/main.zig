@@ -18,12 +18,12 @@ const BootstrapStep = struct {
         std.debug.print(name, .{});
         for (name.len..30) |_| std.debug.print(" ", .{});
         const timer = try std.time.Timer.start();
-        vm.impl.instruction_count = 0;
+        // vm.impl.instruction_count = 0;
         return .{ .timer = timer, .vm = vm };
     }
     fn end(self: *BootstrapStep) void {
         std.debug.print("{} ms, ", .{self.timer.read() / std.time.ns_per_ms});
-        std.debug.print("{} instructions, ", .{self.vm.impl.instruction_count});
+        // std.debug.print("{} instructions, ", .{self.vm.impl.instruction_count});
         self.vm.get_heap().dump_stats();
     }
 };
