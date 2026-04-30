@@ -84,7 +84,7 @@ pub const Instruction = union(enum) {
     size, // Pops an address. Returns the size of the object.
     load, // addr offset -> ... Loads a word at the offset from the object.
     heap_size, // Pushes the size of the heap onto the stack. Can be used as a checkpoint for gc.
-    gc, // heapsize obj -> obj. Collects garbage starting at the heapsize, only keeping dependencies of obj.
+    collect_garbage, // heapsize obj -> obj. Collects garbage starting at the heapsize, only keeping dependencies of obj.
     call, // Pops an address, which should point to a function object. Calls it.
     crash, // Pops a message. Crashes with the message.
 
@@ -258,11 +258,11 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
             _ = stack.pop();
             try stack.append(ally, "");
         },
-        .gc => |inner| {
+        .collect_garbage => |inner| {
             try instrs.append(ally, .heap_size);
             try stack.append(ally, "");
             try compile_expr(ally, root, inner, stack, instrs);
-            try instrs.append(ally, .gc);
+            try instrs.append(ally, .collect_garbage);
             _ = stack.pop();
         },
         .also => |also| {
@@ -444,7 +444,7 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
                 const checkpoint = vm.heap.checkpoint();
                 try vm.data_stack.push(checkpoint.address);
             },
-            .gc => {
+            .collect_garbage => {
                 const keep = vm.data_stack.pop();
                 const checkpoint = vm.data_stack.pop();
                 vm.heap.dump_stats();

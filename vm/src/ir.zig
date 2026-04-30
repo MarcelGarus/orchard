@@ -60,7 +60,7 @@ pub const Expr = struct {
         load: Load,
         call: Call,
         rec: []const Expr,
-        gc: Expr,
+        collect_garbage: Expr,
         crash: Expr,
         unreachable_,
 
@@ -214,7 +214,7 @@ pub const Expr = struct {
                 try load.object.format_indented(writer, indentation + 1);
                 try load.index.format_indented(writer, indentation + 1);
             },
-            .gc => |arg| {
+            .collect_garbage => |arg| {
                 try writer.print("gc\n", .{});
                 try arg.format_indented(writer, indentation + 1);
             },
