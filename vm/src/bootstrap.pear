@@ -13,15 +13,37 @@
 
  _ (assert true)
 
- optimize (\ (mode input)
-  (% mode
-   value
-    (% (@kind input))
-   fun input
-  ))
+ and (\ (a b) (% a true b false false))
+ or (\ (a b) (% a true true false b))
 
-  (@string-get-byte "hey" 1)
+ value? (\ (node) (% node value true _ false))
+ optimize (\ (rec mode input)
+  (% mode
+   expr
+    (% input
+     value input
+     (add args)
+      (:
+       left (rec rec (| expr) (.left args))
+       right (rec rec (| expr) (.right args))
+       (% left
+        (value l)
+         (% right
+          (value r) (| value (@add l r))
+          _ (| add (& left left right right))
+         )
+        _ (| add (& left left right right))))
+     _ input
+    )
+   fun (@function (@arguments input) (rec rec (| expr) (@body input)) (@captured input))
+  ))
+ optimize (\ (function) (optimize optimize (| fun) function))
+
+ (optimize (\ (a) (@add a (@add 1 2))))
 )
+
+
+
   (@bytes->string ([] 104 101 108 108 111 32 119 111 114 108 100))
   (@string->bytes "hello world")
 
@@ -60,7 +82,6 @@
   fds (@string-get "Hi" 0)
 
 builtins to add/rename/support:
-@function
 @gc
 @call
 @run-with-limit (needs VM extension)
