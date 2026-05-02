@@ -1,5 +1,5 @@
 const std = @import("std");
-const objects_compiler = @import("objects_compiler.zig");
+const object_loader = @import("object_loader.zig");
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Vm = @import("vm.zig");
@@ -62,7 +62,7 @@ fn run() !void {
     const compile_olive = step: {
         var step = try BootstrapStep.start("Loading the Olive compiler.", &vm);
         defer step.end();
-        break :step Value.from(try objects_compiler.create(ally, vm.get_heap(), objects_code));
+        break :step Value.from(try object_loader.load(ally, vm.get_heap(), objects_code));
     };
     const olive = step: {
         var step = try BootstrapStep.start("Compiling Olive.", &vm);
