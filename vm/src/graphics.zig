@@ -1,7 +1,6 @@
 const std = @import("std");
 const Heap = @import("heap.zig");
 const Obj = Heap.Obj;
-const Val = @import("pear_value.zig");
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const builtin = @import("builtin");
@@ -10,119 +9,92 @@ const gl = @cImport({
     @cInclude("GLFW/glfw3.h");
 });
 const nvg = @import("nanovg");
+const Value = @import("value.zig");
 
 const Graphics = @This();
 
-pub const Position = struct { x: i64, y: i64 };
 pub const Size = struct { width: i64, height: i64 };
-
-pub const Color = struct {
-    r: u8,
-    g: u8,
-    b: u8,
-
-    pub fn parse(obj: Obj, heap: Heap) !Color {
-        const words = heap.get(obj).words;
-        return .{
-            .r = @intCast(Val.get_int(heap, words[0])),
-            .g = @intCast(Val.get_int(heap, words[1])),
-            .b = @intCast(Val.get_int(heap, words[2])),
-        };
-    }
-};
-
-pub const Path = struct {
-    segments: []const Segment,
-
-    pub const Segment = union(enum) {
-        move_to: Position,
-        line_to: Position,
-
-        pub fn parse(obj: Obj, heap: Heap) !Segment {
-            const symbol = Val.get_symbol(heap, heap.load(obj, 0));
-            if (std.mem.eql(u8, symbol, "move to")) {
-                return .{ .move_to = .{
-                    .x = Val.get_int(heap, heap.load(obj, 1)),
-                    .y = Val.get_int(heap, heap.load(obj, 2)),
-                } };
-            }
-            if (std.mem.eql(u8, symbol, "line to")) {
-                return .{ .line_to = .{
-                    .x = Val.get_int(heap, heap.load(obj, 1)),
-                    .y = Val.get_int(heap, heap.load(obj, 2)),
-                } };
-            }
-            std.debug.print("segment: {s}\n", .{symbol});
-            return error.UnknownPathSegment;
-        }
-    };
-
-    pub fn parse(ally: Ally, obj: Obj, heap: Heap) !Path {
-        var segments = ArrayList(Segment).empty;
-        var current = obj;
-        while (true) {
-            if (heap.get(current).words.len == 0) {
-                break;
-            }
-            try segments.append(ally, try Segment.parse(heap.load(current, 0), heap));
-            current = heap.load(current, 1);
-        }
-        return .{ .segments = segments.items };
-    }
-};
-
+pub const Position = struct { x: i64, y: i64 };
+pub const Color = struct { r: u8, g: u8, b: u8 };
+pub const Path = []const PathSegment;
+pub const PathSegment = union(enum) { move_to: Position, line_to: Position };
 pub const DrawingInstruction = union(enum) {
-    also: []const DrawingInstruction,
-    draw_rectangle: struct { pos: Position, size: Size, color: Color },
     fill_path: struct { path: Path, color: Color },
-
-    pub fn parse_all(ally: Ally, obj: Obj, heap: Heap) ![]const DrawingInstruction {
-        //std.debug.print("Parsing: ", .{});
-        //{
-        //    var buffer: [64]u8 = undefined;
-        //    const bw = std.debug.lockStderrWriter(&buffer);
-        //    defer std.debug.unlockStderrWriter();
-        //    try heap.format(obj, bw);
-        //    try bw.print("\n", .{});
-        //}
-        var current = obj;
-        var out = ArrayList(DrawingInstruction).empty;
-        while (heap.get(current).words.len != 0) {
-            const words = heap.get(current).words;
-            try out.append(ally, try parse(ally, words[0], heap));
-            current = words[1];
-        }
-        return out.items;
-    }
-    pub fn parse(ally: Ally, obj: Obj, heap: Heap) error{ OutOfMemory, UnknownPathSegment }!DrawingInstruction {
-        const symbol_obj = heap.load(obj, 0);
-        const symbol = Val.get_symbol(heap, symbol_obj);
-
-        if (std.mem.eql(u8, symbol, "also")) {
-            return .{ .also = try parse_all(ally, heap.load(obj, 1), heap) };
-        }
-        if (std.mem.eql(u8, symbol, "draw rectangle")) {
-            const x = Val.get_int(heap, heap.load(obj, 1));
-            const y = Val.get_int(heap, heap.load(obj, 2));
-            const width = Val.get_int(heap, heap.load(obj, 3));
-            const height = Val.get_int(heap, heap.load(obj, 4));
-            const color = try Color.parse(heap.load(obj, 5), heap);
-            return .{ .draw_rectangle = .{
-                .pos = .{ .x = x, .y = y },
-                .size = .{ .width = width, .height = height },
-                .color = color,
-            } };
-        }
-        if (std.mem.eql(u8, symbol, "fill path")) {
-            const path = try Path.parse(ally, heap.load(obj, 1), heap);
-            const color = try Color.parse(heap.load(obj, 2), heap);
-            return .{ .fill_path = .{ .path = path, .color = color } };
-        }
-
-        std.debug.print("drawing instruction {s}\n", .{symbol});
-        @panic("unknown drawing instruction");
-    }
 };
+
+pub fn parse_position(value: Value) !Position {
+    return .{
+        .x = value.get_field("x").get_int(),
+        .y = value.get_field("y").get_int(),
+    };
+}
+pub fn parse_color(value: Value) !Color {
+    return .{
+        .r = @intCast(value.get_field("r").get_int()),
+        .g = @intCast(value.get_field("g").get_int()),
+        .b = @intCast(value.get_field("b").get_int()),
+    };
+}
+pub fn parse_segment(value: Value) !PathSegment {
+    const variant = value.get_variant();
+    const payload = value.get_payload();
+    if (std.mem.eql(u8, variant, "move-to")) {
+        return .{ .move_to = try parse_position(payload) };
+    }
+    if (std.mem.eql(u8, variant, "line-to")) {
+        return .{ .line_to = try parse_position(payload) };
+    }
+    std.debug.print("segment: {s}\n", .{variant});
+    return error.UnknownPathSegment;
+}
+pub fn parse_path(ally: Ally, value: Value) !Path {
+    const items = value.get_items();
+    var path = try ally.alloc(PathSegment, items.len);
+    for (items, 0..) |item, i| {
+        path[i] = try parse_segment(item);
+    }
+    return path;
+}
+pub fn parse_drawing_instructions_rec(
+    ally: Ally,
+    instructions: *ArrayList(DrawingInstruction),
+    value: Value,
+) error{ OutOfMemory, UnknownPathSegment }!void {
+    const variant = value.get_variant();
+    const payload = value.get_payload();
+    if (std.mem.eql(u8, variant, "fill-path")) {
+        try instructions.append(ally, .{ .fill_path = .{
+            .path = try parse_path(ally, payload.get_field("path")),
+            .color = try parse_color(payload.get_field("color")),
+        } });
+        return;
+    }
+    std.debug.print("drawing instruction \"{s}\"\n", .{variant});
+    @panic("unknown drawing instruction");
+}
+pub fn parse_drawing_instructions(ally: Ally, value: Value) ![]const DrawingInstruction {
+    var instructions = ArrayList(DrawingInstruction).empty;
+    try parse_drawing_instructions_rec(ally, &instructions, value);
+    return instructions.items;
+}
+
+pub fn dump_drawing_instructions(instructions: []const DrawingInstruction) !void {
+    for (instructions) |instruction| {
+        switch (instruction) {
+            .fill_path => |fill| {
+                std.debug.print("fill-path", .{});
+                std.debug.print(" #{x:02}{x:02}{x:02}", .{ fill.color.r, fill.color.g, fill.color.b });
+                for (fill.path) |segment| {
+                    switch (segment) {
+                        .move_to => |pos| std.debug.print(" ({d}|{d})", .{ pos.x, pos.y }),
+                        .line_to => |pos| std.debug.print("--({d}|{d})", .{ pos.x, pos.y }),
+                    }
+                }
+            },
+        }
+        std.debug.print("\n", .{});
+    }
+}
 
 ally: Ally,
 window: ?*gl.GLFWwindow = null,
@@ -140,8 +112,12 @@ pub const Event = union(enum) {
     },
 };
 
+fn glfwErrorCallback(error_code: c_int, description: [*c]const u8) callconv(.c) void {
+    std.debug.print("GLFW Error [{d}]: {s}\n", .{ error_code, description });
+}
 pub fn init(ally: Ally) !*Graphics {
     // Initialize libraries.
+    _ = gl.glfwSetErrorCallback(glfwErrorCallback);
     if (gl.glfwInit() == gl.GLFW_FALSE) return error.GLFWInitFailed;
     gl.glfwWindowHint(gl.GLFW_CONTEXT_VERSION_MAJOR, 2);
     gl.glfwWindowHint(gl.GLFW_CONTEXT_VERSION_MINOR, 0);
@@ -281,23 +257,22 @@ fn render_all(vg: nvg, instructions: []const DrawingInstruction) !void {
 }
 fn render_single(vg: nvg, instruction: DrawingInstruction) error{OutOfMemory}!void {
     switch (instruction) {
-        .also => |instructions| try render_all(vg, instructions),
-        .draw_rectangle => |args| {
-            const x: f32 = @floatFromInt(args.pos.x);
-            const y: f32 = @floatFromInt(args.pos.y);
-            const width: f32 = @floatFromInt(args.size.width);
-            const height: f32 = @floatFromInt(args.size.height);
-            vg.beginPath();
-            vg.moveTo(x, y);
-            vg.lineTo(x + width, y);
-            vg.lineTo(x + width, y + height);
-            vg.lineTo(x, y + height);
-            vg.fillColor(nvg.rgb(args.color.r, args.color.g, args.color.b));
-            vg.fill();
-        },
+        // .draw_rectangle => |args| {
+        //     const x: f32 = @floatFromInt(args.pos.x);
+        //     const y: f32 = @floatFromInt(args.pos.y);
+        //     const width: f32 = @floatFromInt(args.size.width);
+        //     const height: f32 = @floatFromInt(args.size.height);
+        //     vg.beginPath();
+        //     vg.moveTo(x, y);
+        //     vg.lineTo(x + width, y);
+        //     vg.lineTo(x + width, y + height);
+        //     vg.lineTo(x, y + height);
+        //     vg.fillColor(nvg.rgb(args.color.r, args.color.g, args.color.b));
+        //     vg.fill();
+        // },
         .fill_path => |args| {
             vg.beginPath();
-            for (args.path.segments) |segment| {
+            for (args.path) |segment| {
                 switch (segment) {
                     .move_to => |pos| vg.moveTo(
                         @floatFromInt(pos.x),

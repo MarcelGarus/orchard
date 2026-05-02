@@ -16,12 +16,76 @@
  and (\ (a b) (% a true b false false))
  or (\ (a b) (% a true true false b))
 
+ + (\ (a b) (@add a b))
+ - (\ (a b) (@subtract a b))
+ * (\ (a b) (@multiply a b))
+ / (\ (a b) (@divide a b))
+ mod (\ (a b) (@modulo a b))
+ << (\ (a b) (@shift-left a b))
+ >> (\ (a b) (@shift-right a b))
+ bit-and (\ (a b) (@and a b))
+ bit-or (\ (a b) (@or a b))
+ bit-xor (\ (a b) (@xor a b))
+
+ compare (\ (a b) (@compare a b))
+ = (\ (a b) (@equal? a b))
+
+ array-len (\ (array) (@array-length array))
+ array-get (\ (array index) (@array-get array index))
+ array->list (\ (array) (@array->list array))
+ list->array (\ (list) (@list->array list))
+
  value? (\ (node) (% node value true _ false))
+ bind (\ (rec mode input name value)
+  (% mode
+   expr
+    (% input
+     value input
+     (name n) (% (@equal? name n) true value false (| name n))
+     (let l)
+      (| let
+       (&
+        name (.name l)
+        definition (rec rec (| expr) (.definition l) name value)
+        body (rec rec (| expr) (.body l) name value)))
+     (field f)
+      (| field (& of (rec rec (| expr) (.of f) name value) name (.name f)))
+     (call c)
+      (| call
+       (&
+        function (rec rec (| expr) (.function c) name value)
+        arguments (rec rec (| array) (.arguments c) name value)))
+     _ (crash (| todo-bind input))
+    )
+   array (list->array (rec rec (| list) (array->list input) name value))
+   list
+    (% input
+     empty (| empty)
+     (more m)
+      (| more
+       (&
+        item (rec rec (| expr) (.item m) name value)
+        rest (rec rec (| list) (.rest m) name value))))
+   _ (crash (| unknown-bind-mode mode)))
+ )
+ bind (\ (input name value) (bind bind (| expr) input name value))
  optimize (\ (rec mode input)
   (% mode
    expr
     (% input
      value input
+     (let let)
+      (:
+       name (.name let)
+       definition (rec rec (| expr) (.definition let))
+       (% definition
+        (value v) (rec rec (| expr) (bind (.body let) name (| value v)))
+        _ (:
+         body (rec rec (| expr) (.body let))
+         (| let (& name name definition definition body body))
+        )
+       )
+      )
      (add args)
       (:
        left (rec rec (| expr) (.left args))
@@ -35,54 +99,47 @@
         _ (| add (& left left right right))))
      _ input
     )
-   fun (@function (@arguments input) (rec rec (| expr) (@body input)) (@captured input))
+   fun
+    (@function
+     (@arguments input)
+     (rec
+      rec
+      (| expr)
+      (| let
+       (&
+        name "@captured"
+        definition (| value (@captured input))
+        body (@body input))))
+     nil)
   ))
  optimize (\ (function) (optimize optimize (| fun) function))
 
- (@collect-garbage (\ () (optimize (\ (a) (@add a (@add 1 2))))))
-)
+ example-fun (\ (a) (+ a (+ 1 2)))
 
-
-
-  (@bytes->string ([] 104 101 108 108 111 32 119 111 114 108 100))
-  (@string->bytes "hello world")
+ point (\ (x y) (& x x y y))
 
  (&
-  generic-equality (@equal? 2 2)
-  kind (@kind "hey")
-  variant (@variant (| foo))
-  payload (@payload (| bar 2))
-  field-access (@field (& x 1 y 2) "x")
-  fields (@fields (& x 1 y 2))
-  code-reflection (@body (\ (a) (@add a 1)))
-  blub (@struct ([] (& name "x" value 5) (& name "y" value 9)))
-  blob (@enum "foo" 5)
-  flup (@array-get ([] 10 11 12) 1)
-  a (@list->array (@array->list ([] 1 2 3)))
-))
+  example-fun example-fun
+  optimized (@collect-garbage (\ () (optimize example-fun)))
+  render (\ (size)
+   (| fill-path
+    (&
+     path ([] (| move-to (point 10 10)) (| line-to (point 100 10)) (| line-to (point 50 100)))
+     color (& r 255 g 10 b 0)
+    )
+   )
+  )
+  ))
 
+===
 
  kind (\ (value) (@kind value))
  int? (\ (value) (% (kind value) int true _ false))
-
- + (\ (a b) (@add a b))
- - (\ (a b) (@subtract a b))
- * (\ (a b) (@multiply a b))
- / (\ (a b) (@divide a b))
- mod (\ (a b) (@modulo a b))
- << (\ (a b) (@shift-left a b))
- >> (\ (a b) (@shift-right a b))
- bit-and (\ (a b) (@and a b))
- bit-or (\ (a b) (@or a b))
- bit-xor (\ (a b) (@xor a b))
- compare (\ (a b) (@compare a b))
-
  
 
   fds (@string-get "Hi" 0)
 
 builtins to add/rename/support:
-@gc
 @call
 @run-with-limit (needs VM extension)
 
@@ -102,75 +159,3 @@ In Pear:
 - asserts for int stuff
 - rendering stuff
 - ...
-
-
- optimize-expr (\ (rec expr)
-  (% expr
-   value expr
-   (add args)
-    (: left (rec rec (.left args))
-     (: right (rec rec (.right args))
-      ()
-      (| add (& left left right right))
-     )
-    )
-  ))
- optimize (\ (function)
-  (&
-   arguments (@arguments function)
-   captured (@captured function)
-   body (optimize-expr optimize-expr (@body function))))
-
-
-  blob (@fields (& x 1 y 2)))
- (optimize (\ (a) (@add 2 1)))
-
-
-(| add (& left (rec rec (.left args)) right (rec rec (.right args))))
-
-(% (| baz 2)
-  foo "it's foo"
-  bar "it's bar"
-  _ "it's something else")
-
-
-
-
-
-
-
-
-
-
-
-(@get ([] 1 42 3) 1)
-
- nil (&)
- + (\ (a b) (@add a b))
- - (\ (a b) (@subtract a b))
- foo (& x 1 y 2)
- bar (.x foo)
- (% (| a)
-   a 1
-   (b b) b
-   c 3
-   _ 4)
-
-
-
- foo ((ir a)
-  (\ (blub) (...))
-  (@make_function ([] "blub") ir captureblub))
- (foo (| name "blub") 3)
-
-
- (make_function ([] ...) (| make_function (& arguments ([] "blub") ...)))
-
- (foo (b)
-  (make_function ([] "b") (| add (| name "(capture)") (| name "b")) b))
-
-
-crash (\ (message) (@crash message))
-
-
- (+ 2 3)

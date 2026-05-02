@@ -4,7 +4,7 @@ const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Vm = @import("vm.zig");
 const Graphics = @import("graphics.zig");
-const Val = @import("pear_value.zig");
+const Value = @import("value.zig");
 const Ir = @import("ir.zig");
 const Obj = Heap.Obj;
 const Ally = std.mem.Allocator;
@@ -62,28 +62,28 @@ fn run() !void {
     const compile_olive = step: {
         var step = try BootstrapStep.start("Loading the Olive compiler.", &vm);
         defer step.end();
-        break :step Val.from(try objects_compiler.create(ally, vm.get_heap(), objects_code));
+        break :step Value.from(try objects_compiler.create(ally, vm.get_heap(), objects_code));
     };
     const olive = step: {
         var step = try BootstrapStep.start("Compiling Olive.", &vm);
         defer step.end();
         const result = try compile_olive.call(&vm, &.{
-            try Val.new_string(&heap, olive_code),
+            try Value.new_string(&heap, olive_code),
         });
-        break :step Val.from(try vm.garbage_collect(start_of_heap, result.obj));
+        break :step Value.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
     const olive_self_hosted = step: {
         var step = try BootstrapStep.start("Self-compiling Olive.", &vm);
         defer step.end();
         break :step try olive.get_field("compile_olive").call(&vm, &.{
-            try Val.new_string(&heap, olive_code),
+            try Value.new_string(&heap, olive_code),
         });
     };
     const olive_self_hosted_2 = step: {
         var step = try BootstrapStep.start("Self-compiling Olive.", &vm);
         defer step.end();
         break :step try olive_self_hosted.get_field("compile_olive").call(&vm, &.{
-            try Val.new_string(&heap, olive_code),
+            try Value.new_string(&heap, olive_code),
         });
     };
     _ = {
@@ -96,13 +96,13 @@ fn run() !void {
     const compile_pear = step: {
         var step = try BootstrapStep.start("Keeping only Pear compiler.", &vm);
         defer step.end();
-        break :step Val.from(try vm.garbage_collect(start_of_heap, olive_self_hosted_2.get_field("compile_pear").obj));
+        break :step Value.from(try vm.garbage_collect(start_of_heap, olive_self_hosted_2.get_field("compile_pear").obj));
     };
     const pear = step: {
         var step = try BootstrapStep.start("Compiling Pear.", &vm);
         defer step.end();
-        const result = try compile_pear.call(&vm, &.{try Val.new_string(&heap, pear_code)});
-        break :step Val.from(try vm.garbage_collect(start_of_heap, result.obj));
+        const result = try compile_pear.call(&vm, &.{try Value.new_string(&heap, pear_code)});
+        break :step Value.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
     // std.debug.print("pear:\n{f}\n", .{pear.obj});
     const pear_export = try pear.call(&vm, &.{});
@@ -119,105 +119,114 @@ fn run() !void {
     // const result = try pear_export.call(&vm, &.{try Val.new_int(&heap, 2)});
     // std.debug.print("result:\n{f}\n", .{result});
 
-    std.debug.print("amezing\n", .{});
+    std.debug.print("entering rendering mode\n", .{});
 
-    if (true) return;
+    var app = pear_export;
 
-    // app = try handle_tasks(ally, &vm, app);
-    // std.debug.print("Output: {f}\n", .{app});
-    // const eval = app.kind().struct_.get_field("eval");
-    // const code_str = try Val.String.new(&heap, code);
-    // const result = try vm.call(eval.kind().lambda, &.{code_str.as_value()});
+    // if (true) return;
 
-    // var gfx = try Graphics.init(ally);
-    // defer gfx.deinit();
+    var gfx = try Graphics.init(ally);
+    defer gfx.deinit();
 
     // // Cached drawing instructions.
-    // var previous_size = gfx.get_size();
-    // var drawing_instructions: ?[]const Graphics.DrawingInstruction = null;
-    // var drawing_instructions_ally: ?std.heap.ArenaAllocator = null;
+    var previous_size = gfx.get_size();
+    var drawing_instructions: ?[]const Graphics.DrawingInstruction = null;
+    var drawing_instructions_ally: ?std.heap.ArenaAllocator = null;
 
-    // while (!gfx.should_close()) {
-    //     const there_are_events = gfx.event_queue.items.len > 0;
+    while (!gfx.should_close()) {
+        const there_are_events = gfx.event_queue.items.len > 0;
 
-    //     if (there_are_events) {
-    //         const update_lambda = heap.load(app, 2);
-    //         try object_mod.assert_lambda(&heap, update_lambda);
-    //         for (gfx.event_queue.items) |event| {
-    //             // TODO: do the decision of handling in Pear
-    //             const pear_event = event: switch (event) {
-    //                 .entered_char => |char| {
-    //                     std.debug.print("Char: {d}\n", .{char.codepoint});
-    //                     const kind = try Symbol.new(&heap, "char");
-    //                     const codepoint = try Int.new(&heap, @intCast(char.codepoint));
-    //                     var b = try heap.object_builder(0);
-    //                     try b.emit_pointer(kind);
-    //                     try b.emit_pointer(codepoint);
-    //                     break :event b.finish();
-    //                 },
-    //                 .pressed_key => |key| {
-    //                     std.debug.print("Key: {any}\n", .{key});
-    //                     const kind = try Symbol.new(&heap, "key");
-    //                     const keycode = try Int.new(&heap, @intCast(key.keycode));
-    //                     const control_pressed = try Int.new(&heap, if (key.control_pressed) 1 else 0);
-    //                     const shift_pressed = try Int.new(&heap, if (key.shift_pressed) 1 else 0);
-    //                     const alt_pressed = try Int.new(&heap, if (key.alt_pressed) 1 else 0);
-    //                     break :event try heap.new_inner(.{ kind, keycode, control_pressed, shift_pressed, alt_pressed });
-    //                 },
-    //             };
-    //             app = try vm.call(heap.load(update_lambda, 0), &[_]Address{ pear_event, heap.load(update_lambda, 1) });
-    //             app = try handle_tasks(ally, &vm, app);
+        //     if (there_are_events) {
+        //         const update_lambda = heap.load(app, 2);
+        //         try object_mod.assert_lambda(&heap, update_lambda);
+        //         for (gfx.event_queue.items) |event| {
+        //             // TODO: do the decision of handling in Pear
+        //             const pear_event = event: switch (event) {
+        //                 .entered_char => |char| {
+        //                     std.debug.print("Char: {d}\n", .{char.codepoint});
+        //                     const kind = try Symbol.new(&heap, "char");
+        //                     const codepoint = try Int.new(&heap, @intCast(char.codepoint));
+        //                     var b = try heap.object_builder(0);
+        //                     try b.emit_pointer(kind);
+        //                     try b.emit_pointer(codepoint);
+        //                     break :event b.finish();
+        //                 },
+        //                 .pressed_key => |key| {
+        //                     std.debug.print("Key: {any}\n", .{key});
+        //                     const kind = try Symbol.new(&heap, "key");
+        //                     const keycode = try Int.new(&heap, @intCast(key.keycode));
+        //                     const control_pressed = try Int.new(&heap, if (key.control_pressed) 1 else 0);
+        //                     const shift_pressed = try Int.new(&heap, if (key.shift_pressed) 1 else 0);
+        //                     const alt_pressed = try Int.new(&heap, if (key.alt_pressed) 1 else 0);
+        //                     break :event try heap.new_inner(.{ kind, keycode, control_pressed, shift_pressed, alt_pressed });
+        //                 },
+        //             };
+        //             app = try vm.call(heap.load(update_lambda, 0), &[_]Address{ pear_event, heap.load(update_lambda, 1) });
+        //             app = try handle_tasks(ally, &vm, app);
 
-    //             {
-    //                 var buffer: [64]u8 = undefined;
-    //                 const bw = std.debug.lockStderrWriter(&buffer);
-    //                 defer std.debug.unlockStderrWriter();
-    //                 try heap.format(heap.load(app, 3), bw);
-    //                 try bw.print("\n", .{});
-    //             }
-    //         }
-    //         gfx.event_queue.items.len = 0;
-    //         app = try vm.garbage_collect(start_of_heap, app);
-    //         // _ = start_of_heap;
-    //     }
+        //             {
+        //                 var buffer: [64]u8 = undefined;
+        //                 const bw = std.debug.lockStderrWriter(&buffer);
+        //                 defer std.debug.unlockStderrWriter();
+        //                 try heap.format(heap.load(app, 3), bw);
+        //                 try bw.print("\n", .{});
+        //             }
+        //         }
+        //         gfx.event_queue.items.len = 0;
+        //         app = try vm.garbage_collect(start_of_heap, app);
+        //         // _ = start_of_heap;
+        //     }
 
-    //     const size = gfx.get_size();
-    //     if (there_are_events or size.width != previous_size.width or size.height != previous_size.height) {
-    //         if (drawing_instructions) |_| {
-    //             // Clear cached drawing instructions.
-    //             drawing_instructions = null;
-    //             drawing_instructions_ally.?.deinit();
-    //         }
-    //     }
-    //     previous_size = size;
+        const size = gfx.get_size();
+        if (there_are_events or size.width != previous_size.width or size.height != previous_size.height) {
+            if (drawing_instructions) |_| {
+                // Clear cached drawing instructions.
+                drawing_instructions = null;
+                drawing_instructions_ally.?.deinit();
+            }
+        }
+        previous_size = size;
 
-    //     if (drawing_instructions == null) {
-    //         std.debug.print("rendering\n", .{});
-    //         // There are no cached drawing instructions; render a frame.
-    //         const frame_checkpoint = heap.checkpoint();
-    //         defer heap.restore(frame_checkpoint);
-    //         const render_lambda = heap.load(app, 1);
-    //         try object_mod.assert_lambda(&heap, render_lambda);
-    //         const drawing_instructions_obj = try vm.call(
-    //             heap.load(render_lambda, 0),
-    //             &[_]Address{
-    //                 try Int.new(&heap, size.width),
-    //                 try Int.new(&heap, size.height),
-    //                 heap.load(render_lambda, 1),
-    //             },
-    //         );
-    //         drawing_instructions_ally = std.heap.ArenaAllocator.init(ally);
-    //         drawing_instructions = try Graphics.DrawingInstruction.parse_all(
-    //             drawing_instructions_ally.?.allocator(),
-    //             drawing_instructions_obj,
-    //             vm.heap.*,
-    //         );
-    //     }
+        if (drawing_instructions == null) {
+            std.debug.print("rendering\n", .{});
+            // There are no cached drawing instructions; render a frame.
+            const frame_checkpoint = heap.checkpoint();
+            defer heap.restore(frame_checkpoint);
 
-    //     try gfx.render(size, drawing_instructions.?);
+            const instructions = try app.get_field("render").call(&vm, &[_]Value{
+                try Value.new_struct(&heap, .{
+                    .width = try Value.new_int(&heap, size.width),
+                    .height = try Value.new_int(&heap, size.height),
+                }),
+            });
+            std.debug.print("Rendered: {f}\n", .{instructions});
 
-    //     gfx.poll_events();
-    // }
+            drawing_instructions_ally = std.heap.ArenaAllocator.init(ally);
+            drawing_instructions = try Graphics.parse_drawing_instructions(
+                drawing_instructions_ally.?.allocator(),
+                instructions,
+            );
+            try Graphics.dump_drawing_instructions(drawing_instructions.?);
+            std.debug.print("{any}\n", .{drawing_instructions});
+        }
+
+        // drawing_instructions = &.{
+        //     .{
+        //         .fill_path = .{
+        //             .path = &.{
+        //                 .{ .move_to = .{ .x = 10, .y = 10 } },
+        //                 .{ .line_to = .{ .x = 100, .y = 10 } },
+        //                 .{ .line_to = .{ .x = 50, .y = 100 } },
+        //             },
+        //             .color = .{ .r = 255, .g = 10, .b = 0 },
+        //         },
+        //     },
+        // };
+
+        try gfx.render(size, drawing_instructions.?);
+
+        gfx.poll_events();
+    }
 
     //heap.dump_stats();
     //_ = try vm.garbage_collect(start_of_heap, result);

@@ -67,9 +67,8 @@ pub fn get_string(self: Value) []const u8 {
 pub fn new_struct(heap: *Heap, data: anytype) !Value {
     const struct_symbol = try heap.new_symbol("struct");
     const info = @typeInfo(@TypeOf(data));
-    @compileLog(info);
     var keys: [info.@"struct".fields.len]Obj = undefined;
-    for (info.@"struct".fields, 0..) |f, i| {
+    inline for (info.@"struct".fields, 0..) |f, i| {
         keys[i] = try heap.new_symbol(f.name);
     }
     const ty = obj: {
@@ -81,8 +80,8 @@ pub fn new_struct(heap: *Heap, data: anytype) !Value {
     const val = obj: {
         var b = try heap.build_inner();
         try b.emit(ty);
-        for (info.@"struct".fields) |f| {
-            try b.emit(@field(data, f.name));
+        inline for (info.@"struct".fields) |f| {
+            try b.emit(@field(data, f.name).obj);
         }
         break :obj b.finish();
     };
