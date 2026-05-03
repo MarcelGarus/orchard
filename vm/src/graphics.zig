@@ -20,6 +20,7 @@ pub const Path = []const PathSegment;
 pub const PathSegment = union(enum) { move_to: Position, line_to: Position };
 pub const DrawingInstruction = union(enum) {
     fill_path: struct { path: Path, color: Color },
+    translate: struct { by: Position, children: []const DrawingInstruction },
 };
 
 pub fn parse_position(value: Value) !Position {
@@ -62,10 +63,29 @@ pub fn parse_drawing_instructions_rec(
 ) error{ OutOfMemory, UnknownPathSegment }!void {
     const variant = value.get_variant();
     const payload = value.get_payload();
+    if (std.mem.eql(u8, variant, "nothing")) {
+        return;
+    }
     if (std.mem.eql(u8, variant, "fill-path")) {
         try instructions.append(ally, .{ .fill_path = .{
             .path = try parse_path(ally, payload.get_field("path")),
             .color = try parse_color(payload.get_field("color")),
+        } });
+        return;
+    }
+    if (std.mem.eql(u8, variant, "all")) {
+        for (payload.get_items()) |item| {
+            try parse_drawing_instructions_rec(ally, instructions, item);
+        }
+        return;
+    }
+    if (std.mem.eql(u8, variant, "translate")) {
+        const by = try parse_position(payload.get_field("by"));
+        var children = ArrayList(DrawingInstruction).empty;
+        try parse_drawing_instructions_rec(ally, &children, payload.get_field("what"));
+        try instructions.append(ally, .{ .translate = .{
+            .by = by,
+            .children = children.items,
         } });
         return;
     }
@@ -79,7 +99,11 @@ pub fn parse_drawing_instructions(ally: Ally, value: Value) ![]const DrawingInst
 }
 
 pub fn dump_drawing_instructions(instructions: []const DrawingInstruction) !void {
+    try dump_drawing_instructions_indented(instructions, 0);
+}
+pub fn dump_drawing_instructions_indented(instructions: []const DrawingInstruction, indentation: usize) !void {
     for (instructions) |instruction| {
+        for (0..indentation) |_| std.debug.print(" ", .{});
         switch (instruction) {
             .fill_path => |fill| {
                 std.debug.print("fill-path", .{});
@@ -90,9 +114,14 @@ pub fn dump_drawing_instructions(instructions: []const DrawingInstruction) !void
                         .line_to => |pos| std.debug.print("--({d}|{d})", .{ pos.x, pos.y }),
                     }
                 }
+                std.debug.print("\n", .{});
+            },
+            .translate => |translate| {
+                std.debug.print("translate ({d}|{d})", .{ translate.by.x, translate.by.y });
+                std.debug.print("\n", .{});
+                try dump_drawing_instructions_indented(translate.children, indentation + 1);
             },
         }
-        std.debug.print("\n", .{});
     }
 }
 
@@ -286,6 +315,12 @@ fn render_single(vg: nvg, instruction: DrawingInstruction) error{OutOfMemory}!vo
             }
             vg.fillColor(nvg.rgb(args.color.r, args.color.g, args.color.b));
             vg.fill();
+        },
+        .translate => |t| {
+            vg.save();
+            vg.translate(@floatFromInt(t.by.x), @floatFromInt(t.by.y));
+            try render_all(vg, t.children);
+            vg.restore();
         },
     }
 }
