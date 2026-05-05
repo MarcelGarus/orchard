@@ -199,15 +199,15 @@ fn run() !void {
                     .height = try Value.new_int(&heap, size.height),
                 }),
             });
-            std.debug.print("Rendered: {f}\n", .{instructions});
+            // std.debug.print("Rendered: {f}\n", .{instructions});
 
             drawing_instructions_ally = std.heap.ArenaAllocator.init(ally);
             drawing_instructions = try Graphics.parse_drawing_instructions(
                 drawing_instructions_ally.?.allocator(),
                 instructions,
             );
-            try Graphics.dump_drawing_instructions(drawing_instructions.?);
-            std.debug.print("{any}\n", .{drawing_instructions});
+            // try Graphics.dump_drawing_instructions(drawing_instructions.?);
+            // std.debug.print("{any}\n", .{drawing_instructions});
         }
 
         // drawing_instructions = &.{
