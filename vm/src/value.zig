@@ -105,7 +105,7 @@ pub fn new_enum(heap: *Heap, variant: []const u8, payload: Value) !Value {
     const enum_symbol = try heap.new_symbol("enum");
     const variant_symbol = try heap.new_symbol(variant);
     const ty = try heap.new_inner(&.{ enum_symbol, variant_symbol });
-    return try heap.new_inner(&.{ ty, payload });
+    return Value.from(try heap.new_inner(&.{ ty, payload.obj }));
 }
 
 pub fn get_variant(self: Value) []const u8 {

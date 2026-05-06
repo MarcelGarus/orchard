@@ -8,6 +8,11 @@
  crash (\ (error) (@crash error))
  assert (\ (check) (% check true nil false (crash "Assert failed.")))
 
+ rec (\ (input function)
+  (:
+   rec (\ (rec input) (function (\ (new) (rec rec new)) input))
+   (rec rec input)))
+
  true (| true)
  false (| false)
 
@@ -49,6 +54,39 @@
      false (| more (& item item rest (rec rec (+ i 1))))))
    (rec rec 0)))
  filled-array (\ (length item) (list->array (filled-list length item)))
+ list-map (\ (list mapper)
+  (rec list (\ (rec list)
+   (% list
+    empty (| empty)
+    (more m) (| more (& item (mapper (.item m)) rest (rec (.rest m))))))))
+ array-map (\ (array mapper)
+  (list->array (list-map (array->list array) mapper)))
+ list-map-indexed (\ (list mapper)
+  (rec (& list list index 0) (\ (rec args)
+   (% (.list args)
+    empty (| empty)
+    (more m)
+     (| more
+      (&
+       item (mapper (.index args) (.item m))
+       rest (rec (& list (.rest m) index (+ (.index args) 1)))))))))
+ array-map-indexed (\ (array mapper)
+  (list->array (list-map-indexed (array->list array) mapper)))
+ list-any (\ (list checker)
+  (rec list (\ (rec list)
+   (% list
+    empty false
+    (more m) (% (checker (.item m)) true true false (rec (.rest m)))))))
+ array-any (\ (array checker) (list-any (array->list array) checker))
+ list-find (\ (list checker)
+  (rec (& list list index 0) (\ (rec args)
+   (% (.list args)
+    empty (| none)
+    (more m)
+     (% (checker (.item m))
+      true (| some (.index args))
+      false (rec (& list (.rest m) index (+ (.index args) 1))))))))
+ array-find (\ (array checker) (list-find (array->list array) checker))
 
  ascii-char (\ (literal) (array-get (string->bytes literal) 0))
 
@@ -176,7 +214,8 @@
     (% (= i (array-length bytes))
      true (| empty)
      false (: row (row-rec row-rec i 0)
-      (| more (& item (list->array (.result row)) rest (rec rec (.cursor row)))))))
+      (| more
+       (& item (list->array (.result row)) rest (rec rec (.cursor row)))))))
    (list->array (rec rec 0))))
  pixel-glyph (\ (char width string)
   (& char char width width pixels (parse-pixels width string)))
@@ -394,7 +433,9 @@
         ([]
          (.instructions before)
          (translate (& x (+ (.width before) 5) y 0) (.instructions items))
-         (translate (& x (+ (+ (.width before) (.width items)) 6) y 0) (.instructions after))))
+         (translate
+          (& x (+ (+ (.width before) (.width items)) 6) y 0)
+          (.instructions after))))
       width (+ (+ (+ (.width before) (.width items)) (.width after)) 6)))))
  render-down (\ (render rec nodes padding width)
   (% nodes
@@ -446,12 +487,117 @@
   (translate
    (& x 2 y 2)
    (.instructions (render-node render-node state (- (.width size) 4)))))
- update (\ (state event) state)
+ move-down (\ (node)
+  (rec node (\ (rec node)
+   (% node
+    (cursor inner)
+     (% inner
+      hole node
+      name node
+      (array items)
+       (% (= (array-length items) 0)
+        true node
+        false
+         (| array
+          (list->array
+           (| more
+            (&
+             item (| cursor (array-get items 0))
+             rest (% (array->list items) (more m) (.rest m))))))))
+    hole node
+    name node
+    (array items) (| array (array-map items (\ (item) (rec item))))))))
+ move-up (\ (node)
+  (rec node (\ (rec node)
+   (% node
+    cursor node
+    hole node
+    name node
+    (array items)
+     (% (array-any items (\ (item) (% item cursor true _ false)))
+      true
+       (| cursor
+        (| array
+         (array-map items (\ (item) (% item (cursor inner) inner _ item)))))
+      false (| array (array-map items (\ (item) (rec item)))))))))
+ move-right (\ (node)
+  (rec node (\ (rec node)
+   (% node
+    cursor node
+    hole node
+    name node
+    (array items)
+     (% (array-find items (\ (item) (% item cursor true _ false)))
+      none (| array (array-map items (\ (item) (rec item))))
+      (some index)
+       (% (= index (- (array-length items) 1))
+        false
+         (| array
+          (array-map-indexed
+           items
+           (\ (i item)
+            (% (= i index)
+             true (% item (cursor inner) inner)
+             false (% (= i (+ index 1)) true (| cursor item) false item)))))
+        true node))))))
+ move-left (\ (node)
+  (rec node (\ (rec node)
+   (% node
+    cursor node
+    hole node
+    name node
+    (array items)
+     (% (array-find items (\ (item) (% item cursor true _ false)))
+      none (| array (array-map items (\ (item) (rec item))))
+      (some index)
+       (% (= index 0)
+        false
+         (| array
+          (array-map-indexed
+           items
+           (\ (i item)
+            (% (= i index)
+             true (% item (cursor inner) inner)
+             false (% (= i (- index 1)) true (| cursor item) false item)))))
+        true node))))))
+ make-hole (\ (node)
+  (rec node (\ (rec node)
+   (% node
+    cursor (| cursor (| hole))
+    hole node
+    name node
+    (array items) (| array (array-map items (\ (item) (rec item))))))))
+ update (\ (state event)
+  (% event
+   (pressed-key key)
+    (% (= (.keycode key) 259)
+     true (make-hole state)
+     false
+      (% (= (.keycode key) 262)
+       true (move-right state)
+       false
+        (% (= (.keycode key) 263)
+         true (move-left state)
+         false
+          (% (= (.keycode key) 264)
+           true (move-down state)
+           false
+            (% (= (.keycode key) 265)
+             true (move-up state)
+             false state)))))
+   char state
+   _ (crash (| todo-handle event))))
+ app
+  (rec initial-state (\ (rec state)
+   (&
+    render (\ (size) (render state size))
+    update (\ (event) (rec (update state event))))))
 
  (&
   example-fun example-fun
   optimized (@collect-garbage (\ () (optimize example-fun)))
-  render (\ (size) (render initial-state size))))
+  render (.render app)
+  update (.update app)))
 
 ===
 

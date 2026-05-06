@@ -137,44 +137,41 @@ fn run() !void {
         const there_are_events = gfx.event_queue.items.len > 0;
 
         if (there_are_events) {
-            //         const update_lambda = heap.load(app, 2);
-            //         try object_mod.assert_lambda(&heap, update_lambda);
-            //         for (gfx.event_queue.items) |event| {
-            //             // TODO: do the decision of handling in Pear
-            //             const pear_event = event: switch (event) {
-            //                 .entered_char => |char| {
-            //                     std.debug.print("Char: {d}\n", .{char.codepoint});
-            //                     const kind = try Symbol.new(&heap, "char");
-            //                     const codepoint = try Int.new(&heap, @intCast(char.codepoint));
-            //                     var b = try heap.object_builder(0);
-            //                     try b.emit_pointer(kind);
-            //                     try b.emit_pointer(codepoint);
-            //                     break :event b.finish();
-            //                 },
-            //                 .pressed_key => |key| {
-            //                     std.debug.print("Key: {any}\n", .{key});
-            //                     const kind = try Symbol.new(&heap, "key");
-            //                     const keycode = try Int.new(&heap, @intCast(key.keycode));
-            //                     const control_pressed = try Int.new(&heap, if (key.control_pressed) 1 else 0);
-            //                     const shift_pressed = try Int.new(&heap, if (key.shift_pressed) 1 else 0);
-            //                     const alt_pressed = try Int.new(&heap, if (key.alt_pressed) 1 else 0);
-            //                     break :event try heap.new_inner(.{ kind, keycode, control_pressed, shift_pressed, alt_pressed });
-            //                 },
-            //             };
-            //             app = try vm.call(heap.load(update_lambda, 0), &[_]Address{ pear_event, heap.load(update_lambda, 1) });
-            //             app = try handle_tasks(ally, &vm, app);
-
-            //             {
-            //                 var buffer: [64]u8 = undefined;
-            //                 const bw = std.debug.lockStderrWriter(&buffer);
-            //                 defer std.debug.unlockStderrWriter();
-            //                 try heap.format(heap.load(app, 3), bw);
-            //                 try bw.print("\n", .{});
-            //             }
-            //         }
+            for (gfx.event_queue.items) |event| {
+                const pear_event = switch (event) {
+                    .entered_char => |char| try Value.new_enum(
+                        &heap,
+                        "char",
+                        try Value.new_int(&heap, @intCast(char.codepoint)),
+                    ),
+                    .pressed_key => |key| try Value.new_enum(
+                        &heap,
+                        "pressed-key",
+                        try Value.new_struct(&heap, .{
+                            .keycode = try Value.new_int(&heap, @intCast(key.keycode)),
+                            .control_pressed = try Value.new_enum(
+                                &heap,
+                                if (key.control_pressed) "true" else "false",
+                                try Value.new_struct(&heap, .{}),
+                            ),
+                            .shift_pressed = try Value.new_enum(
+                                &heap,
+                                if (key.shift_pressed) "true" else "false",
+                                try Value.new_struct(&heap, .{}),
+                            ),
+                            .alt_pressed = try Value.new_enum(
+                                &heap,
+                                if (key.alt_pressed) "true" else "false",
+                                try Value.new_struct(&heap, .{}),
+                            ),
+                        }),
+                    ),
+                };
+                std.debug.print("Event: {f}\n", .{pear_event});
+                app = try app.get_field("update").call(&vm, &.{pear_event});
+            }
             gfx.event_queue.items.len = 0;
-            //         app = try vm.garbage_collect(start_of_heap, app);
-            //         // _ = start_of_heap;
+            app = Value.from(try vm.garbage_collect(start_of_heap, app.obj));
         }
 
         const size = gfx.get_size();
