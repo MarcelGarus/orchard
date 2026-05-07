@@ -6,7 +6,7 @@
 
  # "Crashing stuff"
  crash (\ (error) (@crash error))
- assert (\ (check) (% check true nil false (crash "Assert failed.")))
+ assert (\ (check) (if check nil (crash "Assert failed.")))
 
  rec (\ (input function)
   (:
@@ -18,8 +18,8 @@
 
  _ (assert true)
 
- and (\ (a b) (% a true b false false))
- or (\ (a b) (% a true true false b))
+ and (\ (a b) (if a b false))
+ or (\ (a b) (if a true b))
 
  + (\ (a b) (@add a b))
  - (\ (a b) (@subtract a b))
@@ -49,9 +49,7 @@
   (:
    _ (assert (< length 100))
    rec (\ (rec i)
-    (% (= i length)
-     true (| empty)
-     false (| more (& item item rest (rec rec (+ i 1))))))
+    (if (= i length) (| empty) (| more (& item item rest (rec rec (+ i 1))))))
    (rec rec 0)))
  filled-array (\ (length item) (list->array (filled-list length item)))
  list-map (\ (list mapper)
@@ -76,18 +74,54 @@
   (rec list (\ (rec list)
    (% list
     empty false
-    (more m) (% (checker (.item m)) true true false (rec (.rest m)))))))
+    (more m) (if (checker (.item m)) true (rec (.rest m)))))))
  array-any (\ (array checker) (list-any (array->list array) checker))
  list-find (\ (list checker)
   (rec (& list list index 0) (\ (rec args)
    (% (.list args)
     empty (| none)
     (more m)
-     (% (checker (.item m))
-      true (| some (.index args))
-      false (rec (& list (.rest m) index (+ (.index args) 1))))))))
+     (if (checker (.item m))
+      (| some (.index args))
+      (rec (& list (.rest m) index (+ (.index args) 1))))))))
  array-find (\ (array checker) (list-find (array->list array) checker))
+ list-concat (\ (a b)
+  (rec a (\ (rec a)
+   (% a
+    empty b
+    (more m) (| more (& item (.item m) rest (rec (.rest m))))))))
+ array-concat (\ (a b)
+  (list->array (list-concat (array->list a) (array->list b))))
+ list-skip (\ (list n)
+  (rec (& list list n n) (\ (rec args)
+   (:
+    list (.list args)
+    n (.n args)
+    (if (= n 0) list (rec (& list (% list (more m) (.rest m)) n (- n 1))))))))
+ list-take (\ (list n)
+  (rec (& list list n n) (\ (rec args)
+   (:
+    list (.list args)
+    n (.n args)
+    (if (= n 0)
+     (| empty)
+     (% list (more m)
+      (| more (& item (.item m) rest (rec (& list (.rest m) n (- n 1)))))))))))
+ list-slice (\ (list from to) (list-take (list-skip list from) (- to from)))
+ array-slice (\ (array from to)
+  (list->array (list-slice (array->list array) from to)))
+ list-update (\ (list index item)
+  (list-map-indexed list (\ (i it) (if (= i index) item it))))
+ array-update (\ (array index item)
+  (list->array (list-update (array->list array) index item)))
 
+ string->bytes (\ (string) (@string->bytes string))
+ bytes->string (\ (bytes) (@bytes->string bytes))
+ string-length (\ (string) (@array-length (string->bytes string)))
+ string-concat (\ (a b)
+  (bytes->string (array-concat (string->bytes a) (string->bytes b))))
+ string-slice (\ (string from to)
+  (bytes->string (array-slice (string->bytes string) from to)))
  ascii-char (\ (literal) (array-get (string->bytes literal) 0))
 
  value? (\ (node) (% node value true _ false))
@@ -96,7 +130,7 @@
    expr
     (% input
      value input
-     (name n) (% (@equal? name n) true value false (| name n))
+     (name n) (if (@equal? name n) value (| name n))
      (let l)
       (| let
        (&
@@ -178,6 +212,7 @@
  red (& r 144 g 32 b 32)
  blue (& r 32 g 97 b 144)
  green (& r 63 g 110 b 16)
+ purple (& r 63 g 32 b 144)
  yellow (& r 254 g 228 b 113)
 
  fill-path (\ (path color) (| fill-path (& path path color color)))
@@ -196,24 +231,20 @@
    bytes (string->bytes string)
    row-rec (\ (rec i x)
     (: c (array-get bytes i)
-     (% (= c (ascii-char "|"))
-      true (& cursor (+ i 1) result (filled-list (- width x) 0))
-      false
-       (% (= x width)
-        true (crash "Pixel line too long.")
-        false
-         (: rest (rec rec (+ i 1) (+ x 1))
-          (&
-           cursor (.cursor rest)
-           result
-            (| more
-             (&
-              item (% (= c (ascii-char " ")) true 0 false 1)
-              rest (.result rest)))))))))
+     (if (= c (ascii-char "|"))
+      (& cursor (+ i 1) result (filled-list (- width x) 0))
+      (if (= x width)
+       (crash "Pixel line too long.")
+       (: rest (rec rec (+ i 1) (+ x 1))
+        (&
+         cursor (.cursor rest)
+         result
+          (| more
+           (& item (if (= c (ascii-char " ")) 0 1) rest (.result rest)))))))))
    rec (\ (rec i)
-    (% (= i (array-length bytes))
-     true (| empty)
-     false (: row (row-rec row-rec i 0)
+    (if (= i (array-length bytes))
+     (| empty)
+     (: row (row-rec row-rec i 0)
       (| more
        (& item (list->array (.result row)) rest (rec rec (.cursor row)))))))
    (list->array (rec rec 0))))
@@ -318,11 +349,9 @@
   (pixel-glyph "8" 6 "| MMMM|MM  MM|MM  MM|MM  MM| MMMM|MM  MM|MM  MM|MM  MM| MMMM|")
   (pixel-glyph "9" 6 "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM|   MM| MMM|"))
  find-glyph (\ (rec char i)
-  (% (= i (array-length glyphs))
-   true default-glyph
-   false
-    (: g (array-get glyphs i)
-     (% (= char (.char g)) true g false (rec rec char (+ i 1))))))
+  (if (= i (array-length glyphs))
+   default-glyph
+   (: g (array-get glyphs i) (if (= char (.char g)) g (rec rec char (+ i 1))))))
  find-glyph (\ (char) (find-glyph find-glyph char 0))
  draw-glyph (\ (glyph scale color)
   (:
@@ -330,16 +359,14 @@
    width (.width glyph)
    height (array-length pixels)
    render-pixel (\ (rec x y)
-    (% (= x width)
-     true (% (= (+ y 1) height) true (| nothing) false (rec rec 0 (+ y 1)))
-     false
-      (% (= (array-get (array-get pixels y) x) 1)
-       true
-        (| all
-         ([]
-          (fill-rect (* x scale) (* y scale) scale scale color)
-          (rec rec (+ x 1) y)))
-       false (rec rec (+ x 1) y))))
+    (if (= x width)
+     (if (= (+ y 1) height) (| nothing) (rec rec 0 (+ y 1)))
+     (if (= (array-get (array-get pixels y) x) 1)
+      (| all
+       ([]
+        (fill-rect (* x scale) (* y scale) scale scale color)
+        (rec rec (+ x 1) y)))
+      (rec rec (+ x 1) y))))
    (render-pixel render-pixel 0 0)))
  draw-char (\ (char color)
   (:
@@ -362,13 +389,11 @@
          (.instructions rest))))
       width (+ (+ (.width char) space-after) (.width rest))))))
  bytes->chars (\ (rec bytes i)
-  (% (= i (array-length bytes))
-   true (| empty)
-   false
-    (| more
-     (&
-      item (@bytes->string ([] (array-get bytes i)))
-      rest (rec rec bytes (+ i 1))))))
+  (if (= i (array-length bytes))
+   (| empty)
+   (| more (&
+    item (@bytes->string ([] (array-get bytes i)))
+    rest (rec rec bytes (+ i 1))))))
  bytes->chars (\ (bytes) (bytes->chars bytes->chars bytes 0))
  draw-text (\ (string color)
   (draw-chars draw-chars (bytes->chars (@string->bytes string)) color))
