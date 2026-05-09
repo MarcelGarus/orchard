@@ -406,6 +406,16 @@
  key-down? (\ (key) (= (.keycode key) 264))
  key-up? (\ (key) (= (.keycode key) 265))
 
+ handle-text-edit (\ (string event)
+  (% event
+   (pressed-key key)
+    (if (key-backspace? key)
+     (if (> (string-length string) 0)
+      (string-slice string 0 (- (string-length string) 1))
+      string)
+     string)
+   (char char) (string-concat string (bytes->string ([] char)))))
+
  new-root (\ (child) (| root (& child child focus (| here))))
  root-handle (\ (code-focus code-handle state event)
   (% (.focus state)
@@ -455,14 +465,8 @@
       (pressed-key key)
        (if (key-up? key)
         (| yield-focus (| name (& name name focus (| outside))))
-        (if (key-backspace? key)
-         (if (> (string-length name) 0)
-          (| update
-           (| name (&
-            name (string-slice name 0 (- (string-length name) 1))
-            focus (| inside))))
-          (| no-change))
-         (| no-change)))
+        (| update
+         (| name (& name (handle-text-edit name event) focus (| inside)))))
       (char char)
        (| update
         (| name (&
@@ -477,6 +481,73 @@
     (.instructions
      (draw-text (.name state) (% (.focus state) outside black inside green)))
    height 10))
+
+ new-enum (\ (variant payload)
+  (| enum (& variant variant payload payload focus (| outside))))
+ enum-focus (\ (state)
+  (| enum
+   (& variant (.variant state) payload (.payload state) focus (| variant))))
+ enum-handle (\ (code-focus code-handle state event)
+  (:
+   variant (.variant state)
+   payload (.payload state)
+   focus (.focus state)
+   (% focus
+    outside (| no-change)
+    variant
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| yield-focus
+         (| enum (& variant variant payload payload focus (| outside))))
+        (| update
+         (| enum (&
+          variant (handle-text-edit variant event)
+          payload payload
+          focus (| variant)))))
+      char
+       (| update
+        (| enum (&
+         variant (handle-text-edit variant event)
+         payload payload
+         focus (| variant)))))
+      )))
+ enum-color purple
+ enum-render-singleline (\ (code-render-singleline state space-allowed)
+  (:
+   variant (draw-text (.variant state) enum-color)
+   payload (if true nil (code-render-singleline (.payload state) false))
+   (if space-allowed
+    (:
+     before (draw-text "|" enum-color)
+     (&
+      instructions
+       (| all ([]
+        (.instructions before)
+        (translate (& x (+ (.width before) 5) y 0) (.instructions variant))))
+      width (+ (.width before) (+ 5 (.width variant)))))
+    (:
+     before (draw-text "(|" enum-color)
+     after (draw-text ")" enum-color)
+     (&
+      instructions
+       (| all ([]
+        (.instructions before)
+        (translate (& x (+ (.width before) 5) y 0) (.instructions variant))
+        (translate
+         (& x (+ (.width before) (+ (.width variant) 6)) y 0)
+         (.instructions after))))
+      width (+ (.width before) (+ (.width variant) (+ (.width after) 6))))))))
+ enum-render (\ (code-render state width)
+  (:
+   inner-width (- width 10)
+   variant (draw-text (.variant state) enum-color)
+   (&
+    instructions
+     (| all ([]
+      (.instructions (draw-text "|" enum-color))
+      (translate (& x 10 y 0) (.instructions variant))))
+    height 10)))
 
  new-array (\ (items) (| array (& items items focus (| outside))))
  array-focus (\ (state) (| array (& items (.items state) focus (| at 0))))
@@ -597,6 +668,7 @@
  code-focus (\ (code)
   (% code
    (name state) (name-focus state)
+   (enum state) (enum-focus state)
    (array state) (array-focus state)
    ))
  code-handle (\ (code event)
@@ -604,6 +676,7 @@
    (% code
     (root state) (root-handle code-focus handle state event)
     (name state) (name-handle state event)
+    (enum state) (enum-handle code-focus handle state event)
     (array state) (array-handle code-focus handle state event)
     ))))
  code-render-singleline (\ (code space-allowed)
@@ -611,6 +684,7 @@
    (% code
     (root state) (root-render-singleline render state space-allowed)
     (name state) (name-render-singleline state)
+    (enum state) (enum-render-singleline render state space-allowed)
     (array state) (array-render-singleline render state space-allowed)
     ))))
  code-render (\ (code width)
@@ -622,6 +696,7 @@
      (% code
       (root state) (root-render render state width)
       (name state) (name-render state)
+      (enum state) (enum-render render state width)
       (array state) (array-render render state width)
       ))))))
 
@@ -629,7 +704,7 @@
   (new-root
    (new-array ([]
     (new-name "e")
-    (new-name "foo")
+    (new-enum "true" (| none))
     (new-array ([]
      (new-name "g")
      (new-name "h")
