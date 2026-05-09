@@ -133,12 +133,7 @@ event_queue: ArrayList(Event),
 
 pub const Event = union(enum) {
     entered_char: struct { codepoint: usize },
-    pressed_key: struct {
-        keycode: usize,
-        control_pressed: bool,
-        alt_pressed: bool,
-        shift_pressed: bool,
-    },
+    pressed_key: struct { keycode: usize, control: bool, alt: bool, shift: bool },
 };
 
 fn glfwErrorCallback(error_code: c_int, description: [*c]const u8) callconv(.c) void {
@@ -204,9 +199,9 @@ fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_i
         graphics.event_queue.append(graphics.ally, .{
             .pressed_key = .{
                 .keycode = @intCast(key),
-                .control_pressed = mods & gl.GLFW_MOD_CONTROL != 0,
-                .alt_pressed = mods & gl.GLFW_MOD_ALT != 0,
-                .shift_pressed = mods & gl.GLFW_MOD_SHIFT != 0,
+                .control = mods & gl.GLFW_MOD_CONTROL != 0,
+                .alt = mods & gl.GLFW_MOD_ALT != 0,
+                .shift = mods & gl.GLFW_MOD_SHIFT != 0,
             },
         }) catch @panic("couldn't append event");
     }
