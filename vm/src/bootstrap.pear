@@ -22,8 +22,15 @@
 
  _ (assert true)
 
+ not (\ (a) (if a false true))
  and (\ (a b) (if a b false))
+ and-3 (\ (a b c) (and (and a b) c))
+ and-4 (\ (a b c d) (and (and a b c) d))
+ and-5 (\ (a b c d e) (and (and a b c d) e))
  or (\ (a b) (if a true b))
+ or-3 (\ (a b c) (or (or a b) c))
+ or-4 (\ (a b c d) (or (or a b c) d))
+ or-5 (\ (a b c d e) (or (or a b c d) e))
 
  + (\ (a b) (@add a b))
  - (\ (a b) (@subtract a b))
@@ -116,6 +123,25 @@
   (list-map-indexed list (\ (i it) (if (= i index) item it))))
  array-update (\ (array index item)
   (list->array (list-update (array->list array) index item)))
+ list-remove (\ (list index) (list-concat (list-take list index) (list-skip list (+ index 1))))
+ array-remove (\ (array index)
+  (list->array (list-remove (array->list array) index)))
+ list-insert (\ (list index item)
+  (list-concat
+   (list-take list index)
+   (list-concat (| more (& item item rest (| empty))) (list-skip list index))))
+ array-insert (\ (array index item)
+  (list->array (list-insert (array->list array) index item)))
+ list-get (\ (list index) (% (list-skip list index) (more m) (.item m)))
+ list-swap (\ (list a b)
+  (list-map-indexed
+   list
+   (\ (i it) (if (= i a) (list-get list b) (if (= i b) (list-get list a) it)))))
+ array-swap (\ (array a b)
+  (array-map-indexed
+   array
+   (\ (i it)
+    (if (= i a) (array-get array b) (if (= i b) (array-get array a) it)))))
 
  string->bytes (\ (string) (@string->bytes string))
  bytes->string (\ (bytes) (@bytes->string bytes))
@@ -400,11 +426,24 @@
  draw-text (\ (string color)
   (draw-chars draw-chars (bytes->chars (@string->bytes string)) color))
 
- key-backspace? (\ (key) (= (.keycode key) 259))
- key-right? (\ (key) (= (.keycode key) 262))
- key-left? (\ (key) (= (.keycode key) 263))
- key-down? (\ (key) (= (.keycode key) 264))
- key-up? (\ (key) (= (.keycode key) 265))
+ no-modifiers? (\ (key)
+  (and-3
+   (not (.control-pressed key))
+   (not (.shift-pressed key))
+   (not (.alt-pressed key))))
+ only-alt-modifier? (\ (key)
+  (and-3
+   (not (.control-pressed key))
+   (not (.shift-pressed key))
+   (.alt-pressed key)))
+ key-backspace? (\ (key) (and (= (.keycode key) 259) (no-modifiers? key)))
+ key-delete? (\ (key) (and (= (.keycode key) 261) (no-modifiers? key)))
+ key-right? (\ (key) (and (= (.keycode key) 262) (no-modifiers? key)))
+ key-left? (\ (key) (and (= (.keycode key) 263) (no-modifiers? key)))
+ key-down? (\ (key) (and (= (.keycode key) 264) (no-modifiers? key)))
+ key-up? (\ (key) (and (= (.keycode key) 265) (no-modifiers? key)))
+ key-alt-right? (\ (key) (and (= (.keycode key) 262) (only-alt-modifier? key)))
+ key-alt-left? (\ (key) (and (= (.keycode key) 263) (only-alt-modifier? key)))
 
  handle-text-edit (\ (string event)
   (% event
@@ -415,6 +454,32 @@
       string)
      string)
    (char char) (string-concat string (bytes->string ([] char)))))
+
+ cursor-color yellow
+ highlight-singleline-cursor (\ (node)
+  (&
+   instructions
+    (| all ([]
+     (fill-rect 0 0 (.width node) 10 cursor-color)
+     (.instructions node)))
+   width (.width node)))
+ padding (\ (amount) (& instructions (| nothing) width amount))
+ render-next-to-each-other (\ (array)
+  (:
+   res
+    (rec-2 (array->list array) 0 (\ (rec items x)
+     (% items
+      empty (& draws (| empty) width 0)
+      (more m) (:
+       item (.item m)
+       rest (rec (.rest m) (+ x (.width item)))
+       (&
+        draws
+         (| more (&
+          item (translate (& x x y 0) (.instructions item))
+          rest (.draws rest)))
+        width (+ (.width item) (.width rest)))))))
+   (& instructions (| all (list->array (.draws res))) width (.width res))))
 
  new-root (\ (child) (| root (& child child focus (| here))))
  root-handle (\ (code-focus code-handle state event)
@@ -435,14 +500,7 @@
  root-render-singleline (\ (code-render-singleline state space-allowed)
   (:
    child (code-render-singleline (.child state) space-allowed)
-   (&
-    instructions
-     (| all ([]
-      (% (.focus state)
-       here (fill-rect 0 0 (.width child) 10 yellow)
-       inside (| nothing))
-      (.instructions child)))
-    width (.width child))))
+   (% (.focus state) here (highlight-singleline-cursor child) inside child)))
  root-render (\ (code-render state width)
   (:
    child (code-render (.child state) width)
@@ -455,23 +513,31 @@
       (.instructions child)))
     height (.height child))))
 
+ new-code-node-from-char (\ (char)
+  (if
+   (or
+    (and (>= char (ascii-char "a")) (<= char (ascii-char "z")))
+    (and (>= char (ascii-char "A")) (<= char (ascii-char "Z"))))
+   (| some (| name (& name (bytes->string ([] char)) focus (| inside))))
+   (| none)))
+
  new-name (\ (name) (| name (& name name focus (| outside))))
  name-handle (\ (state event)
   (% (.focus state)
    outside (| no-change)
-   inside
-    (: name (.name state)
-     (% event
-      (pressed-key key)
-       (if (key-up? key)
-        (| yield-focus (| name (& name name focus (| outside))))
-        (| update
-         (| name (& name (handle-text-edit name event) focus (| inside)))))
-      (char char)
+   inside (:
+    name (.name state)
+    (% event
+     (pressed-key key)
+      (if (key-up? key)
+       (| yield-focus (| name (& name name focus (| outside))))
        (| update
-        (| name (&
-         name (string-concat name (bytes->string ([] char)))
-         focus (| inside))))))))
+        (| name (& name (handle-text-edit name event) focus (| inside)))))
+     (char char)
+      (if (= char (ascii-char " "))
+       (| yield-focus (| name (& name name focus (| outside))))
+       (| update
+        (| name (& name (handle-text-edit name event) focus (| inside)))))))))
  name-focus (\ (state) (| name (& name (.name state) focus (| inside))))
  name-render-singleline (\ (state)
   (draw-text (.name state) (% (.focus state) outside black inside green)))
@@ -486,7 +552,7 @@
   (| enum (& variant variant payload payload focus (| outside))))
  enum-focus (\ (state)
   (| enum
-   (& variant (.variant state) payload (.payload state) focus (| variant))))
+   (& variant (.variant state) payload (.payload state) focus (| at-variant))))
  enum-handle (\ (code-focus code-handle state event)
   (:
    variant (.variant state)
@@ -494,50 +560,115 @@
    focus (.focus state)
    (% focus
     outside (| no-change)
-    variant
+    at-variant
      (% event
       (pressed-key key)
        (if (key-up? key)
         (| yield-focus
          (| enum (& variant variant payload payload focus (| outside))))
+        (if (key-down? key)
+         (| update
+          (| enum (& variant variant payload payload focus (| in-variant))))
+         (if (key-right? key)
+          (| update
+           (| enum (& variant variant payload payload focus (| at-payload))))
+          (| no-change))))
+      (char char)
+       (% payload
+        some (| no-change)
+        none 
+         (% (new-code-node-from-char char)
+          (some node)
+           (| update
+            (| enum
+             (& variant variant payload (| some node) focus (| in-payload))))
+          none (| no-change))))
+    in-variant
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| update
+         (| enum (& variant variant payload payload focus (| at-variant))))
         (| update
          (| enum (&
           variant (handle-text-edit variant event)
           payload payload
-          focus (| variant)))))
+          focus (| in-variant)))))
       char
        (| update
         (| enum (&
          variant (handle-text-edit variant event)
          payload payload
-         focus (| variant)))))
-      )))
+         focus (| in-variant)))))
+    at-payload
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| yield-focus
+         (| enum (& variant variant payload payload focus (| outside))))
+        (if (key-down? key)
+         (| update
+          (| enum (&
+           variant variant
+           payload (| some (code-focus (% payload (some p) p)))
+           focus (| in-payload))))
+         (if (key-left? key)
+          (| update
+           (| enum (& variant variant payload payload focus (| at-variant))))
+          (if (key-backspace? key)
+           (| update
+            (| enum (& variant variant payload (| none) focus (| at-variant))))
+           (| no-change)))))
+      (char char) (| no-change))
+    in-payload
+     (% (code-handle (% payload (some p) p))
+      no-change (| no-change)
+      (update new-payload)
+       (| update
+        (| enum (& variant variant payload (| some new-payload) focus focus)))
+      (yield-focus new-payload)
+       (| update
+        (| enum
+         (&
+          variant variant
+          payload (| some new-payload)
+          focus (| at-payload))))))))
  enum-color purple
  enum-render-singleline (\ (code-render-singleline state space-allowed)
   (:
    variant (draw-text (.variant state) enum-color)
-   payload (if true nil (code-render-singleline (.payload state) false))
+   payload (.payload state)
+   focus (.focus state)
    (if space-allowed
-    (:
-     before (draw-text "|" enum-color)
-     (&
-      instructions
-       (| all ([]
-        (.instructions before)
-        (translate (& x (+ (.width before) 5) y 0) (.instructions variant))))
-      width (+ (.width before) (+ 5 (.width variant)))))
-    (:
-     before (draw-text "(|" enum-color)
-     after (draw-text ")" enum-color)
-     (&
-      instructions
-       (| all ([]
-        (.instructions before)
-        (translate (& x (+ (.width before) 5) y 0) (.instructions variant))
-        (translate
-         (& x (+ (.width before) (+ (.width variant) 6)) y 0)
-         (.instructions after))))
-      width (+ (.width before) (+ (.width variant) (+ (.width after) 6))))))))
+    (render-next-to-each-other ([]
+     (draw-text "|" enum-color)
+     (padding 5)
+     (% focus at-variant (highlight-singleline-cursor variant) _ variant)
+     (% payload
+      (some payload)
+       (render-next-to-each-other ([]
+        (padding 5)
+        (% focus
+         at-payload
+          (highlight-singleline-cursor (code-render-singleline payload false))
+         _ (code-render-singleline payload false))))
+      none (& instructions (| nothing) width 0))
+     ))
+    (render-next-to-each-other ([]
+     (draw-text "(|" enum-color)
+     (padding 5)
+     (% focus at-variant (highlight-singleline-cursor variant) _ variant)
+     (% payload
+      (some payload)
+       (render-next-to-each-other ([]
+        (padding 5)
+        (% focus
+         at-payload
+          (highlight-singleline-cursor (code-render-singleline payload false))
+         _ (code-render-singleline payload false))))
+      none (& instructions (| nothing) width 0))
+     (padding 1)
+     (draw-text ")" enum-color))))))
  enum-render (\ (code-render state width)
   (:
    inner-width (- width 10)
@@ -550,13 +681,32 @@
     height 10)))
 
  new-array (\ (items) (| array (& items items focus (| outside))))
- array-focus (\ (state) (| array (& items (.items state) focus (| at 0))))
+ array-focus (\ (state)
+  (| array (&
+   items (.items state)
+   focus (if (= (array-length (.items state)) 0) (| at-start) (| at 0)))))
  array-handle (\ (code-focus code-handle state event)
   (:
    items (.items state)
    focus (.focus state)
    (% focus
     outside (| no-change)
+    at-start
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| yield-focus (| array (& items items focus (| outside))))
+        (if (key-right? key)
+         (if (= (array-length items) 0)
+          (| no-change)
+          (| update (| array (& items items focus (| at 0)))))
+         (| no-change)))
+      (char char)
+       (% (new-code-node-from-char char)
+        (some node)
+         (| update
+          (| array (& items (array-insert items 0 node) focus (| in 0))))
+        none (| no-change)))
     (at index)
      (% event
       (pressed-key key)
@@ -564,7 +714,7 @@
         (| yield-focus (| array (& items items focus (| outside))))
         (if (key-left? key)
          (if (= index 0)
-          (| no-change)
+          (| update (| array (& items items focus (| at-start))))
           (| update (| array (& items items focus (| at (- index 1))))))
          (if (key-right? key)
           (if (= index (- (array-length items) 1))
@@ -576,8 +726,45 @@
              items
               (array-update items index (code-focus (array-get items index)))
              focus (| in index))))
-           (| no-change)))))
-      char (| no-change))
+           (if (key-backspace? key)
+            (| update
+             (| array
+              (&
+               items (array-remove items index)
+               focus (if (= index 0) (| at-start) (| at (- index 1))))))
+            (if (key-delete? key)
+             (| update
+              (| array
+               (&
+                items (array-remove items index)
+                focus
+                 (if (= index (- (array-length items) 1))
+                  (if (= index 0) (| at-start) (| at (- index 1)))
+                  (| at index)))))
+             (if (key-alt-left? key)
+              (if (= index 0)
+               (| no-change)
+               (| update
+                (| array (&
+                 items (array-swap items index (- index 1))
+                 focus (| at (- index 1))))))
+              (if (key-alt-right? key)
+               (if (= index (- (array-length items) 1))
+                (| no-change)
+                (| update
+                 (| array (&
+                  items (array-swap items index (+ index 1))
+                  focus (| at (+ index 1))))))
+               (| no-change)))))))))
+      (char char)
+       (% (new-code-node-from-char char)
+        (some node)
+         (| update
+          (| array
+           (&
+            items (array-insert items (+ index 1) node)
+            focus (| in (+ index 1)))))
+        none (| no-change)))
     (in index)
      (% (code-handle (array-get items index))
       no-change (| no-change)
@@ -615,26 +802,20 @@
               (.instructions rest))))
           width (+ 5 (+ (.width item) (.width rest)))))))))
    (if space-allowed
-    (:
-     before (draw-text "[]" red)
-     (&
-      instructions
-       (| all ([]
-        (.instructions before)
-        (translate (& x (.width before) y 0) (.instructions items))))
-      width (+ (.width before) (.width items))))
-    (:
-     before (draw-text "([]" red)
-     after (draw-text ")" red)
-     (&
-      instructions
-       (| all ([]
-        (.instructions before)
-        (translate (& x (.width before) y 0) (.instructions items))
-        (translate
-         (& x (+ (.width before) (+ (.width items) 1)) y 0)
-         (.instructions after))))
-      width (+ (.width before) (+ (.width items) (+ 1 (.width after)))))))))
+    (render-next-to-each-other ([]
+     (% (.focus state)
+      at-start (highlight-singleline-cursor (draw-text "[]" red))
+      _ (draw-text "[]" red))
+     items))
+    (render-next-to-each-other ([]
+     (draw-text "(" red)
+     (padding 1)
+     (% (.focus state)
+      at-start (highlight-singleline-cursor (draw-text "[]" red))
+      _ (draw-text "[]" red))
+     items
+     (padding 1)
+     (draw-text ")" red))))))
  array-render (\ (code-render state width)
   (:
    highlight-index (% (.focus state) (at i) i _ (| none))
@@ -651,7 +832,7 @@
         instructions
          (| all ([]
           (if (= index highlight-index)
-           (fill-rect 0 2 inner-width (.height item) yellow)
+           (fill-rect 0 0 inner-width (.height item) yellow)
            (| nothing))
           (.instructions item)
           (translate
@@ -670,7 +851,7 @@
    (name state) (name-focus state)
    (enum state) (enum-focus state)
    (array state) (array-focus state)
-   ))
+   _ (crash (| todo-focus code))))
  code-handle (\ (code event)
   (rec code (\ (handle code)
    (% code
@@ -678,7 +859,7 @@
     (name state) (name-handle state event)
     (enum state) (enum-handle code-focus handle state event)
     (array state) (array-handle code-focus handle state event)
-    ))))
+    _ (crash (| todo-handle code))))))
  code-render-singleline (\ (code space-allowed)
   (rec-2 code space-allowed (\ (render code space-allowed)
    (% code
@@ -686,7 +867,7 @@
     (name state) (name-render-singleline state)
     (enum state) (enum-render-singleline render state space-allowed)
     (array state) (array-render-singleline render state space-allowed)
-    ))))
+    _ (crash (| todo-render code))))))
  code-render (\ (code width)
   (rec-2 code width (\ (render code width)
    (:
@@ -698,22 +879,22 @@
       (name state) (name-render state)
       (enum state) (enum-render render state width)
       (array state) (array-render render state width)
-      ))))))
+      _ (crash (| todo-render code))))))))
 
  initial-state
   (new-root
    (new-array ([]
-    (new-name "e")
-    (new-enum "true" (| none))
+    (new-name "foo")
+    (new-enum "some" (| some (new-name "bar")))
     (new-array ([]
-     (new-name "g")
-     (new-name "h")
+     (new-name "a")
+     (new-name "b")
      (new-array ([]
-      (new-name "i")
-      (new-name "j")
-      (new-name "k")))
-     (new-name "l")
-     (new-name "m"))))))
+      (new-name "c")
+      (new-name "d")
+      (new-name "e")))
+     (new-name "f")
+     (new-name "g"))))))
 
  render (\ (code size)
   (translate
