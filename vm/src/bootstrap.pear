@@ -43,8 +43,6 @@
  <= (\ (a b) (% (compare a b) greater false _ true))
  >= (\ (a b) (% (compare a b) less false _ true))
 
- string->bytes (\ (string) (@string->bytes string))
-
  array-length (\ (array) (@array-length array))
  array-get (\ (array index) (@array-get array index))
  array->list (\ (array) (@array->list array))
@@ -424,9 +422,9 @@
      no-change (| no-change)
      (update child) (| update (| root (& child child focus (| inside))))
      (yield-focus child) (| update (| root (& child child focus (| here)))))))
- root-render-singleline (\ (code-render-singleline state)
+ root-render-singleline (\ (code-render-singleline state space-allowed)
   (:
-   child (code-render-singleline (.child state))
+   child (code-render-singleline (.child state) space-allowed)
    (&
     instructions
      (| all ([]
@@ -472,12 +470,12 @@
          focus (| inside))))))))
  name-focus (\ (state) (| name (& name (.name state) focus (| inside))))
  name-render-singleline (\ (state)
-  (draw-text (.name state) (% (.focus state) outside green inside black)))
+  (draw-text (.name state) (% (.focus state) outside black inside green)))
  name-render (\ (state)
   (&
    instructions
     (.instructions
-     (draw-text (.name state) (% (.focus state) outside green inside black)))
+     (draw-text (.name state) (% (.focus state) outside black inside green)))
    height 10))
 
  new-array (\ (items) (| array (& items items focus (| outside))))
@@ -519,10 +517,8 @@
        (| update
         (| array
          (& items (array-update items index new-item) focus (| at index))))))))
- array-render-singleline (\ (code-render-singleline state)
+ array-render-singleline (\ (code-render-singleline state space-allowed)
   (:
-   before (draw-text "([]" red)
-   after (draw-text ")" red)
    highlight-index (% (.focus state) (at i) i _ (| none))
    items
     (rec (& items (array->list (.items state)) index 0) (\ (rec args)
@@ -533,7 +529,7 @@
        empty (& instructions (| nothing) width 0)
        (more m)
         (:
-         item (code-render-singleline (.item m))
+         item (code-render-singleline (.item m) false)
          rest (rec (& items (.rest m) index (+ index 1)))
          (&
           instructions
@@ -547,15 +543,27 @@
               (& x (+ 5 (.width item)) y 0)
               (.instructions rest))))
           width (+ 5 (+ (.width item) (.width rest)))))))))
-   (&
-    instructions
-     (| all ([]
-      (.instructions before)
-      (translate (& x (+ (.width before) 1) y 0) (.instructions items))
-      (translate
-       (& x (+ (.width before) (+ (.width items) 2)) y 0)
-       (.instructions after))))
-    width (+ (.width before) (+ (.width items) (+ (.width after) 2))))))
+   (if space-allowed
+    (:
+     before (draw-text "[]" red)
+     (&
+      instructions
+       (| all ([]
+        (.instructions before)
+        (translate (& x (.width before) y 0) (.instructions items))))
+      width (+ (.width before) (.width items))))
+    (:
+     before (draw-text "([]" red)
+     after (draw-text ")" red)
+     (&
+      instructions
+       (| all ([]
+        (.instructions before)
+        (translate (& x (.width before) y 0) (.instructions items))
+        (translate
+         (& x (+ (.width before) (+ (.width items) 1)) y 0)
+         (.instructions after))))
+      width (+ (.width before) (+ (.width items) (+ 1 (.width after)))))))))
  array-render (\ (code-render state width)
   (:
    highlight-index (% (.focus state) (at i) i _ (| none))
@@ -595,17 +603,17 @@
     (name state) (name-handle state event)
     (array state) (array-handle code-focus handle state event)
     ))))
- code-render-singleline (\ (code)
-  (rec code (\ (render code)
+ code-render-singleline (\ (code space-allowed)
+  (rec-2 code space-allowed (\ (render code space-allowed)
    (% code
-    (root state) (root-render-singleline render state)
+    (root state) (root-render-singleline render state space-allowed)
     (name state) (name-render-singleline state)
-    (array state) (array-render-singleline render state)
+    (array state) (array-render-singleline render state space-allowed)
     ))))
  code-render (\ (code width)
   (rec-2 code width (\ (render code width)
    (:
-    singleline (code-render-singleline code)
+    singleline (code-render-singleline code true)
     (if (<= (.width singleline) width)
      (& instructions (.instructions singleline) height 10)
      (% code
