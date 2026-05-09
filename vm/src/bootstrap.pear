@@ -12,6 +12,10 @@
   (:
    rec (\ (rec input) (function (\ (new) (rec rec new)) input))
    (rec rec input)))
+ rec-2 (\ (a b function)
+  (:
+   rec (\ (rec a b) (function (\ (a b) (rec rec a b)) a b))
+   (rec rec a b)))
 
  true (| true)
  false (| false)
@@ -398,231 +402,253 @@
  draw-text (\ (string color)
   (draw-chars draw-chars (bytes->chars (@string->bytes string)) color))
 
- initial-state
-  (| array
-   ([]
-    (| name "a")
-    (| cursor
-     (| array ([] (| name "b") (| array ([] (| name "c") (| name "d"))))))
-    (| name "e")
-    (| name "f")
-    (| array ([]
-     (| name "g")
-     (| name "h")
-     (| array ([]
-      (| name "i")
-      (| name "j")
-      (| name "k")))
-     (| name "l")
-     (| name "m")
-    ))))
- render-side-by-side (\ (render rec nodes padding)
-  (% nodes
-   empty (& instructions (| nothing) width 0)
-   (more m)
-    (:
-     item (render render (.item m))
-     rest (rec render rec (.rest m) padding)
-     space-after (% (.rest m) empty 0 more padding)
-     (&
-      instructions
-       (| all
-        ([]
-         (.instructions item)
-         (translate
-          (& x (+ (.width item) space-after) y 0)
-          (.instructions rest))))
-      width (+ (+ (.width item) (.width rest)) space-after)))))
- render-singleline (\ (rec node)
-  (% node
-   hole (& instructions (draw-glyph default-glyph 1 black) width 5)
-   (cursor node)
-    (:
-     rendered-node (rec rec node)
-     (&
-      instructions
-       (| all
-        ([]
-         (fill-rect 0 0 (.width rendered-node) 10 yellow)
-         (.instructions rendered-node)))
-      width (.width rendered-node)))
-   (name name) (draw-text name green)
-   (array items)
-    (:
-     before (draw-text "([]" red)
-     after (draw-text ")" red)
-     items (render-side-by-side rec render-side-by-side (array->list items) 5)
-     (&
-      instructions
-       (| all
-        ([]
-         (.instructions before)
-         (translate (& x (+ (.width before) 5) y 0) (.instructions items))
-         (translate
-          (& x (+ (+ (.width before) (.width items)) 6) y 0)
-          (.instructions after))))
-      width (+ (+ (+ (.width before) (.width items)) (.width after)) 6)))))
- render-down (\ (render rec nodes padding width)
-  (% nodes
-   empty (& instructions (| nothing) height 0)
-   (more m)
-    (:
-     rendered-item (render render (.item m) width)
-     rendered-rest (rec render rec (.rest m) padding width)
-     (&
-      instructions
-       (| all
-        ([]
-         (translate (& x 0 y padding) (.instructions rendered-item))
-         (translate
-          (& x 0 y (+ (.height rendered-item) padding))
-          (.instructions rendered-rest))))
-      height (+ (+ (.height rendered-item) (.height rendered-rest)) padding)))))
- render-node (\ (rec node width)
+ key-backspace? (\ (key) (= (.keycode key) 259))
+ key-right? (\ (key) (= (.keycode key) 262))
+ key-left? (\ (key) (= (.keycode key) 263))
+ key-down? (\ (key) (= (.keycode key) 264))
+ key-up? (\ (key) (= (.keycode key) 265))
+
+ new-root (\ (child) (| root (& child child focus (| here))))
+ root-handle (\ (code-focus code-handle state event)
+  (% (.focus state)
+   here
+    (% event
+     (pressed-key key)
+      (if (key-down? key)
+       (| update
+        (| root (& child (code-focus (.child state)) focus (| inside))))
+       (| no-change))
+     char (| no-change))
+   inside
+    (% (code-handle (.child state))
+     no-change (| no-change)
+     (update child) (| update (| root (& child child focus (| inside))))
+     (yield-focus child) (| update (| root (& child child focus (| here)))))))
+ root-render-singleline (\ (code-render-singleline state)
   (:
-   singleline (render-singleline render-singleline node)
-   (% (<= (.width singleline) width)
-    true (& instructions (.instructions singleline) height 10)
-    false
-     (% node
-      hole (& instructions (draw-glyph default-glyph 1 black) height 10)
-      (cursor node)
-       (:
-        rendered-node (rec rec node width)
-        (&
-         instructions
-          (| all
-           ([]
-            (fill-rect 0 0 width (.height rendered-node) yellow)
-            (.instructions rendered-node)))
-         height (.height rendered-node)))
-      (name name)
-       (& instructions (.instructions (draw-text name green)) height 10)
-      (array items)
-       (:
-        items (render-down rec render-down (array->list items) 2 (- width 5))
-        (&
-         instructions
-          (| all
-           ([]
-            (.instructions (draw-text "[]" red))
-            (translate (& x 5 y 10) (.instructions items))))
-         height (+ 10 (.height items))))))))
- render (\ (state size)
+   child (code-render-singleline (.child state))
+   (&
+    instructions
+     (| all ([]
+      (% (.focus state)
+       here (fill-rect 0 0 (.width child) 10 yellow)
+       inside (| nothing))
+      (.instructions child)))
+    width (.width child))))
+ root-render (\ (code-render state width)
+  (:
+   child (code-render (.child state) width)
+   (&
+    instructions
+     (| all ([]
+      (% (.focus state)
+       here (fill-rect 0 0 width (.height child) yellow)
+       inside (| nothing))
+      (.instructions child)))
+    height (.height child))))
+
+ new-name (\ (name) (| name (& name name focus (| outside))))
+ name-handle (\ (state event)
+  (% (.focus state)
+   outside (| no-change)
+   inside
+    (: name (.name state)
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| yield-focus (| name (& name name focus (| outside))))
+        (if (key-backspace? key)
+         (if (> (string-length name) 0)
+          (| update
+           (| name (&
+            name (string-slice name 0 (- (string-length name) 1))
+            focus (| inside))))
+          (| no-change))
+         (| no-change)))
+      (char char)
+       (| update
+        (| name (&
+         name (string-concat name (bytes->string ([] char)))
+         focus (| inside))))))))
+ name-focus (\ (state) (| name (& name (.name state) focus (| inside))))
+ name-render-singleline (\ (state)
+  (draw-text (.name state) (% (.focus state) outside green inside black)))
+ name-render (\ (state)
+  (&
+   instructions
+    (.instructions
+     (draw-text (.name state) (% (.focus state) outside green inside black)))
+   height 10))
+
+ new-array (\ (items) (| array (& items items focus (| outside))))
+ array-focus (\ (state) (| array (& items (.items state) focus (| at 0))))
+ array-handle (\ (code-focus code-handle state event)
+  (:
+   items (.items state)
+   focus (.focus state)
+   (% focus
+    outside (| no-change)
+    (at index)
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| yield-focus (| array (& items items focus (| outside))))
+        (if (key-left? key)
+         (if (= index 0)
+          (| no-change)
+          (| update (| array (& items items focus (| at (- index 1))))))
+         (if (key-right? key)
+          (if (= index (- (array-length items) 1))
+           (| no-change)
+           (| update (| array (& items items focus (| at (+ index 1))))))
+          (if (key-down? key)
+           (| update
+            (| array (&
+             items
+              (array-update items index (code-focus (array-get items index)))
+             focus (| in index))))
+           (| no-change)))))
+      char (| no-change))
+    (in index)
+     (% (code-handle (array-get items index))
+      no-change (| no-change)
+      (update new-item)
+       (| update
+        (| array (& items (array-update items index new-item) focus focus)))
+      (yield-focus new-item)
+       (| update
+        (| array
+         (& items (array-update items index new-item) focus (| at index))))))))
+ array-render-singleline (\ (code-render-singleline state)
+  (:
+   before (draw-text "([]" red)
+   after (draw-text ")" red)
+   highlight-index (% (.focus state) (at i) i _ (| none))
+   items
+    (rec (& items (array->list (.items state)) index 0) (\ (rec args)
+     (:
+      items (.items args)
+      index (.index args)
+      (% items
+       empty (& instructions (| nothing) width 0)
+       (more m)
+        (:
+         item (code-render-singleline (.item m))
+         rest (rec (& items (.rest m) index (+ index 1)))
+         (&
+          instructions
+           (| all
+            ([]
+             (if (= index highlight-index)
+              (fill-rect 5 0 (.width item) 10 yellow)
+              (| nothing))
+             (translate (& x 5 y 0) (.instructions item))
+             (translate
+              (& x (+ 5 (.width item)) y 0)
+              (.instructions rest))))
+          width (+ 5 (+ (.width item) (.width rest)))))))))
+   (&
+    instructions
+     (| all ([]
+      (.instructions before)
+      (translate (& x (+ (.width before) 1) y 0) (.instructions items))
+      (translate
+       (& x (+ (.width before) (+ (.width items) 2)) y 0)
+       (.instructions after))))
+    width (+ (.width before) (+ (.width items) (+ (.width after) 2))))))
+ array-render (\ (code-render state width)
+  (:
+   highlight-index (% (.focus state) (at i) i _ (| none))
+   inner-width (- width 10)
+   items
+    (rec-2 (array->list (.items state)) 0 (\ (rec items index)
+     (% items
+      empty (& instructions (| nothing) height 0)
+      (more m) (:
+       item (code-render (.item m) inner-width)
+       rest (rec (.rest m) (+ index 1))
+       (&
+        instructions
+         (| all ([]
+          (if (= index highlight-index)
+           (fill-rect 0 2 inner-width (.height item) yellow)
+           (| nothing))
+          (translate (& x 0 y 2) (.instructions item))
+          (translate (& x 0 y (+ 2 (.height item))) (.instructions rest))))
+        height (+ (.height item) (+ (.height rest) 2)))))))
+   (&
+    instructions
+     (| all ([]
+      (.instructions (draw-text "[]" red))
+      (translate (& x 10 y 10) (.instructions items))))
+    height (+ 10 (.height items)))))
+
+ code-focus (\ (code)
+  (% code
+   (name state) (name-focus state)
+   (array state) (array-focus state)
+   ))
+ code-handle (\ (code event)
+  (rec code (\ (handle code)
+   (% code
+    (root state) (root-handle code-focus handle state event)
+    (name state) (name-handle state event)
+    (array state) (array-handle code-focus handle state event)
+    ))))
+ code-render-singleline (\ (code)
+  (rec code (\ (render code)
+   (% code
+    (root state) (root-render-singleline render state)
+    (name state) (name-render-singleline state)
+    (array state) (array-render-singleline render state)
+    ))))
+ code-render (\ (code width)
+  (rec-2 code width (\ (render code width)
+   (:
+    singleline (code-render-singleline code)
+    (if (<= (.width singleline) width)
+     (& instructions (.instructions singleline) height 10)
+     (% code
+      (root state) (root-render render state width)
+      (name state) (name-render state)
+      (array state) (array-render render state width)
+      ))))))
+
+ initial-state
+  (new-root
+   (new-array ([]
+    (new-name "e")
+    (new-name "foo")
+    (new-array ([]
+     (new-name "g")
+     (new-name "h")
+     (new-array ([]
+      (new-name "i")
+      (new-name "j")
+      (new-name "k")))
+     (new-name "l")
+     (new-name "m"))))))
+
+ render (\ (code size)
   (translate
    (& x 2 y 2)
-   (.instructions (render-node render-node state (- (.width size) 4)))))
- move-down (\ (node)
-  (rec node (\ (rec node)
-   (% node
-    (cursor inner)
-     (% inner
-      hole node
-      name node
-      (array items)
-       (% (= (array-length items) 0)
-        true node
-        false
-         (| array
-          (list->array
-           (| more
-            (&
-             item (| cursor (array-get items 0))
-             rest (% (array->list items) (more m) (.rest m))))))))
-    hole node
-    name node
-    (array items) (| array (array-map items (\ (item) (rec item))))))))
- move-up (\ (node)
-  (rec node (\ (rec node)
-   (% node
-    cursor node
-    hole node
-    name node
-    (array items)
-     (% (array-any items (\ (item) (% item cursor true _ false)))
-      true
-       (| cursor
-        (| array
-         (array-map items (\ (item) (% item (cursor inner) inner _ item)))))
-      false (| array (array-map items (\ (item) (rec item)))))))))
- move-right (\ (node)
-  (rec node (\ (rec node)
-   (% node
-    cursor node
-    hole node
-    name node
-    (array items)
-     (% (array-find items (\ (item) (% item cursor true _ false)))
-      none (| array (array-map items (\ (item) (rec item))))
-      (some index)
-       (% (= index (- (array-length items) 1))
-        false
-         (| array
-          (array-map-indexed
-           items
-           (\ (i item)
-            (% (= i index)
-             true (% item (cursor inner) inner)
-             false (% (= i (+ index 1)) true (| cursor item) false item)))))
-        true node))))))
- move-left (\ (node)
-  (rec node (\ (rec node)
-   (% node
-    cursor node
-    hole node
-    name node
-    (array items)
-     (% (array-find items (\ (item) (% item cursor true _ false)))
-      none (| array (array-map items (\ (item) (rec item))))
-      (some index)
-       (% (= index 0)
-        false
-         (| array
-          (array-map-indexed
-           items
-           (\ (i item)
-            (% (= i index)
-             true (% item (cursor inner) inner)
-             false (% (= i (- index 1)) true (| cursor item) false item)))))
-        true node))))))
- make-hole (\ (node)
-  (rec node (\ (rec node)
-   (% node
-    cursor (| cursor (| hole))
-    hole node
-    name node
-    (array items) (| array (array-map items (\ (item) (rec item))))))))
- update (\ (state event)
-  (% event
-   (pressed-key key)
-    (% (= (.keycode key) 259)
-     true (make-hole state)
-     false
-      (% (= (.keycode key) 262)
-       true (move-right state)
-       false
-        (% (= (.keycode key) 263)
-         true (move-left state)
-         false
-          (% (= (.keycode key) 264)
-           true (move-down state)
-           false
-            (% (= (.keycode key) 265)
-             true (move-up state)
-             false state)))))
-   char state
-   _ (crash (| todo-handle event))))
+   (.instructions (code-render code (- (.width size) 4)))))
+ handle (\ (code event)
+  (% (code-handle code event) no-change code (update code) code))
  app
   (rec initial-state (\ (rec state)
    (&
     render (\ (size) (render state size))
-    update (\ (event) (rec (update state event))))))
+    update (\ (event) (rec (handle state event)))
+    state state)))
 
  (&
   example-fun example-fun
   optimized (@collect-garbage (\ () (optimize example-fun)))
   render (.render app)
-  update (.update app)))
+  update (.update app)
+  state initial-state)
+  )
 
 ===
 
