@@ -49,6 +49,8 @@
  > (\ (a b) (% (compare a b) greater true _ false))
  <= (\ (a b) (% (compare a b) greater false _ true))
  >= (\ (a b) (% (compare a b) less false _ true))
+ max (\ (a b) (if (> a b) a b))
+ min (\ (a b) (if (< a b) a b))
 
  array-length (\ (array) (@array-length array))
  array-get (\ (array index) (@array-get array index))
@@ -244,7 +246,47 @@
   ))
  optimize (\ (function) (optimize optimize (| fun) function))
 
- example-fun (\ (a) (+ a (+ 1 2)))
+ ##### "The Render System
+
+  When Pear code is asked to render something for the outside world, it
+  communicates using drawing instructions. These are just normal Pear values.
+
+  <drawing-instruction> =
+   | nothing
+   | fill-path (& path <path> color <color>)
+   | translate (& by <point> what <drawing-instruction>)
+   | all ([] <drawing-instruction>)
+
+  <point> = (& x y)
+  <color> = (& r <int> g <int> b <int>)
+
+  <path> = ([] <path-segment>)
+  <path-segment> =
+   | move-to <point>
+   | line-to <point>
+
+  Initially, I tried to communicate with the outside world using pixel graphics.
+  However, I believe that's not the right move as pixels are more difficult to
+  handle in code. Having pixels (or some concept of a texture) within Pear
+  requires either:
+  - mutable values (which Pear doesn't have), or
+  - lots of copying on every texture modification (which Pear doesn't have), or
+  - a super-smart optimizing compiler (which is useful but it has the sort of
+    slow-by-default-and-you-have-to-trust-the-black-box-to-work feeling I don't
+    like), or
+  - inefficient storage of individual pixels in trees.
+  By communicating the intent on a quite high-level, we can instead make use of
+  GPUs when turning the high-level drawing instructions into pixels. This is
+  also similar to how Flutter works: The Dart VM is decently fast, but not super
+  fast, so it just emits drawing instructions that the lower-level C++ engine
+  takes and turns into pixels.
+
+  Within Pear, rendering functions usually return structs of the form
+  (& draw <drawing-instructions> width <int> height <int>) rather than just raw
+  drawing instructions.
+
+  2026-05-10: Added this comment.
+ "
 
  point (\ (x y) (& x x y y))
 
@@ -256,16 +298,86 @@
  purple (& r 63 g 32 b 144)
  yellow (& r 254 g 228 b 113)
 
- fill-path (\ (path color) (| fill-path (& path path color color)))
- fill-rect (\ (x y width height color)
-  (fill-path
-   ([]
-    (| move-to (point x y))
-    (| line-to (point (+ x width) y))
-    (| line-to (point (+ x width) (+ y height)))
-    (| line-to (point x (+ y height))))
-   color))
- translate (\ (by what) (| translate (& by by what what)))
+ # "I try to name the rendering functions in a declarative way
+  (e.g. row instead of render-next-to-each-other)."
+
+ empty-box (\ (width height) (& draw (| nothing) width width height height))
+
+ sized-box (\ (width height child)
+  (& draw (.draw child) width width height height))
+
+ colored (\ (color child)
+  (:
+   width (.width child)
+   height (.height child)
+   (&
+    draw
+     (| all ([]
+      (| fill-path (&
+       path ([]
+        (| move-to (point 0 0))
+        (| line-to (point width 0))
+        (| line-to (point width height))
+        (| line-to (point 0 height)))
+       color color))
+      (.draw child)))
+    width width
+    height height)))
+
+ padding (\ (padding child)
+  (if (= (@kind padding) (| int))
+   (&
+    draw (| translate (& by (& x padding y padding) what (.draw child)))
+    width (+ (.width child) (* 2 padding))
+    height (+ (.height child) (* 2 padding)))
+   (&
+    draw
+     (| translate (&
+      by (& x (.left padding) y (.top padding))
+      what (.draw child)))
+    width (+ (.width child) (+ (.left padding) (.right padding)))
+    height (+ (.height child) (+ (.top padding) (.bottom padding))))))
+
+ padded-row (\ (padding children)
+  (:
+   res (rec-2 (array->list children) 0 (\ (rec children x)
+    (% children
+     empty (& draw (| empty) width 0 height 0)
+     (more m) (:
+      child (.item m)
+      rest (rec (.rest m) (+ x (.width child)))
+      (&
+       draw
+        (| more (&
+         item (| translate (& by (& x x y 0) what (.draw child)))
+         rest (.draw rest)))
+       width (+ (.width child) (+ padding (.width rest)))
+       height (max (.height child) (.height rest)))))))
+   (&
+    draw (| all (list->array (.draw res)))
+    width (- (.width res) padding)
+    height (.height res))))
+ row (\ (children) (padded-row 0 children))
+
+ column (\ (children)
+  (:
+   res (rec-2 (array->list children) 0 (\ (rec children y)
+    (% children
+     empty (& list (| empty) width 0 height 0)
+     (more m) (:
+      child (.item m)
+      rest (rec (.rest m) (+ y (.height child)))
+      (&
+       list
+        (| more (&
+         item (| translate (& by (& x 0 y y) what (.draw child)))
+         rest (.list rest)))
+       width (max (.width child) (.width rest))
+       height (+ (.height child) (.height rest)))))))
+   (&
+    draw (| all (list->array (.list res)))
+    width (.width res)
+    height (.height res))))
 
  parse-pixels (\ (width string)
   (:
@@ -405,30 +517,38 @@
      (if (= (array-get (array-get pixels y) x) 1)
       (| all
        ([]
-        (fill-rect (* x scale) (* y scale) scale scale color)
+        (| fill-path (&
+         path ([]
+          (| move-to (point (* x scale) (* y scale)))
+          (| line-to (point (+ (* x scale) scale) (* y scale)))
+          (| line-to (point (+ (* x scale) scale) (+ (* y scale) scale)))
+          (| line-to (point (* x scale) (+ (* y scale) scale))))
+         color color))
         (rec rec (+ x 1) y)))
       (rec rec (+ x 1) y))))
    (render-pixel render-pixel 0 0)))
  draw-char (\ (char color)
   (:
    glyph (find-glyph char)
-   (& instructions (draw-glyph glyph 1 color) width (* 1 (.width glyph)))))
+   (& draw (draw-glyph glyph 1 color) width (* 1 (.width glyph)) height 10)))
  draw-chars (\ (rec chars color)
   (% chars
-   empty (& instructions (| nothing) width 0)
+   empty (& draw (| nothing) width 0 height 0)
    (more m)
     (:
      char (draw-char (.item m) color)
      rest (rec rec (.rest m) color)
+     # "todo: kerning"
      space-after (% (.rest m) empty 0 more 1)
      (&
-      instructions
+      draw
        (| all ([]
-        (.instructions char)
-        (translate
-         (& x (+ (.width char) space-after) y 0)
-         (.instructions rest))))
-      width (+ (+ (.width char) space-after) (.width rest))))))
+        (.draw char)
+        (| translate (&
+         by (& x (+ (.width char) space-after) y 0)
+         what (.draw rest)))))
+      width (+ (+ (.width char) space-after) (.width rest))
+      height 10))))
  bytes->chars (\ (rec bytes i)
   (if (= i (array-length bytes))
    (| empty)
@@ -436,7 +556,7 @@
     item (@bytes->string ([] (array-get bytes i)))
     rest (rec rec bytes (+ i 1))))))
  bytes->chars (\ (bytes) (bytes->chars bytes->chars bytes 0))
- draw-text (\ (string color)
+ text (\ (string color)
   (draw-chars draw-chars (bytes->chars (@string->bytes string)) color))
 
  no-modifiers? (\ (key)
@@ -463,65 +583,16 @@
    (char char) (string-concat string (bytes->string ([] char)))))
 
  cursor-color yellow
- padding (\ (amount) (& instructions (| nothing) width amount))
- render-next-to-each-other (\ (array)
-  (:
-   res
-    (rec-2 (array->list array) 0 (\ (rec items x)
-     (% items
-      empty (& draws (| empty) width 0)
-      (more m) (:
-       item (.item m)
-       rest (rec (.rest m) (+ x (.width item)))
-       (&
-        draws
-         (| more (&
-          item (translate (& x x y 0) (.instructions item))
-          rest (.draws rest)))
-        width (+ (.width item) (.width rest)))))))
-   (& instructions (| all (list->array (.draws res))) width (.width res))))
- render-above-each-other (\ (array)
-  (:
-   res
-    (rec-2 (array->list array) 0 (\ (rec items y)
-     (% items
-      empty (& draws (| empty) height 0)
-      (more m) (:
-       item (.item m)
-       rest (rec (.rest m) (+ y (.height item)))
-       (&
-        draws
-         (| more (&
-          item (translate (& x 0 y y) (.instructions item))
-          rest (.draws rest)))
-        height (+ (.height item) (.height rest)))))))
-   (& instructions (| all (list->array (.draws res))) height (.height res))))
- maybe-render-singleline-cursor (\ (enabled node)
-  (if enabled
-   (&
-    instructions
-     (| all ([]
-      (fill-rect 0 0 (.width node) 10 cursor-color)
-      (.instructions node)))
-    width (.width node))
-   node))
- maybe-render-cursor (\ (enabled width node)
-  (if enabled
-   (&
-    instructions
-     (| all ([]
-      (fill-rect 0 0 width (.height node) cursor-color)
-      (.instructions node)))
-    height (.height node))
-   node))
+ maybe-render-cursor (\ (enabled node)
+  (if enabled (colored cursor-color node) node))
  maybe-render-parenthesized (\ (enabled color child)
   (if enabled
-   (render-next-to-each-other ([]
-    (draw-text "(" color)
-    (padding 1)
+   (row ([]
+    (text "(" color)
+    (empty-box 1 0)
     child
-    (padding 1)
-    (draw-text ")" color)))
+    (empty-box 1 0)
+    (text ")" color)))
    child))
 
  new-root (\ (child) (| root (& child child focus (| here))))
@@ -541,20 +612,11 @@
      (update child) (| update (| root (& child child focus (| inside))))
      (yield-focus child) (| update (| root (& child child focus (| here)))))))
  root-render-singleline (\ (code-render-singleline state space-allowed)
-  (maybe-render-singleline-cursor
-   (% (.focus state) here true inside false)
+  (maybe-render-cursor (% (.focus state) here true inside false)
    (code-render-singleline (.child state) space-allowed)))
  root-render (\ (code-render state width)
-  (:
-   child (code-render (.child state) width)
-   (&
-    instructions
-     (| all ([]
-      (% (.focus state)
-       here (fill-rect 0 0 width (.height child) yellow)
-       inside (| nothing))
-      (.instructions child)))
-    height (.height child))))
+  (maybe-render-cursor (% (.focus state) here true inside false)
+   (code-render (.child state) width)))
 
  new-code-node-from-char (\ (char)
   (if
@@ -594,11 +656,10 @@
           focus (| inside))))
         (| no-change)))))))
  int-render-singleline (\ (state)
-  (draw-text
+  (text
    (int->string (.int state))
-   (% (.focus state) outside blue inside green)))
- int-render (\ (state)
-  (& instructions (.instructions (int-render-singleline state)) height 10))
+   (% (.focus state) outside blue inside cursor-color)))
+ int-render (\ (state) (int-render-singleline state))
 
  new-name (\ (name) (| name (& name name focus (| outside))))
  name-focus (\ (state) (| name (& name (.name state) focus (| inside))))
@@ -619,9 +680,8 @@
        (| update
         (| name (& name (handle-text-edit name event) focus (| inside)))))))))
  name-render-singleline (\ (state)
-  (draw-text (.name state) (% (.focus state) outside black inside green)))
- name-render (\ (state)
-  (& instructions (.instructions (name-render-singleline state)) height 10))
+  (text (.name state) (% (.focus state) outside black inside cursor-color)))
+ name-render (\ (state) (name-render-singleline state))
 
  new-enum (\ (variant payload)
   (| enum (& variant variant payload payload focus (| outside))))
@@ -710,51 +770,35 @@
           focus (| at-payload))))))))
  enum-color purple
  enum-render-singleline (\ (code-render-singleline state space-allowed)
-  (maybe-render-parenthesized
-   (not space-allowed)
-   enum-color
-   (render-next-to-each-other ([]
-    (draw-text "|" enum-color)
-    (padding 5)
-    (maybe-render-singleline-cursor
-     (% (.focus state) at-variant true _ false)
-     (draw-text (.variant state) enum-color))
+  (maybe-render-parenthesized (not space-allowed) enum-color
+   (row ([]
+    (text "|" enum-color)
+    (empty-box 5 0)
+    (maybe-render-cursor (% (.focus state) at-variant true _ false)
+     (text (.variant state) enum-color))
     (% (.payload state)
      (some payload)
-      (render-next-to-each-other ([]
-       (padding 5)
-       (maybe-render-singleline-cursor
-        (% (.focus state) at-payload true _ false)
+      (row ([]
+       (empty-box 5 0)
+       (maybe-render-cursor (% (.focus state) at-payload true _ false)
         (code-render-singleline payload false))))
-     none (& instructions (| nothing) width 0))))))
+     none (empty-box 0 0))))))
  enum-render (\ (code-render state width)
-  (:
-   inner-width (- width 10)
-   variant
-    (maybe-render-singleline-cursor
-     (% (.focus state) at-variant true _ false)
-     (draw-text (.variant state) enum-color))
-   (% (.payload state)
-    none
-     (&
-      instructions
-       (| all ([]
-        (.instructions (draw-text "|" enum-color))
-        (translate (& x 10 y 0) (.instructions variant))))
-      height 10)
-    (some payload) (:
-     payload
-      (maybe-render-cursor
-       (% (.focus state) at-payload true _ false)
-       width
-       (code-render payload width))
-     (&
-      instructions
-       (| all ([]
-        (.instructions (draw-text "|" enum-color))
-        (translate (& x 10 y 0) (.instructions variant))
-        (translate (& x 10 y 12) (.instructions payload))))
-      height (+ 12 (.height payload)))))))
+  (% (.payload state)
+   none
+    (row ([]
+     (sized-box 10 10 (text "|" enum-color))
+     (maybe-render-cursor (% (.focus state) at-variant true _ false)
+      (text (.variant state) enum-color))))
+   (some payload)
+    (row ([]
+     (sized-box 10 10 (text "|" enum-color))
+     (column ([]
+      (maybe-render-cursor (% (.focus state) at-variant true _ false)
+       (text (.variant state) enum-color))
+      (empty-box 0 2)
+      (maybe-render-cursor (% (.focus state) at-payload true _ false)
+       (code-render payload (- width 10)))))))))
 
  new-struct (\ (fields) (| struct (& fields fields focus (| outside))))
  struct-focus (\ (state)
@@ -894,53 +938,36 @@
          focus (| at-value index)))))))))
  struct-color green
  struct-render-singleline (\ (code-render-singleline state space-allowed)
-  (maybe-render-parenthesized
-   (not space-allowed)
-   struct-color
-   (render-next-to-each-other ([]
-    (maybe-render-singleline-cursor
-     (% (.focus state) at-start true _ false)
-     (draw-text "&" struct-color))
-    (render-next-to-each-other
+  (maybe-render-parenthesized (not space-allowed) struct-color
+   (row ([]
+    (maybe-render-cursor (% (.focus state) at-start true _ false)
+     (text "&" struct-color))
+    (row
      (array-map-indexed (.fields state) (\ (index field)
-      (render-next-to-each-other ([]
-       (padding 5)
-       (maybe-render-singleline-cursor
-        (% (.focus state) (at-name i) (= i index) _ false)
-        (draw-text (.name field) struct-color))
-       (padding 5)
-       (maybe-render-singleline-cursor
-        (% (.focus state) (at-value i) (= i index) _ false)
+      (row ([]
+       (empty-box 5 0)
+       (maybe-render-cursor (% (.focus state) (at-name i) (= i index) _ false)
+        (text (.name field) struct-color))
+       (empty-box 5 0)
+       (maybe-render-cursor (% (.focus state) (at-value i) (= i index) _ false)
         (code-render-singleline (.value field) false)))))))))))
  struct-render (\ (code-render code-render-singleline state width)
-  (:
-   inner-width (- width 10)
-   fields
-    (render-above-each-other
-     (array-map
-      (.fields state)
-      (\ (field) (:
-       text (draw-text (.name field) struct-color)
-       singleline
-        (render-next-to-each-other ([]
-         text
-         (padding 5)
-         (code-render-singleline (.value field) false)))
-       (if (<= (.width singleline) inner-width)
-        (& instructions (.instructions singleline) height 10)
-        (render-above-each-other ([]
-         text
-         (padding 2)
-         (: value (code-render (.value field) (- inner-width 10))
-          (&
-           instructions (translate (& x 10 y 0) (.instructions value))
-           height (.height value))))))))))
-   (&
-    instructions
-     (| all ([]
-      (.instructions (draw-text "&" struct-color))
-      (translate (& x 10 y 0) (.instructions fields))))
-    height (if (> (.height fields) 10) (.height fields) 10))))
+  (row ([]
+   (sized-box 10 10 (text "&" struct-color))
+   (column
+    (array-map (.fields state) (\ (field) (:
+     name (text (.name field) struct-color)
+     singleline
+      (row ([]
+       name
+       (empty-box 5 0)
+       (code-render-singleline (.value field) false)))
+     (if (<= (.width singleline) (- width 10))
+      singleline
+      (column ([]
+       name
+       (empty-box 0 2)
+       (code-render (.value field) (- width 20))))))))))))
 
  new-array (\ (items) (| array (& items items focus (| outside))))
  array-focus (\ (state)
@@ -1037,50 +1064,30 @@
        (| update
         (| array
          (& items (array-update items index new-item) focus (| at index))))))))
+ array-color red
  array-render-singleline (\ (code-render-singleline state space-allowed)
-  (maybe-render-parenthesized
-   (not space-allowed)
-   red
-   (render-next-to-each-other ([]
-    (maybe-render-singleline-cursor
-     (% (.focus state) at-start true _ false)
-     (draw-text "[]" red))
-    (render-next-to-each-other
+  (maybe-render-parenthesized (not space-allowed) array-color
+   (row ([]
+    (maybe-render-cursor (% (.focus state) at-start true _ false)
+     (text "[]" array-color))
+    (row
      (array-map-indexed (.items state) (\ (index item)
-      (render-next-to-each-other ([]
-       (padding 5)
-       (maybe-render-singleline-cursor
-        (% (.focus state) (at i) (= i index) _ false)
+      (row ([]
+       (empty-box 5 0)
+       (maybe-render-cursor (% (.focus state) (at i) (= i index) _ false)
         (code-render-singleline item false)))))))))))
  array-render (\ (code-render state width)
-  (:
-   highlight-index (% (.focus state) (at i) i _ (| none))
-   inner-width (- width 10)
-   items
-    (rec-2 (array->list (.items state)) 0 (\ (rec items index)
-     (% items
-      empty (& instructions (| nothing) height 0)
-      (more m) (:
-       item (code-render (.item m) inner-width)
-       rest (rec (.rest m) (+ index 1))
-       padding (% (.rest m) empty 0 more 2)
-       (&
-        instructions
-         (| all ([]
-          (if (= index highlight-index)
-           (fill-rect 0 0 inner-width (.height item) yellow)
-           (| nothing))
-          (.instructions item)
-          (translate
-           (& x 0 y (+ (.height item) padding))
-           (.instructions rest))))
-        height (+ (.height item) (+ padding (.height rest))))))))
-   (&
-    instructions
-     (| all ([]
-      (.instructions (draw-text "[]" red))
-      (translate (& x 10 y 0) (.instructions items))))
-    height (.height items))))
+  (row ([]
+   (sized-box 10 10 (text "[]" array-color))
+   (rec-2 (array->list (.items state)) 0 (\ (rec items index)
+    (% items
+     empty (empty-box 0 0)
+     (more m)
+      (column ([]
+       (maybe-render-cursor (% (.focus state) (at i) (= i index) _ false)
+        (code-render (.item m) (- width 10)))
+       (empty-box 0 (% (.rest m) empty 0 more 2))
+       (rec (.rest m) (+ index 1))))))))))
 
  code-focus (\ (code)
   (% code
@@ -1115,7 +1122,7 @@
    (:
     singleline (code-render-singleline code true)
     (if (<= (.width singleline) width)
-     (& instructions (.instructions singleline) height 10)
+     singleline
      (% code
       (root state) (root-render render state width)
       (name state) (name-render state)
@@ -1143,10 +1150,19 @@
      (new-name "f")
      (new-name "g"))))))
 
+ example
+  (colored green
+   (padding 2
+    (colored yellow
+     (padding (& left 2 top 5 right 2 bottom 5)
+      (row ([]
+       (colored red (empty-box 5 5))
+       (empty-box 5 0)
+       (text "Hi" black)))))))
+
+ render (\ (code size) (.draw example))
  render (\ (code size)
-  (translate
-   (& x 2 y 2)
-   (.instructions (code-render code (- (.width size) 4)))))
+  (.draw (padding 2 (code-render code (- (.width size) 4)))))
  handle (\ (code event)
   (% (code-handle code event) no-change code (update code) code))
  app
@@ -1157,21 +1173,12 @@
     state state)))
 
  (&
-  example-fun example-fun
-  optimized (@collect-garbage (\ () (optimize example-fun)))
   render (.render app)
   update (.update app)
   state initial-state)
   )
 
 ===
-
-(fill-path
-   ([]
-    (| move-to (point 10 10))
-    (| line-to (point (.width size) 10))
-    (| line-to (point 50 100)))
-   (& r 255 g 10 b 0))
 
  kind (\ (value) (@kind value))
  int? (\ (value) (% (kind value) int true _ false))
