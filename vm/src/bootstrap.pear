@@ -480,6 +480,22 @@
           rest (.draws rest)))
         width (+ (.width item) (.width rest)))))))
    (& instructions (| all (list->array (.draws res))) width (.width res))))
+ render-above-each-other (\ (array)
+  (:
+   res
+    (rec-2 (array->list array) 0 (\ (rec items y)
+     (% items
+      empty (& draws (| empty) height 0)
+      (more m) (:
+       item (.item m)
+       rest (rec (.rest m) (+ y (.height item)))
+       (&
+        draws
+         (| more (&
+          item (translate (& x 0 y y) (.instructions item))
+          rest (.draws rest)))
+        height (+ (.height item) (.height rest)))))))
+   (& instructions (| all (list->array (.draws res))) height (.height res))))
  maybe-render-singleline-cursor (\ (enabled node)
   (if enabled
    (&
@@ -740,6 +756,192 @@
         (translate (& x 10 y 12) (.instructions payload))))
       height (+ 12 (.height payload)))))))
 
+ new-struct (\ (fields) (| struct (& fields fields focus (| outside))))
+ struct-focus (\ (state)
+  (| struct (&
+   fields (.fields state)
+   focus (if (= (array-length (.fields state)) 0) (| at-start) (| at-name 0)))))
+ struct-handle (\ (code-focus code-handle state event)
+  (:
+   fields (.fields state)
+   focus (.focus state)
+   (% focus
+    outside (| no-change)
+    at-start
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| yield-focus (| struct (& fields fields focus (| outside))))
+        (if (key-right? key)
+         (if (= (array-length fields) 0)
+          (| no-change)
+          (| update (| struct (& fields fields focus (| at-name 0)))))
+         (| no-change)))
+      (char char)
+       (| update
+        (| struct (&
+         fields
+          (array-insert
+           fields
+           0
+           (&
+            name (bytes->string ([] char))
+            value (| int (& int 1 focus (| outside)))))
+         focus (| in-name 0)))))
+    (at-name index)
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| yield-focus (| struct (& fields fields focus (| outside))))
+        (if (key-left? key)
+         (if (= index 0)
+          (| update (| struct (& fields fields focus (| at-start))))
+          (| update (| struct (& fields fields focus (| at-value (- index 1))))))
+         (if (key-right? key)
+          (| update (| struct (& fields fields focus (| at-value index))))
+          (if (key-down? key)
+           (| update (| struct (& fields fields focus (| in-name index))))
+           (if (key-backspace? key)
+            (| update
+             (| struct
+              (&
+               fields (array-remove fields index)
+               focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
+            (if (key-delete? key)
+             (| update
+              (| struct
+               (&
+                fields (array-remove fields index)
+                focus
+                 (if (= index (- (array-length fields) 1))
+                  (if (= index 0) (| at-start) (| at-value (- index 1)))
+                  (| at-name index)))))
+             (| no-change)))))))
+      (char char) (| no-change))
+    (in-name index)
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| update (| struct (& fields fields focus (| at-name index))))
+        (| update
+         (| struct (&
+          fields (:
+           field (array-get fields index)
+           (array-update
+            fields
+            index
+            (&
+             name (handle-text-edit (.name field) event)
+             value (.value field))))
+          focus (| in-name index)))))
+      char
+       (| update
+        (| struct (&
+         fields (:
+          field (array-get fields index)
+          (array-update
+           fields
+           index
+           (&
+            name (handle-text-edit (.name field) event)
+            value (.value field))))
+         focus (| in-name index)))))
+    (at-value index)
+     (% event
+      (pressed-key key)
+       (if (key-up? key)
+        (| yield-focus (| struct (& fields fields focus (| outside))))
+        (if (key-down? key)
+         (| update
+          (| struct (&
+           fields (:
+            field (array-get fields index)
+            (array-update
+             fields
+             index
+             (& name (.name field) value (code-focus (.value field)))))
+           focus (| in-value index))))
+         (if (key-left? key)
+          (| update (| struct (& fields fields focus (| at-name index))))
+          (if (key-right? key)
+           (if (= index (- (array-length fields) 1))
+            (| no-change)
+            (| update
+             (| struct (& fields fields focus (| at-name (+ index 1))))))
+           (if (key-backspace? key)
+            (| update
+             (| struct
+              (&
+               fields (array-remove fields index)
+               focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
+            (| no-change))))))
+      (char char) (| no-change))
+    (in-value index) (:
+     field (array-get fields index)
+     (% (code-handle (.value field))
+      no-change (| no-change)
+      (update new-value)
+       (| update
+        (| struct (&
+         fields
+          (array-update fields index (& name (.name field) value new-value))
+         focus focus)))
+      (yield-focus new-value)
+       (| update
+        (| struct (&
+         fields
+          (array-update fields index (& name (.name field) value new-value))
+         focus (| at-value index)))))))))
+ struct-color green
+ struct-render-singleline (\ (code-render-singleline state space-allowed)
+  (maybe-render-parenthesized
+   (not space-allowed)
+   struct-color
+   (render-next-to-each-other ([]
+    (maybe-render-singleline-cursor
+     (% (.focus state) at-start true _ false)
+     (draw-text "&" struct-color))
+    (render-next-to-each-other
+     (array-map-indexed (.fields state) (\ (index field)
+      (render-next-to-each-other ([]
+       (padding 5)
+       (maybe-render-singleline-cursor
+        (% (.focus state) (at-name i) (= i index) _ false)
+        (draw-text (.name field) struct-color))
+       (padding 5)
+       (maybe-render-singleline-cursor
+        (% (.focus state) (at-value i) (= i index) _ false)
+        (code-render-singleline (.value field) false)))))))))))
+ struct-render (\ (code-render code-render-singleline state width)
+  (:
+   inner-width (- width 10)
+   fields
+    (render-above-each-other
+     (array-map
+      (.fields state)
+      (\ (field) (:
+       text (draw-text (.name field) struct-color)
+       singleline
+        (render-next-to-each-other ([]
+         text
+         (padding 5)
+         (code-render-singleline (.value field) false)))
+       (if (<= (.width singleline) inner-width)
+        (& instructions (.instructions singleline) height 10)
+        (render-above-each-other ([]
+         text
+         (padding 2)
+         (: value (code-render (.value field) (- inner-width 10))
+          (&
+           instructions (translate (& x 10 y 0) (.instructions value))
+           height (.height value))))))))))
+   (&
+    instructions
+     (| all ([]
+      (.instructions (draw-text "&" struct-color))
+      (translate (& x 10 y 0) (.instructions fields))))
+    height (if (> (.height fields) 10) (.height fields) 10))))
+
  new-array (\ (items) (| array (& items items focus (| outside))))
  array-focus (\ (state)
   (| array (&
@@ -836,39 +1038,20 @@
         (| array
          (& items (array-update items index new-item) focus (| at index))))))))
  array-render-singleline (\ (code-render-singleline state space-allowed)
-  (:
-   highlight-index (% (.focus state) (at i) i _ (| none))
-   items
-    (rec (& items (array->list (.items state)) index 0) (\ (rec args)
-     (:
-      items (.items args)
-      index (.index args)
-      (% items
-       empty (& instructions (| nothing) width 0)
-       (more m)
-        (:
-         item (code-render-singleline (.item m) false)
-         rest (rec (& items (.rest m) index (+ index 1)))
-         (&
-          instructions
-           (| all
-            ([]
-             (if (= index highlight-index)
-              (fill-rect 5 0 (.width item) 10 yellow)
-              (| nothing))
-             (translate (& x 5 y 0) (.instructions item))
-             (translate
-              (& x (+ 5 (.width item)) y 0)
-              (.instructions rest))))
-          width (+ 5 (+ (.width item) (.width rest)))))))))
-   (maybe-render-parenthesized
-    (not space-allowed)
-    red
-    (render-next-to-each-other ([]
-     (maybe-render-singleline-cursor
-      (% (.focus state) at-start true _ false)
-      (draw-text "[]" red))
-     items)))))
+  (maybe-render-parenthesized
+   (not space-allowed)
+   red
+   (render-next-to-each-other ([]
+    (maybe-render-singleline-cursor
+     (% (.focus state) at-start true _ false)
+     (draw-text "[]" red))
+    (render-next-to-each-other
+     (array-map-indexed (.items state) (\ (index item)
+      (render-next-to-each-other ([]
+       (padding 5)
+       (maybe-render-singleline-cursor
+        (% (.focus state) (at i) (= i index) _ false)
+        (code-render-singleline item false)))))))))))
  array-render (\ (code-render state width)
   (:
    highlight-index (% (.focus state) (at i) i _ (| none))
@@ -903,6 +1086,7 @@
   (% code
    (name state) (name-focus state)
    (int state) (int-focus state)
+   (struct state) (struct-focus state)
    (enum state) (enum-focus state)
    (array state) (array-focus state)
    _ (crash (| todo-focus code))))
@@ -912,6 +1096,7 @@
     (root state) (root-handle code-focus handle state event)
     (name state) (name-handle state event)
     (int state) (int-handle state event)
+    (struct state) (struct-handle code-focus handle state event)
     (enum state) (enum-handle code-focus handle state event)
     (array state) (array-handle code-focus handle state event)
     _ (crash (| todo-handle code))))))
@@ -921,6 +1106,7 @@
     (root state) (root-render-singleline render state space-allowed)
     (name state) (name-render-singleline state)
     (int state) (int-render-singleline state)
+    (struct state) (struct-render-singleline render state space-allowed)
     (enum state) (enum-render-singleline render state space-allowed)
     (array state) (array-render-singleline render state space-allowed)
     _ (crash (| todo-render code))))))
@@ -934,6 +1120,7 @@
       (root state) (root-render render state width)
       (name state) (name-render state)
       (int state) (int-render state)
+      (struct state) (struct-render render code-render-singleline state width)
       (enum state) (enum-render render state width)
       (array state) (array-render render state width)
       _ (crash (| todo-render code))))))))
@@ -942,6 +1129,9 @@
   (new-root
    (new-array ([]
     (new-name "foo")
+    (new-struct ([]
+     (& name "x" value (new-int 3))
+     (& name "y" value (new-int 5))))
     (new-enum "some" (| some (new-name "bar")))
     (new-array ([]
      (new-name "a")
