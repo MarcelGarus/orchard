@@ -34,7 +34,7 @@ fn trim_whitespace(input: Str, cursor: *usize) void {
         break;
     }
 }
-fn parse_name(input: Str, cursor: *usize) ?Str {
+pub fn parse_name(input: Str, cursor: *usize) ?Str {
     const start = cursor.*;
     while (cursor.* < input.len) : (cursor.* += 1) {
         const c = input[cursor.*];
@@ -44,7 +44,7 @@ fn parse_name(input: Str, cursor: *usize) ?Str {
     if (start == end) return null;
     return input[start..end];
 }
-fn parse_obj(input: Str, cursor: *usize, heap: *Heap, ally: Ally, defs: StringMap(Obj)) error{
+pub fn parse_obj(input: Str, cursor: *usize, heap: *Heap, ally: Ally, defs: StringMap(Obj)) error{
     OutOfMemory,
     UnendingString,
     ExpectedEscapedChar,
@@ -76,11 +76,22 @@ fn parse_obj(input: Str, cursor: *usize, heap: *Heap, ally: Ally, defs: StringMa
                     '\\' => {
                         cursor.* += 1;
                         if (cursor.* == input.len) return error.ExpectedEscapedChar;
-                        try chars.append(ally, switch (input[cursor.*]) {
+                        try chars.append(ally, char: switch (input[cursor.*]) {
                             '\\' => '\\',
                             '"' => '"',
                             'n' => '\n',
-                            else => return error.UnknownEscapeChar,
+                            else => {
+                                cursor.* += 1;
+                                if (cursor.* == input.len) return error.ExpectedEscapedChar;
+                                const c1 = input[cursor.* - 1];
+                                const c2 = input[cursor.*];
+                                if (std.mem.find(u8, "0123456789abcdef", &.{c1})) |d1| {
+                                    if (std.mem.find(u8, "0123456789abcdef", &.{c2})) |d2| {
+                                        break :char @intCast(d1 * 16 + d2);
+                                    }
+                                }
+                                return error.UnknownEscapeChar;
+                            },
                         });
                     },
                     else => |c| try chars.append(ally, c),
