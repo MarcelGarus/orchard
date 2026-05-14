@@ -1,44 +1,121 @@
-# "From a small seed, an Orchard grew.
+# "From a small seed, an Orchard grows.
 
-   This file is the entry point of Pear's bootstrapping process. Generally, the
-   process works like this:
+   I believe programming should be more personal. Currently (2026), software
+   tools are mostly developed by a few people in a central place and then used
+   by many more people. However, you very rarely modify or customize your
+   software tools. Even experienced programmers using open-source tools rarely
+   look at the source code.
 
-   1. You write a VM. The VM should have a heap of immutable objects of two
-      kinds:
-      - Leaf objects contain 64-bit words.
-      - Inner objects contain 64-bit words, which point to previously created
-        objects.
-      The VM then allows execution of functions allocated on its heap in a
-      particular encoding, described below.
-   2. bootstrap.objects (this file) describes the compiler of a low-level,
-      memory-unsafe language to run in the VM.
-   3. bootstrap.olive contains two compilers: An Olive compiler (so that the
-      file can compile itself) and a Pear compiler.
+   The current state is practical: It takes a lot of effort to build software,
+   so naturally you need to bundle resources to create big projects. I like that
+   this necessity to collaborate fosters social relationships and gets people to
+   explore problem spaces together. However, I believe there is also a place for
+   more personal, customized, specialized, smaller software. This vision existed
+   since the earliest days of computing: Alan Kay envisioned computers as
+   'personal dynamic media', where every user feels comfortable to create, use,
+   and customize tools. Orchard is my attempt at creating a personal computing
+   medium."
 
-   This file defines an Olive compiler using only object literals. It contains
-   alternating names and values (first a name, then a value, repeated). Every
-   name-value pair binds a value to a name. This explanatory comment is actually
-   the value of the name #.
 
-   A value describes how to create an object. It can be either:
-   - a number like 42, which tells you to create a leaf object with a single
-     word as payload
-   - a string like this one, which tells you to create a leaf object with words
-     that encode the characters (a string with up to 8 bytes only has a single
-     payload word, a string up to 16 bytes has two words, etc.)
-   - a parenthesized expression like (1 2), which tells you to create an inner
-     object that points to the parenthesized objects
-   - a name like foo, which refers to a previously defined name of the global
-     name-value
-   The final value named export is the result of this entire file.
+# "The Heap
 
-   Now, on to functions: A function is an inner heap object with two children,
-   which are the arguments and its body. The arguments are an inner heap object
-   of strings objects. The body is an expression, which can be run to produce a
-   word (I use single quotes to not break this comment):
+   I started by thinking about how I want my data and computation to look and
+   feel like. To be honest, I'm intruiged by functional programming. Not in the
+   spend-hours-thinking-about-types kind of way, but in a more practical 'data
+   is immutable' way.
+
+   So, I built a heap that can manage (and garbage-collect) immutable objects.
+   In my heap, there are two kinds of objects:
+
+   - Leaf objects contain 64-bit words.
+   - Inner objects contain 64-bit words, which are the addresses of previously
+     created objects.
+
+   Once you create an object, there's no way to modify its contents.
+
+   In fact, this file contains only object literals. It consits of alternating
+   names and values (first a name, then a value, repeated). Every name-value
+   pair binds a value to a name. This text is actually a leaf object containing
+   the bytes of this string and is bound to the name #."
+
+# "Number literals create new leaf objects with one word of payload. This code
+   creates an object:"
+foo 1
+
+# "String literals create a leaf object with words that encode the characters
+   (a string with up to 8 bytes only has a single payload word, a string up to
+   16 bytes has two words, etc). The lowest bits of the first word (word & 0xff)
+   are the first character, so on little-endian machines, the bytes in memory
+   match the string contents exactly. Because not every string has a size that
+   is a multiple of 8 bytes, strings are padded with zeros at the end as
+   necessary."
+bar "a string"
+
+# "Parentheses create inner objects that point to the enclosed,
+   whitespace-separated objects."
+baz (1 2)
+
+# "Names refer to previously defined objects. Here, flup is an inner object that
+   points to the previously defined objects foo, bar, and baz."
+flup (foo bar baz)
+
+# "The value named 'export' is the result of this entire file."
+
+
+# "The VM
+
+   Just having data is not enough. I want to be able to express computations on
+   that data. The programs I create should be portable across CPU architectures
+   and programmatically inspectable and creatable (similar to most Lisps, where
+   'code is data' is part of the philosophy). So, I created a simple virtual
+   machine.
+
+   The standard text-book approach would be to design a byte code for a
+   stack-based virtual machine. That's what I've done previously in other
+   projects (https://marcelgarus.dev/soil). However, byte code is too low level
+   and more painful than necessary for things I'd like to do:
+
+   - Generating byte code is difficult. In my word-based heap of immutable
+     objects, generating byte code is more difficult than if you have a mutable
+     byte array.
+   - Byte code is difficult to optimize. In byte code, data flow is not obvious
+     because it's only implied in the structure of the byte code.
+   - Byte code is difficult to JIT compile to efficient machine code. I've
+     written JIT compilers that compile the individual byte code instructions
+     into machine code. But as soon as you want to efficient use register or
+     emit instructions such as 'add rax, 42', you are fighting the low-levelness
+     of the byte code.
+
+   So, instead of byte code, I chose to encode computations as object trees
+   where the individual nodes are operations with operands as their children.
+   For example, an addition is represented as the object ('add' <expr> <expr>).
+   This is quite a high-level encoding of the intent. The data flow is obvious.
+
+   Every expression is an inner object that starts with a leaf object that tells
+   us what the expression does and what the other children mean (expressions are
+   essentially associated enums).
+ 
+   Functions are the unit of computation. Functions are individually
+   JIT-compiled. Really, a function is just an object with two children:
+
+   - the arguments (an object containing leaf objects with the names of arguments)
+   - the body (an expression)
+ 
+   That's enough information dumping! Let's look at some actual code:"
+
+false 0
+true 1
+not (("a") ("subtract" ("word" 1) ("name" "a")))
+
+# "You can see that a function is really just a heap object. You can probably
+   guess what the expressions 'word', 'name', and 'subtract' do. Generally,
+   every expression evaluates to a single word (which sometimes is an address).
+   Here's a list of all expressions:
+ 
    - ('word' word): Assumes that word is a leaf object with a single word as
      payload. Results in that word. 
-   - ('object' object): Results in the address of the object.
+   - ('object' object): Results in the address of the object. Arithmetic with
+     addresses is undefined behavior, so treat them as opaque tokens.
    - ('name' name): Assumes that the name is a leaf object. Results in the value
      of the name that is in scope, either through being available as a function
      argument, or using a let-expression.
@@ -110,24 +187,16 @@
    - ('crash' error): Assumes that error is an expression. Runs it. Then crashes
      with the error.
    - ('unreachable'): Assumes that this expression is unreachable.
+
    All the assumptions in the descriptions are undefined behavior if not
-   fulfilled. This enables the VM to do more optimizations.
-   TODO: Write a safe VM that catches all undefined behavior.
+   fulfilled. This enables the VM implementation / a JIT-compiler to do more
+   optimizations.
 
+   TODO: Write a safe VM that catches all undefined behavior."
 
-   2026-04-17 Wrote this comment.
-   2026-04-18 Note: Historically, the VM worked differently. Instead of encoding
-              functions as a tree of expressions, it would encode them as a list
-              of instructions meant to execute on a data stack (think push, pop,
-              add, etc.). You could also think about having more dense byte-code
-              a la Smalltalk. However, I want to give more freedom to the VM.
-              The current higher-level encoding doesn't prescribe even a data
-              stack, so the VM can JIT-compile subtrees into machine code
-              instruction sequences that keep everything in registers. If the
-              encoding was stack-based, you'd have to undo that to re-discover
-              the data flow, which is quite ugly."
-
-# "First, I define a couple of string literals to make my life a bit easier."
+# "The not function was painful to write though. So many strings!
+   To make my life easier for the rest of this file, I first define a couple of
+   string literals."
 _ "_"
 a "a"
 add "add"
@@ -196,15 +265,9 @@ xor "xor"
 :tag (name tag)
 :word (name word)
 
-# "Bool stuff.
-   By representing bools as 0 and 1, I can use branchless arithmetics such as
-   subtraction and the bitwise and/or operations to work with bools."
-false 0
-true 1
-not ((a) (subtract :1 :a))
-
 # "Comparisons.
-   Branchless using shifts."
+   Reminder: The compare expression returns 1 (equal), 2 (greater), or 4 (less).
+   I use shifts so that everything is branchless."
 = ((a b) (and (compare :a :b) :1))
 != ((a b) (subtract :1 (and (compare :a :b) :1)))
 >= ((a b) (subtract :1 (and (shift-right (compare :a :b) :2) :1)))
@@ -214,7 +277,9 @@ not ((a) (subtract :1 :a))
 nil ()
 nil? ((a) (call (object =) (:0 (size :a))))
 
-# "List stuff."
+# "List stuff.
+   A list is either an empty object (nil) or an object with two children, the
+   item and the rest (another list)."
 array-to-list-rec ((a i)
  (if (call (object =) (:i (size :a)))
   (object nil)
@@ -313,6 +378,18 @@ ascii-0 48
 ascii-9 57
 ascii-backslash 92
 ascii-n 110
+
+# "The Olive Compiler
+
+   What am I even doing here? You might have noticed that writing code is pretty
+   verbose: Every function call has literally the word 'call' in the code. In
+   order to keep my sanity, the first (and only) computation I write manually
+   using heap objects is a compiler for a higher-level language.
+   
+   Mind you, the language I'm creating is not 'high-level'. It deals with memory
+   allocations and has no memory safety guardrails whatsoever. Believe me, I've
+   dealt with enough segmentation faults for a lifetime. But it's better than
+   creating heap objects by hand."
 
 # "Parsing."
 is-digit ((c)
