@@ -1130,14 +1130,34 @@
        (empty-box 0 (% (.rest m) empty 0 more 2))
        (rec (.rest m) (+ index 1))))))))))
 
+ new-folded (\ (value) (| folded value))
+ folded-focus (\ (focus value)
+  (focus
+   (% (@kind value)
+    int (new-int value)
+    string (new-name value)
+    struct
+     (new-struct
+      (array-map
+       (@fields value)
+       (\ (field) (& name (.name field) value (| folded (.value field))))))
+    enum (new-enum (@variant value) (| some (| folded (@payload value))))
+    array (new-array (array-map value (\ (item) (| folded item))))
+    _ (crash (| unknown-kind value))
+    )))
+ folded-render-singleline (\ (state) (text "..." red))
+ folded-render (\ (state) (folded-render-singleline state))
+
  code-focus (\ (code)
-  (% code
-   (name state) (name-focus state)
-   (int state) (int-focus state)
-   (struct state) (struct-focus state)
-   (enum state) (enum-focus state)
-   (array state) (array-focus state)
-   _ (crash (| todo-focus code))))
+  (rec code (\ (focus code)
+   (% code
+    (name state) (name-focus state)
+    (int state) (int-focus state)
+    (struct state) (struct-focus state)
+    (enum state) (enum-focus state)
+    (array state) (array-focus state)
+    (folded state) (folded-focus focus state)
+    _ (crash (| todo-focus code))))))
  code-handle (\ (code event)
   (rec code (\ (handle code)
    (% code
@@ -1157,6 +1177,7 @@
     (struct state) (struct-render-singleline render state space-allowed)
     (enum state) (enum-render-singleline render state space-allowed)
     (array state) (array-render-singleline render state space-allowed)
+    (folded state) (folded-render-singleline state)
     _ (crash (| todo-render code))))))
  code-render (\ (code width)
   (rec-2 code width (\ (render code width)
@@ -1171,6 +1192,7 @@
       (struct state) (struct-render render code-render-singleline state width)
       (enum state) (enum-render render state width)
       (array state) (array-render render state width)
+      (folded state) (folded-render state)
       _ (crash (| todo-render code))))))))
 
  initial-state
