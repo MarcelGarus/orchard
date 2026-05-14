@@ -329,6 +329,64 @@ fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !Obj {
     return if (mapping.get(keep.address)) |mapped| .{ .address = mapped } else keep;
 }
 
+pub fn file_out(obj: Obj, ally: Ally, writer: *std.Io.Writer) !void {
+    var name_generator = NameGenerator{};
+    var mapping = ObjMap([]const u8).empty;
+    try file_out_rec(obj, ally, writer, &name_generator, &mapping);
+    try writer.print("export {s}\n", .{mapping.get(obj).?});
+    try writer.flush();
+}
+const NameGenerator = struct {
+    count: usize = 1,
+    fn generate(gen: *NameGenerator, ally: Ally) ![]const u8 {
+        var buffer: [10]u8 = undefined;
+        var i = gen.count;
+        var j = buffer.len;
+        while (i > 0) {
+            j -= 1;
+            buffer[j] = @intCast('a' + @mod(i, 26));
+            i /= 26;
+        }
+        const name = buffer[j..];
+        const copy = try ally.alloc(u8, name.len);
+        std.mem.copyForwards(u8, copy, name);
+        gen.count += 1;
+        return copy;
+    }
+};
+fn file_out_rec(obj: Obj, ally: Ally, writer: *std.Io.Writer, name_generator: *NameGenerator, exported: *ObjMap([]const u8)) !void {
+    if (exported.get(obj)) |_| return;
+    if (obj.is_leaf()) {
+        const name = try name_generator.generate(ally);
+        try exported.put(ally, obj, name);
+        try writer.print("{s} \"", .{name});
+        var bytes: []const u8 = @ptrCast(obj.words());
+        for (0..7) |_| {
+            if (bytes[bytes.len - 1] == 0) bytes.len -= 1;
+        }
+        for (bytes) |byte| {
+            if (byte >= ' ' and byte <= '~') {
+                try writer.print("{c}", .{byte});
+            } else {
+                try writer.print("\\{x:02}", .{byte});
+            }
+        }
+        try writer.print("\"\n", .{});
+    } else {
+        for (obj.children()) |child| {
+            try file_out_rec(child, ally, writer, name_generator, exported);
+        }
+        const name = try name_generator.generate(ally);
+        try exported.put(ally, obj, name);
+        try writer.print("{s} (", .{name});
+        for (obj.children(), 0..) |child, i| {
+            if (i > 0) try writer.print(" ", .{});
+            try writer.print("{s}", .{exported.get(child).?});
+        }
+        try writer.print(")\n", .{});
+    }
+}
+
 pub fn copy_to_other_heap(from: *Heap, ally: Ally, to: *Heap, object: Obj) !Obj {
     mark(object, .{ .address = @intFromPtr(from.memory.ptr) });
     var mapping = ObjMap(Obj).empty;
