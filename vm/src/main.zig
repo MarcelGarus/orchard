@@ -152,19 +152,19 @@ pub fn main(init: std.process.Init) !void {
                         "pressed-key",
                         try Value.new_struct(&heap, .{
                             .keycode = try Value.new_int(&heap, @intCast(key.keycode)),
-                            .control_pressed = try Value.new_enum(
+                            .control = try Value.new_enum(
                                 &heap,
-                                if (key.control_pressed) "true" else "false",
+                                if (key.control) "true" else "false",
                                 try Value.new_struct(&heap, .{}),
                             ),
-                            .shift_pressed = try Value.new_enum(
+                            .shift = try Value.new_enum(
                                 &heap,
-                                if (key.shift_pressed) "true" else "false",
+                                if (key.shift) "true" else "false",
                                 try Value.new_struct(&heap, .{}),
                             ),
-                            .alt_pressed = try Value.new_enum(
+                            .alt = try Value.new_enum(
                                 &heap,
-                                if (key.alt_pressed) "true" else "false",
+                                if (key.alt) "true" else "false",
                                 try Value.new_struct(&heap, .{}),
                             ),
                         }),
