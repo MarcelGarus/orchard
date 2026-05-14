@@ -207,15 +207,16 @@ pub fn format_singleline(self: Value, writer: *std.Io.Writer) error{WriteFailed}
                 if (i > 0) try writer.print(" ", .{});
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
-            try writer.print(") [", .{});
-            try self.get_captured().format_singleline(writer);
-            try writer.print("] ", .{});
-            const ir = self.get_ir();
-            if (ir.size() > 0) {
-                try Value.from(ir).format_singleline_code(writer);
-            } else {
-                try writer.print("...", .{});
-            }
+            try writer.print(") ...", .{});
+            // try writer.print(") [", .{});
+            // try self.get_captured().format_singleline(writer);
+            // try writer.print("] ", .{});
+            // const ir = self.get_ir();
+            // if (ir.size() > 0) {
+            //     try Value.from(ir).format_singleline_code(writer);
+            // } else {
+            //     try writer.print("...", .{});
+            // }
             try writer.print(")", .{});
         },
     }
@@ -417,18 +418,19 @@ pub fn format_indented(self: Value, writer: *std.Io.Writer, indentation: usize) 
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
             try writer.print(")", .{});
-            try writer.print("\n", .{});
-            for (0..indentation + 1) |_| try writer.print(" ", .{});
-            try writer.print("[", .{});
-            try self.get_captured().format_indented(writer, indentation + 1);
-            try writer.print("]\n", .{});
-            for (0..indentation + 1) |_| try writer.print(" ", .{});
-            const ir = self.get_ir();
-            if (ir.size() > 0) {
-                try Value.from(ir).format_singleline_code(writer);
-            } else {
-                try writer.print("...", .{});
-            }
+            try writer.print(" ...", .{});
+            // try writer.print("\n", .{});
+            // for (0..indentation + 1) |_| try writer.print(" ", .{});
+            // try writer.print("[", .{});
+            // try self.get_captured().format_indented(writer, indentation + 1);
+            // try writer.print("]\n", .{});
+            // for (0..indentation + 1) |_| try writer.print(" ", .{});
+            // const ir = self.get_ir();
+            // if (ir.size() > 0) {
+            //     try Value.from(ir).format_singleline_code(writer);
+            // } else {
+            //     try writer.print("...", .{});
+            // }
             try writer.print(")", .{});
         },
     }
