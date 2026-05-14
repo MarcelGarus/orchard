@@ -89,8 +89,35 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .ReleaseSafe,
     });
-    //orchard.linkLibrary(raylib.artifact("raylib"));
     orchard.addImport("nanovg", nanovg);
+
+    if (!target.result.cpu.arch.isWasm()) {
+        orchard.addIncludePath(b.path("lib/gl2/include"));
+        orchard.addCSourceFile(.{ .file = b.path("lib/gl2/src/glad.c"), .flags = &.{} });
+        switch (target.result.os.tag) {
+            .windows => {
+                b.installBinFile("glfw3.dll", "glfw3.dll");
+                orchard.linkSystemLibrary("glfw3dll", .{});
+                orchard.linkSystemLibrary("opengl32", .{});
+            },
+            .macos => {
+                orchard.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+                orchard.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+                orchard.linkSystemLibrary("glfw", .{});
+                orchard.linkFramework("OpenGL", .{});
+            },
+            .linux => {
+                orchard.linkSystemLibrary("glfw3", .{});
+                orchard.linkSystemLibrary("GL", .{});
+                orchard.linkSystemLibrary("X11", .{});
+            },
+            else => {
+                std.log.warn("Unsupported target: {}", .{target});
+                orchard.linkSystemLibrary("glfw3", .{});
+                orchard.linkSystemLibrary("GL", .{});
+            },
+        }
+    }
 
     const exe = b.addExecutable(.{
         .name = "orchard",
@@ -99,32 +126,6 @@ pub fn build(b: *std.Build) void {
     if (target.result.cpu.arch.isWasm()) {
         exe.rdynamic = true;
         exe.entry = .disabled;
-    } else {
-        exe.addIncludePath(b.path("lib/gl2/include"));
-        exe.addCSourceFile(.{ .file = b.path("lib/gl2/src/glad.c"), .flags = &.{} });
-        switch (target.result.os.tag) {
-            .windows => {
-                b.installBinFile("glfw3.dll", "glfw3.dll");
-                exe.linkSystemLibrary("glfw3dll");
-                exe.linkSystemLibrary("opengl32");
-            },
-            .macos => {
-                exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
-                exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
-                exe.linkSystemLibrary("glfw");
-                exe.linkFramework("OpenGL");
-            },
-            .linux => {
-                exe.linkSystemLibrary("glfw3");
-                exe.linkSystemLibrary("GL");
-                exe.linkSystemLibrary("X11");
-            },
-            else => {
-                std.log.warn("Unsupported target: {}", .{target});
-                exe.linkSystemLibrary("glfw3");
-                exe.linkSystemLibrary("GL");
-            },
-        }
     }
 
     //exe.linkLibC();

@@ -460,8 +460,9 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
             .call => try vm.run_fun(try vm.compile(Ir.Fun{ .obj = Obj{ .address = vm.data_stack.pop() } })),
             .crash => {
                 const message = vm.data_stack.pop();
-                std.debug.print("\n", .{});
-                (Obj{ .address = message }).dump();
+                std.debug.print("\nOh no! A crash!\n", .{});
+                // (Obj{ .address = message }).dump();
+                std.debug.print("{f}", .{Obj{ .address = message }});
                 std.process.exit(1);
             },
         }

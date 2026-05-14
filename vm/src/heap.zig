@@ -13,10 +13,11 @@
 
 const std = @import("std");
 const ArrayList = std.ArrayList;
-const Map = std.AutoArrayHashMap;
+const Map = std.array_hash_map.Auto;
 const Ally = std.mem.Allocator;
-const Writer = std.io.Writer;
+const Writer = std.Io.Writer;
 const writeSliceEndian = Writer.writeSliceEndian;
+const ObjMap = @import("obj_map.zig").ObjMap;
 
 const Heap = @This();
 
@@ -49,29 +50,29 @@ pub const Obj = packed struct {
         return a.address == b.address;
     }
 
+    pub fn header(self: Obj) *Header {
+        return @ptrFromInt(self.address);
+    }
+
     pub fn is_inner(self: Obj) bool {
-        const header: *Header = @ptrFromInt(self.address);
-        return header.is_inner == 1;
+        return self.header().is_inner == 1;
     }
     pub fn is_leaf(self: Obj) bool {
         return !self.is_inner();
     }
 
     pub fn size(self: Obj) usize {
-        const header: *Header = @ptrFromInt(self.address);
-        return @intCast(header.num_words);
+        return @intCast(self.header().num_words);
     }
 
     pub fn words(self: Obj) []const Word {
         if (!self.is_leaf()) unreachable;
-        const header: *Header = @ptrFromInt(self.address);
-        return @as([*]Word, @ptrFromInt(self.address))[1..][0..header.num_words];
+        return @as([*]Word, @ptrFromInt(self.address))[1..][0..self.header().num_words];
     }
 
     pub fn children(self: Obj) []const Obj {
         if (!self.is_inner()) unreachable;
-        const header: *Header = @ptrFromInt(self.address);
-        return @as([*]Obj, @ptrFromInt(self.address))[1..][0..header.num_words];
+        return @as([*]Obj, @ptrFromInt(self.address))[1..][0..self.header().num_words];
     }
 
     pub fn word(self: Obj, index: usize) Word {
@@ -81,7 +82,7 @@ pub const Obj = packed struct {
         return self.children()[index];
     }
 
-    pub fn format_string(chars: []const u8, colored: bool, writer: *std.io.Writer) error{WriteFailed}!void {
+    pub fn format_string(chars: []const u8, colored: bool, writer: *std.Io.Writer) error{WriteFailed}!void {
         if (colored) try writer.print("\x1b[48;5;222m", .{});
         for (chars) |char| {
             if (char == 0) break;
@@ -89,12 +90,12 @@ pub const Obj = packed struct {
         }
         if (colored) try writer.print("\x1b[0m", .{});
     }
-    pub fn format_number(word_: Word, colored: bool, writer: *std.io.Writer) error{WriteFailed}!void {
+    pub fn format_number(word_: Word, colored: bool, writer: *std.Io.Writer) error{WriteFailed}!void {
         if (colored) try writer.print("\x1b[48;5;153m", .{});
         try writer.print("{d}", .{word_});
         if (colored) try writer.print("\x1b[0m", .{});
     }
-    pub fn format_leaf(words_: []const Word, colored: bool, writer: *std.io.Writer) error{WriteFailed}!void {
+    pub fn format_leaf(words_: []const Word, colored: bool, writer: *std.Io.Writer) error{WriteFailed}!void {
         if (words_.len == 1) {
             var only_ascii = true;
             for (@as([]const u8, @ptrCast(words_))) |char| {
@@ -111,7 +112,7 @@ pub const Obj = packed struct {
             try format_string(@as([]const u8, @ptrCast(words_)), colored, writer);
         }
     }
-    pub fn format_singleline(self: Obj, colored: bool, writer: *std.io.Writer) error{WriteFailed}!void {
+    pub fn format_singleline(self: Obj, colored: bool, writer: *std.Io.Writer) error{WriteFailed}!void {
         if (self.is_leaf()) {
             try format_leaf(self.words(), colored, writer);
         } else {
@@ -131,7 +132,7 @@ pub const Obj = packed struct {
         return len_tracker.count;
     }
     const WIDTH_LIMIT = 120;
-    pub fn format_indented(self: Obj, writer: *std.io.Writer, indentation: usize) !void {
+    pub fn format_indented(self: Obj, writer: *std.Io.Writer, indentation: usize) !void {
         if (indentation + try self.singleline_len() <= WIDTH_LIMIT) {
             try self.format_singleline(true, writer);
             return;
@@ -299,8 +300,8 @@ fn mark(obj: Obj, boundary: Checkpoint) void {
 fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !Obj {
     var read = boundary.address;
     var write = boundary.address;
-    var mapping = Map(Word, Word).init(ally);
-    defer mapping.deinit();
+    var mapping = Map(Word, Word).empty;
+    defer mapping.deinit(ally);
     const heap_end = heap.checkpoint().address;
     while (read < heap_end) {
         // std.debug.print("read: {x} of {x}\n", .{read, heap_end});
@@ -318,7 +319,7 @@ fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !Obj {
                     }
                 }
                 for (0..size) |i| @as(*Word, @ptrFromInt(write + 8 * i)).* = @as(*Word, @ptrFromInt(read + 8 * i)).*;
-                try mapping.put(read, write);
+                try mapping.put(ally, read, write);
             }
             read += 8 * size;
             write += 8 * size;

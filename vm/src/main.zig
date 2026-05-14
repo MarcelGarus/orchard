@@ -9,29 +9,26 @@ const Ir = @import("ir.zig");
 const Obj = Heap.Obj;
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const Io = std.Io;
 
 const BootstrapStep = struct {
-    timer: std.time.Timer,
+    starttime: Io.Timestamp,
     vm: *Vm,
 
-    fn start(comptime name: []const u8, vm: *Vm) !BootstrapStep {
+    fn start(io: Io, comptime name: []const u8, vm: *Vm) !BootstrapStep {
         std.debug.print(name, .{});
         for (name.len..30) |_| std.debug.print(" ", .{});
-        const timer = try std.time.Timer.start();
+        const now = Io.Timestamp.now(io, .real);
         // vm.impl.instruction_count = 0;
-        return .{ .timer = timer, .vm = vm };
+        return .{ .starttime = now, .vm = vm };
     }
-    fn end(self: *BootstrapStep) void {
-        std.debug.print("{} ms, ", .{self.timer.read() / std.time.ns_per_ms});
+    fn end(self: *BootstrapStep, io: Io) void {
+        const now = Io.Timestamp.now(io, .real);
+        std.debug.print("{} ms, ", .{now.toMilliseconds() - self.starttime.toMilliseconds()});
         // std.debug.print("{} instructions, ", .{self.vm.impl.instruction_count});
         self.vm.get_heap().dump_stats();
     }
 };
-
-pub fn main() !void {
-    const thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 * 1024 }, run, .{});
-    thread.join();
-}
 
 fn is_same(a: Obj, b: Obj) bool {
     if (a.address == b.address) return true;
@@ -44,63 +41,69 @@ fn is_same(a: Obj, b: Obj) bool {
     }
     return true;
 }
+pub fn main(init: std.process.Init) !void {
+    // std.debug.print("Orchard!\n", .{});
 
-fn run() !void {
-    std.debug.print("Orchard!\n", .{});
+    const ally = init.gpa;
+    const io = init.io;
 
-    var debug_ally = std.heap.GeneralPurposeAllocator(.{}){};
-    const ally = debug_ally.allocator();
+    // const stdout_buf = try ally.alloc(u8, 1000);
+    // const stdin_buf = try ally.alloc(u8, 1000);
+    // var stdout_w = Io.File.stdout().writer(io, stdout_buf);
+    // var stdin_r = Io.File.stdin().reader(io, stdin_buf);
+    // const stdout = &stdout_w.interface;
+    // const stdin = &stdin_r.interface;
 
     var heap = try Heap.init(ally, 200_000_000);
     const start_of_heap = heap.checkpoint();
     var vm = try Vm.init(&heap, ally);
 
-    const objects_code = try std.fs.cwd().readFileAlloc(ally, "src/bootstrap.objects", 100000000000);
-    const olive_code = try std.fs.cwd().readFileAlloc(ally, "src/bootstrap.olive", 100000000000);
-    const pear_code = try std.fs.cwd().readFileAlloc(ally, "src/bootstrap.pear", 100000000000);
+    const objects_code = try Io.Dir.cwd().readFileAlloc(io, "src/bootstrap.objects", ally, Io.Limit.unlimited);
+    const olive_code = try Io.Dir.cwd().readFileAlloc(io, "src/bootstrap.olive", ally, Io.Limit.unlimited);
+    const pear_code = try Io.Dir.cwd().readFileAlloc(io, "src/bootstrap.pear", ally, Io.Limit.unlimited);
 
     const compile_olive = step: {
-        var step = try BootstrapStep.start("Loading the Olive compiler.", &vm);
-        defer step.end();
+        var step = try BootstrapStep.start(io, "Loading the Olive compiler.", &vm);
+        defer step.end(io);
         break :step Value.from(try object_loader.load(ally, vm.get_heap(), objects_code));
     };
     const olive = step: {
-        var step = try BootstrapStep.start("Compiling Olive.", &vm);
-        defer step.end();
+        var step = try BootstrapStep.start(io, "Compiling Olive.", &vm);
+        defer step.end(io);
         const result = try compile_olive.call(&vm, &.{
             try Value.new_string(&heap, olive_code),
         });
         break :step Value.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
     const olive_self_hosted = step: {
-        var step = try BootstrapStep.start("Self-compiling Olive.", &vm);
-        defer step.end();
+        var step = try BootstrapStep.start(io, "Self-compiling Olive.", &vm);
+        defer step.end(io);
         break :step try olive.get_field("compile_olive").call(&vm, &.{
             try Value.new_string(&heap, olive_code),
         });
     };
     const olive_self_hosted_2 = step: {
-        var step = try BootstrapStep.start("Self-compiling Olive.", &vm);
-        defer step.end();
+        var step = try BootstrapStep.start(io, "Self-compiling Olive.", &vm);
+        defer step.end(io);
         break :step try olive_self_hosted.get_field("compile_olive").call(&vm, &.{
             try Value.new_string(&heap, olive_code),
         });
     };
     _ = {
-        var step = try BootstrapStep.start("Confirming self-hosting.", &vm);
-        defer step.end();
+        var step = try BootstrapStep.start(io, "Confirming self-hosting.", &vm);
+        defer step.end(io);
         if (!is_same(olive_self_hosted.obj, olive_self_hosted_2.obj)) {
             @panic("Not the same.");
         }
     };
     const compile_pear = step: {
-        var step = try BootstrapStep.start("Keeping only Pear compiler.", &vm);
-        defer step.end();
+        var step = try BootstrapStep.start(io, "Keeping only Pear compiler.", &vm);
+        defer step.end(io);
         break :step Value.from(try vm.garbage_collect(start_of_heap, olive_self_hosted_2.get_field("compile_pear").obj));
     };
     const pear = step: {
-        var step = try BootstrapStep.start("Compiling Pear.", &vm);
-        defer step.end();
+        var step = try BootstrapStep.start(io, "Compiling Pear.", &vm);
+        defer step.end(io);
         const result = try compile_pear.call(&vm, &.{try Value.new_string(&heap, pear_code)});
         break :step Value.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
@@ -204,7 +207,7 @@ fn run() !void {
                 instructions,
             );
             // try Graphics.dump_drawing_instructions(drawing_instructions.?);
-            // std.debug.print("{any}\n", .{drawing_instructions});
+            // std.debug.print("{f}\n", .{app.get_field("state")});
         }
 
         // drawing_instructions = &.{

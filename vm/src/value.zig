@@ -166,10 +166,10 @@ pub fn call(function: Value, vm: *Vm, args: []const Value) !Value {
     return .{ .obj = .{ .address = result } };
 }
 
-pub fn format(self: Value, writer: *std.io.Writer) !void {
+pub fn format(self: Value, writer: *std.Io.Writer) !void {
     try self.format_indented(writer, 0);
 }
-pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}!void {
+pub fn format_singleline(self: Value, writer: *std.Io.Writer) error{WriteFailed}!void {
     const ty = self.obj.child(0);
     switch (self.kind()) {
         .int => try writer.print("{d}", .{self.get_int()}),
@@ -220,7 +220,7 @@ pub fn format_singleline(self: Value, writer: *std.io.Writer) error{WriteFailed}
         },
     }
 }
-pub fn format_singleline_code(self: Value, writer: *std.io.Writer) !void {
+pub fn format_singleline_code(self: Value, writer: *std.Io.Writer) !void {
     const variant = self.get_variant();
     const payload = self.get_payload();
     if (std.mem.eql(u8, variant, "value")) {
@@ -361,7 +361,7 @@ fn singleline_len(self: Value) !usize {
     return len_tracker.count;
 }
 const WIDTH_LIMIT = 100;
-pub fn format_indented(self: Value, writer: *std.io.Writer, indentation: usize) !void {
+pub fn format_indented(self: Value, writer: *std.Io.Writer, indentation: usize) !void {
     if (indentation + try self.singleline_len() <= WIDTH_LIMIT) {
         try self.format_singleline(writer);
         return;
