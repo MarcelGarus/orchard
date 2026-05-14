@@ -329,30 +329,32 @@ fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !Obj {
     return if (mapping.get(keep.address)) |mapped| .{ .address = mapped } else keep;
 }
 
-// pub fn copy_to_other(heap: *Heap, ally: Ally, other: *Heap, address: Ptr) Ptr {
-//     heap.mark(0, address);
-//     var cursor = 0;
-//     var mapping = Map(Ptr, Ptr).init(ally);
-//     defer mapping.deinit();
-//     while (cursor < heap.used) {
-//         const header: *Header = @ptrCast(&heap.memory[cursor]);
-//         const size = 1 + header.num_words;
-//         if (header.marked == 1) {
-//             header.marked = 0;
-//             var b = other.object_builder();
-//             for (0..header.num_words) |i| {
-//                 const word = heap.load(cursor, i);
-//                 if (header.has_pointers)
-//                     b.emit_pointer(mapping.get(word) orelse unreachable)
-//                 else
-//                     b.emit_literal(word);
-//             }
-//             try mapping.put(cursor, b.finish());
-//         }
-//         cursor += size;
-//     }
-//     return mapping.get(address);
-// }
+pub fn copy_to_other_heap(from: *Heap, ally: Ally, to: *Heap, object: Obj) !Obj {
+    mark(object, .{ .address = @intFromPtr(from.memory.ptr) });
+    var mapping = ObjMap(Obj).empty;
+    var cursor = Obj{ .address = @intFromPtr(from.memory.ptr) };
+    while (cursor.address < @intFromPtr(&from.memory[from.used])) {
+        if (cursor.header().marked == 1) {
+            var mapped: Obj = undefined;
+            if (cursor.is_inner()) {
+                var b = try to.build_inner();
+                for (cursor.children()) |child| {
+                    try b.emit(mapping.get(child) orelse unreachable);
+                }
+                mapped = b.finish();
+            } else {
+                var b = try to.build_leaf();
+                for (cursor.words()) |word| {
+                    try b.emit(word);
+                }
+                mapped = b.finish();
+            }
+            try mapping.put(ally, cursor, mapped);
+        }
+        cursor.address += cursor.size();
+    }
+    return mapping.get(object) orelse unreachable;
+}
 
 pub fn new_symbol(heap: *Heap, value: []const u8) !Obj {
     var b = try heap.build_leaf();
