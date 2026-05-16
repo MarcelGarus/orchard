@@ -236,6 +236,7 @@ unreachable? (\ (ir) (str=11 (.0 ir) "unreachable"))
 :field-keys "keys"
 :field-values "values"
 :cases "cases"
+:cond "cond"
 :params "params"
 else true
 
@@ -1975,6 +1976,8 @@ analyze-pear (\ (mode ast)
                  nil)))
                "default"
                 ('some (| "crash" (| "value" ('string "if on non-bool")))))))
+           (str=1 name "cond")
+            (if (even? (size children)) (crash "bad cond") (rec :cond rest))
            (str=1 name "\\")
             (if (!= (size children) 3)
              (crash "bad function")
@@ -2269,6 +2272,25 @@ analyze-pear (\ (mode ast)
               "body" (rec :expr body))
              (.0 rest))
             (.1 rest))))))))))
+  (= mode :cond)
+   (if (nil? ast)
+    (| "crash" (| "value" ('string "No cond case matches.")))
+    (| "switch"
+     (&3
+      "condition" (rec :expr (.0 ast))
+      "cases" ('array (#
+       (&3
+        "variant" ('string "true")
+        "payload" 'none
+        "body" (rec :expr (.0 (.1 ast))))
+       (#
+        (&3
+         "variant" ('string "false")
+         "payload" 'none
+         "body" (rec :cond (.1 (.1 ast))))
+        nil)))
+      "default"
+       ('some (| "crash" (| "value" ('string "cond case is not a bool")))))))
   (= mode :params)
    (if (nil? ast)
     nil
