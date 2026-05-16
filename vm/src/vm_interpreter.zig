@@ -462,7 +462,7 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
                 const message = vm.data_stack.pop();
                 std.debug.print("\nOh no! A crash!\n", .{});
                 // (Obj{ .address = message }).dump();
-                std.debug.print("{f}", .{Obj{ .address = message }});
+                std.debug.print("{f}\n", .{Obj{ .address = message }});
                 std.process.exit(1);
             },
         }
