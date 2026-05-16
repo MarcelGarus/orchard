@@ -194,8 +194,6 @@ fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_i
     _ = scancode;
     const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
     if (action == gl.GLFW_PRESS or action == gl.GLFW_REPEAT) {
-        if (key == gl.GLFW_KEY_ESCAPE)
-            gl.glfwSetWindowShouldClose(window, gl.GL_TRUE);
         graphics.event_queue.append(graphics.ally, .{
             .pressed_key = .{
                 .keycode = @intCast(key),
