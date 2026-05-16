@@ -16,11 +16,17 @@
   (:
    rec (\ (rec a b) (function (\ (a b) (rec rec a b)) a b))
    (rec rec a b)))
+ rec-3 (\ (a b c function)
+  (:
+   rec (\ (rec a b c) (function (\ (a b c) (rec rec a b c)) a b c))
+   (rec rec a b c)))
 
  true (| true)
  false (| false)
 
  _ (assert true)
+
+ else true
 
  not (\ (a) (if a false true))
  and (\ (a b) (if a b false))
@@ -45,6 +51,7 @@
 
  compare (\ (a b) (@compare a b))
  = (\ (a b) (@equal? a b))
+ != (\ (a b) (not (@equal? a b)))
  < (\ (a b) (% (compare a b) less true _ false))
  > (\ (a b) (% (compare a b) greater true _ false))
  <= (\ (a b) (% (compare a b) greater false _ true))
@@ -166,6 +173,13 @@
     (rec
      (/ int 10)
      (| more (& item (+ (ascii-char "0") (mod int 10)) rest prev)))))))
+ bytes->chars (\ (rec bytes i)
+  (if (= i (array-length bytes))
+   (| empty)
+   (| more (&
+    item (@bytes->string ([] (array-get bytes i)))
+    rest (rec rec bytes (+ i 1))))))
+ bytes->chars (\ (bytes) (bytes->chars bytes->chars bytes 0))
 
  value? (\ (node) (% node value true _ false))
  bind (\ (rec mode input name value)
@@ -431,7 +445,7 @@
   default-glyph
   default-glyph
   default-glyph
-  default-glyph
+  (pixel-glyph "\n" 2 "|")
   default-glyph
   default-glyph
   default-glyph
@@ -557,53 +571,61 @@
   (: bytes (@string->bytes char)
    (if (and (= (array-length bytes) 1) (< (array-get bytes 0) 123))
     (: glyph (array-get glyphs (array-get bytes 0))
-     _ (assert (= (.char glyph) char))
+     _
+      (if (= (.char glyph) char)
+       nil
+       (crash (| bad-glyph (& char char glyph glyph))))
      glyph)
     (find-glyph find-glyph char 0))))
+ find-kerning (\ (a b) 1)
+ layout-text (\ (text line-height max-width)
+  (rec-3 (bytes->chars (string->bytes text)) 0 0 (\ (rec chars x y)
+   (% chars
+    empty (| empty)
+    (more m) (:
+     char (.item m)
+     rest (.rest m)
+     glyph (find-glyph char)
+     (if (= char "\n")
+      (:
+       next-x 0
+       next-y (+ y line-height)
+       (| more (&
+        item (& x x y y char char glyph glyph cursor-x next-x cursor-y next-y)
+        rest (rec rest next-x next-y))))
+      (:
+       width (.width glyph)
+       kerning (% rest empty 0 (more next) (find-kerning char (.item next)))
+       next-x (+ x (+ width kerning))
+       next-y y
+       next-cursor-x (+ x (- width (/ kerning 2)))
+       (| more (&
+        item (& x x y y char char glyph glyph cursor-x next-cursor-x cursor-y y)
+        rest (rec rest next-x next-y))))))))))
  draw-glyph (\ (glyph color)
-  (rec (.paths glyph) (\ (rec paths)
-   (% paths
-    empty (| nothing)
-    (more m)
-     (| all ([]
-      (| fill-path (& path (.item m) color color))
-      (rec (.rest m))))))))
- draw-char (\ (char color)
-  (:
-   glyph (find-glyph char)
-   (& draw (draw-glyph glyph color) width (.width glyph) height 10)))
- draw-chars (\ (rec chars color)
-  (% chars
-   empty (& draw (| nothing) width 0 height 0)
-   (more m)
-    (:
-     char (draw-char (.item m) color)
-     rest (rec rec (.rest m) color)
-     # "todo: kerning"
-     space-after (% (.rest m) empty 0 more 1)
-     (&
-      draw
-       (| all ([]
-        (.draw char)
-        (| translate (&
-         by (& x (+ (.width char) space-after) y 0)
-         what (.draw rest)))))
-      width (+ (+ (.width char) space-after) (.width rest))
-      height 10))))
- bytes->chars (\ (rec bytes i)
-  (if (= i (array-length bytes))
-   (| empty)
-   (| more (&
-    item (@bytes->string ([] (array-get bytes i)))
-    rest (rec rec bytes (+ i 1))))))
- bytes->chars (\ (bytes) (bytes->chars bytes->chars bytes 0))
+  (| all
+   (list->array
+    (list-map
+     (.paths glyph)
+     (\ (path) (| fill-path (& path path color color)))))))
  text (\ (string color)
-  (draw-chars draw-chars (bytes->chars (@string->bytes string)) color))
+  (:
+   layouted (layout-text string 13 100000)
+   draw
+    (| all
+     (list->array
+      (list-map layouted (\ (glyph)
+       (| translate (&
+        by (& x (.x glyph) y (.y glyph))
+        what (draw-glyph (.glyph glyph) color)))))))
+   (colored yellow (& draw draw width 10 height 13))))
 
  no-modifiers? (\ (key)
   (and-3 (not (.control key)) (not (.shift key)) (not (.alt key))))
  only-alt-modifier? (\ (key)
   (and-3 (not (.control key)) (not (.shift key)) (.alt key)))
+ key-escape? (\ (key) (and (= (.keycode key) 256) (no-modifiers? key)))
+ key-enter? (\ (key) (and (= (.keycode key) 257) (no-modifiers? key)))
  key-backspace? (\ (key) (and (= (.keycode key) 259) (no-modifiers? key)))
  key-delete? (\ (key) (and (= (.keycode key) 261) (no-modifiers? key)))
  key-right? (\ (key) (and (= (.keycode key) 262) (no-modifiers? key)))
@@ -613,14 +635,30 @@
  key-alt-right? (\ (key) (and (= (.keycode key) 262) (only-alt-modifier? key)))
  key-alt-left? (\ (key) (and (= (.keycode key) 263) (only-alt-modifier? key)))
 
+ # "Text editing
+
+  A cursor consists of the following state:
+   - the anchor position (where a selection started)
+   - the active position (where the part controlled by the arrow keys is)
+   - the desired x position"
+
+ new-cursor (& anchor 0 active 0 desired-x 0)
+ cursor-start (\ (cursor) (min (.anchor cursor) (.active cursor)))
+ cursor-end (\ (cursor) (max (.anchor cursor) (.active cursor)))
+ cursor-has-selection? (\ (cursor) (!= (.anchor cursor) (.active cursor)))
+ cursor-selection (\ (cursor)
+  (& start (cursor-start cursor) end (cursor-end cursor)))
+
  handle-text-edit (\ (string event)
   (% event
    (pressed-key key)
-    (if (key-backspace? key)
-     (if (> (string-length string) 0)
-      (string-slice string 0 (- (string-length string) 1))
-      string)
-     string)
+    (cond
+     (key-backspace? key)
+      (if (> (string-length string) 0)
+       (string-slice string 0 (- (string-length string) 1))
+       string)
+     (key-enter? key) (string-concat string "\n")
+     else string)
    (char char) (string-concat string (bytes->string ([] char)))))
 
  cursor-color yellow
@@ -642,10 +680,11 @@
    here
     (% event
      (pressed-key key)
-      (if (key-down? key)
-       (| update
-        (| root (& child (code-focus (.child state)) focus (| inside))))
-       (| no-change))
+      (cond
+       (key-down? key)
+        (| update
+         (| root (& child (code-focus (.child state)) focus (| inside))))
+       else (| no-change))
      char (| no-change))
    inside
     (% (code-handle (.child state))
@@ -660,18 +699,18 @@
    (code-render (.child state) width)))
 
  new-code-node-from-char (\ (char)
-  (if
+  (cond
    (or
     (and (>= char (ascii-char "a")) (<= char (ascii-char "z")))
     (and (>= char (ascii-char "A")) (<= char (ascii-char "Z"))))
-   (| some (| name (& name (bytes->string ([] char)) focus (| inside))))
-   (if (and (>= char (ascii-char "0")) (<= char (ascii-char "9")))
+    (| some (| name (& name (bytes->string ([] char)) focus (| inside))))
+   (and (>= char (ascii-char "0")) (<= char (ascii-char "9")))
     (| some (| int (& int (- char (ascii-char "0")) focus (| inside))))
-    (if (= char (ascii-char "|"))
-     (| some (| enum (& variant "" payload (| none) focus (| in-variant))))
-     (if (= char (ascii-char "["))
-      (| some (| array (& items ([]) focus (| at-start))))
-      (| none))))))
+   (= char (ascii-char "|"))
+    (| some (| enum (& variant "" payload (| none) focus (| in-variant))))
+   (= char (ascii-char "["))
+    (| some (| array (& items ([]) focus (| at-start))))
+   else (| none)))
 
  new-int (\ (int) (| int (& int int focus (| outside))))
  int-focus (\ (state) (| int (& int (.int state) focus (| inside))))
@@ -682,20 +721,21 @@
     int (.int state)
     (% event
      (pressed-key key)
-      (if (key-up? key)
-       (| yield-focus (| int (& int int focus (| outside))))
-       (if (key-backspace? key)
+      (cond
+       (key-up? key) (| yield-focus (| int (& int int focus (| outside))))
+       (key-backspace? key)
         (| update (| int (& int (/ int 10) focus (| inside))))
-        (| no-change)))
+       else (| no-change))
      (char char)
-      (if (= char (ascii-char " "))
-       (| yield-focus (| int (& int int focus (| outside))))
-       (if (and (>= char (ascii-char "0")) (<= char (ascii-char "9")))
+      (cond
+       (= char (ascii-char " "))
+        (| yield-focus (| int (& int int focus (| outside))))
+       (and (>= char (ascii-char "0")) (<= char (ascii-char "9")))
         (| update
          (| int (&
           int (+ (* int 10) (- char (ascii-char "0")))
           focus (| inside))))
-        (| no-change)))))))
+       else (| no-change))))))
  int-render-singleline (\ (state)
   (text
    (int->string (.int state))
@@ -711,10 +751,11 @@
     name (.name state)
     (% event
      (pressed-key key)
-      (if (key-up? key)
-       (| yield-focus (| name (& name name focus (| outside))))
-       (| update
-        (| name (& name (handle-text-edit name event) focus (| inside)))))
+      (cond
+       (key-up? key) (| yield-focus (| name (& name name focus (| outside))))
+       else
+        (| update
+         (| name (& name (handle-text-edit name event) focus (| inside)))))
      (char char)
       (if (= char (ascii-char " "))
        (| yield-focus (| name (& name name focus (| outside))))
@@ -739,16 +780,17 @@
     at-variant
      (% event
       (pressed-key key)
-       (if (key-up? key)
-        (| yield-focus
-         (| enum (& variant variant payload payload focus (| outside))))
-        (if (key-down? key)
+       (cond
+        (key-up? key)
+         (| yield-focus
+          (| enum (& variant variant payload payload focus (| outside))))
+        (key-down? key)
          (| update
           (| enum (& variant variant payload payload focus (| in-variant))))
-         (if (key-right? key)
-          (| update
-           (| enum (& variant variant payload payload focus (| at-payload))))
-          (| no-change))))
+        (key-right? key)
+         (| update
+          (| enum (& variant variant payload payload focus (| at-payload))))
+        else (| no-change))
       (char char)
        (% payload
         some (| no-change)
@@ -762,14 +804,16 @@
     in-variant
      (% event
       (pressed-key key)
-       (if (key-up? key)
-        (| update
-         (| enum (& variant variant payload payload focus (| at-variant))))
-        (| update
-         (| enum (&
-          variant (handle-text-edit variant event)
-          payload payload
-          focus (| in-variant)))))
+       (cond
+        (key-up? key)
+         (| update
+          (| enum (& variant variant payload payload focus (| at-variant))))
+        else
+         (| update
+          (| enum (&
+           variant (handle-text-edit variant event)
+           payload payload
+           focus (| in-variant)))))
       char
        (| update
         (| enum (&
@@ -779,22 +823,23 @@
     at-payload
      (% event
       (pressed-key key)
-       (if (key-up? key)
-        (| yield-focus
-         (| enum (& variant variant payload payload focus (| outside))))
-        (if (key-down? key)
+       (cond
+        (key-up? key)
+         (| yield-focus
+          (| enum (& variant variant payload payload focus (| outside))))
+        (key-down? key)
          (| update
           (| enum (&
            variant variant
            payload (| some (code-focus (% payload (some p) p)))
            focus (| in-payload))))
-         (if (key-left? key)
-          (| update
-           (| enum (& variant variant payload payload focus (| at-variant))))
-          (if (key-backspace? key)
-           (| update
-            (| enum (& variant variant payload (| none) focus (| at-variant))))
-           (| no-change)))))
+        (key-left? key)
+         (| update
+          (| enum (& variant variant payload payload focus (| at-variant))))
+        (key-backspace? key)
+         (| update
+          (| enum (& variant variant payload (| none) focus (| at-variant))))
+        else (| no-change))
       (char char) (| no-change))
     in-payload
      (% (code-handle (% payload (some p) p))
@@ -855,111 +900,104 @@
     at-start
      (% event
       (pressed-key key)
-       (if (key-up? key)
-        (| yield-focus (| struct (& fields fields focus (| outside))))
-        (if (key-right? key)
+       (cond
+        (key-up? key)
+         (| yield-focus (| struct (& fields fields focus (| outside))))
+        (key-right? key)
          (if (= (array-length fields) 0)
           (| no-change)
           (| update (| struct (& fields fields focus (| at-name 0)))))
-         (| no-change)))
-      (char char)
+        else (| no-change))
+      (char char) (:
+       new-field (&
+        name (bytes->string ([] char))
+        value (| int (& int 1 focus (| outside))))
        (| update
         (| struct (&
-         fields
-          (array-insert
-           fields
-           0
-           (&
-            name (bytes->string ([] char))
-            value (| int (& int 1 focus (| outside)))))
-         focus (| in-name 0)))))
+         fields (array-insert fields 0 new-field)
+         focus (| in-name 0))))))
     (at-name index)
      (% event
       (pressed-key key)
-       (if (key-up? key)
-        (| yield-focus (| struct (& fields fields focus (| outside))))
-        (if (key-left? key)
+       (cond
+        (key-up? key)
+         (| yield-focus (| struct (& fields fields focus (| outside))))
+        (key-left? key)
          (if (= index 0)
           (| update (| struct (& fields fields focus (| at-start))))
-          (| update (| struct (& fields fields focus (| at-value (- index 1))))))
-         (if (key-right? key)
-          (| update (| struct (& fields fields focus (| at-value index))))
-          (if (key-down? key)
-           (| update (| struct (& fields fields focus (| in-name index))))
-           (if (key-backspace? key)
-            (| update
-             (| struct
-              (&
-               fields (array-remove fields index)
-               focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
-            (if (key-delete? key)
-             (| update
-              (| struct
-               (&
-                fields (array-remove fields index)
-                focus
-                 (if (= index (- (array-length fields) 1))
-                  (if (= index 0) (| at-start) (| at-value (- index 1)))
-                  (| at-name index)))))
-             (| no-change)))))))
+          (| update
+           (| struct (& fields fields focus (| at-value (- index 1))))))
+        (key-right? key)
+         (| update (| struct (& fields fields focus (| at-value index))))
+        (key-down? key)
+         (| update (| struct (& fields fields focus (| in-name index))))
+        (key-backspace? key)
+         (| update
+          (| struct
+           (&
+            fields (array-remove fields index)
+            focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
+        (key-delete? key)
+         (| update
+          (| struct
+           (&
+            fields (array-remove fields index)
+            focus
+             (if (= index (- (array-length fields) 1))
+              (if (= index 0) (| at-start) (| at-value (- index 1)))
+              (| at-name index)))))
+        else (| no-change))
       (char char) (| no-change))
     (in-name index)
      (% event
       (pressed-key key)
-       (if (key-up? key)
-        (| update (| struct (& fields fields focus (| at-name index))))
-        (| update
-         (| struct (&
-          fields (:
-           field (array-get fields index)
-           (array-update
-            fields
-            index
-            (&
-             name (handle-text-edit (.name field) event)
-             value (.value field))))
-          focus (| in-name index)))))
-      char
+       (cond
+        (key-up? key)
+         (| update (| struct (& fields fields focus (| at-name index))))
+        else (:
+         field (array-get fields index)
+         new-field (&
+          name (handle-text-edit (.name field) event)
+          value (.value field))
+         (| update
+          (| struct (&
+           fields (array-update fields index new-field)
+           focus (| in-name index))))))
+      char (:
+       field (array-get fields index)
+       new-field (&
+        name (handle-text-edit (.name field) event)
+        value (.value field))
        (| update
         (| struct (&
-         fields (:
-          field (array-get fields index)
-          (array-update
-           fields
-           index
-           (&
-            name (handle-text-edit (.name field) event)
-            value (.value field))))
-         focus (| in-name index)))))
+         fields (array-update fields index new-field)
+         focus (| in-name index))))))
     (at-value index)
      (% event
       (pressed-key key)
-       (if (key-up? key)
-        (| yield-focus (| struct (& fields fields focus (| outside))))
-        (if (key-down? key)
+       (cond
+        (key-up? key)
+         (| yield-focus (| struct (& fields fields focus (| outside))))
+        (key-down? key) (:
+         field (array-get fields index)
+         new-field (& name (.name field) value (code-focus (.value field)))
          (| update
           (| struct (&
-           fields (:
-            field (array-get fields index)
-            (array-update
-             fields
-             index
-             (& name (.name field) value (code-focus (.value field)))))
-           focus (| in-value index))))
-         (if (key-left? key)
-          (| update (| struct (& fields fields focus (| at-name index))))
-          (if (key-right? key)
-           (if (= index (- (array-length fields) 1))
-            (| no-change)
-            (| update
-             (| struct (& fields fields focus (| at-name (+ index 1))))))
-           (if (key-backspace? key)
-            (| update
-             (| struct
-              (&
-               fields (array-remove fields index)
-               focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
-            (| no-change))))))
+           fields (array-update fields index new-field)
+           focus (| in-value index)))))
+        (key-left? key)
+         (| update (| struct (& fields fields focus (| at-name index))))
+        (key-right? key)
+         (if (= index (- (array-length fields) 1))
+          (| no-change)
+          (| update (| struct (& fields fields focus (| at-name (+ index 1))))))
+        (key-backspace? key)
+         (| update
+          (| struct
+           (&
+            fields (array-remove fields index)
+            focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
+        else (| no-change))
       (char char) (| no-change))
     (in-value index) (:
      field (array-get fields index)
@@ -1024,13 +1062,14 @@
     at-start
      (% event
       (pressed-key key)
-       (if (key-up? key)
-        (| yield-focus (| array (& items items focus (| outside))))
-        (if (key-right? key)
+       (cond
+        (key-up? key)
+         (| yield-focus (| array (& items items focus (| outside))))
+        (key-right? key)
          (if (= (array-length items) 0)
           (| no-change)
           (| update (| array (& items items focus (| at 0)))))
-         (| no-change)))
+        else (| no-change))
       (char char)
        (% (new-code-node-from-char char)
         (some node)
@@ -1040,52 +1079,52 @@
     (at index)
      (% event
       (pressed-key key)
-       (if (key-up? key)
-        (| yield-focus (| array (& items items focus (| outside))))
-        (if (key-left? key)
+       (cond
+        (key-up? key)
+         (| yield-focus (| array (& items items focus (| outside))))
+        (key-left? key)
          (if (= index 0)
           (| update (| array (& items items focus (| at-start))))
           (| update (| array (& items items focus (| at (- index 1))))))
-         (if (key-right? key)
-          (if (= index (- (array-length items) 1))
-           (| no-change)
-           (| update (| array (& items items focus (| at (+ index 1))))))
-          (if (key-down? key)
-           (| update
-            (| array (&
-             items
-              (array-update items index (code-focus (array-get items index)))
-             focus (| in index))))
-           (if (key-backspace? key)
-            (| update
-             (| array
-              (&
-               items (array-remove items index)
-               focus (if (= index 0) (| at-start) (| at (- index 1))))))
-            (if (key-delete? key)
-             (| update
-              (| array
-               (&
-                items (array-remove items index)
-                focus
-                 (if (= index (- (array-length items) 1))
-                  (if (= index 0) (| at-start) (| at (- index 1)))
-                  (| at index)))))
-             (if (key-alt-left? key)
-              (if (= index 0)
-               (| no-change)
-               (| update
-                (| array (&
-                 items (array-swap items index (- index 1))
-                 focus (| at (- index 1))))))
-              (if (key-alt-right? key)
-               (if (= index (- (array-length items) 1))
-                (| no-change)
-                (| update
-                 (| array (&
-                  items (array-swap items index (+ index 1))
-                  focus (| at (+ index 1))))))
-               (| no-change)))))))))
+        (key-right? key)
+         (if (= index (- (array-length items) 1))
+          (| no-change)
+          (| update (| array (& items items focus (| at (+ index 1))))))
+        (key-down? key)
+         (| update
+          (| array (&
+           items (array-update items index (code-focus (array-get items index)))
+           focus (| in index))))
+        (key-backspace? key)
+         (| update
+          (| array
+           (&
+            items (array-remove items index)
+            focus (if (= index 0) (| at-start) (| at (- index 1))))))
+        (key-delete? key)
+         (| update
+          (| array
+           (&
+            items (array-remove items index)
+            focus
+             (if (= index (- (array-length items) 1))
+              (if (= index 0) (| at-start) (| at (- index 1)))
+              (| at index)))))
+        (key-alt-left? key)
+         (if (= index 0)
+          (| no-change)
+          (| update
+           (| array (&
+            items (array-swap items index (- index 1))
+            focus (| at (- index 1))))))
+        (key-alt-right? key)
+         (if (= index (- (array-length items) 1))
+          (| no-change)
+          (| update
+           (| array (&
+            items (array-swap items index (+ index 1))
+            focus (| at (+ index 1))))))
+        else (| no-change))
       (char char)
        (% (new-code-node-from-char char)
         (some node)
@@ -1213,17 +1252,6 @@
      (new-name "f")
      (new-name "g"))))))
 
- example
-  (colored green
-   (padding 2
-    (colored yellow
-     (padding (& left 2 top 5 right 2 bottom 5)
-      (row ([]
-       (colored red (empty-box 5 5))
-       (empty-box 5 0)
-       (text "Hi" black)))))))
-
- render (\ (code size) (.draw example))
  render (\ (code size)
   (.draw (padding 2 (code-render code (- (.width size) 4)))))
  handle (\ (code event)
@@ -1239,11 +1267,73 @@
  edit (\ (value)
   (make-app (new-root (| folded value))))
 
+ _ "Notes App"
+
+ render (\ (state size)
+  (.draw
+   (padding 2
+    (% (.focus state)
+     (at index)
+      (column
+       (array-map-indexed
+        (.notes state)
+        (\ (i note) (text (.title note) (if (= i index) red black)))))
+     (in index) (:
+      note (array-get (.notes state) index)
+      (column ([]
+       (text (.title note) red)
+       (empty-box 0 5)
+       (text (.content note) black))))))))
+ handle (\ (state event)
+  (:
+   focus (.focus state)
+   notes (.notes state)
+   (% focus
+    (at index)
+     (% event
+      (pressed-key key)
+       (cond
+        (key-down? key)
+         (&
+          focus
+           (| at (if (= index (- (array-length notes) 1)) index (+ index 1)))
+          notes notes)
+        (key-up? key)
+         (& focus (| at (if (= index 0) index (- index 1))) notes notes)
+        (key-enter? key) (& focus (| in index) notes notes)
+        else state)
+      char state)
+    (in index)
+     (% event
+      (pressed-key key)
+       (if (key-escape? key)
+        (& focus (| at index) notes notes)
+        (:
+         note (array-get notes index)
+         new-note (&
+          title (.title note)
+          content (handle-text-edit (.content note) event))
+         (& focus focus notes (array-update notes index new-note))))
+      char (:
+       note (array-get notes index)
+       new-note (&
+        title (.title note)
+        content (handle-text-edit (.content note) event))
+       (& focus focus notes (array-update notes index new-note)))))))
+ make-app (\ (state)
+  (rec state (\ (rec state)
+   (&
+    render (\ (size) (render state size))
+    update (\ (event) (rec (handle state event)))
+    state state))))
+ notes-app (\ (notes) (make-app (& focus (| at 0) notes notes)))
+
  (&
   render (.render app)
   update (.update app)
   state initial-state
-  edit edit)
+  edit edit
+  notes-app notes-app)
 )
 
 ===
