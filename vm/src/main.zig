@@ -101,6 +101,63 @@ pub fn main(init: std.process.Init) !void {
         defer step.end(io);
         break :step Value.from(try vm.garbage_collect(start_of_heap, olive_self_hosted_2.get_field("compile_pear").obj));
     };
+
+    // const dataflup = try compile_pear.call(&vm, &.{
+    //     try Value.new_string(&heap, try Io.Dir.cwd().readFileAlloc(io, "src/data.pear", ally, Io.Limit.unlimited)),
+    // });
+    // const dataflup2 = try dataflup.call(&vm, &.{});
+    // const out = try std.Io.Dir.cwd().createFile(io, "src/data.objects", .{});
+    // var out_buf: [1000]u8 = undefined;
+    // var out_w = out.writer(io, &out_buf);
+    // try Heap.file_out(dataflup2.obj, ally, &out_w.interface);
+
+    // var defs = std.StringHashMapUnmanaged(Value).empty;
+    // while (true) {
+    //     try stdout.print(">> ", .{});
+    //     try stdout.flush();
+    //     const input = std.mem.trim(u8, try stdin.takeDelimiterInclusive('\n'), " \n");
+    //     if (std.mem.eql(u8, input, "quit")) break;
+    //     if (std.mem.eql(u8, input, "names")) {
+    //         var it = defs.iterator();
+    //         while (it.next()) |def| {
+    //             try stdout.print("- {s}\n", .{def.key_ptr.*});
+    //         }
+    //         continue;
+    //     }
+    //     var cursor: usize = 0;
+    //     const name_tmp = object_loader.parse_name(input, &cursor) orelse {
+    //         try stdout.print("Expected name.", .{});
+    //         continue;
+    //     };
+    //     const name = try ally.alloc(u8, name_tmp.len);
+    //     std.mem.copyForwards(u8, name, name_tmp);
+    //     const after_name = std.mem.trim(u8, input[cursor..], " \n");
+    //     if (after_name.len == 0) {
+    //         if (defs.get(name)) |def| {
+    //             try stdout.print("{f}\n", .{def});
+    //         } else {
+    //             try stdout.print("Unknown name {s}.\n", .{name});
+    //         }
+    //         continue;
+    //     }
+    //     const value_creator = compile_pear.call(&vm, &.{
+    //         try Value.new_string(&heap, after_name),
+    //     }) catch |e| {
+    //         try stdout.print("Crashed: {any}\n", .{e});
+    //         continue;
+    //     };
+    //     const value = try value_creator.call(&vm, &.{});
+    //     // const object = object_loader.parse_obj(input, &cursor, &heap, ally, defs) catch |e| {
+    //     //     try stdout.print("Error: {any}\n", .{e});
+    //     //     continue;
+    //     // } orelse {
+    //     //     try stdout.print("Expected expression.\n", .{});
+    //     //     continue;
+    //     // };
+    //     try defs.put(ally, name, value);
+    //     try stdout.print("Created {s}:\n{f}\n", .{ name, value });
+    // }
+
     const pear = step: {
         var step = try BootstrapStep.start(io, "Compiling Pear.", &vm);
         defer step.end(io);
@@ -124,7 +181,13 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("entering rendering mode\n", .{});
 
-    var app = pear_export;
+    const data = Value.from(try object_loader.load(
+        ally,
+        &heap,
+        try Io.Dir.cwd().readFileAlloc(io, "src/data.objects", ally, Io.Limit.unlimited),
+    ));
+    std.debug.print("data: {f}\n", .{data});
+    var app = try pear_export.get_field("notes-app").call(&vm, &.{data.get_field("notes")});
 
     // if (true) return;
 

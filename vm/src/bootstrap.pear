@@ -58,6 +58,7 @@
  >= (\ (a b) (% (compare a b) less false _ true))
  max (\ (a b) (if (> a b) a b))
  min (\ (a b) (if (< a b) a b))
+ abs (\ (n) (if (< n 0) (- 0 n) n))
 
  array-length (\ (array) (@array-length array))
  array-get (\ (array index) (@array-get array index))
@@ -158,6 +159,46 @@
     (more m) (rec (.rest m) (| more (& item (.item m) rest reversed)))))))
  array-reverse (\ (array) (list->array (list-reverse (array->list array))))
 
+ list-take-while (\ (list checker)
+  (rec list (\ (rec list)
+   (% list
+    empty (| empty)
+    (more m)
+     (if (checker (.item m))
+      (| more (& item (.item m) rest (rec (.rest m))))
+      (| empty))))))
+ list-skip-while (\ (list checker)
+  (rec list (\ (rec list)
+   (% list
+    empty (| empty)
+    (more m)
+     (if (checker (.item m))
+      (rec (.rest m))
+      list)))))
+ list-reduce (\ (list reducer)
+  (% list
+   (more m)
+    (rec-2 (.rest m) (.item m) (\ (rec rest acc)
+     (% rest
+      empty acc
+      (more m) (rec (.rest m) (reducer acc (.item m))))))))
+ list-length (\ (list)
+  (rec list (\ (rec list)
+   (% list
+    empty 0
+    (more m) (+ 1 (rec (.rest m)))))))
+ list-take-and-reverse (\ (list n)
+  (rec-2 (& list list n n) (| empty) (\ (rec args reversed)
+   (:
+    list (.list args)
+    n (.n args)
+    (if (= n 0)
+     reversed
+     (% list
+      (more m)
+       (rec
+        (& list (.rest m) n (- n 1))
+        (| more (& item (.item m) rest reversed)))))))))
  string->bytes (\ (string) (@string->bytes string))
  bytes->string (\ (bytes) (@bytes->string bytes))
  string-length (\ (string) (@array-length (string->bytes string)))
@@ -165,6 +206,26 @@
   (bytes->string (array-concat (string->bytes a) (string->bytes b))))
  string-slice (\ (string from to)
   (bytes->string (array-slice (string->bytes string) from to)))
+ string-replace-range (\ (string range replacement)
+  (string-concat
+   (string-concat
+    (string-slice string 0 (.start range))
+    replacement)
+   (string-slice string (.end range) (string-length string))))
+ string-remove-range (\ (string start end)
+  (string-concat
+   (string-slice string 0 start)
+   (string-slice string end (string-length string))))
+ string-remove (\ (string index)
+  (string-concat
+   (string-slice string 0 index)
+   (string-slice string (+ index 1) (string-length string))))
+ string-insert (\ (string index text)
+  (string-concat
+   (string-concat
+    (string-slice string 0 index)
+    text)
+   (string-slice string index (string-length string))))
  ascii-char (\ (literal) (array-get (string->bytes literal) 0))
  int->string (\ (int)
   (rec-2 int (| empty) (\ (rec int prev)
@@ -179,7 +240,9 @@
    (| more (&
     item (@bytes->string ([] (array-get bytes i)))
     rest (rec rec bytes (+ i 1))))))
- bytes->chars (\ (bytes) (bytes->chars bytes->chars bytes 0))
+ bytes->chars-list (\ (bytes) (bytes->chars bytes->chars bytes 0))
+ string->chars-list (\ (string) (bytes->chars-list (string->bytes string)))
+ string->chars-array (\ (string) (list->array (string->chars-list string)))
 
  value? (\ (node) (% node value true _ false))
  bind (\ (rec mode input name value)
@@ -432,6 +495,7 @@
        rest (rec (+ x 1) y)))
       (rec (+ x 1) y)))))
    (& char char width width paths paths)))
+ line-height 13
  default-glyph
   (pixel-glyph "?" 5 "M M M| M M|M M M| M M|M M M| M M|M M M| M M|M M M| M M|")
  glyphs ([]
@@ -578,8 +642,8 @@
      glyph)
     (find-glyph find-glyph char 0))))
  find-kerning (\ (a b) 1)
- layout-text (\ (text line-height max-width)
-  (rec-3 (bytes->chars (string->bytes text)) 0 0 (\ (rec chars x y)
+ layout-text (\ (text max-width)
+  (rec-3 (string->chars-list text) 0 0 (\ (rec chars x y)
    (% chars
     empty (| empty)
     (more m) (:
@@ -610,7 +674,7 @@
      (\ (path) (| fill-path (& path path color color)))))))
  text (\ (string color)
   (:
-   layouted (layout-text string 13 100000)
+   layouted (layout-text string 100000)
    draw
     (| all
      (list->array
@@ -634,6 +698,28 @@
  key-up? (\ (key) (and (= (.keycode key) 265) (no-modifiers? key)))
  key-alt-right? (\ (key) (and (= (.keycode key) 262) (only-alt-modifier? key)))
  key-alt-left? (\ (key) (and (= (.keycode key) 263) (only-alt-modifier? key)))
+ only-ctrl-modifier? (\ (key)
+  (and-3 (.control key) (not (.shift key)) (not (.alt key))))
+ only-shift-modifier? (\ (key)
+  (and-3 (not (.control key)) (.shift key) (not (.alt key))))
+ ctrl-shift-modifier? (\ (key)
+  (and-3 (.control key) (.shift key) (not (.alt key))))
+ key-ctrl-enter? (\ (key) (and (= (.keycode key) 257) (only-ctrl-modifier? key)))
+ key-ctrl-backspace? (\ (key) (and (= (.keycode key) 259) (only-ctrl-modifier? key)))
+ key-shift-right? (\ (key) (and (= (.keycode key) 262) (only-shift-modifier? key)))
+ key-ctrl-right? (\ (key) (and (= (.keycode key) 262) (only-ctrl-modifier? key)))
+ key-ctrl-shift-right? (\ (key) (and (= (.keycode key) 262) (ctrl-shift-modifier? key)))
+ key-shift-left? (\ (key) (and (= (.keycode key) 263) (only-shift-modifier? key)))
+ key-ctrl-left? (\ (key) (and (= (.keycode key) 263) (only-ctrl-modifier? key)))
+ key-ctrl-shift-left? (\ (key) (and (= (.keycode key) 263) (ctrl-shift-modifier? key)))
+ key-shift-down? (\ (key) (and (= (.keycode key) 264) (only-shift-modifier? key)))
+ key-shift-up? (\ (key) (and (= (.keycode key) 265) (only-shift-modifier? key)))
+ key-alt-down? (\ (key) (and (= (.keycode key) 264) (only-alt-modifier? key)))
+ key-alt-up? (\ (key) (and (= (.keycode key) 265) (only-alt-modifier? key)))
+ key-start? (\ (key) (and (= (.keycode key) 268) (no-modifiers? key)))
+ key-shift-start? (\ (key) (and (= (.keycode key) 268) (only-shift-modifier? key)))
+ key-end? (\ (key) (and (= (.keycode key) 269) (no-modifiers? key)))
+ key-shift-end? (\ (key) (and (= (.keycode key) 269) (only-shift-modifier? key)))
 
  # "Text editing
 
@@ -648,6 +734,412 @@
  cursor-has-selection? (\ (cursor) (!= (.anchor cursor) (.active cursor)))
  cursor-selection (\ (cursor)
   (& start (cursor-start cursor) end (cursor-end cursor)))
+
+ text-x-offset (\ (string width offset)
+  (if (= offset 0) 0 (.x (list-get (layout-text string width) (- offset 1)))))
+ find-offset-above (\ (x y glyphs)
+  (:
+   glyphs-before (list-take-while (\ (glyph) (< (.y glyph) y)))
+   (% glyphs-before
+    empty (| none)
+    more
+     (| some
+      (list-reduce glyphs-before (\ (a b)
+       (if (< (.y a) (.y b))
+        b
+        (:
+         dist-a (abs (- (.x a) x))
+         dist-b (abs (- (.x b) x))
+         (if (< dist-a dist-b) a b)))))))))
+ find-offset-below (\ (x y glyphs)
+  (:
+   glyphs-after (list-skip-while (\ (glyph) (<= (.y glyph) y)))
+   (% glyphs-after
+    empty (| none)
+    more
+     (| some
+      (list-reduce glyphs-after (\ (a b)
+       (if (< (.y a) (.y b))
+        a
+        (:
+         dist-a (abs (- (.x a) x))
+         dist-b (abs (- (.x b) x))
+         (if (< dist-a dist-b) a b)))))))))
+ find-line-start (\ (chars offset)
+  (rec offset (\ (rec candidate)
+   (cond
+    (= candidate 0) 0
+    (= (array-get chars (- candidate 1)) "\n") candidate
+    else (rec (- candidate 1))))))
+ find-line-end (\ (chars offset)
+  (rec offset (\ (rec candidate)
+   (cond
+    (= candidate (array-length chars)) (array-length chars)
+    (= (array-get chars candidate) "\n") candidate
+    else (rec (+ candidate 1))))))
+
+ word-char? (\ (char)
+  (: c (ascii-char char)
+   (or-4
+    (= char "_")
+    (and (>= c (ascii-char "a")) (<= c (ascii-char "z")))
+    (and (>= c (ascii-char "A")) (<= c (ascii-char "Z")))
+    (and (>= c (ascii-char "0")) (<= c (ascii-char "9"))))))
+ punctuation-char? (\ (char) (and (!= char " ") (not (word-char? char))))
+ num-leading-word-chars (\ (chars-list)
+  (rec chars-list (\ (rec chars)
+   (% chars
+    empty 0
+    (more m) (if (word-char? (.item m)) (+ 1 (rec (.rest m))) 0)))))
+ num-leading-punctuation-chars (\ (chars-list)
+  (rec chars-list (\ (rec chars)
+   (% chars
+    empty 0
+    (more m) (if (punctuation-char? (.item m)) (+ 1 (rec (.rest m))) 0)))))
+ 
+ # "Skipping (moving ctrl + left/right) =
+    1. Skip spaces
+    2. How many characters of punctuation follow?
+       0: Skip all letters
+       1: Skip the punctuation, then all letters after it
+       2: Skip all punctuation"
+ num-leading-skip-chars (\ (chars-list)
+  (rec chars-list (\ (rec chars)
+   (% chars
+    empty 0
+    (more m) (:
+     char (.item m)
+     rest (.rest m)
+     (cond
+      (= char " ") (+ (rec rest) 1)
+      (word-char? char) (num-leading-word-chars chars)
+      else
+       (% rest
+        empty 1
+        (more next-m)
+         (if (punctuation-char? (.item next-m))
+          (num-leading-punctuation-chars chars)
+          (+ (num-leading-word-chars (.rest next-m)) 1)))))))))
+ find-word-boundary-after (\ (string offset)
+  (+
+   offset
+   (num-leading-skip-chars
+    (list-skip (array->list (string->bytes string)) offset))))
+ find-word-boundary-before (\ (string offset)
+  (-
+   offset
+   (num-leading-skip-chars
+    (list-take-and-reverse (array->list (string->bytes string)) offset))))
+
+ handle-text-edit (\ (string width cursor event)
+  (% event
+   (pressed-key key)
+    (cond
+     (key-enter? key) (:
+      new-string (string-replace-range string (cursor-selection cursor) "\n")
+      new-offset (+ (cursor-start cursor) 1)
+      (&
+       string new-string
+       cursor (&
+        anchor new-offset
+        active new-offset
+        desired-x (text-x-offset new-string width new-offset))))
+     (key-ctrl-enter? key) (:
+      line-end (find-line-end string (.active cursor))
+      new-string (string-insert string line-end "\n")
+      new-offset (+ line-end 1)
+      (&
+       string new-string
+       cursor (&
+        anchor new-offset
+        active new-offset
+        desired-x (text-x-offset new-string width new-offset))))
+     (key-backspace? key)
+      (if (cursor-has-selection? cursor)
+       (: offset (cursor-start cursor)
+        (&
+         string (string-remove-range string (cursor-start cursor) (cursor-end cursor))
+         cursor (&
+          anchor offset
+          active offset
+          desired-x (text-x-offset string width offset))))
+       (: offset (.offset cursor)
+        (if (= offset 0)
+         (& string string cursor cursor)
+         (&
+          string (string-remove string (- offset 1))
+          cursor (&
+           anchor (- offset 1)
+           active (- offset 1)
+           desired-x (text-x-offset string width (- offset 1)))))))
+     (key-ctrl-backspace? key)
+      (if (cursor-has-selection? cursor)
+       (: offset (cursor-start cursor)
+        (&
+         string (string-remove-range string (cursor-start cursor) (cursor-end cursor))
+         cursor (&
+          anchor offset
+          active offset
+          desired-x (text-x-offset string width offset))))
+       (:
+        offset (.offset cursor)
+        new-offset (find-word-boundary-before string offset)
+        (&
+         string (string-remove-range string new-offset offset)
+         cursor (&
+          anchor new-offset
+          active new-offset
+          desired-x (text-x-offset string width new-offset)))))
+     (key-delete? key)
+      (if (cursor-has-selection? cursor)
+       (: offset (cursor-start cursor)
+        (&
+         string (string-remove-range string (cursor-start cursor) (cursor-end cursor))
+         cursor
+          (&
+           anchor offset
+           active offset
+           desired-x (text-x-offset string width offset))))
+       (: offset (cursor-start cursor)
+        (if (= offset (string-length string))
+         (& string string cursor cursor)
+         (& string (string-remove string offset) cursor cursor))))
+     (key-right? key) (:
+      new-offset
+       (if (cursor-has-selection? cursor)
+        (cursor-end cursor)
+        (min (string-length string) (+ (.anchor cursor) 1)))
+      (&
+       string string
+       cursor (&
+        anchor new-offset
+        active new-offset
+        desired-x (text-x-offset string width new-offset))))
+     (key-shift-right? key) (:
+      offset (.active cursor)
+      (if (= offset (string-length text))
+       (& string string cursor cursor)
+       (&
+        string string
+        cursor (&
+         anchor (.anchor cursor)
+         active (+ offset 1)
+         desired-x (text-x-offset string width (+ offset 1))))))
+     (key-ctrl-right? key) (:
+      new-offset (find-word-boundary-after string (.active cursor))
+      (&
+       string string
+       cursor (&
+        anchor new-offset
+        active new-offset
+        desired-x (text-x-offset string width new-offset))))
+     (key-ctrl-shift-right? key) (:
+      new-offset (find-word-boundary-after string (.active cursor))
+      (&
+       string string
+       cursor (&
+        anchor (.anchor cursor)
+        active new-offset
+        desired-x (text-x-offset string width new-offset))))
+     (key-left? key) (:
+      new-offset
+       (if (cursor-has-selection? cursor)
+        (cursor-start cursor)
+        (max 0 (- (.anchor cursor) 1)))
+      (&
+       string string
+       cursor (&
+        anchor new-offset
+        active new-offset
+        desired-x (text-x-offset string width new-offset))))
+     (key-shift-left? key) (:
+      offset (.active cursor)
+      (if (= offset 0)
+       (& string string cursor cursor)
+       (&
+        string string
+        cursor (&
+         anchor (.anchor cursor)
+         active (- offset 1)
+         desired-x (text-x-offset string width (- offset 1))))))
+     (key-ctrl-left? key) (:
+      new-offset (find-word-boundary-before (.active cursor) text)
+      (&
+       string string
+       cursor (&
+        anchor new-offset
+        active new-offset
+        desired-x (text-x-offset string width new-offset))))
+     (key-ctrl-shift-left? key) (:
+      new-offset (find-word-boundary-before string (.active cursor))
+      (&
+       string string
+       cursor (&
+        anchor (.anchor cursor)
+        active new-offset
+        desired-x (text-x-offset string width new-offset))))
+     (key-down? key) (:
+      layouted-text (layout-text string width)
+      cursor-desired-x (.desired-x cursor)
+      cursor-y
+       (if (= (.active cursor) 0)
+        0
+        (.y (list-get layouted-text (- (.active cursor) 1))))
+      new-offset (find-offset-below cursor-desired-x cursor-y layouted-text)
+      new-offset (% new-offset none 0 (some v) v)
+      (&
+       string string
+       cursor (&
+        anchor new-offset
+        active new-offset
+        desired-x cursor-desired-x)))
+     (key-alt-down? key) (:
+      start (find-line-start string (cursor-start cursor))
+      end (find-line-end string (cursor-end cursor))
+      (if (= end (string-length string))
+       (& string string cursor cursor)
+       (:
+        next-line-end (find-line-end string (+ end 1))
+        bytes (array->list (string->bytes string))
+        a (list-slice bytes 0 start)
+        b (list-slice bytes start end)
+        c (list-slice bytes (+ end 1) next-line-end)
+        d (list-skip bytes next-line-end)
+        (&
+         string
+          (bytes->string
+           (list->array
+            (list-concat
+             a
+             (list-concat
+              c
+              (list-concat
+               (| more (& item 10 rest (| empty)))
+               (list-concat b d))))))
+         cursor (&
+          anchor (+ (.anchor cursor) (+ (list-length c) 1))
+          active (+ (.active cursor) (+ (list-length c) 1))
+          desired-x (.desired-x cursor))))))
+     (key-shift-down? key) (:
+      layouted-text (layout-text string width)
+      cursor-desired-x (.desired-x cursor)
+      cursor-y
+       (if (= (.active cursor) 0)
+        0
+        (.y (list-get layouted-text (- (.active cursor) 1))))
+      new-offset (find-offset-below cursor-desired-x cursor-y layouted-text)
+      new-offset (% new-offset none (string-length text) (some v) v)
+      (&
+       string string
+       cursor (&
+        anchor (.anchor cursor)
+        active new-offset
+        desired-x cursor-desired-x)))
+     (key-up? key) (:
+      layouted-text (layout-text string width)
+      cursor-desired-x (.desired-x cursor)
+      cursor-y
+       (if (= (.active cursor) 0)
+        0
+        (.y (list-get layouted-text (- (.active cursor) 1))))
+      new-offset (find-offset-above cursor-desired-x cursor-y layouted-text)
+      new-offset (% new-offset none 0 (some v) v)
+      (&
+       string string
+       cursor (&
+        anchor new-offset
+        active new-offset
+        desired-x cursor-desired-x)))
+     (key-alt-up? key) (:
+      start (find-line-start string (cursor-start cursor))
+      end (find-line-end string (cursor-end cursor))
+      (if (= start 0)
+       (& string string cursor cursor)
+       (:
+        previous-line-start (find-line-start string (- start 1))
+        bytes (array->list (string->bytes string))
+        a (list-slice bytes 0 previous-line-start)
+        b (list-slice bytes previous-line-start (- start 1))
+        c (list-slice bytes start end)
+        d (list-skip bytes end)
+        (&
+         string
+          (bytes->string
+           (list->array
+            (list-concat
+             a
+             (list-concat
+              c
+              (list-concat
+               (| more (& item 10 rest (| empty)))
+               (list-concat b d))))))
+         cursor (&
+          anchor (+ (.anchor cursor) (+ (list-length c) 1))
+          active (+ (.active cursor) (+ (list-length c) 1))
+          desired-x (.desired-x cursor))))))
+     (key-shift-up? key) (:
+      layouted-text (layout-text string width)
+      cursor-desired-x (.desired-x cursor)
+      cursor-y
+       (if (= (.active cursor) 0)
+        0
+        (.y (list-get layouted-text (- (.active cursor) 1))))
+      new-offset (find-offset-above cursor-desired-x cursor-y layouted-text)
+      new-offset (% new-offset none (string-length text) (some v) v)
+      (&
+       string string
+       cursor (&
+        anchor (.anchor cursor)
+        active new-offset
+        desired-x cursor-desired-x)))
+     (key-start? key) (:
+      line-start (find-line-start string (.active cursor))
+      (&
+       string string
+       cursor (&
+        anchor line-start
+        active line-start
+        desired-x (text-x-offset string width line-start))))
+     (key-shift-start? key) (:
+      line-start (find-line-start string (.active cursor))
+      (&
+       string string
+       cursor (&
+        anchor (.anchor cursor)
+        active line-start
+        desired-x (text-x-offset string width line-start))))
+     (key-end? key) (:
+      line-end (find-line-end string (.active cursor))
+      (&
+       string string
+       cursor (&
+        anchor line-end
+        active line-end
+        desired-x (text-x-offset string width line-end))))
+     (key-shift-end? key) (:
+      line-end (find-line-end string (.active cursor))
+      (&
+       string string
+       cursor (&
+        anchor (.anchor cursor)
+        active line-end
+        desired-x (text-x-offset string width line-end))))
+     else (& string string cursor cursor))
+   (char char)
+    (if
+     (or
+      (= char "\n")
+      (and (>= (ascii-char char) 32) (<= (ascii-char char) 126)))
+     (:
+      new-string (string-replace-range string (cursor-selection cursor) char)
+      new-offset (+ (cursor-start cursor) 1)
+      (&
+       string new-string
+       cursor (&
+        anchor new-offset
+        active new-offset
+        desired-x (text-x-offset new-string width new-offset))))
+     (& string string cursor cursor))))
 
  handle-text-edit (\ (string event)
   (% event

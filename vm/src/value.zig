@@ -173,7 +173,17 @@ pub fn format_singleline(self: Value, writer: *std.Io.Writer) error{WriteFailed}
     const ty = self.obj.child(0);
     switch (self.kind()) {
         .int => try writer.print("{d}", .{self.get_int()}),
-        .string => try writer.print("\"{s}\"", .{self.get_string()}),
+        .string => {
+            try writer.print("\"", .{});
+            for (self.get_string()) |byte| {
+                switch (byte) {
+                    '\n' => try writer.print("\\n", .{}),
+                    32...127 => try writer.print("{c}", .{byte}),
+                    else => try writer.print("\\{x}", .{byte}),
+                }
+            }
+            try writer.print("\"", .{});
+        },
         .struct_ => {
             try writer.print("(&", .{});
             for (ty.children()[1..], self.obj.children()[1..]) |field_name, field| {
@@ -371,7 +381,17 @@ pub fn format_indented(self: Value, writer: *std.Io.Writer, indentation: usize) 
     const ty = self.obj.child(0);
     switch (self.kind()) {
         .int => try writer.print("{d}", .{self.get_int()}),
-        .string => try writer.print("\"{s}\"", .{self.get_string()}),
+        .string => {
+            try writer.print("\"", .{});
+            for (self.get_string()) |byte| {
+                switch (byte) {
+                    '\n' => try writer.print("\\n", .{}),
+                    32...127 => try writer.print("{c}", .{byte}),
+                    else => try writer.print("\\{x}", .{byte}),
+                }
+            }
+            try writer.print("\"", .{});
+        },
         .struct_ => {
             try writer.print("(&", .{});
             for (ty.children()[1..], self.obj.children()[1..]) |field_name, field_value| {
