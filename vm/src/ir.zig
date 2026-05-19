@@ -67,6 +67,7 @@ pub const Expr = struct {
         size: Expr,
         load: Load,
         call: Call,
+        call_indirect: CallIndirect,
         rec: []const Expr,
         collect_garbage: Expr,
         crash: Expr,
@@ -78,6 +79,7 @@ pub const Expr = struct {
         pub const Load = struct { object: Expr, index: Expr };
         pub const Also = struct { ignored: Expr, value: Expr };
         pub const Call = struct { fun: Expr, args: []const Expr };
+        pub const CallIndirect = struct { fun: Expr, args: Expr };
     };
 
     pub fn kind(self: Expr) !Kind {
@@ -106,6 +108,7 @@ pub const Expr = struct {
                     Kind.If => .{ .condition = .{ .obj = self.obj.child(1) }, .then = .{ .obj = self.obj.child(2) }, .else_ = .{ .obj = self.obj.child(3) } },
                     Kind.Load => .{ .object = .{ .obj = self.obj.child(1) }, .index = .{ .obj = self.obj.child(2) } },
                     Kind.Call => .{ .fun = .{ .obj = self.obj.child(1) }, .args = @ptrCast(self.obj.child(2).children()) },
+                    Kind.CallIndirect => .{ .fun = .{ .obj = self.obj.child(1) }, .args = .{ .obj = self.obj.child(2) } },
                     []const Expr => @ptrCast(self.obj.child(1).children()),
                     else => @compileError("Unsupported payload type: " ++ @typeName(field.type)),
                 };
@@ -273,6 +276,11 @@ pub const Expr = struct {
                 try call.fun.format_indented(writer, indentation + 1);
                 for (call.args) |arg|
                     try arg.format_indented(writer, indentation + 1);
+            },
+            .call_indirect => |ci| {
+                try writer.print("call-indirect\n", .{});
+                try ci.fun.format_indented(writer, indentation + 1);
+                try ci.args.format_indented(writer, indentation + 1);
             },
             .rec => |args| {
                 try writer.print("rec\n", .{});

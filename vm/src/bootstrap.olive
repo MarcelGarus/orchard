@@ -33,6 +33,7 @@
 %size (\ (object) (# "size" object))
 %load (\ (object index) (# "load" object index))
 %call (\ (fun args) (# "call" fun args))
+%call-indirect (\ (fun args) (# "call-indirect" fun args))
 %rec (\ (args) (# "rec" args))
 %collect-garbage (\ (body) (# "collect-garbage" body))
 %crash (\ (error) (# "crash" error))
@@ -247,6 +248,7 @@ points? (\ (ir) (str=6 (.0 ir) "points"))
 size? (\ (ir) (str=4 (.0 ir) "size"))
 load? (\ (ir) (str=4 (.0 ir) "load"))
 call? (\ (ir) (str=4 (.0 ir) "call"))
+call-indirect? (\ (ir) (str=13 (.0 ir) "call-indirect"))
 rec? (\ (ir) (str=3 (.0 ir) "rec"))
 collect-garbage? (\ (ir) (str=15 (.0 ir) "collect-garbage"))
 crash? (\ (ir) (str=5 (.0 ir) "crash"))
@@ -310,6 +312,7 @@ has-rec (\ (mode ir)
     (collect-garbage? ir) (rec :expr (.1 ir))
     (crash? ir) (rec :expr (.1 ir))
     (call? ir) (if (rec :expr (.1 ir)) true (rec :list (array-to-list (.2 ir))))
+    (call-indirect? ir) (if (rec :expr (.1 ir)) true (rec :expr (.2 ir)))
     (rec? ir) true
     (unreachable? ir) false
     else (crash (# "unknown node in has-rec" (.0 ir))))
@@ -391,6 +394,8 @@ bind (\ (mode name val ir)
      (%call
       (rec :expr name val (.1 ir))
       (flatten-to-inner (rec :list name val (array-to-list (.2 ir)))))
+    (call-indirect? ir)
+     (%call-indirect (rec :expr name val (.1 ir)) (rec :expr name val (.2 ir)))
     (rec? ir)
      (%rec (flatten-to-inner (rec :list name val (array-to-list (.1 ir)))))
     (unreachable? ir) ir
@@ -446,6 +451,7 @@ num-usages (\ (mode name ir)
     (crash? ir) (rec :expr name (.1 ir))
     (call? ir)
      (+ (rec :expr name (.1 ir)) (rec :list name (array-to-list (.2 ir))))
+    (call-indirect? ir) (+ (rec :expr name (.1 ir)) (rec :expr name (.2 ir)))
     (rec? ir) (rec :list name (array-to-list (.1 ir)))
     (unreachable? ir) 0
     else (crash (# "unknown node in bind" ir)))
@@ -491,6 +497,7 @@ pure? (\ (mode ir)
     (collect-garbage? ir) false
     (crash? ir) false
     (call? ir) false
+    (call-indirect? ir) false
     (rec? ir) false
     (unreachable? ir) true
     else (crash (# "unknown node in pure?" ir)))
@@ -550,6 +557,7 @@ all-names (\ (mode ir)
     (crash? ir) (rec :expr (.1 ir))
     (call? ir)
      (list-concat (rec :expr (.1 ir)) (rec :list (array-to-list (.2 ir))))
+    (call-indirect? ir) (list-concat (rec :expr (.1 ir)) (rec :expr (.2 ir)))
     (rec? ir) (rec :list (array-to-list (.1 ir)))
     (unreachable? ir) nil
     else (crash (# "unknown node in all-names" ir)))
@@ -641,6 +649,10 @@ ensure-not-capturing (\ (mode ir forbidden)
      (%call
       (rec :expr (.1 ir) forbidden)
       (flatten-to-inner (rec :list (array-to-list (.2 ir)) forbidden)))
+    (call-indirect? ir)
+     (%call-indirect
+      (rec :expr (.1 ir) forbidden)
+      (rec :expr (.2 ir) forbidden))
     (rec? ir)
      (%rec (flatten-to-inner (rec :list (array-to-list (.1 ir)) forbidden)))
     (unreachable? ir) ir
@@ -819,6 +831,9 @@ optimize (\ (mode ir)
              (rec :expr (wrap-lets (.0 renamed) args (.1 renamed))))))
           (%crash "unreachable fun is not a fun")))
         (%call fun (flatten-to-inner args)))))
+    (call-indirect? ir)
+     (: fun (rec :expr (.1 ir))
+      (: args (rec :expr (.2 ir)) (%call-indirect fun args)))
     (rec? ir)
      (: args (rec :list (array-to-list (.1 ir)))
       (%rec (flatten-to-inner args)))
@@ -1350,6 +1365,11 @@ validate-pear (\ (mode ir vars)
           (if ('array? args)
            (rec :list (.1 (array-to-list args)) vars)
            (crash ('string "Call needs arguments array.")))))
+       (str=13 tag "call-indirect")
+        (also-3
+         (assert ('struct? payload) (| "invalid" ir))
+         (rec :expr (.function payload) vars)
+         (rec :expr (.arguments payload) vars))
        (str=15 tag "collect-garbage") (rec :expr payload vars)
        else (crash ('string (str-concat-3 "Unknown expression " tag "."))))))
     (crash (| "invalid" ir)))
@@ -1935,6 +1955,28 @@ lower-pear (\ (lower mode ir)
               (# (%load-1 (%name "@a")) nil))))
            (%crash (%object ('string "Wrong number of arguments."))))
           (%crash (%object ('string "You can only call functions."))))))
+      (str=13 tag "call-indirect")
+       (%let "@fun" (rec lower :expr (.function payload))
+        (%if (%'function? (%name "@fun"))
+         (%let "@args" (rec lower :expr (.arguments payload))
+          (%if (%'array? (%name "@args"))
+           (%if
+            (%equal?
+             (%subtract (%size (%name "@args")) (%word 1))
+             (%size (%load-1 (%load-0 (%name "@fun")))))
+            (%call-indirect
+             (%load-3 (%load-0 (%name "@fun")))
+             (%flatten-to-inner
+              (%call
+               (%object
+                (\ (arr i closure)
+                 (if (= i (size arr))
+                  (# closure (#))
+                  (# (. i arr) (rec arr (+ i 1) closure)))))
+               (# (%name "@args") (%object 1) (%load-1 (%name "@fun"))))))
+            (%crash (%object ('string "Wrong number of arguments."))))
+           (%crash (%object ('string "@call needs an array of arguments.")))))
+         (%crash (%object ('string "@call needs a function.")))))
       (str=9 tag "arguments")
        (%let "@fun" (rec lower :expr payload)
         (%if (%'function? (%name "@fun"))
@@ -2103,6 +2145,9 @@ find-captured (\ (mode ir bound captured)
       (str= tag "call")
        (rec :expr (.function payload) bound
         (rec :list (.1 (array-to-list (.arguments payload))) bound captured))
+      (str=13 tag "call-indirect")
+       (rec :expr (.function payload) bound
+        (rec :expr (.arguments payload) bound captured))
       (str= tag "crash") (rec :expr payload bound captured)
       true (crash (# "todo find-captured" ir)))))
   (= mode :maybe-expr)
@@ -2475,6 +2520,13 @@ analyze-pear (\ (mode ast)
                (if (!= (size args) 1)
                 (crash "bad @collect-garbage")
                 (| "collect-garbage" (rec :expr (.0 args))))
+              (str=5 name "@call")
+               (if (!= (size args) 2)
+                (crash "bad @call")
+                (| "call-indirect"
+                 (&2
+                  "function" (rec :expr (.0 args))
+                  "arguments" (rec :expr (.1 args)))))
               else
                (crash ('string (str-concat-3 "Unknown builtin " name ".")))))
            else

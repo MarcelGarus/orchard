@@ -32,9 +32,27 @@ const Stack = struct {
         self.memory[self.used] = word;
         self.used += 1;
     }
+    pub fn push_int(self: *Stack, int: i64) !void {
+        try self.push(@bitCast(int));
+    }
+    pub fn push_float(self: *Stack, float: f64) !void {
+        try self.push(@bitCast(float));
+    }
+    pub fn push_obj(self: *Stack, obj: Obj) !void {
+        try self.push(obj.address);
+    }
     pub fn pop(self: *Stack) Word {
         self.used -= 1;
         return self.memory[self.used];
+    }
+    pub fn pop_int(self: *Stack) i64 {
+        return @bitCast(self.pop());
+    }
+    pub fn pop_float(self: *Stack) f64 {
+        return @bitCast(self.pop());
+    }
+    pub fn pop_obj(self: *Stack) Obj {
+        return .{ .address = self.pop() };
     }
     pub fn pop_n(self: *Stack, n: usize) void {
         self.used -= n;
@@ -94,6 +112,7 @@ pub const Instruction = union(enum) {
     heap_size, // Pushes the size of the heap onto the stack. Can be used as a checkpoint for gc.
     collect_garbage, // heapsize obj -> obj. Collects garbage starting at the heapsize, only keeping dependencies of obj.
     call, // Pops an address, which should point to a function object. Calls it.
+    call_indirect, // Pops fun_addr, pops inner heap object; pushes every child of the object; runs fun.
     crash, // Pops a message. Crashes with the message.
 
     pub fn format(instr: Instruction, writer: *std.io.Writer) !void {
@@ -297,6 +316,14 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
             for (call.args) |_| _ = stack.pop();
             try stack.append(ally, "");
         },
+        .call_indirect => |ci| {
+            try compile_expr(ally, root, ci.args, stack, instrs);
+            try compile_expr(ally, root, ci.fun, stack, instrs);
+            try instrs.append(ally, .call_indirect);
+            _ = stack.pop();
+            _ = stack.pop();
+            try stack.append(ally, "");
+        },
         .rec => |args| {
             for (args) |arg| {
                 try compile_expr(ally, root, arg, stack, instrs);
@@ -324,7 +351,7 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
         // std.debug.print("\n", .{});
         switch (instruction) {
             .word => |word| try vm.data_stack.push(word),
-            .address => |object| try vm.data_stack.push(object.address),
+            .address => |object| try vm.data_stack.push_obj(object),
             .stack => |offset| try vm.data_stack.push(vm.data_stack.get(offset)),
             .pop => |amount| vm.data_stack.pop_n(amount),
             .popover => |amount| {
@@ -333,67 +360,64 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
                 try vm.data_stack.push(top);
             },
             .add => {
-                const b: i64 = @bitCast(vm.data_stack.pop());
-                const a: i64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(@bitCast(a +% b));
+                const b = vm.data_stack.pop_int();
+                const a = vm.data_stack.pop_int();
+                try vm.data_stack.push_int(a +% b);
             },
             .subtract => {
-                const b: i64 = @bitCast(vm.data_stack.pop());
-                const a: i64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(@bitCast(a -% b));
+                const b = vm.data_stack.pop_int();
+                const a = vm.data_stack.pop_int();
+                try vm.data_stack.push_int(a -% b);
             },
             .multiply => {
-                const b: i64 = @bitCast(vm.data_stack.pop());
-                const a: i64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(@bitCast(a *% b));
+                const b = vm.data_stack.pop_int();
+                const a = vm.data_stack.pop_int();
+                try vm.data_stack.push_int(a *% b);
             },
             .divide => {
-                const b: i64 = @bitCast(vm.data_stack.pop());
-                const a: i64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(@bitCast(@divTrunc(a, b)));
+                const b = vm.data_stack.pop_int();
+                const a = vm.data_stack.pop_int();
+                try vm.data_stack.push_int(@divTrunc(a, b));
             },
             .modulo => {
-                const b: i64 = @bitCast(vm.data_stack.pop());
-                const a: i64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(@bitCast(@mod(a, b)));
+                const b = vm.data_stack.pop_int();
+                const a = vm.data_stack.pop_int();
+                try vm.data_stack.push_int(@mod(a, b));
             },
             .shift_left => {
-                const b: i64 = @bitCast(vm.data_stack.pop());
-                const a: i64 = @bitCast(vm.data_stack.pop());
-                // std.debug.print("{} << {} is {}\n", .{ a, b, a >> @intCast(b) });
-                try vm.data_stack.push(@bitCast(a << @intCast(b)));
+                const b = vm.data_stack.pop_int();
+                const a = vm.data_stack.pop_int();
+                try vm.data_stack.push_int(a << @intCast(b));
             },
             .shift_right => {
-                const b: i64 = @bitCast(vm.data_stack.pop());
-                const a: i64 = @bitCast(vm.data_stack.pop());
-                // std.debug.print("{} >> {} is {}\n", .{ a, b, a >> @intCast(b) });
-                try vm.data_stack.push(@bitCast(a >> @intCast(b)));
+                const b = vm.data_stack.pop_int();
+                const a = vm.data_stack.pop_int();
+                try vm.data_stack.push_int(a >> @intCast(b));
             },
             .compare => {
-                const b: i64 = @bitCast(vm.data_stack.pop());
-                const a: i64 = @bitCast(vm.data_stack.pop());
-                const result: Word = if (a == b) 1 else if (a > b) 2 else 4;
-                try vm.data_stack.push(result);
+                const b = vm.data_stack.pop_int();
+                const a = vm.data_stack.pop_int();
+                try vm.data_stack.push(if (a == b) 1 else if (a > b) 2 else 4);
             },
             .f_add => {
-                const b: f64 = @bitCast(vm.data_stack.pop());
-                const a: f64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(@bitCast(a + b));
+                const b = vm.data_stack.pop_float();
+                const a = vm.data_stack.pop_float();
+                try vm.data_stack.push_float(a + b);
             },
             .f_subtract => {
-                const b: f64 = @bitCast(vm.data_stack.pop());
-                const a: f64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(@bitCast(a - b));
+                const b = vm.data_stack.pop_float();
+                const a = vm.data_stack.pop_float();
+                try vm.data_stack.push_float(a - b);
             },
             .f_multiply => {
-                const b: f64 = @bitCast(vm.data_stack.pop());
-                const a: f64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(@bitCast(a * b));
+                const b = vm.data_stack.pop_float();
+                const a = vm.data_stack.pop_float();
+                try vm.data_stack.push_float(a * b);
             },
             .f_divide => {
-                const b: f64 = @bitCast(vm.data_stack.pop());
-                const a: f64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(@bitCast(a / b));
+                const b = vm.data_stack.pop_float();
+                const a = vm.data_stack.pop_float();
+                try vm.data_stack.push_float(a / b);
             },
             .f_compare => {
                 const b_bits = vm.data_stack.pop();
@@ -405,20 +429,9 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
                 };
                 try vm.data_stack.push(result);
             },
-            .int_to_float => {
-                const a: i64 = @bitCast(vm.data_stack.pop());
-                const f: f64 = @floatFromInt(a);
-                try vm.data_stack.push(@bitCast(f));
-            },
-            .float_to_int => {
-                const f: f64 = @bitCast(vm.data_stack.pop());
-                const i: i64 = @intFromFloat(f);
-                try vm.data_stack.push(@bitCast(i));
-            },
-            .f_is_finite => {
-                const f: f64 = @bitCast(vm.data_stack.pop());
-                try vm.data_stack.push(if (std.math.isFinite(f)) 1 else 0);
-            },
+            .int_to_float => try vm.data_stack.push_float(@floatFromInt(vm.data_stack.pop_int())),
+            .float_to_int => try vm.data_stack.push_int(@intFromFloat(vm.data_stack.pop_float())),
+            .f_is_finite => try vm.data_stack.push(if (std.math.isFinite(vm.data_stack.pop_float())) 1 else 0),
             .and_ => {
                 const b = vm.data_stack.pop();
                 const a = vm.data_stack.pop();
@@ -444,17 +457,17 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
                 const words = stack[stack.len - size ..];
                 const obj = try vm.heap.new_leaf(@ptrCast(words));
                 vm.data_stack.pop_n(size);
-                try vm.data_stack.push(obj.address);
+                try vm.data_stack.push_obj(obj);
             },
             .new_inner => |size| {
                 const stack = vm.data_stack.memory[0..vm.data_stack.used];
                 const words = stack[stack.len - size ..];
                 const obj = try vm.heap.new_inner(@ptrCast(words));
                 vm.data_stack.pop_n(size);
-                try vm.data_stack.push(obj.address);
+                try vm.data_stack.push_obj(obj);
             },
             .flatten_to_inner => {
-                var obj = Obj{ .address = vm.data_stack.pop() };
+                var obj = vm.data_stack.pop_obj();
                 var b = try vm.heap.build_inner();
                 while (true) {
                     switch (obj.size()) {
@@ -466,11 +479,10 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
                         else => unreachable,
                     }
                 }
-                const flattened = b.finish();
-                try vm.data_stack.push(flattened.address);
+                try vm.data_stack.push_obj(b.finish());
             },
             .flatten_to_leaf => {
-                var obj = Obj{ .address = vm.data_stack.pop() };
+                var obj = vm.data_stack.pop_obj();
                 var b = try vm.heap.build_leaf();
                 while (true) {
                     switch (obj.size()) {
@@ -482,21 +494,19 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
                         else => unreachable,
                     }
                 }
-                const flattened = b.finish();
-                try vm.data_stack.push(flattened.address);
+                try vm.data_stack.push_obj(b.finish());
             },
             .points => {
-                const obj = Obj{ .address = vm.data_stack.pop() };
+                const obj = vm.data_stack.pop_obj();
                 try vm.data_stack.push(if (obj.is_inner()) 1 else 0);
             },
             .size => {
-                const obj = Obj{ .address = vm.data_stack.pop() };
-                const num_words = obj.size();
-                try vm.data_stack.push(num_words);
+                const obj = vm.data_stack.pop_obj();
+                try vm.data_stack.push(obj.size());
             },
             .load => {
                 const offset: usize = vm.data_stack.pop();
-                const base = Obj{ .address = vm.data_stack.pop() };
+                const base = vm.data_stack.pop_obj();
                 const word: usize = if (base.is_inner()) base.child(offset).address else base.word(offset);
                 try vm.data_stack.push(word);
             },
@@ -505,24 +515,32 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
                 try vm.data_stack.push(checkpoint.address);
             },
             .collect_garbage => {
-                const keep = vm.data_stack.pop();
+                const keep = vm.data_stack.pop_obj();
                 const checkpoint = vm.data_stack.pop();
                 vm.heap.dump_stats();
                 std.debug.print("garbage collecting...\n", .{});
                 const mapped_keep = try vm.heap.garbage_collect(
                     vm.ally,
                     .{ .address = checkpoint },
-                    Obj{ .address = keep },
+                    keep,
                 );
                 vm.heap.dump_stats();
-                try vm.data_stack.push(mapped_keep.address);
+                try vm.data_stack.push_obj(mapped_keep);
             },
-            .call => try vm.run_fun(try vm.compile(Ir.Fun{ .obj = Obj{ .address = vm.data_stack.pop() } })),
+            .call => {
+                const callee = vm.data_stack.pop_obj();
+                try vm.run_fun(try vm.compile(Ir.Fun{ .obj = callee }));
+            },
+            .call_indirect => {
+                const callee = vm.data_stack.pop_obj();
+                const args = vm.data_stack.pop_obj();
+                for (args.children()) |c| try vm.data_stack.push_obj(c);
+                try vm.run_fun(try vm.compile(Ir.Fun{ .obj = callee }));
+            },
             .crash => {
-                const message = vm.data_stack.pop();
+                const message = vm.data_stack.pop_obj();
                 std.debug.print("\nOh no! A crash!\n", .{});
-                // (Obj{ .address = message }).dump();
-                std.debug.print("{f}\n", .{Obj{ .address = message }});
+                std.debug.print("{f}\n", .{message});
                 std.process.exit(1);
             },
         }
