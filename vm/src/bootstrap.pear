@@ -75,19 +75,7 @@
  f-min (\ (a b) (if (f< a b) a b))
  int->float (\ (n) (@int->float n))
  float->int (\ (f) (@float->int f))
- f-abs (\ (n) (if (f< n (int->float 0)) (f- (int->float 0) n) n))
- f0 (int->float 0)
- f1 (int->float 1)
- f2 (int->float 2)
- f3 (int->float 3)
- f4 (int->float 4)
- f5 (int->float 5)
- f10 (int->float 10)
- f13 (int->float 13)
- f20 (int->float 20)
- f100 (int->float 100)
- f255 (int->float 255)
- f100000 (int->float 100000)
+ f-abs (\ (n) (if (f< n 0.) (f- 0. n) n))
 
  array-length (\ (array) (@array-length array))
  array-get (\ (array index) (@array-get array index))
@@ -426,10 +414,10 @@
      (| all ([]
       (| fill-path (&
        path ([]
-        (| move-to (& x f0 y f0))
-        (| line-to (& x width y f0))
+        (| move-to (& x 0. y 0.))
+        (| line-to (& x width y 0.))
         (| line-to (& x width y height))
-        (| line-to (& x f0 y height)))
+        (| line-to (& x 0. y height)))
        color color))
       (.draw child)))
     width width
@@ -441,8 +429,8 @@
   (if (= (@kind padding) (| float))
    (&
     draw (| translate (& by (& x padding y padding) what (.draw child)))
-    width (f+ (.width child) (f* f2 padding))
-    height (f+ (.height child) (f* f2 padding)))
+    width (f+ (.width child) (f* 2. padding))
+    height (f+ (.height child) (f* 2. padding)))
    (&
     draw
      (| translate (&
@@ -453,16 +441,16 @@
 
  padded-row (\ (padding children)
   (:
-   res (rec-2 (array->list children) f0 (\ (rec children x)
+   res (rec-2 (array->list children) 0. (\ (rec children x)
     (% children
-     empty (& draw (| empty) width f0 height f0)
+     empty (& draw (| empty) width 0. height 0.)
      (more m) (:
       child (.item m)
       rest (rec (.rest m) (f+ x (.width child)))
       (&
        draw
         (| more (&
-         item (| translate (& by (& x x y f0) what (.draw child)))
+         item (| translate (& by (& x x y 0.) what (.draw child)))
          rest (.draw rest)))
        width (f+ (.width child) (f+ padding (.width rest)))
        height (f-max (.height child) (.height rest)))))))
@@ -470,20 +458,20 @@
     draw (| all (list->array (.draw res)))
     width (f- (.width res) padding)
     height (.height res))))
- row (\ (children) (padded-row f0 children))
+ row (\ (children) (padded-row 0. children))
 
  column (\ (children)
   (:
-   res (rec-2 (array->list children) f0 (\ (rec children y)
+   res (rec-2 (array->list children) 0. (\ (rec children y)
     (% children
-     empty (& list (| empty) width f0 height f0)
+     empty (& list (| empty) width 0. height 0.)
      (more m) (:
       child (.item m)
       rest (rec (.rest m) (f+ y (.height child)))
       (&
        list
         (| more (&
-         item (| translate (& by (& x f0 y y) what (.draw child)))
+         item (| translate (& by (& x 0. y y) what (.draw child)))
          rest (.list rest)))
        width (f-max (.width child) (.width rest))
        height (f+ (.height child) (.height rest)))))))
@@ -532,7 +520,7 @@
        rest (rec (+ x 1) y)))
       (rec (+ x 1) y)))))
    (& char char width (int->float width) paths paths)))
- line-height f13
+ line-height 13.
  default-glyph
   (pixel-glyph "?" 5 "M M M| M M|M M M| M M|M M M| M M|M M M| M M|M M M| M M|")
  glyphs ([]
@@ -678,9 +666,9 @@
        (crash (| bad-glyph (& char char glyph glyph))))
      glyph)
     (find-glyph find-glyph char 0))))
- find-kerning (\ (a b) f1)
+ find-kerning (\ (a b) 1.)
  layout-text (\ (text max-width)
-  (rec-3 (string->chars-list text) f0 f0 (\ (rec chars x y)
+  (rec-3 (string->chars-list text) 0. 0. (\ (rec chars x y)
    (% chars
     empty (| empty)
     (more m) (:
@@ -689,17 +677,17 @@
      glyph (find-glyph char)
      (if (= char "\n")
       (:
-       next-x f0
+       next-x 0.
        next-y (f+ y line-height)
        (| more (&
         item (& x x y y char char glyph glyph cursor-x next-x cursor-y next-y)
         rest (rec rest next-x next-y))))
       (:
        width (.width glyph)
-       kerning (% rest empty f0 (more next) (find-kerning char (.item next)))
+       kerning (% rest empty 0. (more next) (find-kerning char (.item next)))
        next-x (f+ x (f+ width kerning))
        next-y y
-       next-cursor-x (f+ x (f- width (f/ kerning f2)))
+       next-cursor-x (f+ x (f- width (f/ kerning 2.)))
        (| more (&
         item (& x x y y char char glyph glyph cursor-x next-cursor-x cursor-y y)
         rest (rec rest next-x next-y))))))))))
@@ -711,7 +699,7 @@
      (\ (path) (| fill-path (& path path color color)))))))
  text (\ (string color)
   (:
-   layouted (layout-text string f100000)
+   layouted (layout-text string 100000.)
    draw
     (| all
      (list->array
@@ -773,7 +761,7 @@
    - the active position (where the part controlled by the arrow keys is)
    - the desired x position"
 
- new-cursor (& anchor 0 active 0 desired-x f0)
+ new-cursor (& anchor 0 active 0 desired-x 0.)
  cursor-start (\ (cursor) (min (.anchor cursor) (.active cursor)))
  cursor-end (\ (cursor) (max (.anchor cursor) (.active cursor)))
  cursor-has-selection? (\ (cursor) (!= (.anchor cursor) (.active cursor)))
@@ -781,7 +769,7 @@
   (& start (cursor-start cursor) end (cursor-end cursor)))
 
  text-x-offset (\ (string width offset)
-  (if (= offset 0) f0 (.x (list-get (layout-text string width) (- offset 1)))))
+  (if (= offset 0) 0. (.x (list-get (layout-text string width) (- offset 1)))))
  list-indexed (\ (list)
   (rec-2 list 0 (\ (rec list i)
    (% list
@@ -1222,7 +1210,7 @@
     end (cursor-end cursor)
     start-position
      (if (= start 0)
-      (& x f0 y f0)
+      (& x 0. y 0.)
       (: layout (list-get layouted-text (- start 1))
        (point (.x layout) (.y layout))))
     end-position
@@ -1247,20 +1235,20 @@
        (| line-to (point width end-y))
        (| line-to end-position)
        (| line-to (point end-x (f+ end-y line-height)))
-       (| line-to (point f0 (f+ end-y line-height)))
-       (| line-to (point f0 (f+ start-y line-height)))
+       (| line-to (point 0. (f+ end-y line-height)))
+       (| line-to (point 0. (f+ start-y line-height)))
        (| line-to (point start-x (f+ start-y line-height))))
       color cursor-color))))
    (:
     offset (.anchor cursor)
-    position (if (= offset 0) (& x f0 y f0) (list-get layouted-text (- offset 1)))
+    position (if (= offset 0) (& x 0. y 0.) (list-get layouted-text (- offset 1)))
     x (.x position)
     y (.y position)
     (| fill-path (&
      path ([]
       (| move-to (point x y))
-      (| line-to (point (f+ x f2) y))
-      (| line-to (point (f+ x f2) (f+ y line-height)))
+      (| line-to (point (f+ x 2.) y))
+      (| line-to (point (f+ x 2.) (f+ y line-height)))
       (| line-to (point x (f+ y line-height))))
      color cursor-color)))))
 
@@ -1270,9 +1258,9 @@
   (if enabled
    (row ([]
     (text "(" color)
-    (empty-box f1 f0)
+    (empty-box 1. 0.)
     child
-    (empty-box f1 f0)
+    (empty-box 1. 0.)
     (text ")" color)))
    child))
 
@@ -1460,32 +1448,32 @@
   (maybe-render-parenthesized (not space-allowed) enum-color
    (row ([]
     (text "|" enum-color)
-    (empty-box f5 f0)
+    (empty-box 5. 0.)
     (maybe-render-cursor (% (.focus state) at-variant true _ false)
      (text (.variant state) enum-color))
     (% (.payload state)
      (some payload)
       (row ([]
-       (empty-box f5 f0)
+       (empty-box 5. 0.)
        (maybe-render-cursor (% (.focus state) at-payload true _ false)
         (code-render-singleline payload false))))
-     none (empty-box f0 f0))))))
+     none (empty-box 0. 0.))))))
  enum-render (\ (code-render state width)
   (% (.payload state)
    none
     (row ([]
-     (sized-box f10 f10 (text "|" enum-color))
+     (sized-box 10. 10. (text "|" enum-color))
      (maybe-render-cursor (% (.focus state) at-variant true _ false)
       (text (.variant state) enum-color))))
    (some payload)
     (row ([]
-     (sized-box f10 f10 (text "|" enum-color))
+     (sized-box 10. 10. (text "|" enum-color))
      (column ([]
       (maybe-render-cursor (% (.focus state) at-variant true _ false)
        (text (.variant state) enum-color))
-      (empty-box f0 f2)
+      (empty-box 0. 2.)
       (maybe-render-cursor (% (.focus state) at-payload true _ false)
-       (code-render payload (f- width f10)))))))))
+       (code-render payload (f- width 10.)))))))))
 
  new-struct (\ (fields) (| struct (& fields fields focus (| outside))))
  struct-focus (\ (state)
@@ -1625,29 +1613,29 @@
     (row
      (array-map-indexed (.fields state) (\ (index field)
       (row ([]
-       (empty-box f5 f0)
+       (empty-box 5. 0.)
        (maybe-render-cursor (% (.focus state) (at-name i) (= i index) _ false)
         (text (.name field) struct-color))
-       (empty-box f5 f0)
+       (empty-box 5. 0.)
        (maybe-render-cursor (% (.focus state) (at-value i) (= i index) _ false)
         (code-render-singleline (.value field) false)))))))))))
  struct-render (\ (code-render code-render-singleline state width)
   (row ([]
-   (sized-box f10 f10 (text "&" struct-color))
+   (sized-box 10. 10. (text "&" struct-color))
    (column
     (array-map (.fields state) (\ (field) (:
      name (text (.name field) struct-color)
      singleline
       (row ([]
        name
-       (empty-box f5 f0)
+       (empty-box 5. 0.)
        (code-render-singleline (.value field) false)))
-     (if (f<= (.width singleline) (f- width f10))
+     (if (f<= (.width singleline) (f- width 10.))
       singleline
       (column ([]
        name
-       (empty-box f0 f2)
-       (code-render (.value field) (f- width f20))))))))))))
+       (empty-box 0. 2.)
+       (code-render (.value field) (f- width 20.))))))))))))
 
  new-array (\ (items) (| array (& items items focus (| outside))))
  array-focus (\ (state)
@@ -1754,20 +1742,20 @@
     (row
      (array-map-indexed (.items state) (\ (index item)
       (row ([]
-       (empty-box f5 f0)
+       (empty-box 5. 0.)
        (maybe-render-cursor (% (.focus state) (at i) (= i index) _ false)
         (code-render-singleline item false)))))))))))
  array-render (\ (code-render state width)
   (row ([]
-   (sized-box f10 f10 (text "[]" array-color))
+   (sized-box 10. 10. (text "[]" array-color))
    (rec-2 (array->list (.items state)) 0 (\ (rec items index)
     (% items
-     empty (empty-box f0 f0)
+     empty (empty-box 0. 0.)
      (more m)
       (column ([]
        (maybe-render-cursor (% (.focus state) (at i) (= i index) _ false)
-        (code-render (.item m) (f- width f10)))
-       (empty-box f0 (% (.rest m) empty f0 more f2))
+        (code-render (.item m) (f- width 10.)))
+       (empty-box 0. (% (.rest m) empty 0. more 2.))
        (rec (.rest m) (+ index 1))))))))))
 
  new-folded (\ (value) (| folded value))
@@ -1854,7 +1842,7 @@
      (new-name "g"))))))
 
  render (\ (code size)
-  (.draw (padding f2 (code-render code (f- (.width size) f4)))))
+  (.draw (padding 2. (code-render code (f- (.width size) 4.)))))
  handle (\ (code event)
   (% (code-handle code event) no-change code (update code) code))
  make-app (\ (state)
@@ -1872,7 +1860,7 @@
 
  render (\ (state size)
   (.draw
-   (padding f2
+   (padding 2.
     (% (.focus state)
      (at index)
       (column
@@ -1883,7 +1871,7 @@
       note (array-get (.notes state) (.index info))
       (column ([]
        (text (.title note) red)
-       (empty-box f0 f5)
+       (empty-box 0. 5.)
        (text (.content note) black))))))))
  handle (\ (state event)
   (:
