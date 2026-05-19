@@ -205,11 +205,15 @@ pub fn main(init: std.process.Init) !void {
         if (there_are_events) {
             for (gfx.event_queue.items) |event| {
                 const pear_event = switch (event) {
-                    .entered_char => |char| try Value.new_enum(
-                        &heap,
-                        "char",
-                        try Value.new_int(&heap, @intCast(char.codepoint)),
-                    ),
+                    .entered_char => |char| blk: {
+                        var buf: [4]u8 = undefined;
+                        const len = std.unicode.utf8Encode(@intCast(char.codepoint), &buf) catch break :blk try Value.new_enum(&heap, "char", try Value.new_string(&heap, "?"));
+                        break :blk try Value.new_enum(
+                            &heap,
+                            "char",
+                            try Value.new_string(&heap, buf[0..len]),
+                        );
+                    },
                     .pressed_key => |key| try Value.new_enum(
                         &heap,
                         "pressed-key",

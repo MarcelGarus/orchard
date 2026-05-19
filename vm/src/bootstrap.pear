@@ -199,6 +199,8 @@
        (rec
         (& list (.rest m) n (- n 1))
         (| more (& item (.item m) rest reversed)))))))))
+ list-max (\ (list) (list-reduce list (\ (a b) (max a b))))
+
  string->bytes (\ (string) (@string->bytes string))
  bytes->string (\ (bytes) (@bytes->string bytes))
  string-length (\ (string) (@array-length (string->bytes string)))
@@ -682,12 +684,24 @@
        (| translate (&
         by (& x (.x glyph) y (.y glyph))
         what (draw-glyph (.glyph glyph) color)))))))
-   (colored yellow (& draw draw width 10 height 13))))
+   (&
+    draw draw
+    width
+     (list-max
+      (list-map layouted (\ (glyph) (+ (.x glyph) (.width (.glyph glyph))))))
+    height
+     (list-max (list-map layouted (\ (glyph) (+ (.y glyph) line-height)))))))
 
  no-modifiers? (\ (key)
   (and-3 (not (.control key)) (not (.shift key)) (not (.alt key))))
- only-alt-modifier? (\ (key)
+ ctrl-modifier? (\ (key)
+  (and-3 (.control key) (not (.shift key)) (not (.alt key))))
+ alt-modifier? (\ (key)
   (and-3 (not (.control key)) (not (.shift key)) (.alt key)))
+ shift-modifier? (\ (key)
+  (and-3 (not (.control key)) (.shift key) (not (.alt key))))
+ ctrl-shift-modifiers? (\ (key)
+  (and-3 (.control key) (.shift key) (not (.alt key))))
  key-escape? (\ (key) (and (= (.keycode key) 256) (no-modifiers? key)))
  key-enter? (\ (key) (and (= (.keycode key) 257) (no-modifiers? key)))
  key-backspace? (\ (key) (and (= (.keycode key) 259) (no-modifiers? key)))
@@ -696,30 +710,26 @@
  key-left? (\ (key) (and (= (.keycode key) 263) (no-modifiers? key)))
  key-down? (\ (key) (and (= (.keycode key) 264) (no-modifiers? key)))
  key-up? (\ (key) (and (= (.keycode key) 265) (no-modifiers? key)))
- key-alt-right? (\ (key) (and (= (.keycode key) 262) (only-alt-modifier? key)))
- key-alt-left? (\ (key) (and (= (.keycode key) 263) (only-alt-modifier? key)))
- only-ctrl-modifier? (\ (key)
-  (and-3 (.control key) (not (.shift key)) (not (.alt key))))
- only-shift-modifier? (\ (key)
-  (and-3 (not (.control key)) (.shift key) (not (.alt key))))
- ctrl-shift-modifier? (\ (key)
-  (and-3 (.control key) (.shift key) (not (.alt key))))
- key-ctrl-enter? (\ (key) (and (= (.keycode key) 257) (only-ctrl-modifier? key)))
- key-ctrl-backspace? (\ (key) (and (= (.keycode key) 259) (only-ctrl-modifier? key)))
- key-shift-right? (\ (key) (and (= (.keycode key) 262) (only-shift-modifier? key)))
- key-ctrl-right? (\ (key) (and (= (.keycode key) 262) (only-ctrl-modifier? key)))
- key-ctrl-shift-right? (\ (key) (and (= (.keycode key) 262) (ctrl-shift-modifier? key)))
- key-shift-left? (\ (key) (and (= (.keycode key) 263) (only-shift-modifier? key)))
- key-ctrl-left? (\ (key) (and (= (.keycode key) 263) (only-ctrl-modifier? key)))
- key-ctrl-shift-left? (\ (key) (and (= (.keycode key) 263) (ctrl-shift-modifier? key)))
- key-shift-down? (\ (key) (and (= (.keycode key) 264) (only-shift-modifier? key)))
- key-shift-up? (\ (key) (and (= (.keycode key) 265) (only-shift-modifier? key)))
- key-alt-down? (\ (key) (and (= (.keycode key) 264) (only-alt-modifier? key)))
- key-alt-up? (\ (key) (and (= (.keycode key) 265) (only-alt-modifier? key)))
  key-start? (\ (key) (and (= (.keycode key) 268) (no-modifiers? key)))
- key-shift-start? (\ (key) (and (= (.keycode key) 268) (only-shift-modifier? key)))
  key-end? (\ (key) (and (= (.keycode key) 269) (no-modifiers? key)))
- key-shift-end? (\ (key) (and (= (.keycode key) 269) (only-shift-modifier? key)))
+ key-ctrl-enter? (\ (key) (and (= (.keycode key) 257) (ctrl-modifier? key)))
+ key-ctrl-backspace? (\ (key) (and (= (.keycode key) 259) (ctrl-modifier? key)))
+ key-ctrl-right? (\ (key) (and (= (.keycode key) 262) (ctrl-modifier? key)))
+ key-ctrl-left? (\ (key) (and (= (.keycode key) 263) (ctrl-modifier? key)))
+ key-alt-right? (\ (key) (and (= (.keycode key) 262) (alt-modifier? key)))
+ key-alt-left? (\ (key) (and (= (.keycode key) 263) (alt-modifier? key)))
+ key-alt-down? (\ (key) (and (= (.keycode key) 264) (alt-modifier? key)))
+ key-alt-up? (\ (key) (and (= (.keycode key) 265) (alt-modifier? key)))
+ key-shift-right? (\ (key) (and (= (.keycode key) 262) (shift-modifier? key)))
+ key-shift-left? (\ (key) (and (= (.keycode key) 263) (shift-modifier? key)))
+ key-shift-down? (\ (key) (and (= (.keycode key) 264) (shift-modifier? key)))
+ key-shift-up? (\ (key) (and (= (.keycode key) 265) (shift-modifier? key)))
+ key-shift-start? (\ (key) (and (= (.keycode key) 268) (shift-modifier? key)))
+ key-shift-end? (\ (key) (and (= (.keycode key) 269) (shift-modifier? key)))
+ key-ctrl-shift-right? (\ (key)
+  (and (= (.keycode key) 262) (ctrl-shift-modifiers? key)))
+ key-ctrl-shift-left? (\ (key)
+  (and (= (.keycode key) 263) (ctrl-shift-modifiers? key)))
 
  # "Text editing
 
@@ -737,34 +747,47 @@
 
  text-x-offset (\ (string width offset)
   (if (= offset 0) 0 (.x (list-get (layout-text string width) (- offset 1)))))
+ list-indexed (\ (list)
+  (rec-2 list 0 (\ (rec list i)
+   (% list
+    empty (| empty)
+    (more m)
+     (| more (&
+      item (& index i glyph (.item m))
+      rest (rec (.rest m) (+ i 1))))))))
+ pick-closer (\ (x a b)
+  (:
+   ga (.glyph a)
+   gb (.glyph b)
+   dist-a (abs (- (.x ga) x))
+   dist-b (abs (- (.x gb) x))
+   (if (< dist-a dist-b) a b)))
  find-offset-above (\ (x y glyphs)
   (:
-   glyphs-before (list-take-while (\ (glyph) (< (.y glyph) y)))
-   (% glyphs-before
+   indexed (list-indexed glyphs)
+   before (list-take-while indexed (\ (ig) (< (.y (.glyph ig)) y)))
+   (% before
     empty (| none)
     more
      (| some
-      (list-reduce glyphs-before (\ (a b)
-       (if (< (.y a) (.y b))
-        b
-        (:
-         dist-a (abs (- (.x a) x))
-         dist-b (abs (- (.x b) x))
-         (if (< dist-a dist-b) a b)))))))))
+      (.index
+       (list-reduce before (\ (a b)
+        (if (< (.y (.glyph a)) (.y (.glyph b)))
+         b
+         (pick-closer x a b)))))))))
  find-offset-below (\ (x y glyphs)
   (:
-   glyphs-after (list-skip-while (\ (glyph) (<= (.y glyph) y)))
-   (% glyphs-after
+   indexed (list-indexed glyphs)
+   after (list-skip-while indexed (\ (ig) (<= (.y (.glyph ig)) y)))
+   (% after
     empty (| none)
     more
      (| some
-      (list-reduce glyphs-after (\ (a b)
-       (if (< (.y a) (.y b))
-        a
-        (:
-         dist-a (abs (- (.x a) x))
-         dist-b (abs (- (.x b) x))
-         (if (< dist-a dist-b) a b)))))))))
+      (.index
+       (list-reduce after (\ (a b)
+        (if (< (.y (.glyph a)) (.y (.glyph b)))
+         a
+         (pick-closer x a b)))))))))
  find-line-start (\ (chars offset)
   (rec offset (\ (rec candidate)
    (cond
@@ -831,7 +854,7 @@
    (num-leading-skip-chars
     (list-take-and-reverse (array->list (string->bytes string)) offset))))
 
- handle-text-edit (\ (string width cursor event)
+ handle-text-edit-with-cursor (\ (string width cursor event)
   (% event
    (pressed-key key)
     (cond
@@ -863,7 +886,7 @@
           anchor offset
           active offset
           desired-x (text-x-offset string width offset))))
-       (: offset (.offset cursor)
+       (: offset (.active cursor)
         (if (= offset 0)
          (& string string cursor cursor)
          (&
@@ -882,7 +905,7 @@
           active offset
           desired-x (text-x-offset string width offset))))
        (:
-        offset (.offset cursor)
+        offset (.active cursor)
         new-offset (find-word-boundary-before string offset)
         (&
          string (string-remove-range string new-offset offset)
@@ -1126,10 +1149,12 @@
         desired-x (text-x-offset string width line-end))))
      else (& string string cursor cursor))
    (char char)
+    (:
+     c (ascii-char char)
     (if
      (or
-      (= char "\n")
-      (and (>= (ascii-char char) 32) (<= (ascii-char char) 126)))
+      (= c 10)
+      (and (>= c 32) (<= c 126)))
      (:
       new-string (string-replace-range string (cursor-selection cursor) char)
       new-offset (+ (cursor-start cursor) 1)
@@ -1139,7 +1164,7 @@
         anchor new-offset
         active new-offset
         desired-x (text-x-offset new-string width new-offset))))
-     (& string string cursor cursor))))
+     (& string string cursor cursor)))))
 
  handle-text-edit (\ (string event)
   (% event
@@ -1151,9 +1176,59 @@
        string)
      (key-enter? key) (string-concat string "\n")
      else string)
-   (char char) (string-concat string (bytes->string ([] char)))))
+   (char char) (string-concat string char)))
 
  cursor-color yellow
+
+ draw-cursor (\ (cursor width layouted-text)
+  (if (cursor-has-selection? cursor)
+   (:
+    start (cursor-start cursor)
+    end (cursor-end cursor)
+    start-position
+     (if (= start 0)
+      (point 0 0)
+      (: layout (list-get layouted-text (- start 1))
+       (point (.x layout) (.y layout))))
+    end-position
+     (: layout (list-get layouted-text (- end 1))
+      (point (.x layout) (.y layout)))
+    start-x (.x start-position)
+    start-y (.y start-position)
+    end-x (.x end-position)
+    end-y (.y end-position)
+    (if (= start-y end-y)
+     (| fill-path (&
+      path ([]
+       (| move-to start-position)
+       (| line-to (point (.x end-position) start-y))
+       (| line-to (point (.x end-position) (+ start-y line-height)))
+       (| line-to (point (.x start-position) (+ start-y line-height))))
+      color cursor-color))
+     (| fill-path (&
+      path ([]
+       (| move-to start-position)
+       (| line-to (point width start-y))
+       (| line-to (point width end-y))
+       (| line-to end-position)
+       (| line-to (point end-x (+ end-y line-height)))
+       (| line-to (point 0 (+ end-y line-height)))
+       (| line-to (point 0 (+ start-y line-height)))
+       (| line-to (point start-x (+ start-y line-height))))
+      color cursor-color))))
+   (:
+    offset (.anchor cursor)
+    position (if (= offset 0) (point 0 0) (list-get layouted-text (- offset 1)))
+    x (.x position)
+    y (.y position)
+    (| fill-path (&
+     path ([]
+      (| move-to (point x y))
+      (| line-to (point (+ x 2) y))
+      (| line-to (point (+ x 2) (+ y line-height)))
+      (| line-to (point x (+ y line-height))))
+     color cursor-color)))))
+
  maybe-render-cursor (\ (enabled node)
   (if enabled (colored cursor-color node) node))
  maybe-render-parenthesized (\ (enabled color child)
@@ -1191,18 +1266,19 @@
    (code-render (.child state) width)))
 
  new-code-node-from-char (\ (char)
-  (cond
-   (or
-    (and (>= char (ascii-char "a")) (<= char (ascii-char "z")))
-    (and (>= char (ascii-char "A")) (<= char (ascii-char "Z"))))
-    (| some (| name (& name (bytes->string ([] char)) focus (| inside))))
-   (and (>= char (ascii-char "0")) (<= char (ascii-char "9")))
-    (| some (| int (& int (- char (ascii-char "0")) focus (| inside))))
-   (= char (ascii-char "|"))
-    (| some (| enum (& variant "" payload (| none) focus (| in-variant))))
-   (= char (ascii-char "["))
-    (| some (| array (& items ([]) focus (| at-start))))
-   else (| none)))
+  (:
+   c (ascii-char char)
+   (cond
+    (or
+     (and (>= c (ascii-char "a")) (<= c (ascii-char "z")))
+     (and (>= c (ascii-char "A")) (<= c (ascii-char "Z"))))
+     (| some (| name (& name char focus (| inside))))
+    (and (>= c (ascii-char "0")) (<= c (ascii-char "9")))
+     (| some (| int (& int (- c (ascii-char "0")) focus (| inside))))
+    (= char "|")
+     (| some (| enum (& variant "" payload (| none) focus (| in-variant))))
+    (= char "[") (| some (| array (& items ([]) focus (| at-start))))
+    else (| none))))
 
  new-int (\ (int) (| int (& int int focus (| outside))))
  int-focus (\ (state) (| int (& int (.int state) focus (| inside))))
@@ -1218,16 +1294,14 @@
        (key-backspace? key)
         (| update (| int (& int (/ int 10) focus (| inside))))
        else (| no-change))
-     (char char)
+     (char char) (:
+      c (ascii-char char)
       (cond
-       (= char (ascii-char " "))
-        (| yield-focus (| int (& int int focus (| outside))))
-       (and (>= char (ascii-char "0")) (<= char (ascii-char "9")))
+       (= char " ") (| yield-focus (| int (& int int focus (| outside))))
+       (and (>= c (ascii-char "0")) (<= c (ascii-char "9")))
         (| update
-         (| int (&
-          int (+ (* int 10) (- char (ascii-char "0")))
-          focus (| inside))))
-       else (| no-change))))))
+         (| int (& int (+ (* int 10) (- c (ascii-char "0"))) focus (| inside))))
+       else (| no-change)))))))
  int-render-singleline (\ (state)
   (text
    (int->string (.int state))
@@ -1249,7 +1323,7 @@
         (| update
          (| name (& name (handle-text-edit name event) focus (| inside)))))
      (char char)
-      (if (= char (ascii-char " "))
+      (if (= char " ")
        (| yield-focus (| name (& name name focus (| outside))))
        (| update
         (| name (& name (handle-text-edit name event) focus (| inside)))))))))
@@ -1770,8 +1844,8 @@
        (array-map-indexed
         (.notes state)
         (\ (i note) (text (.title note) (if (= i index) red black)))))
-     (in index) (:
-      note (array-get (.notes state) index)
+     (in info) (:
+      note (array-get (.notes state) (.index info))
       (column ([]
        (text (.title note) red)
        (empty-box 0 5)
@@ -1792,26 +1866,32 @@
           notes notes)
         (key-up? key)
          (& focus (| at (if (= index 0) index (- index 1))) notes notes)
-        (key-enter? key) (& focus (| in index) notes notes)
+        (key-enter? key)
+         (& focus (| in (& index index cursor new-cursor)) notes notes)
         else state)
       char state)
-    (in index)
+    (in info) (:
+     index (.index info)
+     cursor (.cursor info)
+     note (array-get notes index)
+     width 1000
      (% event
       (pressed-key key)
        (if (key-escape? key)
         (& focus (| at index) notes notes)
         (:
-         note (array-get notes index)
-         new-note (&
-          title (.title note)
-          content (handle-text-edit (.content note) event))
-         (& focus focus notes (array-update notes index new-note))))
-      char (:
-       note (array-get notes index)
-       new-note (&
-        title (.title note)
-        content (handle-text-edit (.content note) event))
-       (& focus focus notes (array-update notes index new-note)))))))
+         result
+          (handle-text-edit-with-cursor (.content note) width cursor event)
+         new-note (& title (.title note) content (.string result))
+         (&
+          focus (| in (& index index cursor (.cursor result)))
+          notes (array-update notes index new-note))))
+      (char c) (:
+       result (handle-text-edit-with-cursor (.content note) width cursor event)
+       new-note (& title (.title note) content (.string result))
+       (&
+        focus (| in (& index index cursor (.cursor result)))
+        notes (array-update notes index new-note))))))))
  make-app (\ (state)
   (rec state (\ (rec state)
    (&
