@@ -50,6 +50,14 @@ pub const Expr = struct {
         or_: LeftRight,
         xor: LeftRight,
         compare: LeftRight,
+        f_add: LeftRight,
+        f_subtract: LeftRight,
+        f_multiply: LeftRight,
+        f_divide: LeftRight,
+        f_compare: LeftRight,
+        int_to_float: Expr,
+        float_to_int: Expr,
+        f_is_finite: Expr,
         if_: If,
         new_leaf: []const Expr,
         new_inner: []const Expr,
@@ -176,6 +184,43 @@ pub const Expr = struct {
                 try writer.print("compare\n", .{});
                 try args.left.format_indented(writer, indentation + 1);
                 try args.right.format_indented(writer, indentation + 1);
+            },
+            .f_add => |args| {
+                try writer.print("f-add\n", .{});
+                try args.left.format_indented(writer, indentation + 1);
+                try args.right.format_indented(writer, indentation + 1);
+            },
+            .f_subtract => |args| {
+                try writer.print("f-subtract\n", .{});
+                try args.left.format_indented(writer, indentation + 1);
+                try args.right.format_indented(writer, indentation + 1);
+            },
+            .f_multiply => |args| {
+                try writer.print("f-multiply\n", .{});
+                try args.left.format_indented(writer, indentation + 1);
+                try args.right.format_indented(writer, indentation + 1);
+            },
+            .f_divide => |args| {
+                try writer.print("f-divide\n", .{});
+                try args.left.format_indented(writer, indentation + 1);
+                try args.right.format_indented(writer, indentation + 1);
+            },
+            .f_compare => |args| {
+                try writer.print("f-compare\n", .{});
+                try args.left.format_indented(writer, indentation + 1);
+                try args.right.format_indented(writer, indentation + 1);
+            },
+            .int_to_float => |arg| {
+                try writer.print("int-to-float\n", .{});
+                try arg.format_indented(writer, indentation + 1);
+            },
+            .float_to_int => |arg| {
+                try writer.print("float-to-int\n", .{});
+                try arg.format_indented(writer, indentation + 1);
+            },
+            .f_is_finite => |arg| {
+                try writer.print("f-is-finite\n", .{});
+                try arg.format_indented(writer, indentation + 1);
             },
             .if_ => |if_| {
                 try writer.print("if\n", .{});

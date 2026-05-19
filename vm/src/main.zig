@@ -262,8 +262,8 @@ pub fn main(init: std.process.Init) !void {
 
             const instructions = try app.get_field("render").call(&vm, &[_]Value{
                 try Value.new_struct(&heap, .{
-                    .width = try Value.new_int(&heap, size.width),
-                    .height = try Value.new_int(&heap, size.height),
+                    .width = try Value.new_float(&heap, size.width),
+                    .height = try Value.new_float(&heap, size.height),
                 }),
             });
             // std.debug.print("Rendered: {f}\n", .{instructions});

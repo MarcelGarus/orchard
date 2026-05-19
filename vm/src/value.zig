@@ -19,11 +19,12 @@ pub fn from(obj: Obj) Value {
 //     return b.finish();
 // }
 
-pub const Kind = union(enum) { int, string, struct_, enum_, array, function };
+pub const Kind = union(enum) { int, float, string, struct_, enum_, array, function };
 pub fn kind(self: Value) Kind {
     const obj = self.obj;
     const kind_str = Heap.get_symbol(obj.child(0).child(0));
     if (std.mem.eql(u8, kind_str, "int")) return .int;
+    if (std.mem.eql(u8, kind_str, "float")) return .float;
     if (std.mem.eql(u8, kind_str, "string")) return .string;
     if (std.mem.eql(u8, kind_str, "struct")) return .struct_;
     if (std.mem.eql(u8, kind_str, "enum")) return .enum_;
@@ -45,6 +46,21 @@ pub fn new_int(heap: *Heap, value: i64) !Value {
 
 pub fn get_int(self: Value) i64 {
     std.debug.assert(self.kind() == .int);
+    return @bitCast(self.obj.child(1).word(0));
+}
+
+// Float stuff.
+
+pub fn new_float(heap: *Heap, value: f64) !Value {
+    const float_symbol = try heap.new_symbol("float");
+    const type_ = try heap.new_inner(&.{float_symbol});
+    const literal_obj = try heap.new_leaf(&.{@bitCast(value)});
+    const float_obj = try heap.new_inner(&.{ type_, literal_obj });
+    return .{ .obj = float_obj };
+}
+
+pub fn get_float(self: Value) f64 {
+    std.debug.assert(self.kind() == .float);
     return @bitCast(self.obj.child(1).word(0));
 }
 
@@ -173,6 +189,7 @@ pub fn format_singleline(self: Value, writer: *std.Io.Writer) error{WriteFailed}
     const ty = self.obj.child(0);
     switch (self.kind()) {
         .int => try writer.print("{d}", .{self.get_int()}),
+        .float => try writer.print("{d}", .{self.get_float()}),
         .string => {
             try writer.print("\"", .{});
             for (self.get_string()) |byte| {
@@ -381,6 +398,7 @@ pub fn format_indented(self: Value, writer: *std.Io.Writer, indentation: usize) 
     const ty = self.obj.child(0);
     switch (self.kind()) {
         .int => try writer.print("{d}", .{self.get_int()}),
+        .float => try writer.print("{d}", .{self.get_float()}),
         .string => {
             try writer.print("\"", .{});
             for (self.get_string()) |byte| {

@@ -74,6 +74,14 @@ pub const Instruction = union(enum) {
     or_, // a b -> (a | b). Bitwise or.
     xor, // a b -> (a ^ b). Bitwise xor.
     compare, // Pops two words. Stack before: a b. If a == b, pushes 1. If a > b, pushes 1. If a < b, pushes 2.
+    f_add, // a b -> (a+b), interpreted as f64.
+    f_subtract, // a b -> (a-b), interpreted as f64.
+    f_multiply, // a b -> (a*b), interpreted as f64.
+    f_divide, // a b -> (a/b), interpreted as f64.
+    f_compare, // Pops two f64s. Bit-equal -> 1, a>b -> 2, a<b -> 4, otherwise (NaN) -> 1.
+    int_to_float, // Pops i64, pushes f64 with the same numeric value.
+    float_to_int, // Pops f64, pushes i64 via truncation toward zero.
+    f_is_finite, // Pops f64, pushes 1 if finite (not NaN, not +/-Inf), else 0.
     jump_if: usize, // Pops a word. If not 0, jumps to the instruction at the index.
     jump: usize,
     new_leaf: usize, // Creates a new heap object with the given number of words.
@@ -183,7 +191,7 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
             _ = stack.pop();
             try stack.append(ally, "");
         },
-        .add, .subtract, .multiply, .divide, .modulo, .shift_left, .shift_right, .and_, .or_, .xor, .compare => |args| {
+        .add, .subtract, .multiply, .divide, .modulo, .shift_left, .shift_right, .and_, .or_, .xor, .compare, .f_add, .f_subtract, .f_multiply, .f_divide, .f_compare => |args| {
             try compile_expr(ally, root, args.left, stack, instrs);
             try compile_expr(ally, root, args.right, stack, instrs);
             try instrs.append(ally, switch (try expr.kind()) {
@@ -198,6 +206,11 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
                 .or_ => .or_,
                 .xor => .xor,
                 .compare => .compare,
+                .f_add => .f_add,
+                .f_subtract => .f_subtract,
+                .f_multiply => .f_multiply,
+                .f_divide => .f_divide,
+                .f_compare => .f_compare,
                 else => unreachable,
             });
             _ = stack.pop();
@@ -237,7 +250,7 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
             for (args) |_| _ = stack.pop();
             try stack.append(ally, "");
         },
-        .flatten_to_leaf, .flatten_to_inner, .points, .size, .crash => |inner| {
+        .flatten_to_leaf, .flatten_to_inner, .points, .size, .crash, .int_to_float, .float_to_int, .f_is_finite => |inner| {
             try compile_expr(ally, root, inner, stack, instrs);
             try instrs.append(ally, switch (try expr.kind()) {
                 .flatten_to_leaf => .flatten_to_leaf,
@@ -245,6 +258,9 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
                 .points => .points,
                 .size => .size,
                 .crash => .crash,
+                .int_to_float => .int_to_float,
+                .float_to_int => .float_to_int,
+                .f_is_finite => .f_is_finite,
                 else => unreachable,
             });
             _ = stack.pop();
@@ -358,6 +374,50 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
                 const a: i64 = @bitCast(vm.data_stack.pop());
                 const result: Word = if (a == b) 1 else if (a > b) 2 else 4;
                 try vm.data_stack.push(result);
+            },
+            .f_add => {
+                const b: f64 = @bitCast(vm.data_stack.pop());
+                const a: f64 = @bitCast(vm.data_stack.pop());
+                try vm.data_stack.push(@bitCast(a + b));
+            },
+            .f_subtract => {
+                const b: f64 = @bitCast(vm.data_stack.pop());
+                const a: f64 = @bitCast(vm.data_stack.pop());
+                try vm.data_stack.push(@bitCast(a - b));
+            },
+            .f_multiply => {
+                const b: f64 = @bitCast(vm.data_stack.pop());
+                const a: f64 = @bitCast(vm.data_stack.pop());
+                try vm.data_stack.push(@bitCast(a * b));
+            },
+            .f_divide => {
+                const b: f64 = @bitCast(vm.data_stack.pop());
+                const a: f64 = @bitCast(vm.data_stack.pop());
+                try vm.data_stack.push(@bitCast(a / b));
+            },
+            .f_compare => {
+                const b_bits = vm.data_stack.pop();
+                const a_bits = vm.data_stack.pop();
+                const result: Word = if (a_bits == b_bits) 1 else blk: {
+                    const a: f64 = @bitCast(a_bits);
+                    const b: f64 = @bitCast(b_bits);
+                    break :blk if (a > b) 2 else if (a < b) 4 else 1;
+                };
+                try vm.data_stack.push(result);
+            },
+            .int_to_float => {
+                const a: i64 = @bitCast(vm.data_stack.pop());
+                const f: f64 = @floatFromInt(a);
+                try vm.data_stack.push(@bitCast(f));
+            },
+            .float_to_int => {
+                const f: f64 = @bitCast(vm.data_stack.pop());
+                const i: i64 = @intFromFloat(f);
+                try vm.data_stack.push(@bitCast(i));
+            },
+            .f_is_finite => {
+                const f: f64 = @bitCast(vm.data_stack.pop());
+                try vm.data_stack.push(if (std.math.isFinite(f)) 1 else 0);
             },
             .and_ => {
                 const b = vm.data_stack.pop();

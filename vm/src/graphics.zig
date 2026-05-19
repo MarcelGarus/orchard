@@ -13,8 +13,8 @@ const Value = @import("value.zig");
 
 const Graphics = @This();
 
-pub const Size = struct { width: i64, height: i64 };
-pub const Position = struct { x: i64, y: i64 };
+pub const Size = struct { width: f64, height: f64 };
+pub const Position = struct { x: f64, y: f64 };
 pub const Color = struct { r: u8, g: u8, b: u8 };
 pub const Path = []const PathSegment;
 pub const PathSegment = union(enum) { move_to: Position, line_to: Position };
@@ -25,8 +25,8 @@ pub const DrawingInstruction = union(enum) {
 
 pub fn parse_position(value: Value) !Position {
     return .{
-        .x = value.get_field("x").get_int(),
-        .y = value.get_field("y").get_int(),
+        .x = value.get_field("x").get_float(),
+        .y = value.get_field("y").get_float(),
     };
 }
 pub fn parse_color(value: Value) !Color {
@@ -219,18 +219,19 @@ pub fn get_mouse_pos(self: Graphics) Position {
     var double_mx: f64 = undefined;
     var double_my: f64 = undefined;
     gl.glfwGetCursorPos(self.window, &double_mx, &double_my);
-    const mx = @as(f32, @floatCast(double_mx)) / self.scale;
-    const my = @as(f32, @floatCast(double_my)) / self.scale;
-    return .{ .x = @intFromFloat(mx), .y = @intFromFloat(my) };
+    const scale: f64 = @floatCast(self.scale);
+    return .{ .x = double_mx / scale, .y = double_my / scale };
 }
 
 pub fn get_size(self: Graphics) Size {
     var int_width: i32 = undefined;
     var int_height: i32 = undefined;
     gl.glfwGetWindowSize(self.window, &int_width, &int_height);
-    const width = @as(f32, @floatFromInt(int_width)) / self.scale;
-    const height = @as(f32, @floatFromInt(int_height)) / self.scale;
-    return .{ .width = @intFromFloat(width), .height = @intFromFloat(height) };
+    const scale: f64 = @floatCast(self.scale);
+    return .{
+        .width = @as(f64, @floatFromInt(int_width)) / scale,
+        .height = @as(f64, @floatFromInt(int_height)) / scale,
+    };
 }
 
 pub fn get_time(self: Graphics) f32 {
@@ -259,14 +260,14 @@ pub fn render(self: Graphics, size: Size, instructions: []const DrawingInstructi
     var fb_width: i32 = undefined;
     var fb_height: i32 = undefined;
     gl.glfwGetFramebufferSize(self.window, &fb_width, &fb_height);
-    const pxRatio = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatFromInt(size.width));
+    const pxRatio = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatCast(size.width));
 
     // Update and render
     gl.glViewport(0, 0, fb_width, fb_height);
     gl.glClearColor(1, 1, 1, 1);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT);
 
-    self.vg.beginFrame(@floatFromInt(size.width), @floatFromInt(size.height), pxRatio);
+    self.vg.beginFrame(@floatCast(size.width), @floatCast(size.height), pxRatio);
 
     try render_all(self.vg, instructions);
 
@@ -297,12 +298,12 @@ fn render_single(vg: nvg, instruction: DrawingInstruction) error{OutOfMemory}!vo
             for (args.path) |segment| {
                 switch (segment) {
                     .move_to => |pos| vg.moveTo(
-                        @floatFromInt(pos.x),
-                        @floatFromInt(pos.y),
+                        @floatCast(pos.x),
+                        @floatCast(pos.y),
                     ),
                     .line_to => |pos| vg.lineTo(
-                        @floatFromInt(pos.x),
-                        @floatFromInt(pos.y),
+                        @floatCast(pos.x),
+                        @floatCast(pos.y),
                     ),
                 }
             }
@@ -311,7 +312,7 @@ fn render_single(vg: nvg, instruction: DrawingInstruction) error{OutOfMemory}!vo
         },
         .translate => |t| {
             vg.save();
-            vg.translate(@floatFromInt(t.by.x), @floatFromInt(t.by.y));
+            vg.translate(@floatCast(t.by.x), @floatCast(t.by.y));
             try render_all(vg, t.children);
             vg.restore();
         },
