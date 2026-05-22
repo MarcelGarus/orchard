@@ -16,9 +16,23 @@ const Vm = @This();
 ally: Ally,
 heap: *Heap,
 data_stack: Stack,
-call_stack: Stack,
+call_stack: std.ArrayList(Ip) = .empty,
 compiled_cache: ObjMap(CompiledFun),
 instruction_count: usize = 0,
+fuel: usize = std.math.maxInt(usize),
+sandbox_stack: std.ArrayList(SandboxScope) = .empty,
+
+// Ip = instruction pointer
+const Ip = struct { instructions: []const Instruction, index: usize };
+
+const SandboxScope = struct {
+    data_stack_size: usize,
+    call_stack_size: usize,
+    heap_checkpoint: Heap.Checkpoint,
+    fuel_diff: usize,
+    on_crash: Ip,
+    on_out_of_fuel: Ip,
+};
 
 const Stack = struct {
     memory: []Word,
@@ -76,11 +90,23 @@ pub const CompiledFun = struct {
     }
 };
 pub const Instruction = union(enum) {
-    word: Word, // Pushes the word to the stack.
-    address: Obj, // Pushes the address to the stack.
-    stack: usize, // Pushes a word from the stack to the stack. Offset 0 = top element, 1 = below top, etc.
-    pop: usize, // Pops the given number of words from the stack.
-    popover: usize, // Keeps the top element on the stack, but pops the given number of words below that.
+    word: Word,
+    // Pushes the word to the stack.
+
+    address: Obj,
+    // Pushes the address to the stack.
+
+    stack: usize,
+    // Pushes a word from the stack to the stack. Offset 0 = top element,
+    // 1 = below top, etc.
+
+    pop: usize,
+    // Pops the given number of words from the stack.
+
+    popover: usize,
+    // Keeps the top element on the stack, but pops the given number of words
+    // below that.
+
     add, // a b -> (a+b)
     subtract, // a b -> (a-b)
     multiply, // a b -> (a*b)
@@ -91,29 +117,85 @@ pub const Instruction = union(enum) {
     and_, // a b -> (a & b). Bitwise and.
     or_, // a b -> (a | b). Bitwise or.
     xor, // a b -> (a ^ b). Bitwise xor.
-    compare, // Pops two words. Stack before: a b. If a == b, pushes 1. If a > b, pushes 1. If a < b, pushes 2.
+
+    compare,
+    // Pops two words. Stack before: a b.
+    // If a == b, pushes 1. If a > b, pushes 1. If a < b, pushes 2.
+
     f_add, // a b -> (a+b), interpreted as f64.
     f_subtract, // a b -> (a-b), interpreted as f64.
     f_multiply, // a b -> (a*b), interpreted as f64.
     f_divide, // a b -> (a/b), interpreted as f64.
-    f_compare, // Pops two f64s. Bit-equal -> 1, a>b -> 2, a<b -> 4, otherwise (NaN) -> 1.
+
+    f_compare,
+    // Pops two f64s. Bit-equal -> 1, a>b -> 2, a<b -> 4, otherwise (NaN) -> 1.
+
     int_to_float, // Pops i64, pushes f64 with the same numeric value.
     float_to_int, // Pops f64, pushes i64 via truncation toward zero.
     f_is_finite, // Pops f64, pushes 1 if finite (not NaN, not +/-Inf), else 0.
-    jump_if: usize, // Pops a word. If not 0, jumps to the instruction at the index.
+
+    jump_if: usize,
+    // Pops a word. If not 0, jumps to the instruction at the index.
+
     jump: usize,
-    new_leaf: usize, // Creates a new heap object with the given number of words.
-    new_inner: usize, // Creates a new heap object with the given number of words.
-    flatten_to_inner, // Pops an address. An object of the form [a [b [c []]]] becomes [a b c].
-    flatten_to_leaf, // Pops an address. An object of the form [[a] [[b] [[c] []]]] becomes [a b c].
-    points, // Pops an address. Returns 1 or 0, depending on whether the object contains pointers.
+
+    new_leaf: usize,
+    // Creates a new heap object with the given number of words.
+
+    new_inner: usize,
+    // Creates a new heap object with the given number of words.
+
+    flatten_to_inner,
+    // Pops an address. An object of the form [a [b [c []]]] becomes [a b c].
+
+    flatten_to_leaf,
+    // Pops an address.
+    // An object of the form [[a] [[b] [[c] []]]] becomes [a b c].
+
+    points,
+    // Pops an address. Returns 1 or 0, depending on whether the object contains
+    // pointers.
+
     size, // Pops an address. Returns the size of the object.
+
     load, // addr offset -> ... Loads a word at the offset from the object.
-    heap_size, // Pushes the size of the heap onto the stack. Can be used as a checkpoint for gc.
-    collect_garbage, // heapsize obj -> obj. Collects garbage starting at the heapsize, only keeping dependencies of obj.
+
+    heap_size,
+    // Pushes the size of the heap onto the stack. Can be used as a checkpoint
+    // for gc.
+
+    collect_garbage,
+    // heapsize obj -> obj. Collects garbage starting at the heapsize, only
+    // keeping dependencies of obj.
+
     call, // Pops an address, which should point to a function object. Calls it.
-    call_indirect, // Pops fun_addr, pops inner heap object; pushes every child of the object; runs fun.
-    crash, // Pops a message. Crashes with the message.
+
+    call_indirect,
+    // Pops fun_addr, pops inner heap object; pushes every child of the object;
+    // runs fun.
+
+    start_sandbox: Sandbox,
+    // Pops a word (the fuel limit), opens a sandbox scope. The Sandbox changes
+    // the behavior of the use_fuel and crash instructions before the matching
+    // end_sandbox:
+    // - On crash, we revert the call stack to the moment of start_sandbox. We
+    //   set the instruction pointer to the Sandbox's on_crash. We revert the
+    //   data stack to the moment of start_sandbox + the error.
+    // - On out of fuel, we revert the call stack and data stack to the moment
+    //   of start_sandbox. We set the instruction pointer to the Sandbox's
+    //   on_out_of_fuel.
+
+    end_sandbox, // Ends the current sandbox scope.
+
+    use_fuel,
+    // Pops a word (the fuel amount) and charges it against the current fuel
+    // limit.
+
+    crash,
+    // Pops an error. Restores the surrounding sandbox's VM state. Pushes the
+    // error. Jumps to the sandbox's on_crash handler.
+
+    const Sandbox = struct { on_crash: usize, on_out_of_fuel: usize };
 
     pub fn format(instr: Instruction, writer: *std.io.Writer) !void {
         switch (instr) {
@@ -128,6 +210,10 @@ pub const Instruction = union(enum) {
             .jump => |target| try writer.print("jump {}", .{target}),
             .new_leaf => |size| try writer.print("new_leaf {}", .{size}),
             .new_inner => |size| try writer.print("new_inner {}", .{size}),
+            .start_sandbox => |sandbox| try writer.print(
+                "start_sandbox crash->{} out-of-fuel->",
+                .{ sandbox.on_crash, sandbox.on_out_of_fuel },
+            ),
             inline else => try writer.print("{s}", .{@tagName(instr)}),
         }
     }
@@ -138,15 +224,14 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
         .ally = ally,
         .heap = heap,
         .data_stack = try Stack.init(ally, 1000000),
-        .call_stack = try Stack.init(ally, 1000000),
         .compiled_cache = ObjMap(CompiledFun).empty,
     };
 }
 
-pub fn run(vm: *Vm, fun: Ir.Fun, args: []const Word) error{ BadIr, UnknownVariable, OutOfMemory, Todo }!Word {
+pub fn run(vm: *Vm, fun: Ir.Fun, args: []const Word) !Word {
     const compiled = try vm.compile(fun);
     for (args) |arg| try vm.data_stack.push(arg);
-    try vm.run_fun(compiled);
+    try vm.run_loop(compiled.instructions);
     return vm.data_stack.pop();
 }
 pub fn compile(vm: *Vm, fun: Ir.Fun) !CompiledFun {
@@ -179,7 +264,7 @@ fn find_in_stack(stack: *const std.ArrayList([]const u8), name: []const u8) ?usi
 }
 fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *std.ArrayList([]const u8), instrs: *std.ArrayList(Instruction)) !void {
     const stack_size_before = stack.items.len;
-    switch (try expr.kind()) {
+    switch (expr.kind()) {
         .word => |w| {
             try instrs.append(ally, .{ .word = w });
             try stack.append(ally, "");
@@ -197,14 +282,14 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
                 std.debug.print("stack:", .{});
                 for (stack.items) |st| std.debug.print(" {s}", .{st});
                 std.debug.print("\n", .{});
-                return error.UnknownVariable;
+                std.process.exit(1);
             }
         },
         .let => |let| {
             try compile_expr(ally, root, let.def, stack, instrs);
             _ = stack.pop();
             try stack.append(ally, let.name);
-            try compile_expr(ally, root, let.expr, stack, instrs);
+            try compile_expr(ally, root, let.body, stack, instrs);
             try instrs.append(ally, .{ .popover = 1 });
             _ = stack.pop();
             _ = stack.pop();
@@ -213,7 +298,7 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
         .add, .subtract, .multiply, .divide, .modulo, .shift_left, .shift_right, .and_, .or_, .xor, .compare, .f_add, .f_subtract, .f_multiply, .f_divide, .f_compare => |args| {
             try compile_expr(ally, root, args.left, stack, instrs);
             try compile_expr(ally, root, args.right, stack, instrs);
-            try instrs.append(ally, switch (try expr.kind()) {
+            try instrs.append(ally, switch (expr.kind()) {
                 .add => .add,
                 .subtract => .subtract,
                 .multiply => .multiply,
@@ -271,7 +356,7 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
         },
         .flatten_to_leaf, .flatten_to_inner, .points, .size, .crash, .int_to_float, .float_to_int, .f_is_finite => |inner| {
             try compile_expr(ally, root, inner, stack, instrs);
-            try instrs.append(ally, switch (try expr.kind()) {
+            try instrs.append(ally, switch (expr.kind()) {
                 .flatten_to_leaf => .flatten_to_leaf,
                 .flatten_to_inner => .flatten_to_inner,
                 .points => .points,
@@ -299,6 +384,53 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
             try compile_expr(ally, root, inner, stack, instrs);
             try instrs.append(ally, .collect_garbage);
             _ = stack.pop();
+        },
+        .sandbox => |sandbox| {
+            try compile_expr(ally, root, sandbox.fuel, stack, instrs);
+            const start = instrs.items.len;
+            try instrs.append(ally, .crash); // placeholder for start_sandbox
+            _ = stack.pop();
+            try compile_expr(ally, root, sandbox.body, stack, instrs);
+            // Body ran through successfully.
+            try instrs.append(ally, .end_sandbox);
+            try instrs.append(ally, .{ .word = 0 });
+            try instrs.append(ally, .{ .new_leaf = 1 });
+            try instrs.append(ally, .{ .stack = 1 });
+            try instrs.append(ally, .{ .new_inner = 2 });
+            try instrs.append(ally, .{ .popover = 1 });
+            const end_of_success = instrs.items.len;
+            try instrs.append(ally, .crash); // placeholder for jump
+            // Body crashed.
+            const on_crash = instrs.items.len;
+            try instrs.append(ally, .{ .word = 1 });
+            try instrs.append(ally, .{ .new_leaf = 1 });
+            try instrs.append(ally, .{ .stack = 1 });
+            try instrs.append(ally, .{ .new_inner = 2 });
+            try instrs.append(ally, .{ .popover = 1 });
+            const end_of_on_crash = instrs.items.len;
+            try instrs.append(ally, .crash); // placeholder for jump
+            // Body out of fuel.
+            const on_out_of_fuel = instrs.items.len;
+            try instrs.append(ally, .{ .word = 2 });
+            try instrs.append(ally, .{ .new_leaf = 1 });
+            try instrs.append(ally, .{ .new_inner = 1 });
+            const end_of_on_out_of_fuel = instrs.items.len;
+            try instrs.append(ally, .crash); // placeholder for jump
+            // Patch.
+            const after_sandbox = instrs.items.len;
+            instrs.items[start] = .{ .start_sandbox = .{
+                .on_crash = on_crash,
+                .on_out_of_fuel = on_out_of_fuel,
+            } };
+            instrs.items[end_of_success] = .{ .jump = after_sandbox };
+            instrs.items[end_of_on_crash] = .{ .jump = after_sandbox };
+            instrs.items[end_of_on_out_of_fuel] = .{ .jump = after_sandbox };
+        },
+        .use_fuel => |use_fuel| {
+            try compile_expr(ally, root, use_fuel.amount, stack, instrs);
+            try instrs.append(ally, .use_fuel);
+            _ = stack.pop();
+            try compile_expr(ally, root, use_fuel.child, stack, instrs);
         },
         .also => |also| {
             try compile_expr(ally, root, also.ignored, stack, instrs);
@@ -339,16 +471,16 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
     std.debug.assert(stack_size_after == stack_size_before + 1);
 }
 
-pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
-    var ip: usize = 0;
-    while (ip < fun.instructions.len) {
+fn run_loop(vm: *Vm, instructions: []const Instruction) !void {
+    var ip = Ip{ .instructions = instructions, .index = 0 };
+    while (true) {
+        if (ip.index >= ip.instructions.len) {
+            ip = vm.call_stack.pop() orelse return;
+            continue;
+        }
+        const instruction = ip.instructions[ip.index];
+        ip.index += 1;
         vm.instruction_count += 1;
-        const instruction = fun.instructions[ip];
-        ip += 1;
-        // std.debug.print("Running {f} ", .{instruction});
-        // std.debug.print("stack:  ", .{});
-        // for (vm.data_stack.memory[0..vm.data_stack.used]) |word| std.debug.print(" {}", .{word});
-        // std.debug.print("\n", .{});
         switch (instruction) {
             .word => |word| try vm.data_stack.push(word),
             .address => |object| try vm.data_stack.push_obj(object),
@@ -449,9 +581,9 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
             },
             .jump_if => |target| {
                 const condition = vm.data_stack.pop();
-                if (condition != 0) ip = target;
+                if (condition != 0) ip.index = target;
             },
-            .jump => |target| ip = target,
+            .jump => |target| ip.index = target,
             .new_leaf => |size| {
                 const stack = vm.data_stack.memory[0..vm.data_stack.used];
                 const words = stack[stack.len - size ..];
@@ -529,19 +661,70 @@ pub fn run_fun(vm: *Vm, fun: CompiledFun) !void {
             },
             .call => {
                 const callee = vm.data_stack.pop_obj();
-                try vm.run_fun(try vm.compile(Ir.Fun{ .obj = callee }));
+                const compiled = try vm.compile(Ir.Fun{ .obj = callee });
+                try vm.call_stack.append(vm.ally, ip);
+                ip = .{ .instructions = compiled.instructions, .index = 0 };
             },
             .call_indirect => {
                 const callee = vm.data_stack.pop_obj();
                 const args = vm.data_stack.pop_obj();
                 for (args.children()) |c| try vm.data_stack.push_obj(c);
-                try vm.run_fun(try vm.compile(Ir.Fun{ .obj = callee }));
+                const compiled = try vm.compile(Ir.Fun{ .obj = callee });
+                try vm.call_stack.append(vm.ally, ip);
+                ip = .{ .instructions = compiled.instructions, .index = 0 };
+            },
+            .start_sandbox => |sandbox| {
+                const limit: usize = @intCast(vm.data_stack.pop_int());
+                const fuel_diff = if (vm.fuel <= limit) 0 else vm.fuel - limit;
+                vm.fuel -= fuel_diff;
+                try vm.sandbox_stack.append(vm.ally, .{
+                    .data_stack_size = vm.data_stack.used,
+                    .call_stack_size = vm.call_stack.items.len,
+                    .heap_checkpoint = vm.heap.checkpoint(),
+                    .fuel_diff = fuel_diff,
+                    .on_crash = .{ .instructions = ip.instructions, .index = sandbox.on_crash },
+                    .on_out_of_fuel = .{ .instructions = ip.instructions, .index = sandbox.on_out_of_fuel },
+                });
+            },
+            .end_sandbox => {
+                const scope = vm.sandbox_stack.pop().?;
+                vm.fuel += scope.fuel_diff;
+            },
+            .use_fuel => {
+                const amount: usize = @intCast(vm.data_stack.pop_int());
+                if (vm.fuel < amount) {
+                    @branchHint(.unlikely);
+                    const sandbox = sandbox: while (true) {
+                        const sandbox = vm.sandbox_stack.pop() orelse {
+                            std.debug.print("\nTop-level out of fuel?\n", .{});
+                            std.process.exit(1);
+                        };
+                        if (sandbox.fuel_diff == 0) continue;
+                        break :sandbox sandbox;
+                    };
+                    vm.data_stack.used = sandbox.data_stack_size;
+                    vm.call_stack.items.len = sandbox.call_stack_size;
+                    vm.fuel = sandbox.fuel_diff;
+                    ip = sandbox.on_out_of_fuel;
+                    vm.heap.restore(sandbox.heap_checkpoint);
+                    vm.compiled_cache.remove_everything_after(sandbox.heap_checkpoint.address);
+                } else vm.fuel -= amount;
             },
             .crash => {
-                const message = vm.data_stack.pop_obj();
-                std.debug.print("\nOh no! A crash!\n", .{});
-                std.debug.print("{f}\n", .{message});
-                std.process.exit(1);
+                @branchHint(.unlikely);
+                const sandbox = vm.sandbox_stack.pop() orelse {
+                    const e = vm.data_stack.pop_obj();
+                    std.debug.print("\nOh no! A crash!\n", .{});
+                    std.debug.print("{f}\n", .{e});
+                    std.process.exit(1);
+                };
+                const e = vm.data_stack.pop_obj();
+                vm.data_stack.used = sandbox.data_stack_size;
+                vm.call_stack.items.len = sandbox.call_stack_size;
+                vm.fuel += sandbox.fuel_diff;
+                ip = sandbox.on_crash;
+                const mapped_e = try vm.garbage_collect(sandbox.heap_checkpoint, e);
+                try vm.data_stack.push_obj(mapped_e);
             },
         }
     }

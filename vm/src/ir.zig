@@ -1,7 +1,7 @@
 const std = @import("std");
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const Writer = std.io.Writer;
+const Writer = std.Io.Writer;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
@@ -33,6 +33,7 @@ const Name = []const u8;
 pub const Expr = struct {
     obj: Obj,
 
+    // See bootstrap.objects for an explanation of the expressions.
     pub const Kind = union(enum) {
         word: Word,
         object: Obj,
@@ -70,19 +71,23 @@ pub const Expr = struct {
         call_indirect: CallIndirect,
         rec: []const Expr,
         collect_garbage: Expr,
+        sandbox: Sandbox,
+        use_fuel: UseFuel,
         crash: Expr,
         unreachable_,
 
-        pub const Let = struct { name: Name, def: Expr, expr: Expr };
+        pub const Let = struct { name: Name, def: Expr, body: Expr };
         pub const LeftRight = struct { left: Expr, right: Expr };
         pub const If = struct { condition: Expr, then: Expr, else_: Expr };
         pub const Load = struct { object: Expr, index: Expr };
         pub const Also = struct { ignored: Expr, value: Expr };
         pub const Call = struct { fun: Expr, args: []const Expr };
         pub const CallIndirect = struct { fun: Expr, args: Expr };
+        pub const Sandbox = struct { fuel: Expr, body: Expr };
+        pub const UseFuel = struct { amount: Expr, child: Expr };
     };
 
-    pub fn kind(self: Expr) !Kind {
+    pub fn kind(self: Expr) Kind {
         const tag = get_symbol(self.obj.child(0));
         inline for (@typeInfo(Kind).@"union".fields) |field| {
             const expected_tag = comptime kebab_case: {
@@ -102,13 +107,15 @@ pub const Expr = struct {
                     Obj => self.obj.child(1),
                     Name => get_symbol(self.obj.child(1)),
                     Expr => .{ .obj = self.obj.child(1) },
-                    Kind.Let => .{ .name = get_symbol(self.obj.child(1)), .def = .{ .obj = self.obj.child(2) }, .expr = .{ .obj = self.obj.child(3) } },
+                    Kind.Let => .{ .name = get_symbol(self.obj.child(1)), .def = .{ .obj = self.obj.child(2) }, .body = .{ .obj = self.obj.child(3) } },
                     Kind.Also => .{ .ignored = .{ .obj = self.obj.child(1) }, .value = .{ .obj = self.obj.child(2) } },
                     Kind.LeftRight => .{ .left = .{ .obj = self.obj.child(1) }, .right = .{ .obj = self.obj.child(2) } },
                     Kind.If => .{ .condition = .{ .obj = self.obj.child(1) }, .then = .{ .obj = self.obj.child(2) }, .else_ = .{ .obj = self.obj.child(3) } },
                     Kind.Load => .{ .object = .{ .obj = self.obj.child(1) }, .index = .{ .obj = self.obj.child(2) } },
                     Kind.Call => .{ .fun = .{ .obj = self.obj.child(1) }, .args = @ptrCast(self.obj.child(2).children()) },
                     Kind.CallIndirect => .{ .fun = .{ .obj = self.obj.child(1) }, .args = .{ .obj = self.obj.child(2) } },
+                    Kind.Sandbox => .{ .fuel = .{ .obj = self.obj.child(1) }, .body = .{ .obj = self.obj.child(2) } },
+                    Kind.UseFuel => .{ .amount = .{ .obj = self.obj.child(1) }, .child = .{ .obj = self.obj.child(2) } },
                     []const Expr => @ptrCast(self.obj.child(1).children()),
                     else => @compileError("Unsupported payload type: " ++ @typeName(field.type)),
                 };
@@ -116,7 +123,8 @@ pub const Expr = struct {
             }
         }
 
-        return error.BadIr;
+        std.debug.print("An IR expression has a bad kind.\nExpr:\n{f}", .{self});
+        std.process.exit(1);
     }
 
     pub fn format(expr: Expr, writer: *Writer) !void {
@@ -124,14 +132,14 @@ pub const Expr = struct {
     }
     pub fn format_indented(expr: Expr, writer: *Writer, indentation: usize) !void {
         for (0..indentation) |_| try writer.print("  ", .{});
-        switch (try expr.kind()) {
+        switch (expr.kind()) {
             .word => |word| try writer.print("word {}\n", .{word}),
             .object => |obj| try writer.print("object {x}\n", .{obj.address}),
             .name => |name| try writer.print("name {s}\n", .{name}),
             .let => |let| {
                 try writer.print("let {s}\n", .{let.name});
                 try let.def.format_indented(writer, indentation + 1);
-                try let.expr.format_indented(writer, indentation + 1);
+                try let.body.format_indented(writer, indentation + 1);
             },
             .add => |args| {
                 try writer.print("add\n", .{});
@@ -286,6 +294,16 @@ pub const Expr = struct {
                 try writer.print("rec\n", .{});
                 for (args) |arg|
                     try arg.format_indented(writer, indentation + 1);
+            },
+            .sandbox => |sandbox| {
+                try writer.print("sandbox\n", .{});
+                try sandbox.fuel.format_indented(writer, indentation + 1);
+                try sandbox.body.format_indented(writer, indentation + 1);
+            },
+            .use_fuel => |use_fuel| {
+                try writer.print("use-fuel\n", .{});
+                try use_fuel.amount.format_indented(writer, indentation + 1);
+                try use_fuel.child.format_indented(writer, indentation + 1);
             },
             .crash => |error_| {
                 try writer.print("crash\n", .{});
