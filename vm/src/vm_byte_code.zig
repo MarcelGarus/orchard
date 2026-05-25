@@ -6,12 +6,11 @@ const Ally = std.mem.Allocator;
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Obj = Heap.Obj;
-const Value = @import("value.zig");
 const ObjMap = @import("obj_map.zig").ObjMap;
-const Ir = @import("ir.zig");
+const Vm = @import("vm.zig");
 const get_symbol = Heap.get_symbol;
 
-const Vm = @This();
+const Self = @This();
 
 ally: Ally,
 heap: *Heap,
@@ -19,8 +18,9 @@ data_stack: Stack,
 call_stack: std.ArrayList(Ip) = .empty,
 compiled_cache: ObjMap(CompiledFun),
 instruction_count: usize = 0,
-fuel: usize = std.math.maxInt(usize),
+fuel: usize = 0,
 sandbox_stack: std.ArrayList(SandboxScope) = .empty,
+crash_payload: ?Obj = null,
 
 // Ip = instruction pointer
 const Ip = struct { instructions: []const Instruction, index: usize };
@@ -219,7 +219,7 @@ pub const Instruction = union(enum) {
     }
 };
 
-pub fn init(heap: *Heap, ally: Ally) !Vm {
+pub fn init(heap: *Heap, ally: Ally) !Self {
     return .{
         .ally = ally,
         .heap = heap,
@@ -228,20 +228,46 @@ pub fn init(heap: *Heap, ally: Ally) !Vm {
     };
 }
 
-pub fn run(vm: *Vm, fun: Ir.Fun, args: []const Word) !Word {
-    const compiled = try vm.compile(fun);
-    for (args) |arg| try vm.data_stack.push(arg);
-    try vm.run_loop(compiled.instructions);
-    return vm.data_stack.pop();
+pub fn call(self: *Self, fun: Vm.Fun, args: []const Obj, fuel: *usize) !Vm.Result {
+    // The byte code interpreter never returns error.UndefinedBehavior or
+    // error.OutOfExpressions; both are in the signature only to match the
+    // impl interface in vm.zig. (UB is detected by the tree-walker;
+    // OutOfExpressions is its own host-side stack-guard.)
+    //
+    // Reset per-call state. The compiled_cache persists between runs.
+    self.data_stack.used = 0;
+    self.call_stack.items.len = 0;
+    self.sandbox_stack.items.len = 0;
+    self.crash_payload = null;
+    self.fuel = fuel.*;
+    defer fuel.* = self.fuel;
+    errdefer fuel.* = self.fuel;
+
+    const compiled = self.compile(fun) catch |err| switch (err) {
+        error.OutOfMemory => return .out_of_memory,
+        error.UndefinedBehavior => return error.UndefinedBehavior,
+    };
+    for (args) |arg| self.data_stack.push_obj(arg) catch return .out_of_memory;
+    self.run(compiled.instructions) catch |err| switch (err) {
+        error.OutOfMemory => return .out_of_memory,
+        error.UncaughtCrash => return .{ .crashed = self.crash_payload.? },
+        error.UncaughtOutOfFuel => {
+            self.fuel = 0;
+            return .out_of_fuel;
+        },
+        error.UndefinedBehavior => return error.UndefinedBehavior,
+    };
+    return .{ .returned = self.data_stack.pop_obj() };
 }
-pub fn compile(vm: *Vm, fun: Ir.Fun) !CompiledFun {
-    if (vm.compiled_cache.get(fun.obj)) |compiled| return compiled;
-    const compiled = try really_compile(vm.ally, fun);
-    try vm.compiled_cache.put(vm.ally, fun.obj, compiled);
+
+pub fn compile(self: *Self, fun: Vm.Fun) !CompiledFun {
+    if (self.compiled_cache.get(fun.obj)) |compiled| return compiled;
+    const compiled = try really_compile(self.ally, fun);
+    try self.compiled_cache.put(self.ally, fun.obj, compiled);
     return compiled;
 }
 
-pub fn really_compile(ally: Ally, fun: Ir.Fun) !CompiledFun {
+pub fn really_compile(ally: Ally, fun: Vm.Fun) !CompiledFun {
     // std.debug.print("{f}", .{fun});
     var stack = std.ArrayList([]const u8).empty;
     defer stack.deinit(ally);
@@ -262,9 +288,10 @@ fn find_in_stack(stack: *const std.ArrayList([]const u8), name: []const u8) ?usi
     }
     return null;
 }
-fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *std.ArrayList([]const u8), instrs: *std.ArrayList(Instruction)) !void {
+fn compile_expr(ally: std.mem.Allocator, root: Vm.Fun, expr: Vm.Expr, stack: *std.ArrayList([]const u8), instrs: *std.ArrayList(Instruction)) (Ally.Error || error{UndefinedBehavior})!void {
     const stack_size_before = stack.items.len;
-    switch (expr.kind()) {
+    const k = try expr.kind();
+    switch (k) {
         .word => |w| {
             try instrs.append(ally, .{ .word = w });
             try stack.append(ally, "");
@@ -278,11 +305,7 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
                 try instrs.append(ally, .{ .stack = offset });
                 try stack.append(ally, n);
             } else {
-                std.debug.print("unknown variable {s}\n", .{n});
-                std.debug.print("stack:", .{});
-                for (stack.items) |st| std.debug.print(" {s}", .{st});
-                std.debug.print("\n", .{});
-                std.process.exit(1);
+                return error.UndefinedBehavior;
             }
         },
         .let => |let| {
@@ -298,7 +321,7 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
         .add, .subtract, .multiply, .divide, .modulo, .shift_left, .shift_right, .and_, .or_, .xor, .compare, .f_add, .f_subtract, .f_multiply, .f_divide, .f_compare => |args| {
             try compile_expr(ally, root, args.left, stack, instrs);
             try compile_expr(ally, root, args.right, stack, instrs);
-            try instrs.append(ally, switch (expr.kind()) {
+            try instrs.append(ally, switch (k) {
                 .add => .add,
                 .subtract => .subtract,
                 .multiply => .multiply,
@@ -356,7 +379,7 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
         },
         .flatten_to_leaf, .flatten_to_inner, .points, .size, .crash, .int_to_float, .float_to_int, .f_is_finite => |inner| {
             try compile_expr(ally, root, inner, stack, instrs);
-            try instrs.append(ally, switch (expr.kind()) {
+            try instrs.append(ally, switch (k) {
                 .flatten_to_leaf => .flatten_to_leaf,
                 .flatten_to_inner => .flatten_to_inner,
                 .points => .points,
@@ -438,19 +461,19 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
             _ = stack.pop();
             try compile_expr(ally, root, also.value, stack, instrs);
         },
-        .call => |call| {
-            for (call.args) |arg| {
+        .call => |c| {
+            for (c.args) |arg| {
                 try compile_expr(ally, root, arg, stack, instrs);
             }
-            try compile_expr(ally, root, call.fun, stack, instrs);
+            try compile_expr(ally, root, c.fun, stack, instrs);
             try instrs.append(ally, .call);
             _ = stack.pop();
-            for (call.args) |_| _ = stack.pop();
+            for (c.args) |_| _ = stack.pop();
             try stack.append(ally, "");
         },
-        .call_indirect => |ci| {
-            try compile_expr(ally, root, ci.args, stack, instrs);
-            try compile_expr(ally, root, ci.fun, stack, instrs);
+        .call_indirect => |c| {
+            try compile_expr(ally, root, c.args, stack, instrs);
+            try compile_expr(ally, root, c.fun, stack, instrs);
             try instrs.append(ally, .call_indirect);
             _ = stack.pop();
             _ = stack.pop();
@@ -471,136 +494,136 @@ fn compile_expr(ally: std.mem.Allocator, root: Ir.Fun, expr: Ir.Expr, stack: *st
     std.debug.assert(stack_size_after == stack_size_before + 1);
 }
 
-fn run_loop(vm: *Vm, instructions: []const Instruction) !void {
+fn run(self: *Self, instructions: []const Instruction) !void {
     var ip = Ip{ .instructions = instructions, .index = 0 };
     while (true) {
         if (ip.index >= ip.instructions.len) {
-            ip = vm.call_stack.pop() orelse return;
+            ip = self.call_stack.pop() orelse return;
             continue;
         }
         const instruction = ip.instructions[ip.index];
         ip.index += 1;
-        vm.instruction_count += 1;
+        self.instruction_count += 1;
         switch (instruction) {
-            .word => |word| try vm.data_stack.push(word),
-            .address => |object| try vm.data_stack.push_obj(object),
-            .stack => |offset| try vm.data_stack.push(vm.data_stack.get(offset)),
-            .pop => |amount| vm.data_stack.pop_n(amount),
+            .word => |word| try self.data_stack.push(word),
+            .address => |object| try self.data_stack.push_obj(object),
+            .stack => |offset| try self.data_stack.push(self.data_stack.get(offset)),
+            .pop => |amount| self.data_stack.pop_n(amount),
             .popover => |amount| {
-                const top = vm.data_stack.pop();
-                vm.data_stack.pop_n(amount);
-                try vm.data_stack.push(top);
+                const top = self.data_stack.pop();
+                self.data_stack.pop_n(amount);
+                try self.data_stack.push(top);
             },
             .add => {
-                const b = vm.data_stack.pop_int();
-                const a = vm.data_stack.pop_int();
-                try vm.data_stack.push_int(a +% b);
+                const b = self.data_stack.pop_int();
+                const a = self.data_stack.pop_int();
+                try self.data_stack.push_int(a +% b);
             },
             .subtract => {
-                const b = vm.data_stack.pop_int();
-                const a = vm.data_stack.pop_int();
-                try vm.data_stack.push_int(a -% b);
+                const b = self.data_stack.pop_int();
+                const a = self.data_stack.pop_int();
+                try self.data_stack.push_int(a -% b);
             },
             .multiply => {
-                const b = vm.data_stack.pop_int();
-                const a = vm.data_stack.pop_int();
-                try vm.data_stack.push_int(a *% b);
+                const b = self.data_stack.pop_int();
+                const a = self.data_stack.pop_int();
+                try self.data_stack.push_int(a *% b);
             },
             .divide => {
-                const b = vm.data_stack.pop_int();
-                const a = vm.data_stack.pop_int();
-                try vm.data_stack.push_int(@divTrunc(a, b));
+                const b = self.data_stack.pop_int();
+                const a = self.data_stack.pop_int();
+                try self.data_stack.push_int(@divTrunc(a, b));
             },
             .modulo => {
-                const b = vm.data_stack.pop_int();
-                const a = vm.data_stack.pop_int();
-                try vm.data_stack.push_int(@mod(a, b));
+                const b = self.data_stack.pop_int();
+                const a = self.data_stack.pop_int();
+                try self.data_stack.push_int(@mod(a, b));
             },
             .shift_left => {
-                const b = vm.data_stack.pop_int();
-                const a = vm.data_stack.pop_int();
-                try vm.data_stack.push_int(a << @intCast(b));
+                const b = self.data_stack.pop_int();
+                const a = self.data_stack.pop_int();
+                try self.data_stack.push_int(a << @intCast(b));
             },
             .shift_right => {
-                const b = vm.data_stack.pop_int();
-                const a = vm.data_stack.pop_int();
-                try vm.data_stack.push_int(a >> @intCast(b));
+                const b = self.data_stack.pop_int();
+                const a = self.data_stack.pop_int();
+                try self.data_stack.push_int(a >> @intCast(b));
             },
             .compare => {
-                const b = vm.data_stack.pop_int();
-                const a = vm.data_stack.pop_int();
-                try vm.data_stack.push(if (a == b) 1 else if (a > b) 2 else 4);
+                const b = self.data_stack.pop_int();
+                const a = self.data_stack.pop_int();
+                try self.data_stack.push(if (a == b) 1 else if (a > b) 2 else 4);
             },
             .f_add => {
-                const b = vm.data_stack.pop_float();
-                const a = vm.data_stack.pop_float();
-                try vm.data_stack.push_float(a + b);
+                const b = self.data_stack.pop_float();
+                const a = self.data_stack.pop_float();
+                try self.data_stack.push_float(a + b);
             },
             .f_subtract => {
-                const b = vm.data_stack.pop_float();
-                const a = vm.data_stack.pop_float();
-                try vm.data_stack.push_float(a - b);
+                const b = self.data_stack.pop_float();
+                const a = self.data_stack.pop_float();
+                try self.data_stack.push_float(a - b);
             },
             .f_multiply => {
-                const b = vm.data_stack.pop_float();
-                const a = vm.data_stack.pop_float();
-                try vm.data_stack.push_float(a * b);
+                const b = self.data_stack.pop_float();
+                const a = self.data_stack.pop_float();
+                try self.data_stack.push_float(a * b);
             },
             .f_divide => {
-                const b = vm.data_stack.pop_float();
-                const a = vm.data_stack.pop_float();
-                try vm.data_stack.push_float(a / b);
+                const b = self.data_stack.pop_float();
+                const a = self.data_stack.pop_float();
+                try self.data_stack.push_float(a / b);
             },
             .f_compare => {
-                const b_bits = vm.data_stack.pop();
-                const a_bits = vm.data_stack.pop();
+                const b_bits = self.data_stack.pop();
+                const a_bits = self.data_stack.pop();
                 const result: Word = if (a_bits == b_bits) 1 else blk: {
                     const a: f64 = @bitCast(a_bits);
                     const b: f64 = @bitCast(b_bits);
                     break :blk if (a > b) 2 else if (a < b) 4 else 1;
                 };
-                try vm.data_stack.push(result);
+                try self.data_stack.push(result);
             },
-            .int_to_float => try vm.data_stack.push_float(@floatFromInt(vm.data_stack.pop_int())),
-            .float_to_int => try vm.data_stack.push_int(@intFromFloat(vm.data_stack.pop_float())),
-            .f_is_finite => try vm.data_stack.push(if (std.math.isFinite(vm.data_stack.pop_float())) 1 else 0),
+            .int_to_float => try self.data_stack.push_float(@floatFromInt(self.data_stack.pop_int())),
+            .float_to_int => try self.data_stack.push_int(@intFromFloat(self.data_stack.pop_float())),
+            .f_is_finite => try self.data_stack.push(if (std.math.isFinite(self.data_stack.pop_float())) 1 else 0),
             .and_ => {
-                const b = vm.data_stack.pop();
-                const a = vm.data_stack.pop();
-                try vm.data_stack.push(a & b);
+                const b = self.data_stack.pop();
+                const a = self.data_stack.pop();
+                try self.data_stack.push(a & b);
             },
             .or_ => {
-                const b = vm.data_stack.pop();
-                const a = vm.data_stack.pop();
-                try vm.data_stack.push(a | b);
+                const b = self.data_stack.pop();
+                const a = self.data_stack.pop();
+                try self.data_stack.push(a | b);
             },
             .xor => {
-                const b = vm.data_stack.pop();
-                const a = vm.data_stack.pop();
-                try vm.data_stack.push(a ^ b);
+                const b = self.data_stack.pop();
+                const a = self.data_stack.pop();
+                try self.data_stack.push(a ^ b);
             },
             .jump_if => |target| {
-                const condition = vm.data_stack.pop();
+                const condition = self.data_stack.pop();
                 if (condition != 0) ip.index = target;
             },
             .jump => |target| ip.index = target,
             .new_leaf => |size| {
-                const stack = vm.data_stack.memory[0..vm.data_stack.used];
+                const stack = self.data_stack.memory[0..self.data_stack.used];
                 const words = stack[stack.len - size ..];
-                const obj = try vm.heap.new_leaf(@ptrCast(words));
-                vm.data_stack.pop_n(size);
-                try vm.data_stack.push_obj(obj);
+                const obj = try self.heap.new_leaf(@ptrCast(words));
+                self.data_stack.pop_n(size);
+                try self.data_stack.push_obj(obj);
             },
             .new_inner => |size| {
-                const stack = vm.data_stack.memory[0..vm.data_stack.used];
+                const stack = self.data_stack.memory[0..self.data_stack.used];
                 const words = stack[stack.len - size ..];
-                const obj = try vm.heap.new_inner(@ptrCast(words));
-                vm.data_stack.pop_n(size);
-                try vm.data_stack.push_obj(obj);
+                const obj = try self.heap.new_inner(@ptrCast(words));
+                self.data_stack.pop_n(size);
+                try self.data_stack.push_obj(obj);
             },
             .flatten_to_inner => {
-                var obj = vm.data_stack.pop_obj();
-                var b = try vm.heap.build_inner();
+                var obj = self.data_stack.pop_obj();
+                var b = try self.heap.build_inner();
                 while (true) {
                     switch (obj.size()) {
                         0 => break,
@@ -611,11 +634,11 @@ fn run_loop(vm: *Vm, instructions: []const Instruction) !void {
                         else => unreachable,
                     }
                 }
-                try vm.data_stack.push_obj(b.finish());
+                try self.data_stack.push_obj(b.finish());
             },
             .flatten_to_leaf => {
-                var obj = vm.data_stack.pop_obj();
-                var b = try vm.heap.build_leaf();
+                var obj = self.data_stack.pop_obj();
+                var b = try self.heap.build_leaf();
                 while (true) {
                     switch (obj.size()) {
                         0 => break,
@@ -626,120 +649,115 @@ fn run_loop(vm: *Vm, instructions: []const Instruction) !void {
                         else => unreachable,
                     }
                 }
-                try vm.data_stack.push_obj(b.finish());
+                try self.data_stack.push_obj(b.finish());
             },
             .points => {
-                const obj = vm.data_stack.pop_obj();
-                try vm.data_stack.push(if (obj.is_inner()) 1 else 0);
+                const obj = self.data_stack.pop_obj();
+                try self.data_stack.push(if (obj.is_inner()) 1 else 0);
             },
             .size => {
-                const obj = vm.data_stack.pop_obj();
-                try vm.data_stack.push(obj.size());
+                const obj = self.data_stack.pop_obj();
+                try self.data_stack.push(obj.size());
             },
             .load => {
-                const offset: usize = vm.data_stack.pop();
-                const base = vm.data_stack.pop_obj();
+                const offset: usize = self.data_stack.pop();
+                const base = self.data_stack.pop_obj();
                 const word: usize = if (base.is_inner()) base.child(offset).address else base.word(offset);
-                try vm.data_stack.push(word);
+                try self.data_stack.push(word);
             },
             .heap_size => {
-                const checkpoint = vm.heap.checkpoint();
-                try vm.data_stack.push(checkpoint.address);
+                const checkpoint = self.heap.checkpoint();
+                try self.data_stack.push(checkpoint.address);
             },
             .collect_garbage => {
-                const keep = vm.data_stack.pop_obj();
-                const checkpoint = vm.data_stack.pop();
-                vm.heap.dump_stats();
+                const keep = self.data_stack.pop_obj();
+                const checkpoint = self.data_stack.pop();
+                self.heap.dump_stats();
                 std.debug.print("garbage collecting...\n", .{});
-                const mapped_keep = try vm.heap.garbage_collect(
-                    vm.ally,
+                const mapped_keep = try self.garbage_collect(
                     .{ .address = checkpoint },
                     keep,
                 );
-                vm.heap.dump_stats();
-                try vm.data_stack.push_obj(mapped_keep);
+                self.heap.dump_stats();
+                try self.data_stack.push_obj(mapped_keep);
             },
             .call => {
-                const callee = vm.data_stack.pop_obj();
-                const compiled = try vm.compile(Ir.Fun{ .obj = callee });
-                try vm.call_stack.append(vm.ally, ip);
+                const callee = self.data_stack.pop_obj();
+                const compiled = try self.compile(Vm.Fun{ .obj = callee });
+                try self.call_stack.append(self.ally, ip);
                 ip = .{ .instructions = compiled.instructions, .index = 0 };
             },
             .call_indirect => {
-                const callee = vm.data_stack.pop_obj();
-                const args = vm.data_stack.pop_obj();
-                for (args.children()) |c| try vm.data_stack.push_obj(c);
-                const compiled = try vm.compile(Ir.Fun{ .obj = callee });
-                try vm.call_stack.append(vm.ally, ip);
+                const callee = self.data_stack.pop_obj();
+                const args = self.data_stack.pop_obj();
+                for (args.children()) |c| try self.data_stack.push_obj(c);
+                const compiled = try self.compile(Vm.Fun{ .obj = callee });
+                try self.call_stack.append(self.ally, ip);
                 ip = .{ .instructions = compiled.instructions, .index = 0 };
             },
             .start_sandbox => |sandbox| {
-                const limit: usize = @intCast(vm.data_stack.pop_int());
-                const fuel_diff = if (vm.fuel <= limit) 0 else vm.fuel - limit;
-                vm.fuel -= fuel_diff;
-                try vm.sandbox_stack.append(vm.ally, .{
-                    .data_stack_size = vm.data_stack.used,
-                    .call_stack_size = vm.call_stack.items.len,
-                    .heap_checkpoint = vm.heap.checkpoint(),
+                const limit: usize = @intCast(self.data_stack.pop_int());
+                const fuel_diff = if (self.fuel <= limit) 0 else self.fuel - limit;
+                self.fuel -= fuel_diff;
+                try self.sandbox_stack.append(self.ally, .{
+                    .data_stack_size = self.data_stack.used,
+                    .call_stack_size = self.call_stack.items.len,
+                    .heap_checkpoint = self.heap.checkpoint(),
                     .fuel_diff = fuel_diff,
                     .on_crash = .{ .instructions = ip.instructions, .index = sandbox.on_crash },
                     .on_out_of_fuel = .{ .instructions = ip.instructions, .index = sandbox.on_out_of_fuel },
                 });
             },
             .end_sandbox => {
-                const scope = vm.sandbox_stack.pop().?;
-                vm.fuel += scope.fuel_diff;
+                const scope = self.sandbox_stack.pop().?;
+                self.fuel += scope.fuel_diff;
             },
             .use_fuel => {
-                const amount: usize = @intCast(vm.data_stack.pop_int());
-                if (vm.fuel < amount) {
+                const amount: usize = @intCast(self.data_stack.pop_int());
+                if (self.fuel < amount) {
                     @branchHint(.unlikely);
                     const sandbox = sandbox: while (true) {
-                        const sandbox = vm.sandbox_stack.pop() orelse {
-                            std.debug.print("\nTop-level out of fuel?\n", .{});
-                            std.process.exit(1);
+                        const sandbox = self.sandbox_stack.pop() orelse {
+                            return error.UncaughtOutOfFuel;
                         };
                         if (sandbox.fuel_diff == 0) continue;
                         break :sandbox sandbox;
                     };
-                    vm.data_stack.used = sandbox.data_stack_size;
-                    vm.call_stack.items.len = sandbox.call_stack_size;
-                    vm.fuel = sandbox.fuel_diff;
+                    self.data_stack.used = sandbox.data_stack_size;
+                    self.call_stack.items.len = sandbox.call_stack_size;
+                    self.fuel = sandbox.fuel_diff;
                     ip = sandbox.on_out_of_fuel;
-                    vm.heap.restore(sandbox.heap_checkpoint);
-                    vm.compiled_cache.remove_everything_after(sandbox.heap_checkpoint.address);
-                } else vm.fuel -= amount;
+                    self.heap.restore(sandbox.heap_checkpoint);
+                    self.compiled_cache.remove_everything_after(sandbox.heap_checkpoint.address);
+                } else self.fuel -= amount;
             },
             .crash => {
                 @branchHint(.unlikely);
-                const sandbox = vm.sandbox_stack.pop() orelse {
-                    const e = vm.data_stack.pop_obj();
-                    std.debug.print("\nOh no! A crash!\n", .{});
-                    std.debug.print("{f}\n", .{e});
-                    std.process.exit(1);
+                const sandbox = self.sandbox_stack.pop() orelse {
+                    self.crash_payload = self.data_stack.pop_obj();
+                    return error.UncaughtCrash;
                 };
-                const e = vm.data_stack.pop_obj();
-                vm.data_stack.used = sandbox.data_stack_size;
-                vm.call_stack.items.len = sandbox.call_stack_size;
-                vm.fuel += sandbox.fuel_diff;
+                const e = self.data_stack.pop_obj();
+                self.data_stack.used = sandbox.data_stack_size;
+                self.call_stack.items.len = sandbox.call_stack_size;
+                self.fuel += sandbox.fuel_diff;
                 ip = sandbox.on_crash;
-                const mapped_e = try vm.garbage_collect(sandbox.heap_checkpoint, e);
-                try vm.data_stack.push_obj(mapped_e);
+                const mapped_e = try self.garbage_collect(sandbox.heap_checkpoint, e);
+                try self.data_stack.push_obj(mapped_e);
             },
         }
     }
 }
 
-pub fn deduplicate(vm: *Vm, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
-    var map = try vm.heap.deduplicate(vm.ally, checkpoint);
-    vm.compiled_cache.remove_everything_after(checkpoint.address);
-    const mapped = map.get(obj) orelse obj;
-    map.deinit();
-    return mapped;
+pub fn deduplicate(self: *Self, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
+    var map = try self.heap.deduplicate(self.ally, checkpoint);
+    defer map.deinit();
+    self.compiled_cache.remove_everything_after(checkpoint.address);
+    return map.get(obj) orelse obj;
 }
 
-pub fn garbage_collect(vm: *Vm, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
-    const mapped = vm.heap.garbage_collect(vm.ally, checkpoint, keep);
-    vm.compiled_cache.remove_everything_after(checkpoint.address);
+pub fn garbage_collect(self: *Self, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
+    const mapped = try self.heap.garbage_collect(self.ally, checkpoint, keep);
+    self.compiled_cache.remove_everything_after(checkpoint.address);
     return mapped;
 }

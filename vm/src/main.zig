@@ -1,32 +1,27 @@
 const std = @import("std");
 const object_loader = @import("object_loader.zig");
 const Heap = @import("heap.zig");
-const Word = Heap.Word;
 const Vm = @import("vm.zig");
 const Graphics = @import("graphics.zig");
 const Value = @import("value.zig");
-const Ir = @import("ir.zig");
 const Obj = Heap.Obj;
 const Ally = std.mem.Allocator;
-const ArrayList = std.ArrayList;
 const Io = std.Io;
 
 const BootstrapStep = struct {
     starttime: Io.Timestamp,
-    vm: *Vm,
+    heap: *Heap,
 
-    fn start(io: Io, comptime name: []const u8, vm: *Vm) !BootstrapStep {
+    fn start(io: Io, comptime name: []const u8, heap: *Heap) !BootstrapStep {
         std.debug.print(name, .{});
         for (name.len..30) |_| std.debug.print(" ", .{});
         const now = Io.Timestamp.now(io, .real);
-        // vm.impl.instruction_count = 0;
-        return .{ .starttime = now, .vm = vm };
+        return .{ .starttime = now, .heap = heap };
     }
     fn end(self: *BootstrapStep, io: Io) void {
         const now = Io.Timestamp.now(io, .real);
         std.debug.print("{} ms, ", .{now.toMilliseconds() - self.starttime.toMilliseconds()});
-        // std.debug.print("{} instructions, ", .{self.vm.impl.instruction_count});
-        self.vm.get_heap().dump_stats();
+        self.heap.dump_stats();
     }
 };
 
@@ -56,19 +51,19 @@ pub fn main(init: std.process.Init) !void {
 
     var heap = try Heap.init(ally, 200_000_000);
     const start_of_heap = heap.checkpoint();
-    var vm = try Vm.init(&heap, ally);
+    var vm = try Vm.Default.init(&heap, ally);
 
     const objects_code = try Io.Dir.cwd().readFileAlloc(io, "src/bootstrap.objects", ally, Io.Limit.unlimited);
     const olive_code = try Io.Dir.cwd().readFileAlloc(io, "src/bootstrap.olive", ally, Io.Limit.unlimited);
     const pear_code = try Io.Dir.cwd().readFileAlloc(io, "src/bootstrap.pear", ally, Io.Limit.unlimited);
 
     const compile_olive = step: {
-        var step = try BootstrapStep.start(io, "Loading the Olive compiler.", &vm);
+        var step = try BootstrapStep.start(io, "Loading the Olive compiler.", &heap);
         defer step.end(io);
-        break :step Value.from(try object_loader.load(ally, vm.get_heap(), objects_code));
+        break :step Value.from(try object_loader.load(ally, &heap, objects_code));
     };
     const olive = step: {
-        var step = try BootstrapStep.start(io, "Compiling Olive.", &vm);
+        var step = try BootstrapStep.start(io, "Compiling Olive.", &heap);
         defer step.end(io);
         const result = try compile_olive.call(&vm, &.{
             try Value.new_string(&heap, olive_code),
@@ -76,28 +71,28 @@ pub fn main(init: std.process.Init) !void {
         break :step Value.from(try vm.garbage_collect(start_of_heap, result.obj));
     };
     const olive_self_hosted = step: {
-        var step = try BootstrapStep.start(io, "Self-compiling Olive.", &vm);
+        var step = try BootstrapStep.start(io, "Self-compiling Olive.", &heap);
         defer step.end(io);
         break :step try olive.get_field("compile_olive").call(&vm, &.{
             try Value.new_string(&heap, olive_code),
         });
     };
     const olive_self_hosted_2 = step: {
-        var step = try BootstrapStep.start(io, "Self-compiling Olive.", &vm);
+        var step = try BootstrapStep.start(io, "Self-compiling Olive.", &heap);
         defer step.end(io);
         break :step try olive_self_hosted.get_field("compile_olive").call(&vm, &.{
             try Value.new_string(&heap, olive_code),
         });
     };
     _ = {
-        var step = try BootstrapStep.start(io, "Confirming self-hosting.", &vm);
+        var step = try BootstrapStep.start(io, "Confirming self-hosting.", &heap);
         defer step.end(io);
         if (!is_same(olive_self_hosted.obj, olive_self_hosted_2.obj)) {
             @panic("Not the same.");
         }
     };
     const compile_pear = step: {
-        var step = try BootstrapStep.start(io, "Keeping only Pear compiler.", &vm);
+        var step = try BootstrapStep.start(io, "Keeping only Pear compiler.", &heap);
         defer step.end(io);
         break :step Value.from(try vm.garbage_collect(start_of_heap, olive_self_hosted_2.get_field("compile_pear").obj));
     };
@@ -159,7 +154,7 @@ pub fn main(init: std.process.Init) !void {
     // }
 
     const pear = step: {
-        var step = try BootstrapStep.start(io, "Compiling Pear.", &vm);
+        var step = try BootstrapStep.start(io, "Compiling Pear.", &heap);
         defer step.end(io);
         const result = try compile_pear.call(&vm, &.{try Value.new_string(&heap, pear_code)});
         break :step Value.from(try vm.garbage_collect(start_of_heap, result.obj));
@@ -305,7 +300,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 // fn handle_tasks(ally: Ally, vm: *Vm, app_: Address) !Address {
-//     const heap = vm.heap;
+//     const heap = &heap;
 //     var app = app_;
 //     while (true) {
 //         const symbol = app.get(0).as_symbol();

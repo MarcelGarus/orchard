@@ -4,7 +4,6 @@ const Address = Heap.Address;
 const Word = Heap.Word;
 const Obj = Heap.Obj;
 const Vm = @import("vm.zig");
-const Ir = @import("ir.zig");
 
 obj: Obj,
 
@@ -160,26 +159,34 @@ pub fn get_args(self: Value) Obj {
 pub fn get_ir(self: Value) Obj {
     return self.obj.child(0).child(2);
 }
-pub fn get_fun(self: Value) Ir.Fun {
-    return Ir.Fun{ .obj = self.obj.child(0).child(3) };
+pub fn get_fun(self: Value) Vm.Fun {
+    return Vm.Fun{ .obj = self.obj.child(0).child(3) };
 }
 pub fn get_captured(self: Value) Value {
     return Value.from(self.obj.child(1));
 }
 
-pub fn call(function: Value, vm: *Vm, args: []const Value) !Value {
-    // std.debug.print("calling {f}\n", .{function.obj});
+pub fn call(function: Value, vm: anytype, args: []const Value) !Value {
     std.debug.assert(function.kind() == .function);
     std.debug.assert(function.get_args().size() == args.len);
-    // std.debug.print("flup\n", .{});
     const fun = function.get_fun();
     const closure = function.get_captured().obj;
-    const all_args = try vm.impl.ally.alloc(Word, args.len + 1);
-    for (args, 0..) |arg, i| all_args[i] = arg.obj.address;
-    all_args[args.len] = closure.address;
-    // std.debug.print("calling {f}\n", .{fun.obj});
-    const result = try vm.call(fun, all_args);
-    return .{ .obj = .{ .address = result } };
+    const all_args = try vm.ally.alloc(Obj, args.len + 1);
+    defer vm.ally.free(all_args);
+    for (args, 0..) |arg, i| all_args[i] = arg.obj;
+    all_args[args.len] = closure;
+
+    var fuel: usize = Vm.max_fuel;
+    const result = try vm.call(fun, all_args, &fuel);
+    return switch (result) {
+        .returned => |obj| .{ .obj = obj },
+        .crashed => |e| {
+            std.debug.print("\nUncaught crash from a Value.call:\n{f}\n", .{e});
+            std.process.exit(1);
+        },
+        .out_of_fuel => @panic("ran out of fuel (top-level Value.call)"),
+        .out_of_memory => return error.OutOfMemory,
+    };
 }
 
 pub fn format(self: Value, writer: *std.Io.Writer) !void {

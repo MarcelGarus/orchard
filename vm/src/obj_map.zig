@@ -15,6 +15,10 @@ pub fn ObjMap(T: type) type {
 
         pub const empty = Self{ .entries = ArrayList(Entry).empty };
 
+        pub fn deinit(self: *Self, ally: Ally) void {
+            self.entries.deinit(ally);
+        }
+
         pub fn put(self: *Self, ally: Ally, key: Obj, value: T) !void {
             try self.entries.append(ally, .{ .key = key, .value = value });
         }

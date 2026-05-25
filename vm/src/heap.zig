@@ -46,10 +46,6 @@ comptime {
 pub const Obj = packed struct {
     address: Word,
 
-    pub fn is_same(a: Obj, b: Obj) bool {
-        return a.address == b.address;
-    }
-
     pub fn header(self: Obj) *Header {
         return @ptrFromInt(self.address);
     }
@@ -163,6 +159,17 @@ pub const Obj = packed struct {
         bw.print("\n", .{}) catch return;
     }
 };
+
+pub fn is_same(a: Obj, b: Obj) bool {
+    if (a.is_inner() != b.is_inner()) return false;
+    if (a.size() != b.size()) return false;
+    if (a.is_inner()) {
+        for (a.children(), b.children()) |ac, bc| if (!is_same(ac, bc)) return false;
+    } else {
+        for (a.words(), b.words()) |aw, bw| if (aw != bw) return false;
+    }
+    return true;
+}
 
 memory: []Word,
 used: usize,
@@ -390,9 +397,13 @@ fn file_out_rec(obj: Obj, ally: Ally, writer: *std.Io.Writer, name_generator: *N
 pub fn copy_to_other_heap(from: *Heap, ally: Ally, to: *Heap, object: Obj) !Obj {
     mark(object, .{ .address = @intFromPtr(from.memory.ptr) });
     var mapping = ObjMap(Obj).empty;
+    defer mapping.deinit(ally);
     var cursor = Obj{ .address = @intFromPtr(from.memory.ptr) };
-    while (cursor.address < @intFromPtr(&from.memory[from.used])) {
+    const end = @intFromPtr(from.memory.ptr) + 8 * from.used;
+    while (cursor.address < end) {
+        const header_size = cursor.size();
         if (cursor.header().marked == 1) {
+            cursor.header().marked = 0;
             var mapped: Obj = undefined;
             if (cursor.is_inner()) {
                 var b = try to.build_inner();
@@ -401,15 +412,11 @@ pub fn copy_to_other_heap(from: *Heap, ally: Ally, to: *Heap, object: Obj) !Obj 
                 }
                 mapped = b.finish();
             } else {
-                var b = try to.build_leaf();
-                for (cursor.words()) |word| {
-                    try b.emit(word);
-                }
-                mapped = b.finish();
+                mapped = try to.new_leaf(cursor.words());
             }
             try mapping.put(ally, cursor, mapped);
         }
-        cursor.address += cursor.size();
+        cursor.address += 8 * (1 + header_size);
     }
     return mapping.get(object) orelse unreachable;
 }
