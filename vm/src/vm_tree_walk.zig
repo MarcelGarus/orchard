@@ -37,17 +37,21 @@ const Self = @This();
 
 ally: Ally,
 heap: *Heap,
-log_ub: bool = true,
-// Cap on the total number of expressions evaluated in a single `run`. The
-// tree-walker uses Zig's call stack, so unbounded recursion would blow the
-// host stack. When the cap is reached, eval returns error.OutOfExpressions.
-// This is a host-side runaway guard — not part of the VM spec, and not
-// observable as a Vm.Result variant.
-max_expressions: usize = std.math.maxInt(usize),
+log_ub: bool,
+max_expressions: usize,
 expressions_evaluated: usize = 0,
 
-pub fn init(heap: *Heap, ally: Ally) !Self {
-    return .{ .ally = ally, .heap = heap };
+const Options = struct {
+    log_undefined_behavior: bool = true,
+    max_expressions: usize = std.math.maxInt(usize),
+};
+pub fn init(heap: *Heap, ally: Ally, options: Options) !Self {
+    return .{
+        .ally = ally,
+        .heap = heap,
+        .log_ub = options.log_undefined_behavior,
+        .max_expressions = options.max_expressions,
+    };
 }
 
 pub const Value = union(enum) {

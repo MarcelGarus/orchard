@@ -2,9 +2,9 @@
 // executable expressions (see bootstrap.objects for a specification). There are
 // multiple implementations with different tradeoffs:
 //
-// - vm_tree_walking.zig: Every time a function is executed, this VM traverses
-//   the expression tree and interprets the nodes. Slow, but catches all
-//   undefined behavior.
+// - vm_tree_walk.zig: Every time a function is executed, this VM traverses the
+//   expression tree and interprets the nodes. Slow, but catches all undefined
+//   behavior.
 // - vm_byte_code.zig: When a function is executed, compiles it into byte code
 //   (cached) and runs it. This is faster than the tree-walking interpreter and
 //   exploits undefined behavior for optimizations.
@@ -28,12 +28,10 @@ const Word = Heap.Word;
 const Obj = Heap.Obj;
 const get_symbol = Heap.get_symbol;
 
-pub const TreeWalkingInterpreter = @import("vm_tree_walking.zig");
-pub const ByteCodeInterpreter = @import("vm_byte_code.zig");
-pub const Default = switch (builtin.cpu.arch) {
-    // .x86_64 => Vm(@import("vm_x86_64.zig")), // a JIT compiler
-    else => ByteCodeInterpreter,
-};
+pub const TreeWalk = @import("vm_tree_walk.zig");
+pub const ByteCode = @import("vm_byte_code.zig");
+pub const Jit = if (builtin.cpu.arch == .x86_64) @import("vm_x86_64.zig") else void;
+pub const Default = if (builtin.cpu.arch == .x86_64) Jit else ByteCode;
 
 pub const max_fuel = std.math.maxInt(usize);
 pub const Result = union(enum) {
@@ -41,6 +39,15 @@ pub const Result = union(enum) {
     crashed: Obj,
     out_of_fuel,
     out_of_memory,
+
+    pub fn format(result: Result, writer: *Writer) !void {
+        try writer.print("{s}", .{@tagName(result)});
+        switch (result) {
+            .returned => |o| try writer.print(" {f}", .{o}),
+            .crashed => |o| try writer.print(" {f}", .{o}),
+            else => {},
+        }
+    }
 };
 
 pub const Fun = struct {

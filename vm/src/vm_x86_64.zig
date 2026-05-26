@@ -1,64 +1,136 @@
-// This module JIT-compiles instructions to x86 machine code. We map the VM semantics like this:
+// This module JIT-compiles instructions to x86 machine code. The whole idea is
+// to map the semantics of my VM to semantics of the x86-64 machine because it
+// has a more efficient interpreter (the CPU). This is how I do it:
 //
-// Heap: The VM's heap is a memory region that we allocate (the Zig Heap struct does that). The heap
-//   can't grow dynamically; if you use it too much, you get an out-of-memory error instead.
-// Data stack: The VM's data stack is a memory region that we allocate. The data stack can't grow
-//   dynamically; code can overflow it.
-// Call stack:  The VM's call stack is a memory region that we allocate. The call stack can't grow
-//   dynamically; code can overflow it.
+// 0. I create the VM (including memory for its stack and the heap) before doing
+//    any machine code shenanigans. In particular, I allocate memory:
 //
-// r8 = heap cursor
-// r9 = call stack cursor
-// rsp = data stack cursor
-// rdi = Vm state
-// rsi = Zig state
-// r15 = original rsp
+//    Heap:       The VM's heap is a memory region that I allocate before (the
+//                Zig Heap struct does that). The heap can't grow dynamically;
+//                if you use it too much, you get an out-of-memory error
+//                instead.
+//    Data stack: The VM's data stack is a memory region that I allocate before.
+//                The data stack can't grow dynamically; code can overflow it.
+//    Call stack: The VM's call stack is a memory region that we allocate before.
+//                The call stack can't grow dynamically; code can overflow it.
+//
+// 1. Before running machine code, I prepare data structures to pass to it:
+//
+//    VM state:  The VM and heap contain Zig data structures (slices, etc.),
+//               which don't have a defined memory layout. I extract relevant
+//               parts (stack and heap cursors) into a VmState struct.
+//    Zig state: I want to be able to call certain Zig code from the VM, for
+//               example, to do a garbage collection without re-implementing
+//               that in assembly. The Zig state bundles up stuff that this Zig
+//               code needs (Allocator, Vm). I pass a pointer to the Zig state
+//               to the machine code, which treats it like an opaque pointer.
+//
+// 2. I call a generated function with the C calling convention with the
+//    prepared state. The machine code of my compiled functions doesn't use the
+//    SysV calling convention (the C ABI), but a custom one instead:
+//
+//    rax = intra-instruction temporary state (e.g. idiv always uses rax)
+//    rbx = intra-instruction temporary state
+//    rcx = sandbox stack cursor
+//    rdx = original rsp
+//    rsi = fuel left
+//    rdi = heap cursor
+//    rsp = data stack cursor
+//    rbp = call stack cursor
+//    r8  = general purpose register
+//    r9  = general purpose register
+//    r10 = general purpose register
+//    r11 = general purpose register
+//    r12 = general purpose register
+//    r13 = general purpose register
+//    r14 = general purpose register
+//    r15 = general purpose register
+//
+//    When you call a function, upon return, the following registers are
+//    guaranteed to be unchanged: rdx, rsi, rdi, rsp, rbp.
+//    All other registers may be overwritten.
+//
+//    To bridge the calling convention, I backup the SysV state (callee-saved
+//    registers) on the x86 stack. I store the VM state and the Zig state on the
+//    x86 stack. I copy heap cursor, stack cursors, and fuel into registers.
+//    Then I store the original rsp in rdx and store the data stack cursor into
+//    rsp. From that point, I can use push and pop instructions to move contents
+//    between my stack and the registers. However, calls become more complicated
+//    (I can't use the call instruction, since it would modify the data stack).
+//
+// 3. Generated machine code runs.
+//
+// 4. Upon returning to Zig code, I use the original rsp (backupped in rdx) to
+//    get access to the Vm state and Zig state. I copy the VM's state from
+//    registers into the Vm state and go back to Zig code.
 
 const std = @import("std");
-const ArrayList = std.ArrayListUnmanaged;
+const ArrayList = std.ArrayList;
 const Map = std.AutoArrayHashMap;
 const Ally = std.mem.Allocator;
 
 const Heap = @import("heap.zig");
 const Word = Heap.Word;
 const Obj = Heap.Obj;
+const get_symbol = Heap.get_symbol;
 const ObjMap = @import("obj_map.zig").ObjMap;
-const Val = @import("pear_value.zig");
-const Interpreter = @import("vm_interpreter.zig");
-const Instruction = Interpreter.Instruction;
-const Ir = @import("ir.zig");
+const Vm = @import("vm.zig");
 
-const Vm = @This();
+const Self = @This();
 
 ally: Ally,
 // TODO: add guard pages next to the heap and stacks
+
 heap: *Heap,
+// The generated machine code will create objects with the exact same memory
+// layout as Zig code or other VMs.
+
 data_stack: Stack,
+// The stack is private to this VM. Unlike the byte code interpreter, this stack
+// grows from the top down (from high addresses toward low addresses; filling
+// the allocated memory region from the back). The native x86 stack has the same
+// property and it allows us to emit "push" and "pop" instructions that directly
+// operate on the data stack.
+
 call_stack: Stack,
-jit_cache: ObjMap([]const u8), // maps (pointer to instructions obj) to (x86_64 machine code)
-run_jitted_wrapper: *const fn (*VmState, *ZigState, [*]const u8) callconv(.c) void,
+// Also grows downward, contains callees.
 
-const VmState = packed struct {
-    heap_cursor: *anyopaque,
-    data_stack_cursor: *anyopaque,
-    call_stack_cursor: *anyopaque,
+sandbox_stack: Stack,
+// Also grows downward. Every sandbox scope pushes a 4-word struct:
+// { on_crash, heap, call, data }. The translator from SysV to my calling
+// convention adds a sandbox scope, so when a crash happens, there is guaranteed
+// to be an entry on the stack.
 
-    fn load_from_vm(self: *VmState, vm: *Vm) void {
-        self.heap_cursor = @ptrFromInt(@intFromPtr(vm.heap.memory.ptr) + (8 * vm.heap.used));
-        self.data_stack_cursor = @ptrFromInt(@intFromPtr(vm.data_stack.memory.ptr) + (8 * vm.data_stack.cursor));
-        self.call_stack_cursor = @ptrFromInt(@intFromPtr(vm.call_stack.memory.ptr) + (8 * vm.call_stack.cursor));
+jit_cache: ObjMap([]const u8),
+// Maps (pointer to instructions obj) to (x86_64 machine code). The machine code
+// memory regions are marked as executable memory pages.
+
+run_jitted_wrapper: *const fn (*VmState, *ZigState, [*]const u8) callconv(.c) usize,
+// Returns a status code: 0 = returned normally, 1 = crashed.
+
+// Laid out in C order so the JIT can index into it with fixed byte offsets.
+const VmState = extern struct {
+    heap_cursor: usize, // +0
+    data_stack_cursor: usize, // +8
+    call_stack_cursor: usize, // +16
+    sandbox_stack_cursor: usize, // +24
+
+    fn load_from_vm(self: *VmState, vm: *Self) void {
+        self.heap_cursor = @intFromPtr(vm.heap.memory.ptr) + (8 * vm.heap.used);
+        self.data_stack_cursor = @intFromPtr(vm.data_stack.memory.ptr) + (8 * vm.data_stack.cursor);
+        self.call_stack_cursor = @intFromPtr(vm.call_stack.memory.ptr) + (8 * vm.call_stack.cursor);
+        self.sandbox_stack_cursor = @intFromPtr(vm.sandbox_stack.memory.ptr) + (8 * vm.sandbox_stack.cursor);
     }
-    fn store_to_vm(self: *VmState, vm: *Vm) void {
-        vm.heap.used = (@intFromPtr(self.heap_cursor) - @intFromPtr(vm.heap.memory.ptr)) / 8;
-        vm.data_stack.cursor = (@intFromPtr(self.data_stack_cursor) - @intFromPtr(vm.data_stack.memory.ptr)) / 8;
-        vm.call_stack.cursor = (@intFromPtr(self.call_stack_cursor) - @intFromPtr(vm.call_stack.memory.ptr)) / 8;
+    fn store_to_vm(self: *VmState, vm: *Self) void {
+        vm.heap.used = (self.heap_cursor - @intFromPtr(vm.heap.memory.ptr)) / 8;
+        vm.data_stack.cursor = (self.data_stack_cursor - @intFromPtr(vm.data_stack.memory.ptr)) / 8;
+        vm.call_stack.cursor = (self.call_stack_cursor - @intFromPtr(vm.call_stack.memory.ptr)) / 8;
+        vm.sandbox_stack.cursor = (self.sandbox_stack_cursor - @intFromPtr(vm.sandbox_stack.memory.ptr)) / 8;
     }
 };
 const ZigState = struct {
-    vm: *Vm,
+    vm: *Self,
 };
-
-// TODO: std.linux.munmap() the cache
 
 // The stack grows downward, just like the native x86 stack. This allows us to use push and pop
 // instructions directly to modify the (data) stack.
@@ -81,552 +153,1702 @@ const Stack = struct {
     }
 };
 
-pub fn init(heap: *Heap, ally: Ally) !Vm {
+pub fn init(heap: *Heap, ally: Ally) !Self {
     return .{
         .ally = ally,
         .heap = heap,
         .data_stack = try Stack.init(ally, 1000),
         .call_stack = try Stack.init(ally, 1000),
+        .sandbox_stack = try Stack.init(ally, 1000),
         .jit_cache = ObjMap([]const u8).empty,
-        .run_jitted_wrapper = @ptrCast(try make_run_fun(ally)),
+        .run_jitted_wrapper = wrapper: {
+            // SysV args: rdi=*VmState, rsi=*ZigState, rdx=jitted machine code ptr.
+            //
+            // Native-stack layout after the prologue (low to high):
+            //   [rdx + 0]  = *ZigState
+            //   [rdx + 8]  = *VmState
+            //   [...]      = saved callee-saved regs
+            //
+            // Returns (in rax): 0 = function returned normally, 1 = a .crash
+            // unwound to our outer sandbox handler.
+            var mc = MachineCode{ .ally = ally };
+            defer mc.deinit();
+            const sink = &mc;
+
+            // Save SysV callee-saved registers we're about to clobber.
+            try sink.emit("push {reg}", .{.rbx});
+            try sink.emit("push {reg}", .{.rbp});
+            try sink.emit("push {reg}", .{.r12});
+            try sink.emit("push {reg}", .{.r13});
+            try sink.emit("push {reg}", .{.r14});
+            try sink.emit("push {reg}", .{.r15});
+
+            // Park *VmState and *ZigState on the native stack so hooks can reach
+            // them via [rdx + 8] / [rdx].
+            try sink.emit("push {reg}", .{.rdi}); // *VmState
+            try sink.emit("push {reg}", .{.rsi}); // *ZigState
+
+            // Stash jitted_ptr (currently rdx) in rax so we can jmp to it later;
+            // rdx is about to become the original-rsp marker.
+            try sink.emit("mov {reg}, {reg}", .{ .rax, .rdx });
+
+            // Switch from SysV to Orchard convention.
+            try sink.emit("mov {reg}, {reg}", .{ .rdx, .rsp }); // rdx = original rsp
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rdx, 8 }); // rbx = *VmState
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rdi, .rbx, 0 }); // rdi = heap
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbp, .rbx, 16 }); // rbp = call_stack
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rcx, .rbx, 24 }); // rcx = sandbox_stack
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rsp, .rbx, 8 }); // rsp = data (LAST)
+
+            // Install the outer sandbox entry. Its crash_target is the .L_crash
+            // label below; on unwind, the jitted code restores cursors from the
+            // entry and jumps there, where we'll set rax=1 and return.
+            try sink.emit("sub {reg}, {i32}", .{ .rcx, 32 });
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rcx, 24, .rsp }); // data snapshot
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rcx, 16, .rbp }); // call snapshot
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rcx, 8, .rdi }); // heap snapshot
+            const crash_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rcx, 0, .rbx }); // crash_target
+
+            // "Call" the jitted code: push our return address onto the Orchard
+            // call stack and jmp into it.
+            try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
+            const ret_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
+            try sink.emit("jmp {reg}", .{.rax});
+
+            // --- Normal-return path ---
+            try sink.patch_to_here(ret_patch);
+            try sink.emit("add {reg}, {i32}", .{ .rcx, 32 }); // pop our outer sandbox entry
+            try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, 0) }); // status = returned
+            const to_epilogue = try sink.placeholder("jmp {label}", .{});
+
+            // --- Crash path ---
+            // .crash already restored cursors and popped its sandbox entry. We just
+            // record the status and fall through to the epilogue.
+            try sink.patch_to_here(crash_patch);
+            try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, 1) }); // status = crashed
+            try sink.patch_to_here(to_epilogue);
+
+            // --- Shared epilogue ---
+            // Write the updated cursors back into *VmState.
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rdx, 8 }); // rbx = *VmState
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
+
+            // Switch back to the native stack and discard the parked pointers.
+            try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
+            try sink.emit("pop {reg}", .{.rsi}); // discard *ZigState
+            try sink.emit("pop {reg}", .{.rdi}); // discard *VmState
+
+            // Restore SysV callee-saved registers, in reverse order. rax (the
+            // status code) is preserved across all these.
+            try sink.emit("pop {reg}", .{.r15});
+            try sink.emit("pop {reg}", .{.r14});
+            try sink.emit("pop {reg}", .{.r13});
+            try sink.emit("pop {reg}", .{.r12});
+            try sink.emit("pop {reg}", .{.rbp});
+            try sink.emit("pop {reg}", .{.rbx});
+
+            try sink.emit("ret", .{});
+
+            break :wrapper @ptrCast(try sink.finalize());
+        },
     };
 }
-pub fn make_run_fun(ally: Ally) ![]const u8 {
-    var code = MachineCode.init(ally);
-    // Args: vm state (rdi), Zig state (rsi), machine code (rdx)
-
-    // Switch from Sys-V calling convention to Orchard calling convention.
-    try code.emit("mov r15, rsp", .{});
-    try code.emit("mov r8, [rdi]", .{}); // heap
-    try code.emit("mov rsp, [rdi + 8]", .{}); // data stack
-    try code.emit("mov r9, [rdi + 16]", .{}); // call stack
-
-    // "call" the jitted code (putting our next instruction on the VM's call stack)
-    try code.emit("sub r9, 8", .{});
-    try code.emit("mov rax, {base}", .{});
-    const a = try code.emit_placeholder("add rax, {:8}", .{@as(i8, 0)});
-    try code.emit("mov [r9], rax", .{});
-    try code.emit("jmp rdx", .{});
-    const b = code.len();
-    code.patch(a, "add rax, {:8}", .{@as(i8, @intCast(b))});
-
-    // Switch from Orchard calling convention to Sys-V calling convention.
-    try code.emit("mov [rdi], r8", .{}); // heap
-    try code.emit("mov [rdi + 8], rsp", .{}); // data stack
-    try code.emit("mov [rdi + 16], r9", .{}); // call stack
-    try code.emit("mov rsp, r15", .{});
-
-    try code.emit("ret", .{});
-
-    return try code.finish();
+pub fn deinit(_: *Self) !void {
+    // TODO: std.linux.munmap() the cache
 }
 
-pub fn push(vm: *Vm, word: Word) !void {
-    try vm.data_stack.push(word);
-}
-pub fn pop(vm: *Vm) Word {
-    return vm.data_stack.pop();
-}
+pub fn call(vm: *Self, fun: Vm.Fun, args: []const Obj, fuel: *usize) !Vm.Result {
+    // TODO: implement fuel tracking
+    _ = fuel;
 
-pub fn run(vm: *Vm, fun: Ir.Fun, args: []const Word) !Word {
-    return try vm.run_jitted(try vm.compile(fun), args);
+    vm.data_stack.cursor = vm.data_stack.memory.len;
+    vm.call_stack.cursor = vm.call_stack.memory.len;
+    vm.sandbox_stack.cursor = vm.sandbox_stack.memory.len;
+
+    const jitted = vm.compile(fun) catch |err| switch (err) {
+        error.OutOfMemory => return .out_of_memory,
+        error.UndefinedBehavior => return error.UndefinedBehavior,
+    };
+    for (args) |arg| vm.data_stack.push(arg.address) catch return .out_of_memory;
+    const status = vm.run_jitted(jitted) catch |err| switch (err) {
+        error.OutOfMemory => return .out_of_memory,
+    };
+    const top = Obj{ .address = vm.data_stack.pop() };
+    return switch (status) {
+        0 => .{ .returned = top },
+        1 => .{ .crashed = top },
+        else => unreachable,
+    };
 }
-pub fn run_jitted(vm: *Vm, jitted: []const u8, args: []const Word) !Word {
-    _ = args;
+pub fn run_jitted(vm: *Self, jitted: []const u8) error{OutOfMemory}!usize {
     std.debug.print("data stack:", .{});
-    for (vm.data_stack.memory[vm.data_stack.cursor..]) |byte| std.debug.print(" {x:02}", .{byte});
+    for (vm.data_stack.memory[vm.data_stack.cursor..]) |word| std.debug.print(" {x:016}", .{word});
     std.debug.print("\n", .{});
     std.debug.print("running jitted instructions\n", .{});
 
     var zig_state = ZigState{ .vm = vm };
     var vm_state: VmState = undefined;
     vm_state.load_from_vm(vm);
-    std.debug.print("state = {any}\n", .{vm_state});
-    // @breakpoint();
-    vm.run_jitted_wrapper(&vm_state, &zig_state, @ptrCast(jitted));
-    std.debug.print("state = {any}\n", .{vm_state});
+    const status = vm.run_jitted_wrapper(&vm_state, &zig_state, @ptrCast(jitted));
     vm_state.store_to_vm(vm);
 
-    std.debug.print("ran jitted instructions\n", .{});
+    std.debug.print("ran jitted instructions (status={d})\n", .{status});
     std.debug.print("data stack:", .{});
-    for (vm.data_stack.memory[vm.data_stack.cursor..]) |word| std.debug.print(" {x:02}", .{word});
+    for (vm.data_stack.memory[vm.data_stack.cursor..]) |word| std.debug.print(" {x:016}", .{word});
     std.debug.print("\n", .{});
-    return 0;
+    return status;
 }
-pub fn compile(vm: *Vm, fun: Ir.Fun) ![]const u8 {
+pub fn compile(vm: *Self, fun: Vm.Fun) !([]const u8) {
     if (vm.jit_cache.get(fun.obj)) |machine_code| return machine_code;
-    const machine_code = try compile_instructions(
-        vm.ally,
-        (try Interpreter.really_compile(vm.ally, fun)).instructions,
-    );
+    const machine_code = try compile_fun(vm, fun);
     try vm.jit_cache.put(vm.ally, fun.obj, machine_code);
     return machine_code;
 }
-// Turns the instructions into x86 machine code bytes.
-pub fn compile_instructions(ally: Ally, instructions: []const Instruction) ![]const u8 {
-    var code = MachineCode.init(ally);
-    _ = try compile_all(&code, instructions);
-    try code.emit("add r9, 8", .{});
-    try code.emit("jmp [r9 - 8]", .{});
-    const machine_code = try code.finish();
 
-    std.debug.print("machine code:", .{});
-    for (machine_code) |byte| std.debug.print(" {x:02}", .{byte});
+// Compiles a Vm.Fun directly to x86 machine code. We track named values on a
+// parallel "name stack" so .name lookups become `push [rsp + offset*8]`.
+pub fn compile_fun(vm: *Self, fun: Vm.Fun) !([]const u8) {
+    const ally = vm.ally;
+
+    var arena = std.heap.ArenaAllocator.init(ally);
+    defer arena.deinit();
+    const ir = parse_ir(vm, arena.allocator(), fun) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.UndefinedBehavior => return error.UndefinedBehavior,
+    };
+    compute_regs(ir);
+    std.debug.print("== fun ==\n{f}\n", .{fun});
+    std.debug.print("== jit ir ==\n{f}", .{ir});
+
+    var asm_sink = try Asm.init(arena.allocator());
+    defer asm_sink.deinit();
+    try emit_fun(&asm_sink, ir, fun);
+    std.debug.print("== asm ==\n{s}", .{asm_sink.bytes.items});
+
+    var mc = MachineCode{ .ally = ally };
+    defer mc.deinit();
+    try emit_fun(&mc, ir, fun);
+    std.debug.print("== machine code ==\n", .{});
+    for (mc.bytes.items) |b| std.debug.print(" {x:02}", .{b});
     std.debug.print("\n", .{});
 
-    return machine_code;
+    return try mc.finalize();
 }
-const MachineCode = struct {
-    ally: std.mem.Allocator,
-    bytes: ArrayList(u8),
-    patches: ArrayList(usize), // indizes of 8-byte values in the bytes where the final base address should be added
 
-    pub fn init(ally: std.mem.Allocator) MachineCode {
-        return .{ .ally = ally, .bytes = ArrayList(u8).empty, .patches = ArrayList(usize).empty };
+// JIT IR: Similar to the Zig compiler, I turn expressions into a prefix-encoded
+// dense representation with variable-sized nodes. Each expression occupies a
+// contiguous run of slots that start with a header. Children come afterwards.
+//
+// Example: (add (word 2) (word 3))
+// Becomes: [add ][word][   2][word][   3]
+//
+// This means that I can't just go to e.g. the second operand of an add node,
+// but I have to traverse nodes depth-first from the start.
+
+pub const Ir = struct {
+    slots: []u64,
+
+    pub fn format(ir: Ir, writer: *std.Io.Writer) error{WriteFailed}!void {
+        var cursor: Index = 0;
+        _ = try dump_node(ir.slots, &cursor, 0, writer);
     }
-    fn emit_byte(self: *MachineCode, byte: u8) !void {
-        try self.bytes.append(self.ally, byte);
+};
+const Index = usize;
+const Header = packed struct {
+    tag: Tag,
+    regs: u8 = 0, // filled in later by the regs pass
+    rest: u48 = 0, // tag-specific payload
+};
+const Tag = enum(u8) {
+    word, // value (u64)
+    object, // address (pointer)
+    name, // name (pointer into VM heap's symbol object)
+    let, // name (pointer into VM heap's symbol object), def, body
+    also, // ignored, value
+    add, // left, right
+    subtract, // left, right
+    multiply, // left, right
+    divide, // left, right
+    modulo, // left, right
+    shift_left, // left, right
+    shift_right, // left, right
+    and_, // left, right
+    or_, // left, right
+    xor, // left, right
+    compare, // left, right
+    f_add, // left, right
+    f_subtract, // left, right
+    f_multiply, // left, right
+    f_divide, // left, right
+    f_compare, // left, right
+    int_to_float, // child
+    float_to_int, // child
+    f_is_finite, // child
+    if_, // cond, then, else
+    new_leaf, // [rest = num children] child 0, child 1, ...
+    new_inner, // [rest = num children] child 0, child 1, ...
+    flatten_to_leaf, // child
+    flatten_to_inner, // child
+    points, // child
+    size, // child
+    load, // object, index
+    load_imm, // index (usize), object
+    call, // [rest = num args] arg 0, arg1, ..., fun
+    call_imm, // [rest = num args] fun (heap obj), arg 0, arg 1, ...
+    call_indirect, // [rest = num args] args, fun
+    rec, // [rest = num args] arg 0, arg 1, ...
+    collect_garbage, // child
+    sandbox, // fuel, body
+    use_fuel, // amount, child
+    crash, // error
+    unreachable_, // header
+};
+
+fn eat_slot(slots: []const u64, at: *Index) u64 {
+    const slot = slots[at.*];
+    at.* += 1;
+    return slot;
+}
+fn dump_node(slots: []const u64, at: *Index, indent: usize, writer: *std.Io.Writer) error{WriteFailed}!void {
+    for (0..indent) |_| try writer.print("  ", .{});
+    const header: Header = @bitCast(eat_slot(slots, at));
+    try writer.print("{s}", .{@tagName(header.tag)});
+    switch (header.tag) {
+        .word => try writer.print(" {d}\n", .{eat_slot(slots, at)}),
+        .object => try writer.print(" 0x{x}\n", .{eat_slot(slots, at)}),
+        .name => {
+            const name_obj = Obj{ .address = eat_slot(slots, at) };
+            try writer.print(" ", .{});
+            try Obj.format_string(get_symbol(name_obj), false, writer);
+            try writer.print("\n", .{});
+        },
+        .let => {
+            const name_obj = Obj{ .address = eat_slot(slots, at) };
+            try writer.print(" ", .{});
+            try Obj.format_string(get_symbol(name_obj), false, writer);
+            try writer.print("\n", .{});
+            try dump_node(slots, at, indent + 1, writer); // def
+            try dump_node(slots, at, indent + 1, writer); // body
+        },
+        .also,
+        .add,
+        .subtract,
+        .multiply,
+        .divide,
+        .modulo,
+        .shift_left,
+        .shift_right,
+        .and_,
+        .or_,
+        .xor,
+        .compare,
+        .f_add,
+        .f_subtract,
+        .f_multiply,
+        .f_divide,
+        .f_compare,
+        .load,
+        .call_indirect,
+        .sandbox,
+        .use_fuel,
+        => {
+            try writer.print("\n", .{});
+            try dump_node(slots, at, indent + 1, writer);
+            try dump_node(slots, at, indent + 1, writer);
+        },
+        .int_to_float,
+        .float_to_int,
+        .f_is_finite,
+        .flatten_to_leaf,
+        .flatten_to_inner,
+        .points,
+        .size,
+        .crash,
+        .collect_garbage,
+        => {
+            try writer.print("\n", .{});
+            try dump_node(slots, at, indent + 1, writer);
+        },
+        .if_ => {
+            try writer.print("\n", .{});
+            try dump_node(slots, at, indent + 1, writer); // cond
+            try dump_node(slots, at, indent + 1, writer); // then
+            try dump_node(slots, at, indent + 1, writer); // else
+        },
+        .new_leaf, .new_inner, .rec => {
+            const n: usize = @intCast(header.rest);
+            try writer.print("\n", .{});
+            for (0..n) |_| try dump_node(slots, at, indent + 1, writer);
+        },
+        .call => {
+            const n: usize = @intCast(header.rest);
+            try writer.print("\n", .{});
+            for (0..n) |_| try dump_node(slots, at, indent + 1, writer); // args
+            try dump_node(slots, at, indent + 1, writer); // fun
+        },
+        .call_imm => {
+            const n: usize = @intCast(header.rest);
+            try writer.print(" 0x{x}\n", .{eat_slot(slots, at)});
+            for (0..n) |_| try dump_node(slots, at, indent + 1, writer);
+        },
+        .load_imm => {
+            try writer.print(" {d}\n", .{eat_slot(slots, at)});
+            try dump_node(slots, at, indent + 1, writer);
+        },
+        .unreachable_ => try writer.print("\n", .{}),
     }
-    pub fn len(self: MachineCode) usize {
-        return self.bytes.items.len;
-    }
-    pub fn emit(self: *MachineCode, comptime x86_instr: []const u8, args: anytype) !void {
-        std.debug.print("{s:<30} {any:<30}\n", .{ x86_instr, args });
-        const constants = .{
-            // TODO: remove some unused instructions from here
-            .hlt = "f4",
-            .@"push qword {:i32}" = "68 {0:i32le}",
-            .@"push [rsp]" = "ff 34 24",
-            .@"push [rsp + {:8}]" = "ff 74 24 {0:i8}",
-            .@"push [rsp + {:32}]" = "ff b4 24 {0:i32le}",
-            .@"push rdi" = "57",
-            .@"push rsi" = "56",
-            .@"push rax" = "50",
-            .@"push [rax]" = "ff 30",
-            .@"push rbx" = "53",
-            .@"push rcx" = "51",
-            .@"push r8" = "41 50",
-            .@"push r9" = "41 51",
-            .@"pop rdi" = "5f",
-            .@"pop rsi" = "5e",
-            .@"pop rax" = "58",
-            .@"pop rbx" = "5b",
-            .@"pop rcx" = "59",
-            .@"pop rdx" = "5a",
-            .@"mov rsp, [rdi + 8]" = "48 8b 67 08",
-            .@"mov rsp, [rdi + 16]" = "48 8b 67 10",
-            .@"mov rsp, [rdi + 24]" = "48 8b 67 18",
-            .@"mov rsp, r15" = "4c 89 fc",
-            .@"mov rdi, rbx" = "48 89 df",
-            .@"mov rdi, [r8]" = "49 8b 38",
-            .@"mov rdi, r13" = "4c 89 ef",
-            .@"mov [rdi], r8" = "4c 89 07",
-            .@"mov [rdi + 8], rsp" = "48 89 67 08",
-            .@"mov [rdi + 8], r8" = "4c 89 47 08",
-            .@"mov [rdi + 16], r9" = "4c 89 4f 10",
-            .@"mov [rdi + 16], rsp" = "48 89 67 10",
-            .@"mov rsi, r14" = "4c 89 f6",
-            .@"mov rax, {base}" = "48 b8 {base:u64le}",
-            .@"mov rax, {:64}" = "48 b8 {0:u64le}",
-            .@"mov rax, rsp" = "48 89 e0",
-            .@"mov rax, [rsp]" = "48 8b 04 24",
-            .@"mov rax, r8" = "4c 89 c0",
-            .@"mov rax, [r9]" = "49 8b 01",
-            .@"mov rax, r10" = "4c 89 d0",
-            .@"mov rax, r12" = "4c 89 e0",
-            .@"mov rax, [rax]" = "48 8b 00",
-            .@"mov rax, [r10]" = "49 8b 02",
-            .@"mov rax, [r10 - 8]" = "49 8b 42 f8",
-            .@"mov rax, [r12]" = "49 8b 04 24",
-            .@"mov rbx, 0xffffffffffff" = "48 bb ff ff ff ff ff ff 00 00",
-            .@"mov rbx, {:64}" = "48 bb {0:u64le}",
-            .@"mov rbx, rsp" = "48 89 e3",
-            .@"mov rbx, [rdi]" = "48 8b 1f",
-            .@"mov rbx, [rax]" = "48 8b 18",
-            .@"mov rcx, r8" = "4c 89 c1",
-            .@"mov rcx, [rbx]" = "48 8b 0b",
-            .@"mov rcx, [r10]" = "49 8b 0a",
-            .@"mov r8, [rdi]" = "4c 8b 07",
-            .@"mov r8, [rdi + 8]" = "4c 8b 47 08",
-            .@"mov [r8], rax" = "49 89 00",
-            .@"mov [r8], rbx" = "49 89 18",
-            .@"mov [r8], rcx" = "49 89 08",
-            .@"mov [r8 + 8], rax" = "49 89 40 08",
-            .@"mov r9, [rdi + 16]" = "4c 8b 4f 10",
-            .@"mov r9, [rdi + 24]" = "4c 8b 4f 18",
-            .@"mov [r9], rax" = "49 89 01",
-            .@"mov [r10], rax" = "49 89 02",
-            .@"mov [r10], rcx" = "49 89 0a",
-            .@"mov [r10], {:32}" = "49 c7 02 {0:u32le}",
-            .@"mov [r10 - 8], rax" = "49 89 42 f8",
-            .@"mov [r10 - 16], rax" = "49 89 42 f0",
-            .@"mov [r12], rax" = "49 89 04 24",
-            .@"mov [r12], {:32}" = "49 c7 04 24 {0:u32le}",
-            .@"mov [r12 - 16], rax" = "49 89 44 24 f0",
-            .@"mov r13, rdi" = "49 89 fd",
-            .@"mov r14, rsi" = "49 89 f6",
-            .@"mov r15, rsp" = "49 89 e7",
-            .@"add rsp, {:8}" = "48 83 c4 {0:i8}",
-            .@"add rsp, rax" = "48 01 c4",
-            .@"add rsp, rbx" = "48 01 dc",
-            .@"add rax, 8" = "48 83 c0 08",
-            .@"add rax, {:8}" = "48 83 c0 {0:i8}",
-            .@"add rax, rbx" = "48 01 d8",
-            .@"add rax, [r10 - 16]" = "49 03 42 f0",
-            .@"add r8, 8" = "49 83 c0 08",
-            .@"add r8, 16" = "49 83 c0 10",
-            .@"add r9, 8" = "49 83 c1 08",
-            .@"add r10, 8" = "49 83 c2 08",
-            .@"add r12, 8" = "49 83 c4 08",
-            .@"sub rax, 8" = "49 83 e8 08",
-            .@"sub rax, {:32}" = "48 2d {0:u32le}", // TODO: remove?
-            .@"sub rax, rbx" = "48 29 d8",
-            .@"sub rax, [r10 - 16]" = "49 2b 42 f0",
-            .@"sub rbx, 8" = "48 83 eb 08",
-            .@"sub r9, 8" = "49 83 e9 08",
-            .@"sub r10, rax" = "49 29 c2",
-            .@"sub r10, rbx" = "49 29 da",
-            .@"sub r10, 8" = "49 83 ea 08",
-            .@"sub r10d, {:32}" = "41 81 ea {0:u32le}",
-            .@"imul rax, rbx" = "48 0f af c3",
-            .@"shl rbx, 3" = "48 c1 e3 03",
-            .@"and rax, rbx" = "48 21 d8",
-            .@"xor rax, rax" = "48 31 c0",
-            .@"cmp rax, 0" = "48 83 f8 00",
-            .@"cmp rcx, 0" = "48 83 f9 00",
-            .@"cmovnz rax, rbx" = "48 0f 45 c3",
-            .@"jz {:32}" = "0f 84 {0:i32le}",
-            .@"jmp {:32}" = "e9 {0:i32le}",
-            .@"jmp rax" = "ff e0",
-            .@"jmp rbx" = "ff e3",
-            .@"jmp rdx" = "ff e2",
-            .@"jmp [r9 - 8]" = "41 ff 61 f8",
-            .@"call {:32}" = "e8 {0:i32le}",
-            .@"call rax" = "ff d0",
-            .ret = "c3",
-        };
-        inline for (@typeInfo(@TypeOf(constants)).@"struct".fields) |field| {
-            if (comptime std.mem.eql(u8, x86_instr, field.name)) {
-                const bytes = @field(constants, field.name);
-                comptime var iter = std.mem.splitScalar(u8, bytes, ' ');
-                inline while (comptime iter.next()) |item| {
-                    if (comptime std.mem.startsWith(u8, item, "{")) {
-                        const content = item[1..(item.len - 1)];
-                        comptime var it = std.mem.splitScalar(u8, content, ':');
-                        const index_str = comptime it.next() orelse @compileError("expected index part");
-                        const how_to_emit = comptime it.next() orelse @compileError("expected how to emit");
-                        if (comptime std.mem.eql(u8, index_str, "base")) {
-                            if (!comptime std.mem.eql(u8, how_to_emit, "u64le")) @compileError("base needs to be u64le");
-                            try self.patches.append(self.ally, self.bytes.items.len);
-                            const target_space = try self.bytes.addManyAsArray(self.ally, 8);
-                            std.mem.writeInt(u64, target_space, 0, .little);
-                            continue;
-                        }
-                        const index = comptime std.fmt.parseInt(usize, index_str, 10) catch unreachable;
-                        const value = args[index];
-                        if (comptime std.mem.eql(u8, how_to_emit, "i8")) {
-                            if (@TypeOf(value) != i8) @compileError("expected i8, got " ++ @typeName(@TypeOf(value)));
-                            try self.emit_byte(@bitCast(value));
-                        } else if (comptime std.mem.eql(u8, how_to_emit, "u32le")) {
-                            if (@TypeOf(value) != u32) @compileError("expected u32, got " ++ @typeName(@TypeOf(value)));
-                            const target_space = try self.bytes.addManyAsArray(self.ally, 4);
-                            std.mem.writeInt(u32, target_space, value, .little);
-                        } else if (comptime std.mem.eql(u8, how_to_emit, "i32le")) {
-                            if (@TypeOf(value) != i32) @compileError("expected i32, got " ++ @typeName(@TypeOf(value)));
-                            const target_space = try self.bytes.addManyAsArray(self.ally, 4);
-                            std.mem.writeInt(i32, target_space, value, .little);
-                        } else if (comptime std.mem.eql(u8, how_to_emit, "u64le")) {
-                            if (@TypeOf(value) != u64) @compileError("expected u64, got " ++ @typeName(@TypeOf(value)));
-                            const target_space = try self.bytes.addManyAsArray(self.ally, 8);
-                            std.mem.writeInt(u64, target_space, value, .little);
-                        } else @compileError("unknown formatting " ++ how_to_emit);
-                    } else {
-                        const byte = comptime std.fmt.parseInt(u8, item, 16) catch unreachable;
-                        try self.emit_byte(byte);
-                    }
-                }
+}
+
+pub fn parse_ir(vm: *Self, ally: Ally, fun: Vm.Fun) !Ir {
+    var slots = ArrayList(u64).empty;
+    errdefer slots.deinit(ally);
+    try parse_node(vm, ally, &slots, fun.body());
+    return .{ .slots = try slots.toOwnedSlice(ally) };
+}
+fn parse_node(vm: *Self, ally: Ally, slots: *ArrayList(u64), expr: Vm.Expr) error{ OutOfMemory, UndefinedBehavior }!void {
+    switch (try expr.kind()) {
+        .word => |word| {
+            try slots.append(ally, @bitCast(Header{ .tag = .word }));
+            try slots.append(ally, word);
+        },
+        .object => |obj| {
+            try slots.append(ally, @bitCast(Header{ .tag = .object }));
+            try slots.append(ally, obj.address);
+        },
+        .name => {
+            try slots.append(ally, @bitCast(Header{ .tag = .name }));
+            try slots.append(ally, @bitCast(expr.obj.child(1).address));
+        },
+        .let => |let| {
+            try slots.append(ally, @bitCast(Header{ .tag = .let }));
+            try slots.append(ally, @bitCast(expr.obj.child(1).address));
+            try parse_node(vm, ally, slots, let.def);
+            try parse_node(vm, ally, slots, let.body);
+        },
+        .also => |also_| {
+            try slots.append(ally, @bitCast(Header{ .tag = .also }));
+            try parse_node(vm, ally, slots, also_.ignored);
+            try parse_node(vm, ally, slots, also_.value);
+        },
+        .add => |args| try parse_binop(vm, ally, slots, .add, args),
+        .subtract => |args| try parse_binop(vm, ally, slots, .subtract, args),
+        .multiply => |args| try parse_binop(vm, ally, slots, .multiply, args),
+        .divide => |args| try parse_binop(vm, ally, slots, .divide, args),
+        .modulo => |args| try parse_binop(vm, ally, slots, .modulo, args),
+        .shift_left => |args| try parse_binop(vm, ally, slots, .shift_left, args),
+        .shift_right => |args| try parse_binop(vm, ally, slots, .shift_right, args),
+        .and_ => |args| try parse_binop(vm, ally, slots, .and_, args),
+        .or_ => |args| try parse_binop(vm, ally, slots, .or_, args),
+        .xor => |args| try parse_binop(vm, ally, slots, .xor, args),
+        .compare => |args| try parse_binop(vm, ally, slots, .compare, args),
+        .f_add => |args| try parse_binop(vm, ally, slots, .f_add, args),
+        .f_subtract => |args| try parse_binop(vm, ally, slots, .f_subtract, args),
+        .f_multiply => |args| try parse_binop(vm, ally, slots, .f_multiply, args),
+        .f_divide => |args| try parse_binop(vm, ally, slots, .f_divide, args),
+        .f_compare => |args| try parse_binop(vm, ally, slots, .f_compare, args),
+        .int_to_float => |arg| try parse_unop(vm, ally, slots, .int_to_float, arg),
+        .float_to_int => |arg| try parse_unop(vm, ally, slots, .float_to_int, arg),
+        .f_is_finite => |arg| try parse_unop(vm, ally, slots, .f_is_finite, arg),
+        .flatten_to_leaf => |arg| try parse_unop(vm, ally, slots, .flatten_to_leaf, arg),
+        .flatten_to_inner => |arg| try parse_unop(vm, ally, slots, .flatten_to_inner, arg),
+        .points => |arg| try parse_unop(vm, ally, slots, .points, arg),
+        .size => |arg| try parse_unop(vm, ally, slots, .size, arg),
+        .crash => |arg| try parse_unop(vm, ally, slots, .crash, arg),
+        .collect_garbage => |arg| try parse_unop(vm, ally, slots, .collect_garbage, arg),
+        .if_ => |if_| {
+            try slots.append(ally, @bitCast(Header{ .tag = .if_ }));
+            try parse_node(vm, ally, slots, if_.condition);
+            try parse_node(vm, ally, slots, if_.then);
+            try parse_node(vm, ally, slots, if_.else_);
+        },
+        .new_leaf => |children| {
+            try slots.append(ally, @bitCast(Header{ .tag = .new_leaf, .rest = @intCast(children.len) }));
+            for (children) |child| try parse_node(vm, ally, slots, child);
+        },
+        .new_inner => |children| {
+            try slots.append(ally, @bitCast(Header{ .tag = .new_inner, .rest = @intCast(children.len) }));
+            for (children) |child| try parse_node(vm, ally, slots, child);
+        },
+        .load => |load| {
+            const index_kind = try load.index.kind();
+            if (index_kind == .word) {
+                try slots.append(ally, @bitCast(Header{ .tag = .load_imm }));
+                try slots.append(ally, index_kind.word);
+                try parse_node(vm, ally, slots, load.object);
+            } else {
+                try slots.append(ally, @bitCast(Header{ .tag = .load }));
+                try parse_node(vm, ally, slots, load.object);
+                try parse_node(vm, ally, slots, load.index);
+            }
+        },
+        .call => |c| {
+            const fun_kind = try c.fun.kind();
+            if (fun_kind == .object) {
+                const machine_code = try vm.compile(.{ .obj = fun_kind.object });
+                try slots.append(ally, @bitCast(Header{ .tag = .call_imm, .rest = @intCast(c.args.len) }));
+                try slots.append(ally, @intFromPtr(machine_code.ptr));
+                for (c.args) |arg| try parse_node(vm, ally, slots, arg);
                 return;
             }
-        }
-        @compileError("Unknown instruction: " ++ x86_instr);
+            try slots.append(ally, @bitCast(Header{ .tag = .call, .rest = @intCast(c.args.len) }));
+            for (c.args) |arg| try parse_node(vm, ally, slots, arg);
+            try parse_node(vm, ally, slots, c.fun);
+        },
+        .call_indirect => |c| {
+            try slots.append(ally, @bitCast(Header{ .tag = .call_indirect }));
+            try parse_node(vm, ally, slots, c.args);
+            try parse_node(vm, ally, slots, c.fun);
+        },
+        .rec => |args| {
+            try slots.append(ally, @bitCast(Header{ .tag = .rec, .rest = @intCast(args.len) }));
+            for (args) |arg| try parse_node(vm, ally, slots, arg);
+        },
+        .sandbox => |s| {
+            try slots.append(ally, @bitCast(Header{ .tag = .sandbox }));
+            try parse_node(vm, ally, slots, s.fuel);
+            try parse_node(vm, ally, slots, s.body);
+        },
+        .use_fuel => |uf| {
+            try slots.append(ally, @bitCast(Header{ .tag = .use_fuel }));
+            try parse_node(vm, ally, slots, uf.amount);
+            try parse_node(vm, ally, slots, uf.child);
+        },
+        .unreachable_ => {
+            try slots.append(ally, @bitCast(Header{ .tag = .unreachable_ }));
+        },
     }
-    pub fn emit_placeholder(self: *MachineCode, comptime x86_instr: []const u8, args: anytype) !usize {
-        const length = self.len();
-        try self.emit(x86_instr, args);
-        return length;
-    }
-    pub fn patch(self: *MachineCode, at: usize, comptime x86_instr: []const u8, args: anytype) void {
-        const cursor = self.bytes.items.len;
-        self.bytes.items.len = at;
-        self.emit(x86_instr, args) catch unreachable;
-        self.bytes.items.len = cursor;
-    }
-    pub fn finish(self: *MachineCode) ![]const u8 {
-        const bytes = self.bytes.items;
+}
+fn parse_binop(vm: *Self, ally: Ally, slots: *ArrayList(u64), tag: Tag, args: Vm.Expr.Kind.LeftRight) !void {
+    try slots.append(ally, @bitCast(Header{ .tag = tag }));
+    try parse_node(vm, ally, slots, args.left);
+    try parse_node(vm, ally, slots, args.right);
+}
+fn parse_unop(vm: *Self, ally: Ally, slots: *ArrayList(u64), tag: Tag, arg: Vm.Expr) !void {
+    try slots.append(ally, @bitCast(Header{ .tag = tag }));
+    try parse_node(vm, ally, slots, arg);
+}
 
-        // We want to create an executable memory region that contains the machine code. To do that, we
-        // need to talk to the operating system in a low level way, so we don't go through Zig allocators.
-        const permission_read_write = std.os.linux.PROT.READ | std.os.linux.PROT.WRITE;
-        const permission_read_exec = std.os.linux.PROT.READ | std.os.linux.PROT.EXEC;
-        const address = std.os.linux.mmap(
+// Computes how many registers each subtrees needs and stores it directly into
+// the node's header. If a subtree can't be evaluated only using registers
+// (e.g. because it calls into Zig code, like garbage_collect), it stores STACK
+// instead.
+const STACK: u8 = 255;
+pub fn compute_regs(ir: Ir) void {
+    var cursor: Index = 0;
+    _ = compute_node_regs(ir.slots, &cursor);
+}
+fn also(_: anytype, value: anytype) @TypeOf(value) {
+    return value;
+}
+fn compute_node_regs(slots: []u64, at: *Index) u8 {
+    const header_idx = at.*;
+    var header: Header = @bitCast(eat_slot(slots, at));
+
+    const regs: u8 = switch (header.tag) {
+        .word => also(eat_slot(slots, at), @as(u8, 1)),
+        .object => also(eat_slot(slots, at), @as(u8, 1)),
+        .name => also(eat_slot(slots, at), @as(u8, 1)),
+        .let => also(
+            eat_slot(slots, at),
+            @max(
+                compute_node_regs(slots, at),
+                1 +| compute_node_regs(slots, at),
+            ),
+        ),
+        .also => @max(
+            compute_node_regs(slots, at),
+            compute_node_regs(slots, at),
+        ),
+        .add, .subtract, .multiply, .divide, .modulo, .shift_left, .shift_right, .and_, .or_, .xor, .compare => @max(
+            compute_node_regs(slots, at),
+            1 +| compute_node_regs(slots, at),
+        ),
+        .f_add, .f_subtract, .f_multiply, .f_divide, .f_compare => @max(
+            compute_node_regs(slots, at),
+            1 +| compute_node_regs(slots, at),
+        ),
+        .int_to_float, .float_to_int, .f_is_finite => compute_node_regs(slots, at),
+        .if_ => @max(
+            compute_node_regs(slots, at),
+            compute_node_regs(slots, at),
+            compute_node_regs(slots, at),
+        ),
+        .new_leaf, .new_inner => blk: {
+            const n: usize = @intCast(header.rest);
+            if (n > 255) {
+                for (0..n) |_| _ = compute_node_regs(slots, at);
+                break :blk STACK;
+            } else {
+                var max: u8 = 0;
+                for (0..n) |i|
+                    max = @max(max, @as(u8, @intCast(i)) +| compute_node_regs(slots, at));
+                break :blk max;
+            }
+        },
+        .flatten_to_leaf, .flatten_to_inner => also(
+            compute_node_regs(slots, at),
+            STACK,
+        ),
+        .points, .size => compute_node_regs(slots, at),
+        .load => @max(
+            compute_node_regs(slots, at),
+            1 +| compute_node_regs(slots, at),
+        ),
+        .load_imm => also(
+            eat_slot(slots, at),
+            compute_node_regs(slots, at),
+        ),
+        .call => blk: {
+            const n: usize = @intCast(header.rest);
+            for (0..n) |_| _ = compute_node_regs(slots, at);
+            _ = compute_node_regs(slots, at); // fun
+            break :blk STACK;
+        },
+        .call_imm => blk: {
+            _ = eat_slot(slots, at);
+            const n: usize = @intCast(header.rest);
+            for (0..n) |_| _ = compute_node_regs(slots, at);
+            break :blk STACK;
+        },
+        .call_indirect => @max(
+            compute_node_regs(slots, at),
+            1 +| compute_node_regs(slots, at),
+        ),
+        .rec => blk: {
+            const n: usize = @intCast(header.rest);
+            for (0..n) |_| _ = compute_node_regs(slots, at);
+            break :blk STACK;
+        },
+        .sandbox => @max(
+            compute_node_regs(slots, at),
+            compute_node_regs(slots, at),
+            STACK,
+        ),
+        .use_fuel => @max(
+            compute_node_regs(slots, at),
+            compute_node_regs(slots, at),
+        ),
+        .collect_garbage => also(
+            compute_node_regs(slots, at),
+            STACK,
+        ),
+        .crash => also(
+            compute_node_regs(slots, at),
+            @as(u8, 0),
+        ),
+        .unreachable_ => 0,
+    };
+    header.regs = regs;
+    slots[header_idx] = @bitCast(header);
+    return regs;
+}
+
+// Next, I define helpers for creating assembly or machine code. Both are
+// implemented as structs with an emit function that you can call with a
+// comptime assembly string.
+//
+// Functions that emit something use an anytype "sink", which will either be:
+//
+// - Asm: A sink that generates Intel-syntax assembly text with comments and
+//   indentation, useful for debugging.
+// - Machine code: A sink that generates raw x86-64 machine code.
+//
+// Forward jumps emit placeholder bytes and return a Patch. patch_to_here later
+// writes the relative offset for MachineCode or appends a label line for Asm.
+// Patches must be patched in the same emitter they came from.
+
+const Reg = enum(u4) {
+    rax = 0,
+    rcx = 1,
+    rdx = 2,
+    rbx = 3,
+    rsp = 4,
+    rbp = 5,
+    rsi = 6,
+    rdi = 7,
+    r8 = 8,
+    r9 = 9,
+    r10 = 10,
+    r11 = 11,
+    r12 = 12,
+    r13 = 13,
+    r14 = 14,
+    r15 = 15,
+
+    fn next(self: Reg) Reg {
+        return @enumFromInt(@intFromEnum(self) + 1);
+    }
+};
+
+const Patch = struct {
+    // Asm: id of the label we'll define later via patch_to_here.
+    // MachineCode: byte offset of the i32 displacement slot.
+    handle: u32,
+};
+
+const Asm = struct {
+    ally: Ally,
+    bytes: ArrayList(u8) = .empty,
+    next_label: u32 = 0,
+    indentation: usize = 0,
+
+    fn init(ally: Ally) !Asm {
+        var self = Asm{ .ally = ally };
+        try self.write("root:\n", .{});
+        return self;
+    }
+    fn deinit(self: *Asm) void {
+        self.bytes.deinit(self.ally);
+    }
+
+    fn write(self: *Asm, comptime fmt: []const u8, args: anytype) !void {
+        var buf: [256]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, fmt, args) catch @panic("asm line too long");
+        try self.bytes.appendSlice(self.ally, s);
+    }
+
+    fn indent(self: *Asm) void {
+        self.indentation += 1;
+    }
+    fn deindent(self: *Asm) void {
+        self.indentation -= 1;
+    }
+    fn comment(self: *Asm, comptime fmt: []const u8, args: anytype) !void {
+        for (0..self.indentation) |_| try self.write("  ", .{});
+        try self.write("; ", .{});
+        try self.write(fmt, args);
+        try self.write("\n", .{});
+    }
+    fn emit(self: *Asm, comptime instr: []const u8, args: anytype) !void {
+        for (0..self.indentation) |_| try self.write("  ", .{});
+        if (comptime std.mem.eql(u8, instr, "jmp {root}")) {
+            try self.write("jmp .root\n", .{});
+            return;
+        }
+        const Token = struct {
+            kind: enum { literal, placeholder },
+            text: []const u8,
+        };
+        const tokens = comptime tokens: {
+            var tokens: []const Token = &[_]Token{};
+            var lit_start: usize = 0;
+            var i: usize = 0;
+            while (i < instr.len) {
+                if (instr[i] == '{') {
+                    if (i > lit_start) {
+                        tokens = tokens ++ &[_]Token{.{ .kind = .literal, .text = instr[lit_start..i] }};
+                    }
+                    var end: usize = i + 1;
+                    while (end < instr.len and instr[end] != '}') : (end += 1) {}
+                    tokens = tokens ++ &[_]Token{.{ .kind = .placeholder, .text = instr[i + 1 .. end] }};
+                    i = end + 1;
+                    lit_start = i;
+                } else {
+                    i += 1;
+                }
+            }
+            if (lit_start < instr.len) {
+                tokens = tokens ++ &[_]Token{.{ .kind = .literal, .text = instr[lit_start..] }};
+            }
+            break :tokens tokens;
+        };
+        comptime var arg_idx: usize = 0;
+        inline for (tokens) |tok| switch (tok.kind) {
+            .literal => try self.write("{s}", .{tok.text}),
+            .placeholder => {
+                const arg = args[arg_idx];
+                arg_idx += 1;
+                if (comptime std.mem.eql(u8, tok.text, "reg")) {
+                    try self.write("{s}", .{@tagName(arg)});
+                } else if (comptime std.mem.eql(u8, tok.text, "reg8")) {
+                    const low_name = ([_][]const u8{
+                        "al",  "cl",  "dl",   "bl",   "spl",  "bpl",  "sil",  "dil",
+                        "r8b", "r9b", "r10b", "r11b", "r12b", "r13b", "r14b", "r15b",
+                    })[@intFromEnum(arg)];
+                    try self.write("{s}", .{low_name});
+                } else if (comptime std.mem.eql(u8, tok.text, "i32")) {
+                    try self.write("{d}", .{arg});
+                } else if (comptime std.mem.eql(u8, tok.text, "i8")) {
+                    try self.write("{d}", .{arg});
+                } else if (comptime std.mem.eql(u8, tok.text, "u8")) {
+                    try self.write("{d}", .{arg});
+                } else if (comptime std.mem.eql(u8, tok.text, "u64")) {
+                    try self.write("0x{x}", .{arg});
+                } else if (comptime std.mem.eql(u8, tok.text, "i64")) {
+                    try self.write("{d}", .{arg});
+                } else if (comptime std.mem.eql(u8, tok.text, "label")) {
+                    try self.write(".L{d}", .{arg});
+                } else {
+                    @compileError("Asm.emit: unknown placeholder {" ++ tok.text ++ "}");
+                }
+            },
+        };
+        try self.write("\n", .{});
+    }
+    // Emits an instruction that contains a {label} placeholder referring to a
+    // not-yet-known forward location. The returned Patch is later resolved
+    // by patch_to_here at the actual target site.
+    fn placeholder(self: *Asm, comptime instr: []const u8, args: anytype) !Patch {
+        const id = self.next_label;
+        self.next_label += 1;
+        const expanded_args = args ++ .{id};
+        if (comptime (std.mem.eql(u8, instr, "jz {label}") or
+            std.mem.eql(u8, instr, "jmp {label}") or
+            std.mem.eql(u8, instr, "lea {reg}, [rip + {label}]")))
+        {
+            try self.emit(instr, expanded_args);
+            return .{ .handle = id };
+        } else {
+            @compileError("Asm.placeholder: unknown placeholder: " ++ instr);
+        }
+    }
+    fn patch_to_here(self: *Asm, p: Patch) !void {
+        for (0..self.indentation) |_| try self.write("  ", .{});
+        try self.write(".L{d}:\n", .{p.handle});
+    }
+};
+
+const MachineCode = struct {
+    ally: Ally,
+    bytes: ArrayList(u8) = .empty,
+
+    fn deinit(self: *MachineCode) void {
+        self.bytes.deinit(self.ally);
+    }
+
+    // Copy the emitted bytes into a fresh mmap'd page with RX permissions,
+    // so the CPU can actually execute them. The buffer (self.bytes) can be
+    // freed by deinit afterwards — the returned slice is a separate region.
+    fn finalize(self: *MachineCode) ![]const u8 {
+        const len = self.bytes.items.len;
+        if (len == 0) return &[_]u8{};
+        const rw: std.os.linux.PROT = .{ .READ = true, .WRITE = true };
+        const rx: std.os.linux.PROT = .{ .READ = true, .EXEC = true };
+        const addr = std.os.linux.mmap(
             null,
-            bytes.len,
-            permission_read_write,
+            len,
+            rw,
             .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
         );
-        if (address == 0) return error.OutOfMemory;
-        const ptr: [*]u8 = @ptrFromInt(address);
-        @memcpy(ptr, bytes);
-        for (self.patches.items) |pos| std.mem.writeInt(u64, ptr[pos..][0..8], address, .little);
-        std.debug.assert(std.os.linux.mprotect(ptr, bytes.len, permission_read_exec) == 0);
-        return ptr[0..bytes.len];
+        // mmap returns a small negative value (cast to usize: very large) on
+        // failure.
+        if (addr > std.math.maxInt(isize)) return error.OutOfMemory;
+        const ptr: [*]u8 = @ptrFromInt(addr);
+        @memcpy(ptr, self.bytes.items);
+        std.debug.assert(std.os.linux.mprotect(ptr, len, rx) == 0);
+        return ptr[0..len];
+    }
+
+    fn indent(_: *MachineCode) void {}
+    fn deindent(_: *MachineCode) void {}
+    fn comment(_: *MachineCode, _: []const u8, _: anytype) !void {}
+    fn high(self: Reg) bool {
+        return @intFromEnum(self) >= 8;
+    }
+    fn low(self: Reg) u3 {
+        return @intCast(@intFromEnum(self) & 0x07);
+    }
+    fn b(self: *MachineCode, x: u8) !void {
+        try self.bytes.append(self.ally, x);
+    }
+    fn i32le(self: *MachineCode, x: i32) !void {
+        var buf: [4]u8 = undefined;
+        std.mem.writeInt(i32, &buf, x, .little);
+        try self.bytes.appendSlice(self.ally, &buf);
+    }
+    fn u64le(self: *MachineCode, x: u64) !void {
+        var buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &buf, x, .little);
+        try self.bytes.appendSlice(self.ally, &buf);
+    }
+    fn rex(self: *MachineCode, w: bool, r_ext: bool, x_ext: bool, b_ext: bool) !void {
+        const byte: u8 = 0x40 |
+            (@as(u8, @intFromBool(w)) << 3) |
+            (@as(u8, @intFromBool(r_ext)) << 2) |
+            (@as(u8, @intFromBool(x_ext)) << 1) |
+            @intFromBool(b_ext);
+        if (byte != 0x40) try self.b(byte);
+    }
+    fn modrm(self: *MachineCode, mod: u2, reg: u3, rm: u3) !void {
+        try self.b((@as(u8, mod) << 6) | (@as(u8, reg) << 3) | @as(u8, rm));
+    }
+    fn mem_operand(self: *MachineCode, reg_field: u3, base: Reg, disp: i32) !void {
+        const base_lo: u3 = low(base);
+        const needs_sib = base_lo == 0b100;
+        const is_rbp = base_lo == 0b101;
+        const mod: u2 = blk: {
+            if (disp == 0 and !is_rbp) break :blk 0b00;
+            if (disp >= -128 and disp <= 127) break :blk 0b01;
+            break :blk 0b10;
+        };
+        try self.modrm(mod, reg_field, base_lo);
+        if (needs_sib) {
+            try self.b(@as(u8, 0b00 << 6) | @as(u8, 0b100 << 3) | @as(u8, base_lo));
+        }
+        switch (mod) {
+            0b00 => {},
+            0b01 => try self.b(@as(u8, @bitCast(@as(i8, @intCast(disp))))),
+            0b10 => try self.i32le(disp),
+            else => unreachable,
+        }
+    }
+    fn emit(self: *MachineCode, comptime instr: []const u8, args: anytype) !void {
+        if (comptime std.mem.eql(u8, instr, "push {reg}")) {
+            if (high(args[0])) try self.b(0x41);
+            try self.b(0x50 | @as(u8, low(args[0])));
+        } else if (comptime std.mem.eql(u8, instr, "pop {reg}")) {
+            if (high(args[0])) try self.b(0x41);
+            try self.b(0x58 | @as(u8, low(args[0])));
+        } else if (comptime std.mem.eql(u8, instr, "push qword {i32}")) {
+            try self.b(0x68);
+            try self.i32le(args[0]);
+        } else if (comptime std.mem.eql(u8, instr, "push qword {i8}")) {
+            try self.b(0x6a);
+            try self.b(@as(u8, @bitCast(@as(i8, args[0]))));
+        } else if (comptime std.mem.eql(u8, instr, "push qword [{reg} + {i32}]")) {
+            try self.rex(false, false, false, high(args[0]));
+            try self.b(0xff);
+            try self.mem_operand(6, args[0], args[1]);
+        } else if (comptime std.mem.eql(u8, instr, "mov {reg}, {u64}")) {
+            try self.rex(true, false, false, high(args[0]));
+            try self.b(0xb8 | @as(u8, low(args[0])));
+            try self.u64le(args[1]);
+        } else if (comptime std.mem.eql(u8, instr, "mov {reg}, {reg}")) {
+            try self.rex(true, high(args[1]), false, high(args[0]));
+            try self.b(0x89);
+            try self.modrm(0b11, low(args[1]), low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "mov {reg}, qword [{reg} + {i32}]")) {
+            try self.rex(true, high(args[0]), false, high(args[1]));
+            try self.b(0x8b);
+            try self.mem_operand(low(args[0]), args[1], args[2]);
+        } else if (comptime std.mem.eql(u8, instr, "mov qword [{reg} + {i32}], {reg}")) {
+            try self.rex(true, high(args[2]), false, high(args[0]));
+            try self.b(0x89);
+            try self.mem_operand(low(args[2]), args[0], args[1]);
+        } else if (comptime std.mem.eql(u8, instr, "add {reg}, {reg}")) {
+            try self.rex(true, high(args[1]), false, high(args[0]));
+            try self.b(0x01);
+            try self.modrm(0b11, low(args[1]), low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "sub {reg}, {reg}")) {
+            try self.rex(true, high(args[1]), false, high(args[0]));
+            try self.b(0x29);
+            try self.modrm(0b11, low(args[1]), low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "and {reg}, {reg}")) {
+            try self.rex(true, high(args[1]), false, high(args[0]));
+            try self.b(0x21);
+            try self.modrm(0b11, low(args[1]), low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "or {reg}, {reg}")) {
+            try self.rex(true, high(args[1]), false, high(args[0]));
+            try self.b(0x09);
+            try self.modrm(0b11, low(args[1]), low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "xor {reg}, {reg}")) {
+            try self.rex(true, high(args[1]), false, high(args[0]));
+            try self.b(0x31);
+            try self.modrm(0b11, low(args[1]), low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "imul {reg}, {reg}")) {
+            try self.rex(true, high(args[0]), false, high(args[1]));
+            try self.b(0x0f);
+            try self.b(0xaf);
+            try self.modrm(0b11, low(args[0]), low(args[1]));
+        } else if (comptime std.mem.eql(u8, instr, "add {reg}, {i32}")) {
+            try self.rex(true, false, false, high(args[0]));
+            try self.b(0x81);
+            try self.modrm(0b11, 0, low(args[0]));
+            try self.i32le(args[1]);
+        } else if (comptime std.mem.eql(u8, instr, "sub {reg}, {i32}")) {
+            try self.rex(true, false, false, high(args[0]));
+            try self.b(0x81);
+            try self.modrm(0b11, 5, low(args[0]));
+            try self.i32le(args[1]);
+        } else if (comptime std.mem.eql(u8, instr, "cqo")) {
+            try self.b(0x48);
+            try self.b(0x99);
+        } else if (comptime std.mem.eql(u8, instr, "idiv {reg}")) {
+            try self.rex(true, false, false, high(args[0]));
+            try self.b(0xf7);
+            try self.modrm(0b11, 7, low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "shl {reg}, cl")) {
+            try self.rex(true, false, false, high(args[0]));
+            try self.b(0xd3);
+            try self.modrm(0b11, 4, low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "sar {reg}, cl")) {
+            try self.rex(true, false, false, high(args[0]));
+            try self.b(0xd3);
+            try self.modrm(0b11, 7, low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "shl {reg}, {u8}")) {
+            try self.rex(true, false, false, high(args[0]));
+            try self.b(0xc1);
+            try self.modrm(0b11, 4, low(args[0]));
+            try self.b(args[1]);
+        } else if (comptime std.mem.eql(u8, instr, "shr {reg}, {u8}")) {
+            try self.rex(true, false, false, high(args[0]));
+            try self.b(0xc1);
+            try self.modrm(0b11, 5, low(args[0]));
+            try self.b(args[1]);
+        } else if (comptime std.mem.eql(u8, instr, "sar {reg}, {u8}")) {
+            try self.rex(true, false, false, high(args[0]));
+            try self.b(0xc1);
+            try self.modrm(0b11, 7, low(args[0]));
+            try self.b(args[1]);
+        } else if (comptime std.mem.eql(u8, instr, "shl ecx, 1")) {
+            try self.b(0xd1);
+            try self.modrm(0b11, 4, 1);
+        } else if (comptime std.mem.eql(u8, instr, "cmp {reg}, {reg}")) {
+            try self.rex(true, high(args[1]), false, high(args[0]));
+            try self.b(0x39);
+            try self.modrm(0b11, low(args[1]), low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "test {reg}, {reg}")) {
+            try self.rex(true, high(args[1]), false, high(args[0]));
+            try self.b(0x85);
+            try self.modrm(0b11, low(args[1]), low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "setz {reg8}")) {
+            if (@intFromEnum(args[0]) >= 4) try self.rex(false, false, false, high(args[0]));
+            try self.b(0x0f);
+            try self.b(0x94);
+            try self.modrm(0b11, 0, low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "setnz {reg8}")) {
+            if (@intFromEnum(args[0]) >= 4) try self.rex(false, false, false, high(args[0]));
+            try self.b(0x0f);
+            try self.b(0x95);
+            try self.modrm(0b11, 0, low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "setg {reg8}")) {
+            if (@intFromEnum(args[0]) >= 4) try self.rex(false, false, false, high(args[0]));
+            try self.b(0x0f);
+            try self.b(0x9f);
+            try self.modrm(0b11, 0, low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "setl {reg8}")) {
+            if (@intFromEnum(args[0]) >= 4) try self.rex(false, false, false, high(args[0]));
+            try self.b(0x0f);
+            try self.b(0x9c);
+            try self.modrm(0b11, 0, low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "setg ch")) {
+            try self.b(0x0f);
+            try self.b(0x9f);
+            try self.modrm(0b11, 0, 5);
+        } else if (comptime std.mem.eql(u8, instr, "lea {reg}, [rcx + rcx*2]")) {
+            try self.rex(true, high(args[0]), false, false);
+            try self.b(0x8d);
+            try self.modrm(0b00, low(args[0]), 0b100); // SIB follows
+            try self.b((@as(u8, 0b01) << 6) | (@as(u8, 0b001) << 3) | @as(u8, 0b001));
+        } else if (comptime std.mem.eql(u8, instr, "cmovg {reg}, {reg}")) {
+            try self.rex(true, high(args[0]), false, high(args[1]));
+            try self.b(0x0f);
+            try self.b(0x4f);
+            try self.modrm(0b11, low(args[0]), low(args[1]));
+        } else if (comptime std.mem.eql(u8, instr, "cmovl {reg}, {reg}")) {
+            try self.rex(true, high(args[0]), false, high(args[1]));
+            try self.b(0x0f);
+            try self.b(0x4c);
+            try self.modrm(0b11, low(args[0]), low(args[1]));
+        } else if (comptime std.mem.eql(u8, instr, "jmp {reg}")) {
+            if (high(args[0])) try self.b(0x41);
+            try self.b(0xff);
+            try self.modrm(0b11, 4, low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "jmp {root}")) {
+            try self.b(0xe9);
+            try self.i32le(@intCast(-(@as(i64, @intCast(self.bytes.items.len)) + 4)));
+        } else if (comptime std.mem.eql(u8, instr, "ret")) {
+            try self.b(0xc3);
+        } else if (comptime std.mem.eql(u8, instr, "ud2")) {
+            try self.b(0x0f);
+            try self.b(0x0b);
+        } else {
+            @compileError("MachineCode.emit: unknown instruction: " ++ instr);
+        }
+    }
+    // Emits an instruction whose {label} placeholder refers to a not-yet-known
+    // forward location, returning a Patch that patch_to_here resolves. All
+    // supported forms use a 4-byte rip-relative i32 displacement (the i32 is
+    // relative to the byte right after itself).
+    fn placeholder(self: *MachineCode, comptime instr: []const u8, args: anytype) !Patch {
+        if (comptime std.mem.eql(u8, instr, "jz {label}")) {
+            try self.b(0x0f);
+            try self.b(0x84);
+            const handle: u32 = @intCast(self.bytes.items.len);
+            try self.bytes.appendNTimes(self.ally, 0, 4);
+            return .{ .handle = handle };
+        } else if (comptime std.mem.eql(u8, instr, "jmp {label}")) {
+            try self.b(0xe9);
+            const handle: u32 = @intCast(self.bytes.items.len);
+            try self.bytes.appendNTimes(self.ally, 0, 4);
+            return .{ .handle = handle };
+        } else if (comptime std.mem.eql(u8, instr, "lea {reg}, [rip + {label}]")) {
+            try self.rex(true, high(args[0]), false, false);
+            try self.b(0x8d); // LEA
+            try self.modrm(0b00, low(args[0]), 0b101); // RIP-relative
+            const handle: u32 = @intCast(self.bytes.items.len);
+            try self.bytes.appendNTimes(self.ally, 0, 4);
+            return .{ .handle = handle };
+        } else {
+            @compileError("MachineCode.placeholder: unknown placeholder: " ++ instr);
+        }
+    }
+    fn patch_to_here(self: *MachineCode, p: Patch) !void {
+        const target: i64 = @intCast(self.bytes.items.len);
+        const after: i64 = @as(i64, @intCast(p.handle)) + 4;
+        const delta: i32 = @intCast(target - after);
+        std.mem.writeInt(i32, self.bytes.items[p.handle..][0..4], delta, .little);
     }
 };
-fn compile_all(code: *MachineCode, instructions: []const Instruction) !void {
-    for (instructions) |instruction| try compile_single(code, instruction);
+
+// ===== IR -> Assembly text =================================================
+//
+// First-cut emitter: walks the cost-annotated IR with a mutable cursor and
+// writes Intel-syntax assembly lines into an ArrayList(u8). For each subtree
+// emit_expr_to_stack checks whether its reg cost fits in r8..r15; if it does
+// it routes to emit_expr_to_reg with a starting register, then pushes the
+// resulting register. Otherwise it lowers the node onto the data stack and
+// recurses through emit_expr_to_stack for each child.
+
+const Resolver = struct {
+    stack: ArrayList([]const u8),
+    regs: ArrayList(RegBinding),
+    const RegBinding = struct { name: []const u8, reg: Reg };
+
+    fn init() Resolver {
+        return .{ .stack = .empty, .regs = .empty };
+    }
+    fn deinit(self: *Resolver, ally: Ally) void {
+        self.stack.deinit(ally);
+        self.regs.deinit(ally);
+    }
+
+    fn push_anon(self: *Resolver, ally: Ally) !void {
+        try self.stack.append(ally, "");
+    }
+    fn push_named(self: *Resolver, ally: Ally, name: []const u8) !void {
+        try self.stack.append(ally, name);
+    }
+    fn pop_stack(self: *Resolver) void {
+        _ = self.stack.pop();
+    }
+    fn rename_top(self: *Resolver, name: []const u8) void {
+        self.stack.items[self.stack.items.len - 1] = name;
+    }
+    fn bind_reg(self: *Resolver, ally: Ally, name: []const u8, reg: Reg) !void {
+        try self.regs.append(ally, .{ .name = name, .reg = reg });
+    }
+    fn unbind_reg(self: *Resolver) void {
+        _ = self.regs.pop();
+    }
+
+    const Location = union(enum) { stack: usize, reg: Reg };
+    fn lookup(self: *const Resolver, target: []const u8) ?Location {
+        var i: usize = self.regs.items.len;
+        while (i > 0) {
+            i -= 1;
+            const e = self.regs.items[i];
+            if (std.mem.eql(u8, e.name, target)) return .{ .reg = e.reg };
+        }
+        i = self.stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const e = self.stack.items[i];
+            if (e.len == 0) continue;
+            if (std.mem.eql(u8, e, target)) {
+                return .{ .stack = self.stack.items.len - 1 - i };
+            }
+        }
+        return null;
+    }
+};
+
+fn emit_fun(sink: anytype, ir: Ir, fun: Vm.Fun) !void {
+    var resolver = Resolver.init();
+    defer resolver.deinit(sink.ally);
+
+    for (fun.args()) |arg| try resolver.push_named(sink.ally, get_symbol(arg));
+
+    var cursor: Index = 0;
+    try emit_expr_to_stack(sink, ir.slots, &cursor, &resolver);
+
+    if (fun.args().len > 0) {
+        try sink.emit("pop {reg}", .{.rax});
+        try sink.emit("add {reg}, {i32}", .{ .rsp, @as(i32, @intCast(fun.args().len * 8)) });
+        try sink.emit("push {reg}", .{.rax});
+    }
+    try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rbp, @as(i32, 0) });
+    try sink.emit("add {reg}, {i32}", .{ .rbp, 8 });
+    try sink.emit("jmp {reg}", .{.rax});
 }
-fn compile_single(code: *MachineCode, instruction: Instruction) error{OutOfMemory}!void {
-    switch (instruction) {
-        .word => |word| {
+fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *Resolver) error{OutOfMemory}!void {
+    const header: Header = @bitCast(slots[at.*]);
+    const ally = sink.ally;
+
+    if (header.regs != STACK and header.regs <= 8) {
+        try emit_expr_to_reg(sink, slots, at, resolver, .r8);
+        sink.indent();
+        try sink.emit("push {reg}", .{.r8});
+        sink.deindent();
+        try resolver.push_anon(ally);
+        return;
+    }
+
+    try sink.comment("{s}", .{@tagName(header.tag)});
+    sink.indent();
+    defer sink.deindent();
+
+    _ = eat_slot(slots, at); // consume header
+    switch (header.tag) {
+        .word => {
+            const word = eat_slot(slots, at);
             const signed = @as(i64, @bitCast(word));
-            if (word == 0) {
-                try code.emit("xor rax, rax", .{});
-                try code.emit("push rax", .{});
+            if (signed >= -0x80 and signed < 0x80) {
+                try sink.emit("push qword {i8}", .{@as(i8, @intCast(signed))});
             } else if (signed >= -0x80000000 and signed < 0x7fffffff) {
-                try code.emit("push qword {:i32}", .{@as(i32, @intCast(signed))});
+                try sink.emit("push qword {i32}", .{@as(i32, @intCast(signed))});
             } else {
-                try code.emit("mov rax, {:64}", .{@as(u64, @intCast(word))});
-                try code.emit("push rax", .{});
+                try sink.emit("mov {reg}, {u64}", .{ .rax, word });
+                try sink.emit("push {reg}", .{.rax});
             }
+            try resolver.push_anon(ally);
         },
-        .address => |object| {
-            const address = object.address;
-            const signed = @as(i64, @bitCast(address));
-            if (signed >= -0x80000000 and signed < 0x7fffffff) {
-                try code.emit("push qword {:i32}", .{@as(i32, @intCast(signed))});
-            } else {
-                try code.emit("mov rax, {:64}", .{@as(u64, @intCast(address))});
-                try code.emit("push rax", .{});
+        .object => {
+            const a = eat_slot(slots, at);
+            try sink.emit("mov {reg}, {u64}", .{ .rax, a });
+            try sink.emit("push {reg}", .{.rax});
+            try resolver.push_anon(ally);
+        },
+        .name => {
+            const name = get_symbol(Obj{ .address = eat_slot(slots, at) });
+            const loc = resolver.lookup(name) orelse unreachable;
+            switch (loc) {
+                .stack => |o| try sink.emit("push qword [{reg} + {i32}]", .{ .rsp, @as(i32, @intCast(o * 8)) }),
+                .reg => |r| try sink.emit("push {reg}", .{r}),
             }
+            try resolver.push_anon(ally);
         },
-        .stack => |offset| {
-            const byte_offset = offset * 8;
-            if (byte_offset == 0) {
-                try code.emit("push [rsp]", .{});
-            } else if (byte_offset < 0x7f) {
-                try code.emit("push [rsp + {:8}]", .{@as(i8, @intCast(@as(i64, @bitCast(byte_offset))))});
-            } else {
-                try code.emit("mov rax, rsp", .{});
-                try code.emit("mov rbx, {:64}", .{@as(u64, @intCast(byte_offset))});
-                try code.emit("add rax, rbx", .{});
-                try code.emit("push [rax]", .{});
+        .let => {
+            const name = get_symbol(Obj{ .address = eat_slot(slots, at) });
+            try emit_expr_to_stack(sink, slots, at, resolver); // def
+            resolver.rename_top(name);
+            try emit_expr_to_stack(sink, slots, at, resolver); // body
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("add {reg}, {i32}", .{ .rsp, 8 });
+            try sink.emit("push {reg}", .{.rax});
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
+        },
+        .also => {
+            try emit_expr_to_stack(sink, slots, at, resolver); // ignored
+            try sink.emit("add {reg}, {i32}", .{ .rsp, 8 });
+            resolver.pop_stack();
+            try emit_expr_to_stack(sink, slots, at, resolver); // value
+        },
+        .add, .subtract, .and_, .or_, .xor => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rbx});
+            try sink.emit("pop {reg}", .{.rax});
+            switch (header.tag) {
+                .add => try sink.emit("add {reg}, {reg}", .{ .rax, .rbx }),
+                .subtract => try sink.emit("sub {reg}, {reg}", .{ .rax, .rbx }),
+                .and_ => try sink.emit("and {reg}, {reg}", .{ .rax, .rbx }),
+                .or_ => try sink.emit("or {reg}, {reg}", .{ .rax, .rbx }),
+                .xor => try sink.emit("xor {reg}, {reg}", .{ .rax, .rbx }),
+                else => unreachable,
             }
-        },
-        .pop => |amount| {
-            const byte_amount = amount * 8;
-            if (byte_amount < 128) {
-                try code.emit("add rsp, {:8}", .{@as(i8, @intCast(byte_amount))});
-            } else {
-                try code.emit("mov rax, {:64}", .{@as(u64, @intCast(amount * 8))});
-                try code.emit("add rsp, rax", .{});
-            }
-        },
-        .popover => |amount| {
-            const byte_amount = amount * 8;
-            if (byte_amount < 128) {
-                try code.emit("pop rax", .{});
-                try code.emit("add rsp, {:8}", .{@as(i8, @intCast(byte_amount))});
-                try code.emit("push rax", .{});
-            } else {
-                try code.emit("pop rax", .{});
-                try code.emit("mov rbx, {:64}", .{@as(u64, @intCast(byte_amount))});
-                try code.emit("add rsp, rbx", .{});
-                try code.emit("push rax", .{});
-            }
-        },
-        .add => {
-            try code.emit("pop rbx", .{});
-            try code.emit("pop rax", .{});
-            try code.emit("add rax, rbx", .{});
-            try code.emit("push rax", .{});
-        },
-        .subtract => {
-            try code.emit("pop rbx", .{});
-            try code.emit("pop rax", .{});
-            try code.emit("sub rax, rbx", .{});
-            try code.emit("push rax", .{});
+            try sink.emit("push {reg}", .{.rax});
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
         },
         .multiply => {
-            try code.emit("pop rbx", .{});
-            try code.emit("pop rax", .{});
-            try code.emit("imul rax, rbx", .{});
-            try code.emit("push rax", .{});
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rbx});
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("imul {reg}, {reg}", .{ .rax, .rbx });
+            try sink.emit("push {reg}", .{.rax});
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
         },
-        .divide => {
-            try code.emit("pop rbx", .{});
-            try code.emit("pop rax", .{});
-            @panic("div rax, rbx");
-            // try code.emit("push rax", .{});
+        .divide, .modulo => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rbx});
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("cqo", .{});
+            try sink.emit("idiv {reg}", .{.rbx});
+            try sink.emit("push {reg}", .{if (header.tag == .divide) Reg.rax else Reg.rdx});
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
         },
-        .modulo => {
-            try code.emit("pop rbx", .{});
-            try code.emit("pop rax", .{});
-            @panic("mod rax, rbx");
-            // try code.emit("push rax", .{});
+        .shift_left, .shift_right => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            // x86's variable-count shifts require the count in cl, but rcx
+            // holds the sandbox cursor. So:
+            // 1. stash rcx in rbx
+            // 2. do the shift
+            // 3. restore
+            try sink.emit("mov {reg}, {reg}", .{ .rbx, .rcx });
+            try sink.emit("pop {reg}", .{.rcx});
+            try sink.emit("pop {reg}", .{.rax});
+            if (header.tag == .shift_left)
+                try sink.emit("shl {reg}, cl", .{.rax})
+            else
+                try sink.emit("sar {reg}, cl", .{.rax});
+            try sink.emit("mov {reg}, {reg}", .{ .rcx, .rbx });
+            try sink.emit("push {reg}", .{.rax});
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
         },
-        .shift_left => {
-            try code.emit("pop rbx", .{});
-            try code.emit("pop rax", .{});
-            @panic("shl");
-            // try code.emit("shl rax, rbx", .{});
-            // try code.emit("push rax", .{});
+        .compare => { // 1=equal, 2=greater, 4=less
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rbx});
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("cmp {reg}, {reg}", .{ .rax, .rbx });
+            try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, 1) });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, @as(u64, 2) });
+            try sink.emit("cmovg {reg}, {reg}", .{ .rax, .rbx });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, @as(u64, 4) });
+            try sink.emit("cmovl {reg}, {reg}", .{ .rax, .rbx });
+            try sink.emit("push {reg}", .{.rax});
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
         },
-        .shift_right => {
-            try code.emit("pop rbx", .{});
-            try code.emit("pop rax", .{});
-            @panic("shr");
-            // try code.emit("shr rax, rbx", .{});
-            // try code.emit("push rax", .{});
+        .if_ => {
+            try emit_expr_to_stack(sink, slots, at, resolver); // cond
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("test {reg}, {reg}", .{ .rax, .rax });
+            const jz = try sink.placeholder("jz {label}", .{});
+            resolver.pop_stack();
+            try emit_expr_to_stack(sink, slots, at, resolver); // then
+            const jmp = try sink.placeholder("jmp {label}", .{});
+            try sink.patch_to_here(jz);
+            resolver.pop_stack();
+            try emit_expr_to_stack(sink, slots, at, resolver); // else
+            try sink.patch_to_here(jmp);
         },
-        .compare => @panic("JIT compare"), // equal: 0, greater: 1, less: 2
-        .and_ => @panic("JIT and"),
-        .or_ => @panic("JIT or"),
-        .xor => @panic("JIT xor"),
-        // .if_ => |if_| {
-        //     try code.emit("pop rax", .{});
-        //     try code.emit("cmp rax, 0", .{});
-        //     const jump_to_else_placeholder = try code.emit_placeholder("jz {:32}", .{@as(i32, 0)});
-        //     const after_jump_to_else = code.len();
-        //     try compile_all(code, if_.then);
-        //     const jump_to_after_if_placeholder = try code.emit_placeholder("jmp {:32}", .{@as(i32, 0)});
-        //     const after_jump_to_after_if = code.len();
-        //     const else_ = code.len();
-        //     try compile_all(code, if_.else_);
-        //     const after_if = code.len();
-        //     // Patch the placeholders (these are relative jumps).
-        //     code.patch(jump_to_else_placeholder, "jz {:32}", .{@as(i32, @intCast(else_ - after_jump_to_else))});
-        //     code.patch(jump_to_after_if_placeholder, "jmp {:32}", .{@as(i32, @intCast(after_if - after_jump_to_after_if))});
-        // },
-        .new_leaf => @panic("JIT new_leaf"),
-        .new_inner => |new| {
-            _ = new;
-            @panic("Jit new inner");
-            // const header_word = @as(u64, @bitCast(Heap.Header{
-            //     .num_words = @intCast(new.num_words),
-            //     .is_inner = if (new.has_pointers) 1 else 0,
-            // }));
-            // if (new.num_words == 1) {
-            //     try code.emit("mov rbx, {:64}", .{header_word});
-            //     try code.emit("mov [r8], rbx", .{});
-            //     try code.emit("pop rax", .{});
-            //     try code.emit("mov [r8 + 8], rax", .{});
-            //     try code.emit("push r8", .{});
-            //     try code.emit("add r8, 16", .{});
-            // } else {
-            //     try code.emit("mov rax, r8", .{});
-            //     // rax = start of object; r8 = start of object; rsp = top of stack
-            //     try code.emit("mov rbx, {:64}", .{header_word});
-            //     try code.emit("mov [r8], rbx", .{});
-            //     try code.emit("add r8, 8", .{});
-            //     // The header word has now been allocated on the heap.
-            //     try code.emit("mov rbx, {:64}", .{@as(u64, @intCast(new.num_words * 8))});
-            //     try code.emit("add rsp, rbx", .{});
-            //     try code.emit("mov rbx, rsp", .{});
-            //     for (0..new.num_words) |_| {
-            //         try code.emit("sub rbx, 8", .{});
-            //         try code.emit("mov rcx, [rbx]", .{});
-            //         try code.emit("mov [r8], rcx", .{});
-            //         try code.emit("add r8, 8", .{});
-            //     }
-            //     try code.emit("push rax", .{});
-            // }
+        .points => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rax, 0 });
+            try sink.emit("shr {reg}, {u8}", .{ .rax, @as(u8, 63) });
+            try sink.emit("push {reg}", .{.rax});
         },
-        .flatten_to_inner => @panic("JIT flatten to inner"),
-        .flatten_to_leaf => @panic("JIT flatten to leaf"),
-        .points => @panic("JIT points"),
         .size => {
-            try code.emit("pop rax", .{});
-            try code.emit("mov rax, [rax]", .{});
-            try code.emit("mov rbx, 0xffffffffffff", .{});
-            try code.emit("and rax, rbx", .{});
-            try code.emit("push rax", .{});
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rax, 0 });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, 0xffffffffffff });
+            try sink.emit("and {reg}, {reg}", .{ .rax, .rbx });
+            try sink.emit("push {reg}", .{.rax});
         },
         .load => {
-            try code.emit("pop rbx", .{});
-            try code.emit("shl rbx, 3", .{});
-            try code.emit("pop rax", .{});
-            try code.emit("add rax, 8", .{});
-            try code.emit("add rax, rbx", .{});
-            try code.emit("push [rax]", .{});
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rbx});
+            // Word index -> byte offset via shl by 3. Use the imm8 form so
+            // we don't have to touch rcx (the sandbox cursor).
+            try sink.emit("shl {reg}, {u8}", .{ .rbx, @as(u8, 3) });
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("add {reg}, {i32}", .{ .rax, 8 });
+            try sink.emit("add {reg}, {reg}", .{ .rax, .rbx });
+            try sink.emit("push qword [{reg} + {i32}]", .{ .rax, 0 });
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
         },
-        .heap_size => {
-            try code.emit("push r8", .{});
+        .load_imm => {
+            const imm = eat_slot(slots, at);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("push qword [{reg} + {i32}]", .{ .rax, @as(i32, @intCast(imm * 8 + 8)) });
         },
-        .gc => @panic("JIT gc"),
+        .new_leaf, .new_inner => {
+            const n: usize = @intCast(header.rest);
+            for (0..n) |_| try emit_expr_to_stack(sink, slots, at, resolver);
+            const header_val: u64 = if (header.tag == .new_inner)
+                (@as(u64, 1) << 63) | @as(u64, n)
+            else
+                @as(u64, n);
+            try sink.emit("mov {reg}, {reg}", .{ .rax, .rdi }); // rax = object address
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, header_val });
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx });
+            for (0..n) |i| {
+                const src_off: i32 = @intCast((n - 1 - i) * 8);
+                const dst_off: i32 = @intCast((i + 1) * 8);
+                try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rsp, src_off });
+                try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rdi, dst_off, .rbx });
+            }
+            try sink.emit("add {reg}, {i32}", .{ .rdi, @as(i32, @intCast((n + 1) * 8)) });
+            if (n > 0) try sink.emit("add {reg}, {i32}", .{ .rsp, @as(i32, @intCast(n * 8)) });
+            try sink.emit("push {reg}", .{.rax});
+            for (0..n) |_| resolver.pop_stack();
+            try resolver.push_anon(ally);
+        },
+        .flatten_to_leaf => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.comment("hook flatten_to_leaf", .{});
+        },
+        .flatten_to_inner => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.comment("hook flatten_to_inner", .{});
+        },
         .call => {
-            @panic("JIT call");
-            // try code.emit("pop rdx", .{});
-
-            // // Swap from the Orchard to the C calling convention.
-            // try code.emit("mov [rdi], r8", .{}); // heap
-            // try code.emit("mov [rdi + 8], rsp", .{}); // data stack
-            // try code.emit("mov [rdi + 16], r9", .{}); // call stack
-            // try code.emit("mov rsp, r15", .{});
-
-            // try code.emit("push rdi", .{});
-            // try code.emit("push rsi", .{});
-            // try code.emit("push rax", .{}); // align stack to 16 bytes
-
-            // // Call the Zig function.
-            // try code.emit("mov rax, {:64}", .{@as(u64, @intCast(@intFromPtr(&hook_eval)))});
-            // try code.emit("call rax", .{});
-
-            // try code.emit("pop rax", .{}); // remove garbage from stack
-            // try code.emit("pop rsi", .{});
-            // try code.emit("pop rdi", .{});
-
-            // // Swap from the C to the Orchard calling convention.
-            // try code.emit("mov r15, rsp", .{});
-            // try code.emit("mov r8, [rdi]", .{}); // heap
-            // try code.emit("mov rsp, [rdi + 8]", .{}); // data stack
-            // try code.emit("mov r9, [rdi + 16]", .{}); // call stack
-
-            // try code.emit("hlt", .{});
+            const n: usize = @intCast(header.rest);
+            for (0..n) |_| try emit_expr_to_stack(sink, slots, at, resolver);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.comment("call (indirect) with {d} args", .{n});
+            for (0..n) |_| resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
+        },
+        .call_imm => {
+            const callee = eat_slot(slots, at);
+            const n: usize = @intCast(header.rest);
+            for (0..n) |_| try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
+            const ret_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
+            try sink.emit("mov {reg}, {u64}", .{ .rax, callee });
+            try sink.emit("jmp {reg}", .{.rax});
+            try sink.patch_to_here(ret_patch);
+            for (0..n) |_| resolver.pop_stack();
+            try resolver.push_anon(ally);
+        },
+        .call_indirect => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.comment("call_indirect", .{});
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
+        },
+        .rec => {
+            const n: usize = @intCast(header.rest);
+            for (0..n) |_| try emit_expr_to_stack(sink, slots, at, resolver);
+            // Tail call: stack now holds [old args | intermediates | new args].
+            // Copy the N new args from the top down into the old-args slots at
+            // the bottom, then drop everything between by adjusting rsp, then
+            // jump back to .root.
+            const depth = resolver.stack.items.len;
+            for (0..n) |i| {
+                try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rsp, @as(i32, @intCast(i * 8)) });
+                try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rsp, @as(i32, @intCast((depth - n + i) * 8)), .rax });
+            }
+            if (depth > n) {
+                try sink.emit("add {reg}, {i32}", .{ .rsp, @as(i32, @intCast((depth - n) * 8)) });
+            }
+            try sink.emit("jmp {root}", .{});
+            for (0..n) |_| resolver.pop_stack();
+            try resolver.push_anon(ally);
+        },
+        .collect_garbage => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.comment("hook collect_garbage", .{});
+        },
+        .sandbox => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            resolver.pop_stack();
+            try sink.comment("sandbox begin", .{});
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.comment("sandbox end", .{});
+        },
+        .use_fuel => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("sub {reg}, {reg}", .{ .rsi, .rax });
+            resolver.pop_stack();
+            try emit_expr_to_stack(sink, slots, at, resolver);
         },
         .crash => {
-            try code.emit("mov rax, {:64}", .{@as(u64, @bitCast(@intFromPtr(&hook_crash)))});
-            try code.emit("call rax", .{});
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // rax = error
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // rsp = sandbox.data
+            try sink.emit("push {reg}", .{.rax}); // error onto restored stack
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rdi, .rcx, 8 }); // rdi = sandbox.heap
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbp, .rcx, 16 }); // rbp = sandbox.call
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // rbx = crash_target
+            try sink.emit("add {reg}, {i32}", .{ .rcx, 32 }); // pop entry
+            try sink.emit("jmp {reg}", .{.rbx});
+            // .crash never falls through, so we don't update the resolver
+            // (any code following it is dead).
         },
-        else => @panic("JIT other"),
+        .unreachable_ => {
+            try sink.emit("ud2", .{});
+            try resolver.push_anon(ally);
+        },
+        .int_to_float, .float_to_int, .f_is_finite, .f_add, .f_subtract, .f_multiply, .f_divide, .f_compare => {
+            @panic("emit_expr_to_stack: float ops not implemented");
+        },
+    }
+}
+fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Resolver, dst: Reg) error{OutOfMemory}!void {
+    const header: Header = @bitCast(eat_slot(slots, at));
+
+    try sink.comment("{s}", .{@tagName(header.tag)});
+    sink.indent();
+    defer sink.deindent();
+
+    switch (header.tag) {
+        .word => {
+            const w = eat_slot(slots, at);
+            try sink.emit("mov {reg}, {u64}", .{ dst, w });
+        },
+        .object => {
+            const a = eat_slot(slots, at);
+            try sink.emit("mov {reg}, {u64}", .{ dst, a });
+        },
+        .name => {
+            const name = get_symbol(Obj{ .address = eat_slot(slots, at) });
+            const loc = resolver.lookup(name) orelse unreachable;
+            switch (loc) {
+                .stack => |o| try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, .rsp, @as(i32, @intCast(o * 8)) }),
+                .reg => |r| try sink.emit("mov {reg}, {reg}", .{ dst, r }),
+            }
+        },
+        .let => {
+            const name = get_symbol(Obj{ .address = eat_slot(slots, at) });
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try resolver.bind_reg(sink.ally, name, dst);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst.next());
+            resolver.unbind_reg();
+            try sink.emit("mov {reg}, {reg}", .{ dst, dst.next() });
+        },
+        .also => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+        },
+        .add, .subtract, .and_, .or_, .xor => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst.next());
+            switch (header.tag) {
+                .add => try sink.emit("add {reg}, {reg}", .{ dst, dst.next() }),
+                .subtract => try sink.emit("sub {reg}, {reg}", .{ dst, dst.next() }),
+                .and_ => try sink.emit("and {reg}, {reg}", .{ dst, dst.next() }),
+                .or_ => try sink.emit("or {reg}, {reg}", .{ dst, dst.next() }),
+                .xor => try sink.emit("xor {reg}, {reg}", .{ dst, dst.next() }),
+                else => unreachable,
+            }
+        },
+        .multiply => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst.next());
+            try sink.emit("imul {reg}, {reg}", .{ dst, dst.next() });
+        },
+        .divide, .modulo => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst.next());
+            try sink.emit("mov {reg}, {reg}", .{ .rax, dst });
+            try sink.emit("cqo", .{});
+            try sink.emit("idiv {reg}", .{dst.next()});
+            try sink.emit("mov {reg}, {reg}", .{ dst, if (header.tag == .divide) Reg.rax else Reg.rdx });
+        },
+        .shift_left, .shift_right => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst.next());
+            // Stash rcx (the sandbox cursor) in rbx while we use cl for the
+            // shift count; restore it before the surrounding sees rcx.
+            try sink.emit("mov {reg}, {reg}", .{ .rbx, .rcx });
+            try sink.emit("mov {reg}, {reg}", .{ .rcx, dst.next() });
+            if (header.tag == .shift_left)
+                try sink.emit("shl {reg}, cl", .{dst})
+            else
+                try sink.emit("sar {reg}, cl", .{dst});
+            try sink.emit("mov {reg}, {reg}", .{ .rcx, .rbx });
+        },
+        .compare => {
+            // See the stack-variant for the algorithm. rcx is reserved as
+            // the sandbox cursor, so the bit-pack uses rax/rbx instead.
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst.next());
+            try sink.emit("cmp {reg}, {reg}", .{ dst, dst.next() });
+            try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, 1) });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, @as(u64, 2) });
+            try sink.emit("cmovg {reg}, {reg}", .{ .rax, .rbx });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, @as(u64, 4) });
+            try sink.emit("cmovl {reg}, {reg}", .{ .rax, .rbx });
+            try sink.emit("mov {reg}, {reg}", .{ dst, .rax });
+        },
+        .points => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, dst, 0 });
+            try sink.emit("shr {reg}, {u8}", .{ dst, @as(u8, 63) });
+        },
+        .size => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, dst, 0 });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, 0xffffffffffff });
+            try sink.emit("and {reg}, {reg}", .{ dst, .rbx });
+        },
+        .load => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst.next());
+            // shl by 3 to convert word index -> byte offset. Use the imm8
+            // form so we don't touch rcx (the sandbox cursor).
+            try sink.emit("shl {reg}, {u8}", .{ dst.next(), @as(u8, 3) });
+            try sink.emit("add {reg}, {i32}", .{ dst, 8 });
+            try sink.emit("add {reg}, {reg}", .{ dst, dst.next() });
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, dst, 0 });
+        },
+        .load_imm => {
+            const imm = eat_slot(slots, at);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, dst, @as(i32, @intCast(imm * 8 + 8)) });
+        },
+        .if_ => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try sink.emit("test {reg}, {reg}", .{ dst, dst });
+            const jz = try sink.placeholder("jz {label}", .{});
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            const jmp = try sink.placeholder("jmp {label}", .{});
+            try sink.patch_to_here(jz);
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try sink.patch_to_here(jmp);
+        },
+        .use_fuel => {
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+            try sink.emit("sub {reg}, {reg}", .{ .rsi, dst });
+            try emit_expr_to_reg(sink, slots, at, resolver, dst);
+        },
+        .crash => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            resolver.pop_stack();
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // error
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // on crash handler
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rdi, .rcx, 8 }); // restore call stack
+            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // restore data stack
+            try sink.emit("add {reg}, {i32}", .{ .rcx, 32 }); // pop sandbox stack entry
+            try sink.emit("push {reg}", .{.rax}); // push error
+            try sink.emit("jmp {reg}", .{.rbx}); // jump to crash handler
+        },
+        .new_leaf, .new_inner => {
+            const n: usize = @intCast(header.rest);
+            const is_inner = header.tag == .new_inner;
+            // Compile each child into consecutive registers dst, dst+1, ...
+            var child_reg: Reg = dst;
+            for (0..n) |_| {
+                try emit_expr_to_reg(sink, slots, at, resolver, child_reg);
+                if (child_reg != .r15) child_reg = child_reg.next();
+            }
+            // Write each child to the heap. Doing this before overwriting dst
+            // with the address means we can read child[0] from dst safely.
+            child_reg = dst;
+            for (0..n) |i| {
+                const off: i32 = @intCast((i + 1) * 8);
+                try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rdi, off, child_reg });
+                if (child_reg != .r15) child_reg = child_reg.next();
+            }
+            // Write the header word at [rdi + 0].
+            const header_val: u64 = if (is_inner)
+                (@as(u64, 1) << 63) | @as(u64, n)
+            else
+                @as(u64, n);
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, header_val });
+            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx });
+            // Capture the object address into dst (= the rdi value before we
+            // advanced it) and bump rdi past the new object.
+            try sink.emit("mov {reg}, {reg}", .{ dst, .rdi });
+            try sink.emit("add {reg}, {i32}", .{ .rdi, @as(i32, @intCast((n + 1) * 8)) });
+        },
+        .unreachable_ => try sink.emit("ud2", .{}),
+        else => @panic(@tagName(header.tag)),
     }
 }
 
-fn hook_crash() callconv(.c) void {
-    std.debug.print("oh no! crashing\n", .{});
-    std.process.exit(1);
+// Garbage collection and deduplication remove the jit-compiled machine code of
+// moved functions (they may contain hardcoded addresses of moved objects). They
+// will just be jit-compiled the next time they are called.
+// Over time, long-used functions (and other long-lived objects) will be at the
+// beginning of the heap and no longer affected by garbage collection,
+// preventing unnecessary recompiles.
+
+pub fn garbage_collect(vm: *Self, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
+    const mapped = try vm.heap.garbage_collect(vm.ally, checkpoint, keep);
+    vm.jit_cache.remove_everything_after(checkpoint.address);
+    return mapped;
 }
-fn hook_eval(vm_state: *VmState, zig_state: *ZigState, instructions: Obj) callconv(.c) void {
-    std.debug.print("hellooooo! evaling {x}\n", .{instructions.address});
+
+pub fn deduplicate(vm: *Self, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
+    var map = try vm.heap.deduplicate(vm.ally, checkpoint);
+    defer map.deinit();
+    vm.jit_cache.remove_everything_after(checkpoint.address);
+    return map.get(obj) orelse obj;
+}
+
+// Next up: Hooks. Zig functions that follow the SysV calling convention so I
+// can call them from assembly.
+
+// TODO: move into assembly
+fn hook_flatten_to_inner(vm_state: *VmState, zig_state: *ZigState) callconv(.c) void {
     const vm = zig_state.vm;
     vm_state.store_to_vm(vm);
-    vm.run(instructions) catch {
-        std.debug.print("run failed!", .{});
-        std.process.exit(1);
-    };
+    defer vm_state.load_from_vm(vm);
+
+    var obj = Obj{ .address = vm.data_stack.pop() };
+    var b = vm.heap.build_inner() catch @panic("flatten_to_inner OOM");
+    while (true) {
+        switch (obj.size()) {
+            0 => break,
+            2 => {
+                b.emit(obj.child(0)) catch @panic("flatten_to_inner OOM");
+                obj = obj.child(1);
+            },
+            else => unreachable,
+        }
+    }
+    const result = b.finish();
+    vm.data_stack.push(result.address) catch @panic("flatten_to_inner stack overflow");
 }
 
-pub fn garbage_collect(vm: *Vm, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
-    const mapped = vm.heap.garbage_collect(vm.ally, checkpoint, keep);
-    vm.jit_cache.remove_everything_after(checkpoint.address);
-    return mapped;
+// TODO: move into assembly
+fn hook_flatten_to_leaf(vm_state: *VmState, zig_state: *ZigState) callconv(.c) void {
+    const vm = zig_state.vm;
+    vm_state.store_to_vm(vm);
+    defer vm_state.load_from_vm(vm);
+
+    var obj = Obj{ .address = vm.data_stack.pop() };
+    var b = vm.heap.build_leaf() catch @panic("flatten_to_leaf OOM");
+    while (true) {
+        switch (obj.size()) {
+            0 => break,
+            2 => {
+                b.emit(obj.child(0).word(0)) catch @panic("flatten_to_leaf OOM");
+                obj = obj.child(1);
+            },
+            else => unreachable,
+        }
+    }
+    const result = b.finish();
+    vm.data_stack.push(result.address) catch @panic("flatten_to_leaf stack overflow");
 }
 
-pub fn deduplicate(vm: *Vm, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
-    var map = try vm.heap.deduplicate(vm.ally, checkpoint);
-    vm.jit_cache.remove_everything_after(checkpoint.address);
-    const mapped = map.get(obj) orelse obj;
-    map.deinit();
-    return mapped;
+fn hook_gc(vm_state: *VmState, zig_state: *ZigState) callconv(.c) void {
+    const vm = zig_state.vm;
+    vm_state.store_to_vm(vm);
+    defer vm_state.load_from_vm(vm);
+
+    const keep = Obj{ .address = vm.data_stack.pop() };
+    const checkpoint = Heap.Checkpoint{ .address = vm.data_stack.pop() };
+    const mapped = vm.garbage_collect(checkpoint, keep) catch @panic("gc OOM");
+    vm.data_stack.push(mapped.address) catch @panic("gc stack overflow");
+}
+
+// TODO: make this actually call the function
+// Looks up (or compiles) the callee's machine code and returns a pointer to
+// the first byte. Used by the .call instruction.
+fn hook_call(vm_state: *VmState, zig_state: *ZigState, callee_addr: u64) callconv(.c) [*]const u8 {
+    const vm = zig_state.vm;
+    vm_state.store_to_vm(vm);
+    defer vm_state.load_from_vm(vm);
+
+    const callee = Vm.Fun{ .obj = .{ .address = callee_addr } };
+    const machine_code = vm.compile(callee) catch @panic("hook_call: compile failed");
+    return machine_code.ptr;
 }

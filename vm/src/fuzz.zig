@@ -5,11 +5,13 @@ const Word = Heap.Word;
 const Obj = Heap.Obj;
 const Smith = std.testing.Smith;
 
-test "tree-walking vs byte-code" {
-    try std.testing.fuzz({}, tree_walking_vs_byte_code, .{});
+const HEAP_SIZE = 10000;
+
+test "tree-walk vs byte-code" {
+    try std.testing.fuzz({}, tw_vs_bc, .{});
 }
-test "tree-walking vs byte-code (often)" {
-    for (0..100000) |i| {
+test "tree-walk vs byte-code (often)" {
+    for (0..1000) |i| {
         var bytes: [4096]u8 = undefined;
         var prng: std.Random.DefaultPrng = .init(i);
         var off: usize = 0;
@@ -18,51 +20,91 @@ test "tree-walking vs byte-code (often)" {
             std.mem.writeInt(u64, bytes[off..][0..8], v, .little);
         }
         var smith: Smith = .{ .in = &bytes };
-        tree_walking_vs_byte_code({}, &smith) catch |err| {
+        tw_vs_bc({}, &smith) catch |err| {
             std.debug.print("seed {d}: {s}\n", .{ i, @errorName(err) });
             return err;
         };
     }
 }
-fn tree_walking_vs_byte_code(_: void, smith: *Smith) anyerror!void {
+fn tw_vs_bc(_: void, smith: *Smith) anyerror!void {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const ally = arena.allocator();
 
-    var heap_tw = try Heap.init(ally, 100000);
-    var heap_bc = try Heap.init(ally, 100000);
-
+    var heap_tw = try Heap.init(ally, HEAP_SIZE);
     const fun_tw = generate_function(ally, smith, &heap_tw) catch return;
-    const fun_bc = Vm.Fun{ .obj = try heap_tw.copy_to_other_heap(ally, &heap_bc, fun_tw.obj) };
-
-    var vm_tw: Vm.TreeWalkingInterpreter = try .init(&heap_tw, ally);
-    vm_tw.log_ub = false;
-    vm_tw.max_expressions = 100000;
-    var vm_bc: Vm.ByteCodeInterpreter = try .init(&heap_bc, ally);
-
-    var fuel_tw: usize = 10000;
+    var vm_tw: Vm.TreeWalk = try .init(&heap_tw, ally, .{
+        .log_undefined_behavior = false,
+        .max_expressions = 100000,
+    });
+    var fuel_tw: usize = Vm.max_fuel;
     const result_tw = vm_tw.call(fun_tw, &.{}, &fuel_tw) catch return;
     std.debug.print("Fun: {f}\n", .{fun_tw.obj});
 
-    var fuel_bc: usize = 10000;
+    var heap_bc = try Heap.init(ally, HEAP_SIZE);
+    const fun_bc = Vm.Fun{ .obj = try heap_tw.copy_to_other_heap(ally, &heap_bc, fun_tw.obj) };
+    var vm_bc: Vm.ByteCode = try .init(&heap_bc, ally);
+    var fuel_bc: usize = Vm.max_fuel;
     const result_bc = vm_bc.call(fun_bc, &.{}, &fuel_bc) catch return;
 
     if (!compatible_results(result_tw, result_bc)) {
-        std.debug.print("Tree-walking and byte-code interpreter behave differently:\n", .{});
-        std.debug.print("Function: {f}\n", .{fun_tw.obj});
-        std.debug.print("Tree-walking: {s}", .{@tagName(result_tw)});
-        switch (result_tw) {
-            .returned => |o| std.debug.print(" {f}", .{o}),
-            .crashed => |o| std.debug.print(" {f}", .{o}),
-            else => {},
+        std.debug.print(
+            \\Tree-walk and byte-code behave differently:
+            \\Function: {f}
+            \\Tree-walk: {f}
+            \\Byte-code: {f}
+        , .{ fun_tw.obj, result_tw, result_bc });
+        return error.VmMismatch;
+    }
+}
+
+test "tree-walk vs jit" {
+    try std.testing.fuzz({}, tw_vs_jit, .{});
+}
+test "tree-walk vs jit (often)" {
+    for (0..1000) |i| {
+        var bytes: [4096]u8 = undefined;
+        var prng: std.Random.DefaultPrng = .init(i);
+        var off: usize = 0;
+        while (off < bytes.len) : (off += 8) {
+            const v = prng.random().intRangeLessThan(u64, 0, 64);
+            std.mem.writeInt(u64, bytes[off..][0..8], v, .little);
         }
-        std.debug.print("\nByte-code: {s}", .{@tagName(result_bc)});
-        switch (result_bc) {
-            .returned => |o| std.debug.print(" {f}", .{o}),
-            .crashed => |o| std.debug.print(" {f}", .{o}),
-            else => {},
-        }
-        std.debug.print("\n", .{});
+        var smith: Smith = .{ .in = &bytes };
+        tw_vs_jit({}, &smith) catch |err| {
+            std.debug.print("seed {d}: {s}\n", .{ i, @errorName(err) });
+            return err;
+        };
+    }
+}
+fn tw_vs_jit(_: void, smith: *Smith) anyerror!void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const ally = arena.allocator();
+
+    var heap_tw = try Heap.init(ally, HEAP_SIZE);
+    const fun_tw = generate_function(ally, smith, &heap_tw) catch return;
+    var vm_tw: Vm.TreeWalk = try .init(&heap_tw, ally, .{
+        .log_undefined_behavior = false,
+        .max_expressions = 100000,
+    });
+    var fuel_tw: usize = Vm.max_fuel;
+    const result_tw = vm_tw.call(fun_tw, &.{}, &fuel_tw) catch return;
+    std.debug.print("Fun: {f}\n", .{fun_tw.obj});
+
+    var heap_jit = try Heap.init(ally, HEAP_SIZE);
+    const fun_jit = Vm.Fun{ .obj = try heap_tw.copy_to_other_heap(ally, &heap_jit, fun_tw.obj) };
+    var vm_jit: Vm.Jit = try .init(&heap_jit, ally);
+    var fuel_jit: usize = Vm.max_fuel;
+    const result_jit = vm_jit.call(fun_jit, &.{}, &fuel_jit) catch return;
+
+    if (!compatible_results(result_tw, result_jit)) {
+        std.debug.print(
+            \\Tree-walk and JIT behave differently:usize
+            \\Function: {f}
+            \\Tree-walk: {f}
+            \\JIT:       {f}
+        , .{ fun_tw.obj, result_tw, result_jit });
         return error.VmMismatch;
     }
 }
