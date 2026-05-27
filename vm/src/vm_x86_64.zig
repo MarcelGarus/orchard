@@ -194,27 +194,27 @@ pub fn init(heap: *Heap, ally: Ally) !Self {
 
             // Switch from SysV to Orchard convention.
             try sink.emit("mov {reg}, {reg}", .{ .rdx, .rsp }); // rdx = original rsp
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rdx, 8 }); // rbx = *VmState
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rdi, .rbx, 0 }); // rdi = heap
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbp, .rbx, 16 }); // rbp = call_stack
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rcx, .rbx, 24 }); // rcx = sandbox_stack
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rsp, .rbx, 8 }); // rsp = data (LAST)
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 }); // rbx = *VmState
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 }); // rdi = heap
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 }); // rbp = call_stack
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 }); // rcx = sandbox_stack
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 }); // rsp = data (LAST)
 
             // Install the outer sandbox entry. Its crash_target is the .L_crash
             // label below; on unwind, the jitted code restores cursors from the
             // entry and jumps there, where we'll set rax=1 and return.
             try sink.emit("sub {reg}, {i32}", .{ .rcx, 32 });
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rcx, 24, .rsp }); // data snapshot
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rcx, 16, .rbp }); // call snapshot
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rcx, 8, .rdi }); // heap snapshot
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 24, .rsp }); // data snapshot
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 16, .rbp }); // call snapshot
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 8, .rdi }); // heap snapshot
             const crash_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rcx, 0, .rbx }); // crash_target
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 0, .rbx }); // crash_target
 
             // "Call" the jitted code: push our return address onto the Orchard
             // call stack and jmp into it.
             try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
             const ret_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
             try sink.emit("jmp {reg}", .{.rax});
 
             // --- Normal-return path ---
@@ -232,11 +232,11 @@ pub fn init(heap: *Heap, ally: Ally) !Self {
 
             // --- Shared epilogue ---
             // Write the updated cursors back into *VmState.
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rdx, 8 }); // rbx = *VmState
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 }); // rbx = *VmState
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
 
             // Switch back to the native stack and discard the parked pointers.
             try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
@@ -715,10 +715,11 @@ fn compute_node_regs(slots: []u64, at: *Index) u8 {
             for (0..n) |_| _ = compute_node_regs(slots, at);
             break :blk STACK;
         },
-        .call_indirect => @max(
-            compute_node_regs(slots, at),
-            1 +| compute_node_regs(slots, at),
-        ),
+        .call_indirect => blk: {
+            _ = compute_node_regs(slots, at);
+            _ = compute_node_regs(slots, at);
+            break :blk STACK;
+        },
         .rec => blk: {
             const n: usize = @intCast(header.rest);
             for (0..n) |_| _ = compute_node_regs(slots, at);
@@ -790,6 +791,11 @@ const Patch = struct {
     // MachineCode: byte offset of the i32 displacement slot.
     handle: u32,
 };
+
+// Marks an already-emitted location that later instructions can jump back to.
+// Asm: id of a label written at the target site.
+// MachineCode: absolute byte offset of the target inside the buffer.
+const BackLabel = struct { handle: u32 };
 
 const Asm = struct {
     ally: Ally,
@@ -883,6 +889,8 @@ const Asm = struct {
                     try self.write("{d}", .{arg});
                 } else if (comptime std.mem.eql(u8, tok.text, "label")) {
                     try self.write(".L{d}", .{arg});
+                } else if (comptime std.mem.eql(u8, tok.text, "back")) {
+                    try self.write(".L{d}", .{arg.handle});
                 } else {
                     @compileError("Asm.emit: unknown placeholder {" ++ tok.text ++ "}");
                 }
@@ -910,6 +918,15 @@ const Asm = struct {
     fn patch_to_here(self: *Asm, p: Patch) !void {
         for (0..self.indentation) |_| try self.write("  ", .{});
         try self.write(".L{d}:\n", .{p.handle});
+    }
+    // Defines a label at the current location and returns a BackLabel that
+    // later "jmp {back}" instructions can target.
+    fn here(self: *Asm) !BackLabel {
+        const id = self.next_label;
+        self.next_label += 1;
+        for (0..self.indentation) |_| try self.write("  ", .{});
+        try self.write(".L{d}:\n", .{id});
+        return .{ .handle = id };
     }
 };
 
@@ -1006,13 +1023,13 @@ const MachineCode = struct {
         } else if (comptime std.mem.eql(u8, instr, "pop {reg}")) {
             if (high(args[0])) try self.b(0x41);
             try self.b(0x58 | @as(u8, low(args[0])));
-        } else if (comptime std.mem.eql(u8, instr, "push qword {i32}")) {
+        } else if (comptime std.mem.eql(u8, instr, "push {i32}")) {
             try self.b(0x68);
             try self.i32le(args[0]);
-        } else if (comptime std.mem.eql(u8, instr, "push qword {i8}")) {
+        } else if (comptime std.mem.eql(u8, instr, "push {i8}")) {
             try self.b(0x6a);
             try self.b(@as(u8, @bitCast(@as(i8, args[0]))));
-        } else if (comptime std.mem.eql(u8, instr, "push qword [{reg} + {i32}]")) {
+        } else if (comptime std.mem.eql(u8, instr, "push [{reg} + {i32}]")) {
             try self.rex(false, false, false, high(args[0]));
             try self.b(0xff);
             try self.mem_operand(6, args[0], args[1]);
@@ -1024,11 +1041,11 @@ const MachineCode = struct {
             try self.rex(true, high(args[1]), false, high(args[0]));
             try self.b(0x89);
             try self.modrm(0b11, low(args[1]), low(args[0]));
-        } else if (comptime std.mem.eql(u8, instr, "mov {reg}, qword [{reg} + {i32}]")) {
+        } else if (comptime std.mem.eql(u8, instr, "mov {reg}, [{reg} + {i32}]")) {
             try self.rex(true, high(args[0]), false, high(args[1]));
             try self.b(0x8b);
             try self.mem_operand(low(args[0]), args[1], args[2]);
-        } else if (comptime std.mem.eql(u8, instr, "mov qword [{reg} + {i32}], {reg}")) {
+        } else if (comptime std.mem.eql(u8, instr, "mov [{reg} + {i32}], {reg}")) {
             try self.rex(true, high(args[2]), false, high(args[0]));
             try self.b(0x89);
             try self.mem_operand(low(args[2]), args[0], args[1]);
@@ -1151,9 +1168,18 @@ const MachineCode = struct {
             if (high(args[0])) try self.b(0x41);
             try self.b(0xff);
             try self.modrm(0b11, 4, low(args[0]));
+        } else if (comptime std.mem.eql(u8, instr, "call {reg}")) {
+            if (high(args[0])) try self.b(0x41);
+            try self.b(0xff);
+            try self.modrm(0b11, 2, low(args[0]));
         } else if (comptime std.mem.eql(u8, instr, "jmp {root}")) {
             try self.b(0xe9);
             try self.i32le(@intCast(-(@as(i64, @intCast(self.bytes.items.len)) + 4)));
+        } else if (comptime std.mem.eql(u8, instr, "jmp {back}")) {
+            try self.b(0xe9);
+            const after: i64 = @as(i64, @intCast(self.bytes.items.len)) + 4;
+            const target: i64 = @intCast(args[0].handle);
+            try self.i32le(@intCast(target - after));
         } else if (comptime std.mem.eql(u8, instr, "ret")) {
             try self.b(0xc3);
         } else if (comptime std.mem.eql(u8, instr, "ud2")) {
@@ -1195,6 +1221,9 @@ const MachineCode = struct {
         const after: i64 = @as(i64, @intCast(p.handle)) + 4;
         const delta: i32 = @intCast(target - after);
         std.mem.writeInt(i32, self.bytes.items[p.handle..][0..4], delta, .little);
+    }
+    fn here(self: *MachineCode) !BackLabel {
+        return .{ .handle = @intCast(self.bytes.items.len) };
     }
 };
 
@@ -1274,7 +1303,7 @@ fn emit_fun(sink: anytype, ir: Ir, fun: Vm.Fun) !void {
         try sink.emit("add {reg}, {i32}", .{ .rsp, @as(i32, @intCast(fun.args().len * 8)) });
         try sink.emit("push {reg}", .{.rax});
     }
-    try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rbp, @as(i32, 0) });
+    try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rbp, @as(i32, 0) });
     try sink.emit("add {reg}, {i32}", .{ .rbp, 8 });
     try sink.emit("jmp {reg}", .{.rax});
 }
@@ -1301,9 +1330,9 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             const word = eat_slot(slots, at);
             const signed = @as(i64, @bitCast(word));
             if (signed >= -0x80 and signed < 0x80) {
-                try sink.emit("push qword {i8}", .{@as(i8, @intCast(signed))});
+                try sink.emit("push {i8}", .{@as(i8, @intCast(signed))});
             } else if (signed >= -0x80000000 and signed < 0x7fffffff) {
-                try sink.emit("push qword {i32}", .{@as(i32, @intCast(signed))});
+                try sink.emit("push {i32}", .{@as(i32, @intCast(signed))});
             } else {
                 try sink.emit("mov {reg}, {u64}", .{ .rax, word });
                 try sink.emit("push {reg}", .{.rax});
@@ -1320,7 +1349,7 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             const name = get_symbol(Obj{ .address = eat_slot(slots, at) });
             const loc = resolver.lookup(name) orelse unreachable;
             switch (loc) {
-                .stack => |o| try sink.emit("push qword [{reg} + {i32}]", .{ .rsp, @as(i32, @intCast(o * 8)) }),
+                .stack => |o| try sink.emit("push [{reg} + {i32}]", .{ .rsp, @as(i32, @intCast(o * 8)) }),
                 .reg => |r| try sink.emit("push {reg}", .{r}),
             }
             try resolver.push_anon(ally);
@@ -1437,14 +1466,14 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
         .points => {
             try emit_expr_to_stack(sink, slots, at, resolver);
             try sink.emit("pop {reg}", .{.rax});
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rax, 0 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rax, 0 });
             try sink.emit("shr {reg}, {u8}", .{ .rax, @as(u8, 63) });
             try sink.emit("push {reg}", .{.rax});
         },
         .size => {
             try emit_expr_to_stack(sink, slots, at, resolver);
             try sink.emit("pop {reg}", .{.rax});
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rax, 0 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rax, 0 });
             try sink.emit("mov {reg}, {u64}", .{ .rbx, 0xffffffffffff });
             try sink.emit("and {reg}, {reg}", .{ .rax, .rbx });
             try sink.emit("push {reg}", .{.rax});
@@ -1459,7 +1488,7 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try sink.emit("pop {reg}", .{.rax});
             try sink.emit("add {reg}, {i32}", .{ .rax, 8 });
             try sink.emit("add {reg}, {reg}", .{ .rax, .rbx });
-            try sink.emit("push qword [{reg} + {i32}]", .{ .rax, 0 });
+            try sink.emit("push [{reg} + {i32}]", .{ .rax, 0 });
             resolver.pop_stack();
             resolver.pop_stack();
             try resolver.push_anon(ally);
@@ -1468,7 +1497,7 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             const imm = eat_slot(slots, at);
             try emit_expr_to_stack(sink, slots, at, resolver);
             try sink.emit("pop {reg}", .{.rax});
-            try sink.emit("push qword [{reg} + {i32}]", .{ .rax, @as(i32, @intCast(imm * 8 + 8)) });
+            try sink.emit("push [{reg} + {i32}]", .{ .rax, @as(i32, @intCast(imm * 8 + 8)) });
         },
         .new_leaf, .new_inner => {
             const n: usize = @intCast(header.rest);
@@ -1479,12 +1508,12 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
                 @as(u64, n);
             try sink.emit("mov {reg}, {reg}", .{ .rax, .rdi }); // rax = object address
             try sink.emit("mov {reg}, {u64}", .{ .rbx, header_val });
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx });
             for (0..n) |i| {
                 const src_off: i32 = @intCast((n - 1 - i) * 8);
                 const dst_off: i32 = @intCast((i + 1) * 8);
-                try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rsp, src_off });
-                try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rdi, dst_off, .rbx });
+                try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rsp, src_off });
+                try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, dst_off, .rbx });
             }
             try sink.emit("add {reg}, {i32}", .{ .rdi, @as(i32, @intCast((n + 1) * 8)) });
             if (n > 0) try sink.emit("add {reg}, {i32}", .{ .rsp, @as(i32, @intCast(n * 8)) });
@@ -1494,17 +1523,95 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
         },
         .flatten_to_leaf => {
             try emit_expr_to_stack(sink, slots, at, resolver);
-            try sink.comment("hook flatten_to_leaf", .{});
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("mov {reg}, {reg}", .{ .r8, .rdi });
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 8 });
+            try sink.emit("xor {reg}, {reg}", .{ .r9, .r9 });
+            const loop = try sink.here();
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rax, 0 });
+            try sink.emit("mov {reg}, {u64}", .{ .r10, @as(u64, 0xffffffffffff) });
+            try sink.emit("and {reg}, {reg}", .{ .rbx, .r10 });
+            const done = try sink.placeholder("jz {label}", .{});
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .r10, .rax, 8 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .r11, .r10, 8 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .r11 });
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 8 });
+            try sink.emit("add {reg}, {i32}", .{ .r9, 1 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rax, 16 });
+            try sink.emit("jmp {back}", .{loop});
+            try sink.patch_to_here(done);
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .r8, 0, .r9 });
+            try sink.emit("push {reg}", .{.r8});
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
         },
         .flatten_to_inner => {
             try emit_expr_to_stack(sink, slots, at, resolver);
-            try sink.comment("hook flatten_to_inner", .{});
+            try sink.emit("pop {reg}", .{.rax});
+            try sink.emit("mov {reg}, {reg}", .{ .r8, .rdi });
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 8 });
+            try sink.emit("xor {reg}, {reg}", .{ .r9, .r9 });
+            const loop = try sink.here();
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rax, 0 });
+            try sink.emit("mov {reg}, {u64}", .{ .r10, @as(u64, 0xffffffffffff) });
+            try sink.emit("and {reg}, {reg}", .{ .rbx, .r10 });
+            const done = try sink.placeholder("jz {label}", .{});
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .r10, .rax, 8 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .r10 });
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 8 });
+            try sink.emit("add {reg}, {i32}", .{ .r9, 1 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rax, 16 });
+            try sink.emit("jmp {back}", .{loop});
+            try sink.patch_to_here(done);
+            try sink.emit("mov {reg}, {u64}", .{ .r10, @as(u64, 1) << 63 });
+            try sink.emit("or {reg}, {reg}", .{ .r9, .r10 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .r8, 0, .r9 });
+            try sink.emit("push {reg}", .{.r8});
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
         },
         .call => {
             const n: usize = @intCast(header.rest);
             for (0..n) |_| try emit_expr_to_stack(sink, slots, at, resolver);
-            try emit_expr_to_stack(sink, slots, at, resolver);
-            try sink.comment("call (indirect) with {d} args", .{n});
+            try emit_expr_to_stack(sink, slots, at, resolver); // callee obj
+            // Stack now holds [..., arg_0, ..., arg_(n-1), callee_obj]. Pop the
+            // callee_obj into rax. The args stay on the data stack where the
+            // callee will find them.
+            try sink.emit("pop {reg}", .{.rax});
+            // Bridge to SysV and call hook_compile(*VmState, *ZigState, callee_obj)
+            // to obtain a pointer to the callee's compiled machine code.
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
+            try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
+            try sink.emit("push {reg}", .{.rdx});
+            try sink.emit("push {reg}", .{.rsi});
+            try sink.emit("sub {reg}, {i32}", .{ .rsp, 8 });
+            try sink.emit("mov {reg}, {reg}", .{ .rdi, .rbx }); // arg 0
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rdx, 0 }); // arg 1
+            try sink.emit("mov {reg}, {reg}", .{ .rdx, .rax }); // arg 2: callee_obj
+            try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, @intFromPtr(&hook_compile)) });
+            try sink.emit("call {reg}", .{.rax});
+            // rax now holds the machine-code pointer (SysV return). Restore.
+            try sink.emit("add {reg}, {i32}", .{ .rsp, 8 });
+            try sink.emit("pop {reg}", .{.rsi});
+            try sink.emit("pop {reg}", .{.rdx});
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 });
+            // Push the return address onto the call stack and jump to the
+            // callee's machine code. The callee follows the same convention
+            // as .call_imm: it pops args from the data stack and returns by
+            // reading rbp+0 / adding 8 to rbp.
+            try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
+            const ret_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
+            try sink.emit("jmp {reg}", .{.rax});
+            try sink.patch_to_here(ret_patch);
             for (0..n) |_| resolver.pop_stack();
             resolver.pop_stack();
             try resolver.push_anon(ally);
@@ -1515,7 +1622,7 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             for (0..n) |_| try emit_expr_to_stack(sink, slots, at, resolver);
             try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
             const ret_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
             try sink.emit("mov {reg}, {u64}", .{ .rax, callee });
             try sink.emit("jmp {reg}", .{.rax});
             try sink.patch_to_here(ret_patch);
@@ -1523,9 +1630,56 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try resolver.push_anon(ally);
         },
         .call_indirect => {
-            try emit_expr_to_stack(sink, slots, at, resolver);
-            try emit_expr_to_stack(sink, slots, at, resolver);
-            try sink.comment("call_indirect", .{});
+            try emit_expr_to_stack(sink, slots, at, resolver); // args
+            try emit_expr_to_stack(sink, slots, at, resolver); // fun
+            // Stack: [..., args_obj, fun_obj], top = fun_obj.
+            try sink.emit("pop {reg}", .{.r12}); // r12 = fun_obj (preserved across the loop)
+            try sink.emit("pop {reg}", .{.rbx}); // rbx = args_obj
+            // n = args_obj.size() = header & 0xffffffffffff.
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .r10, .rbx, 0 });
+            try sink.emit("mov {reg}, {u64}", .{ .r11, @as(u64, 0xffffffffffff) });
+            try sink.emit("and {reg}, {reg}", .{ .r10, .r11 });
+            try sink.emit("add {reg}, {i32}", .{ .rbx, 8 }); // rbx -> first child slot
+            // Push each child onto the data stack in order, so child[n-1] is on top.
+            const loop = try sink.here();
+            try sink.emit("test {reg}, {reg}", .{ .r10, .r10 });
+            const done = try sink.placeholder("jz {label}", .{});
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .r11, .rbx, 0 });
+            try sink.emit("push {reg}", .{.r11});
+            try sink.emit("add {reg}, {i32}", .{ .rbx, 8 });
+            try sink.emit("sub {reg}, {i32}", .{ .r10, 1 });
+            try sink.emit("jmp {back}", .{loop});
+            try sink.patch_to_here(done);
+            // Bridge to SysV and call hook_compile(*VmState, *ZigState, fun_obj).
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
+            try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
+            try sink.emit("push {reg}", .{.rdx});
+            try sink.emit("push {reg}", .{.rsi});
+            try sink.emit("sub {reg}, {i32}", .{ .rsp, 8 });
+            try sink.emit("mov {reg}, {reg}", .{ .rdi, .rbx }); // arg 0: *VmState
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rdx, 0 }); // arg 1: *ZigState
+            try sink.emit("mov {reg}, {reg}", .{ .rdx, .r12 }); // arg 2: fun_obj
+            try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, @intFromPtr(&hook_compile)) });
+            try sink.emit("call {reg}", .{.rax});
+            // rax now holds the callee's machine-code pointer.
+            try sink.emit("add {reg}, {i32}", .{ .rsp, 8 });
+            try sink.emit("pop {reg}", .{.rsi});
+            try sink.emit("pop {reg}", .{.rdx});
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 });
+            // Push return address onto the call stack and jump to the callee.
+            try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
+            const ret_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
+            try sink.emit("jmp {reg}", .{.rax});
+            try sink.patch_to_here(ret_patch);
             resolver.pop_stack();
             resolver.pop_stack();
             try resolver.push_anon(ally);
@@ -1539,8 +1693,8 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             // jump back to .root.
             const depth = resolver.stack.items.len;
             for (0..n) |i| {
-                try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rsp, @as(i32, @intCast(i * 8)) });
-                try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rsp, @as(i32, @intCast((depth - n + i) * 8)), .rax });
+                try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rsp, @as(i32, @intCast(i * 8)) });
+                try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rsp, @as(i32, @intCast((depth - n + i) * 8)), .rax });
             }
             if (depth > n) {
                 try sink.emit("add {reg}, {i32}", .{ .rsp, @as(i32, @intCast((depth - n) * 8)) });
@@ -1550,8 +1704,41 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try resolver.push_anon(ally);
         },
         .collect_garbage => {
-            try emit_expr_to_stack(sink, slots, at, resolver);
-            try sink.comment("hook collect_garbage", .{});
+            try sink.emit("push {reg}", .{.rdi}); // heap checkpoint
+            try resolver.push_anon(ally);
+            try emit_expr_to_stack(sink, slots, at, resolver); // keep
+            // Move registers into *VmState so the hook sees current cursors.
+            // rdx points at the native-stack frame with
+            // [rdx+0] = *ZigState
+            // [rdx+8] = *VmState.
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
+            // Switch to the native stack (rdx), which is currently aligned by
+            // 8 mod 16.
+            try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
+            try sink.emit("push {reg}", .{.rdx});
+            try sink.emit("push {reg}", .{.rsi});
+            try sink.emit("sub {reg}, {i32}", .{ .rsp, 8 });
+            try sink.emit("mov {reg}, {reg}", .{ .rdi, .rbx }); // arg 0: *VmState
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rdx, 0 }); // arg 1: *ZigState
+            try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, @intFromPtr(&hook_gc)) });
+            try sink.emit("call {reg}", .{.rax});
+            // (the garbage collection runs)
+            try sink.emit("add {reg}, {i32}", .{ .rsp, 8 });
+            try sink.emit("pop {reg}", .{.rsi});
+            try sink.emit("pop {reg}", .{.rdx});
+            // Move state from *VmState into registers.
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 });
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
         },
         .sandbox => {
             try emit_expr_to_stack(sink, slots, at, resolver);
@@ -1569,12 +1756,12 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
         },
         .crash => {
             try emit_expr_to_stack(sink, slots, at, resolver);
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // rax = error
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // rsp = sandbox.data
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // rax = error
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // rsp = sandbox.data
             try sink.emit("push {reg}", .{.rax}); // error onto restored stack
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rdi, .rcx, 8 }); // rdi = sandbox.heap
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbp, .rcx, 16 }); // rbp = sandbox.call
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // rbx = crash_target
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rcx, 8 }); // rdi = sandbox.heap
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rcx, 16 }); // rbp = sandbox.call
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // rbx = crash_target
             try sink.emit("add {reg}, {i32}", .{ .rcx, 32 }); // pop entry
             try sink.emit("jmp {reg}", .{.rbx});
             // .crash never falls through, so we don't update the resolver
@@ -1609,7 +1796,7 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
             const name = get_symbol(Obj{ .address = eat_slot(slots, at) });
             const loc = resolver.lookup(name) orelse unreachable;
             switch (loc) {
-                .stack => |o| try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, .rsp, @as(i32, @intCast(o * 8)) }),
+                .stack => |o| try sink.emit("mov {reg}, [{reg} + {i32}]", .{ dst, .rsp, @as(i32, @intCast(o * 8)) }),
                 .reg => |r| try sink.emit("mov {reg}, {reg}", .{ dst, r }),
             }
         },
@@ -1678,12 +1865,12 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
         },
         .points => {
             try emit_expr_to_reg(sink, slots, at, resolver, dst);
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, dst, 0 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ dst, dst, 0 });
             try sink.emit("shr {reg}, {u8}", .{ dst, @as(u8, 63) });
         },
         .size => {
             try emit_expr_to_reg(sink, slots, at, resolver, dst);
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, dst, 0 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ dst, dst, 0 });
             try sink.emit("mov {reg}, {u64}", .{ .rbx, 0xffffffffffff });
             try sink.emit("and {reg}, {reg}", .{ dst, .rbx });
         },
@@ -1695,12 +1882,12 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
             try sink.emit("shl {reg}, {u8}", .{ dst.next(), @as(u8, 3) });
             try sink.emit("add {reg}, {i32}", .{ dst, 8 });
             try sink.emit("add {reg}, {reg}", .{ dst, dst.next() });
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, dst, 0 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ dst, dst, 0 });
         },
         .load_imm => {
             const imm = eat_slot(slots, at);
             try emit_expr_to_reg(sink, slots, at, resolver, dst);
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ dst, dst, @as(i32, @intCast(imm * 8 + 8)) });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ dst, dst, @as(i32, @intCast(imm * 8 + 8)) });
         },
         .if_ => {
             try emit_expr_to_reg(sink, slots, at, resolver, dst);
@@ -1720,10 +1907,10 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
         .crash => {
             try emit_expr_to_stack(sink, slots, at, resolver);
             resolver.pop_stack();
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // error
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // on crash handler
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rdi, .rcx, 8 }); // restore call stack
-            try sink.emit("mov {reg}, qword [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // restore data stack
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // error
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // on crash handler
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rcx, 8 }); // restore call stack
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // restore data stack
             try sink.emit("add {reg}, {i32}", .{ .rcx, 32 }); // pop sandbox stack entry
             try sink.emit("push {reg}", .{.rax}); // push error
             try sink.emit("jmp {reg}", .{.rbx}); // jump to crash handler
@@ -1742,7 +1929,7 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
             child_reg = dst;
             for (0..n) |i| {
                 const off: i32 = @intCast((i + 1) * 8);
-                try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rdi, off, child_reg });
+                try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, off, child_reg });
                 if (child_reg != .r15) child_reg = child_reg.next();
             }
             // Write the header word at [rdi + 0].
@@ -1751,7 +1938,7 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
             else
                 @as(u64, n);
             try sink.emit("mov {reg}, {u64}", .{ .rbx, header_val });
-            try sink.emit("mov qword [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx });
             // Capture the object address into dst (= the rdi value before we
             // advanced it) and bump rdi past the new object.
             try sink.emit("mov {reg}, {reg}", .{ dst, .rdi });
@@ -1785,50 +1972,6 @@ pub fn deduplicate(vm: *Self, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
 // Next up: Hooks. Zig functions that follow the SysV calling convention so I
 // can call them from assembly.
 
-// TODO: move into assembly
-fn hook_flatten_to_inner(vm_state: *VmState, zig_state: *ZigState) callconv(.c) void {
-    const vm = zig_state.vm;
-    vm_state.store_to_vm(vm);
-    defer vm_state.load_from_vm(vm);
-
-    var obj = Obj{ .address = vm.data_stack.pop() };
-    var b = vm.heap.build_inner() catch @panic("flatten_to_inner OOM");
-    while (true) {
-        switch (obj.size()) {
-            0 => break,
-            2 => {
-                b.emit(obj.child(0)) catch @panic("flatten_to_inner OOM");
-                obj = obj.child(1);
-            },
-            else => unreachable,
-        }
-    }
-    const result = b.finish();
-    vm.data_stack.push(result.address) catch @panic("flatten_to_inner stack overflow");
-}
-
-// TODO: move into assembly
-fn hook_flatten_to_leaf(vm_state: *VmState, zig_state: *ZigState) callconv(.c) void {
-    const vm = zig_state.vm;
-    vm_state.store_to_vm(vm);
-    defer vm_state.load_from_vm(vm);
-
-    var obj = Obj{ .address = vm.data_stack.pop() };
-    var b = vm.heap.build_leaf() catch @panic("flatten_to_leaf OOM");
-    while (true) {
-        switch (obj.size()) {
-            0 => break,
-            2 => {
-                b.emit(obj.child(0).word(0)) catch @panic("flatten_to_leaf OOM");
-                obj = obj.child(1);
-            },
-            else => unreachable,
-        }
-    }
-    const result = b.finish();
-    vm.data_stack.push(result.address) catch @panic("flatten_to_leaf stack overflow");
-}
-
 fn hook_gc(vm_state: *VmState, zig_state: *ZigState) callconv(.c) void {
     const vm = zig_state.vm;
     vm_state.store_to_vm(vm);
@@ -1840,15 +1983,14 @@ fn hook_gc(vm_state: *VmState, zig_state: *ZigState) callconv(.c) void {
     vm.data_stack.push(mapped.address) catch @panic("gc stack overflow");
 }
 
-// TODO: make this actually call the function
 // Looks up (or compiles) the callee's machine code and returns a pointer to
-// the first byte. Used by the .call instruction.
-fn hook_call(vm_state: *VmState, zig_state: *ZigState, callee_addr: u64) callconv(.c) [*]const u8 {
+// the first byte.
+fn hook_compile(vm_state: *VmState, zig_state: *ZigState, callee_addr: u64) callconv(.c) [*]const u8 {
     const vm = zig_state.vm;
     vm_state.store_to_vm(vm);
     defer vm_state.load_from_vm(vm);
 
     const callee = Vm.Fun{ .obj = .{ .address = callee_addr } };
-    const machine_code = vm.compile(callee) catch @panic("hook_call: compile failed");
+    const machine_code = vm.compile(callee) catch @panic("hook_compile: compile failed");
     return machine_code.ptr;
 }
