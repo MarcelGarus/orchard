@@ -96,10 +96,20 @@ call_stack: Stack,
 // Also grows downward, contains callees.
 
 sandbox_stack: Stack,
-// Also grows downward. Every sandbox scope pushes a 4-word struct:
-// { on_crash, heap, call, data }. The translator from SysV to my calling
-// convention adds a sandbox scope, so when a crash happens, there is guaranteed
-// to be an entry on the stack.
+// Also grows downward. Every sandbox scope pushes a 6-word struct:
+// { on_crash, heap, call, data, fuel_diff, on_out_of_fuel }. The translator
+// from SysV to my calling convention adds a sandbox scope, so when a crash or
+// out-of-fuel happens, there is guaranteed to be an entry on the stack.
+// fuel_diff is how much fuel the sandbox subtracted from rsi when it capped
+// the body's allowance, so it can be added back when the sandbox exits. The
+// outer translator entry uses fuel_diff = 1 as a sentinel so the out-of-fuel
+// walking loop (which skips entries with fuel_diff == 0) terminates at the
+// translator instead of running off the bottom of the sandbox stack.
+
+fuel: usize = 0,
+// Remaining fuel for the currently-running call. Like the stacks, this only
+// has a meaningful value during a call; `call` sets it from the caller's
+// pointer and writes the leftover back when the call returns.
 
 jit_cache: ObjMap([]const u8),
 // Maps (pointer to instructions obj) to (x86_64 machine code). The machine code
@@ -114,18 +124,21 @@ const VmState = extern struct {
     data_stack_cursor: usize, // +8
     call_stack_cursor: usize, // +16
     sandbox_stack_cursor: usize, // +24
+    fuel: usize, // +32
 
     fn load_from_vm(self: *VmState, vm: *Self) void {
         self.heap_cursor = @intFromPtr(vm.heap.memory.ptr) + (8 * vm.heap.used);
         self.data_stack_cursor = @intFromPtr(vm.data_stack.memory.ptr) + (8 * vm.data_stack.cursor);
         self.call_stack_cursor = @intFromPtr(vm.call_stack.memory.ptr) + (8 * vm.call_stack.cursor);
         self.sandbox_stack_cursor = @intFromPtr(vm.sandbox_stack.memory.ptr) + (8 * vm.sandbox_stack.cursor);
+        self.fuel = vm.fuel;
     }
     fn store_to_vm(self: *VmState, vm: *Self) void {
         vm.heap.used = (self.heap_cursor - @intFromPtr(vm.heap.memory.ptr)) / 8;
         vm.data_stack.cursor = (self.data_stack_cursor - @intFromPtr(vm.data_stack.memory.ptr)) / 8;
         vm.call_stack.cursor = (self.call_stack_cursor - @intFromPtr(vm.call_stack.memory.ptr)) / 8;
         vm.sandbox_stack.cursor = (self.sandbox_stack_cursor - @intFromPtr(vm.sandbox_stack.memory.ptr)) / 8;
+        vm.fuel = self.fuel;
     }
 };
 const ZigState = struct {
@@ -198,17 +211,27 @@ pub fn init(heap: *Heap, ally: Ally) !Self {
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 }); // rdi = heap
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 }); // rbp = call_stack
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 }); // rcx = sandbox_stack
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rbx, 32 }); // rsi = fuel
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 }); // rsp = data (LAST)
 
-            // Install the outer sandbox entry. Its crash_target is the .L_crash
-            // label below; on unwind, the jitted code restores cursors from the
-            // entry and jumps there, where we'll set rax=1 and return.
-            try sink.emit("sub {reg}, {i32}", .{ .rcx, 32 });
+            // Install the outer sandbox entry. Its crash_target/ouf_target are
+            // the labels below; on unwind, the jitted code restores cursors
+            // from the entry and jumps there, where we'll set rax=1 or rax=2
+            // and return. fuel_diff = 1 is a sentinel: the outer entry doesn't
+            // actually cap fuel, but the out-of-fuel walking loop skips
+            // entries with fuel_diff == 0, so we need a non-zero value to
+            // ensure the loop terminates at the translator. The +1 that .crash
+            // adds to rsi is harmless because the epilogue ignores rsi.
+            try sink.emit("sub {reg}, {i32}", .{ .rcx, 48 });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 24, .rsp }); // data snapshot
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 16, .rbp }); // call snapshot
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 8, .rdi }); // heap snapshot
             const crash_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 0, .rbx }); // crash_target
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, @as(u64, 1) });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 32, .rbx }); // fuel_diff sentinel
+            const ouf_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 40, .rbx }); // on_out_of_fuel
 
             // "Call" the jitted code: push our return address onto the Orchard
             // call stack and jmp into it.
@@ -219,24 +242,39 @@ pub fn init(heap: *Heap, ally: Ally) !Self {
 
             // --- Normal-return path ---
             try sink.patch_to_here(ret_patch);
-            try sink.emit("add {reg}, {i32}", .{ .rcx, 32 }); // pop our outer sandbox entry
+            try sink.emit("add {reg}, {i32}", .{ .rcx, 48 }); // pop our outer sandbox entry
             try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, 0) }); // status = returned
-            const to_epilogue = try sink.placeholder("jmp {label}", .{});
+            const to_epilogue_from_normal = try sink.placeholder("jmp {label}", .{});
 
             // --- Crash path ---
-            // .crash already restored cursors and popped its sandbox entry. We just
-            // record the status and fall through to the epilogue.
+            // .crash already restored cursors and popped its sandbox entry.
+            // It also added our entry's fuel_diff sentinel (1) to rsi to
+            // "restore" the outer slack — subtract it back here so the user
+            // sees the actual remaining fuel at crash time.
             try sink.patch_to_here(crash_patch);
+            try sink.emit("sub {reg}, {i32}", .{ .rsi, 1 });
             try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, 1) }); // status = crashed
-            try sink.patch_to_here(to_epilogue);
+            const to_epilogue_from_crash = try sink.placeholder("jmp {label}", .{});
+
+            // --- Out-of-fuel path ---
+            // The .use_fuel unwinder already restored cursors and popped its
+            // sandbox entry, and set rsi to our entry's fuel_diff (1, sentinel
+            // garbage). Force rsi = 0 to match the byte-code's contract for
+            // uncaught out-of-fuel (`self.fuel = 0`).
+            try sink.patch_to_here(ouf_patch);
+            try sink.emit("xor {reg}, {reg}", .{ .rsi, .rsi });
+            try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, 2) }); // status = out_of_fuel
+            try sink.patch_to_here(to_epilogue_from_normal);
+            try sink.patch_to_here(to_epilogue_from_crash);
 
             // --- Shared epilogue ---
-            // Write the updated cursors back into *VmState.
+            // Write the updated cursors and remaining fuel back into *VmState.
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 }); // rbx = *VmState
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 32, .rsi });
 
             // Switch back to the native stack and discard the parked pointers.
             try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
@@ -263,12 +301,11 @@ pub fn deinit(_: *Self) !void {
 }
 
 pub fn call(vm: *Self, fun: Vm.Fun, args: []const Obj, fuel: *usize) !Vm.Result {
-    // TODO: implement fuel tracking
-    _ = fuel;
-
     vm.data_stack.cursor = vm.data_stack.memory.len;
     vm.call_stack.cursor = vm.call_stack.memory.len;
     vm.sandbox_stack.cursor = vm.sandbox_stack.memory.len;
+    vm.fuel = fuel.*;
+    defer fuel.* = vm.fuel;
 
     const jitted = vm.compile(fun) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
@@ -278,10 +315,10 @@ pub fn call(vm: *Self, fun: Vm.Fun, args: []const Obj, fuel: *usize) !Vm.Result 
     const status = vm.run_jitted(jitted) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
     };
-    const top = Obj{ .address = vm.data_stack.pop() };
     return switch (status) {
-        0 => .{ .returned = top },
-        1 => .{ .crashed = top },
+        0 => .{ .returned = .{ .address = vm.data_stack.pop() } },
+        1 => .{ .crashed = .{ .address = vm.data_stack.pop() } },
+        2 => .out_of_fuel,
         else => unreachable,
     };
 }
@@ -730,10 +767,11 @@ fn compute_node_regs(slots: []u64, at: *Index) u8 {
             compute_node_regs(slots, at),
             STACK,
         ),
-        .use_fuel => @max(
-            compute_node_regs(slots, at),
-            compute_node_regs(slots, at),
-        ),
+        .use_fuel => blk: {
+            _ = compute_node_regs(slots, at);
+            _ = compute_node_regs(slots, at);
+            break :blk STACK;
+        },
         .collect_garbage => also(
             compute_node_regs(slots, at),
             STACK,
@@ -906,6 +944,7 @@ const Asm = struct {
         self.next_label += 1;
         const expanded_args = args ++ .{id};
         if (comptime (std.mem.eql(u8, instr, "jz {label}") or
+            std.mem.eql(u8, instr, "jb {label}") or
             std.mem.eql(u8, instr, "jmp {label}") or
             std.mem.eql(u8, instr, "lea {reg}, [rip + {label}]")))
         {
@@ -1197,6 +1236,12 @@ const MachineCode = struct {
         if (comptime std.mem.eql(u8, instr, "jz {label}")) {
             try self.b(0x0f);
             try self.b(0x84);
+            const handle: u32 = @intCast(self.bytes.items.len);
+            try self.bytes.appendNTimes(self.ally, 0, 4);
+            return .{ .handle = handle };
+        } else if (comptime std.mem.eql(u8, instr, "jb {label}")) {
+            try self.b(0x0f);
+            try self.b(0x82);
             const handle: u32 = @intCast(self.bytes.items.len);
             try self.bytes.appendNTimes(self.ally, 0, 4);
             return .{ .handle = handle };
@@ -1585,23 +1630,21 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 32, .rsi });
             try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
-            try sink.emit("push {reg}", .{.rdx});
-            try sink.emit("push {reg}", .{.rsi});
-            try sink.emit("sub {reg}, {i32}", .{ .rsp, 8 });
+            try sink.emit("push {reg}", .{.rdx}); // save rdx; also keeps rsp 16-aligned for the call
             try sink.emit("mov {reg}, {reg}", .{ .rdi, .rbx }); // arg 0
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rdx, 0 }); // arg 1
             try sink.emit("mov {reg}, {reg}", .{ .rdx, .rax }); // arg 2: callee_obj
             try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, @intFromPtr(&hook_compile)) });
             try sink.emit("call {reg}", .{.rax});
             // rax now holds the machine-code pointer (SysV return). Restore.
-            try sink.emit("add {reg}, {i32}", .{ .rsp, 8 });
-            try sink.emit("pop {reg}", .{.rsi});
             try sink.emit("pop {reg}", .{.rdx});
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rbx, 32 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 });
             // Push the return address onto the call stack and jump to the
             // callee's machine code. The callee follows the same convention
@@ -1656,23 +1699,21 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 32, .rsi });
             try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
-            try sink.emit("push {reg}", .{.rdx});
-            try sink.emit("push {reg}", .{.rsi});
-            try sink.emit("sub {reg}, {i32}", .{ .rsp, 8 });
+            try sink.emit("push {reg}", .{.rdx}); // save rdx; also keeps rsp 16-aligned for the call
             try sink.emit("mov {reg}, {reg}", .{ .rdi, .rbx }); // arg 0: *VmState
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rdx, 0 }); // arg 1: *ZigState
             try sink.emit("mov {reg}, {reg}", .{ .rdx, .r12 }); // arg 2: fun_obj
             try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, @intFromPtr(&hook_compile)) });
             try sink.emit("call {reg}", .{.rax});
             // rax now holds the callee's machine-code pointer.
-            try sink.emit("add {reg}, {i32}", .{ .rsp, 8 });
-            try sink.emit("pop {reg}", .{.rsi});
             try sink.emit("pop {reg}", .{.rdx});
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rbx, 32 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 });
             // Push return address onto the call stack and jump to the callee.
             try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
@@ -1716,53 +1757,174 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
-            // Switch to the native stack (rdx), which is currently aligned by
-            // 8 mod 16.
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 32, .rsi });
+            // Switch to the native stack (rdx, which is 8 mod 16); a single
+            // push lands us 16-aligned for the SysV call.
             try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
             try sink.emit("push {reg}", .{.rdx});
-            try sink.emit("push {reg}", .{.rsi});
-            try sink.emit("sub {reg}, {i32}", .{ .rsp, 8 });
             try sink.emit("mov {reg}, {reg}", .{ .rdi, .rbx }); // arg 0: *VmState
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rdx, 0 }); // arg 1: *ZigState
             try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, @intFromPtr(&hook_gc)) });
             try sink.emit("call {reg}", .{.rax});
             // (the garbage collection runs)
-            try sink.emit("add {reg}, {i32}", .{ .rsp, 8 });
-            try sink.emit("pop {reg}", .{.rsi});
             try sink.emit("pop {reg}", .{.rdx});
             // Move state from *VmState into registers.
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rbx, 32 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 });
             resolver.pop_stack();
             resolver.pop_stack();
             try resolver.push_anon(ally);
         },
         .sandbox => {
+            // Evaluate the fuel limit (a raw word).
             try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("pop {reg}", .{.rax}); // rax = limit
+            // Cap fuel: rsi = min(rsi, limit). r8 captures the diff so we can
+            // add it back on sandbox exit (normal or crash).
+            try sink.emit("mov {reg}, {reg}", .{ .r8, .rsi }); // r8 = original fuel
+            try sink.emit("cmp {reg}, {reg}", .{ .rsi, .rax });
+            try sink.emit("cmovg {reg}, {reg}", .{ .rsi, .rax }); // if rsi>limit: rsi=limit
+            try sink.emit("sub {reg}, {reg}", .{ .r8, .rsi }); // r8 = original - capped
             resolver.pop_stack();
-            try sink.comment("sandbox begin", .{});
+
+            // Push a sandbox entry: { crash_target, heap, call, data, fuel_diff, ouf_target }.
+            try sink.emit("sub {reg}, {i32}", .{ .rcx, 48 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 32, .r8 }); // fuel_diff
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 24, .rsp }); // data snapshot
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 16, .rbp }); // call snapshot
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 8, .rdi }); // heap snapshot
+            const crash_target_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 0, .rbx }); // crash_target
+            const ouf_target_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rcx, 40, .rbx }); // ouf_target
+
+            // Body runs; on success, leaves its result on top of the data stack.
             try emit_expr_to_stack(sink, slots, at, resolver);
-            try sink.comment("sandbox end", .{});
+
+            // Normal exit: pop entry, restore fuel, wrap as (leaf 0, result).
+            try sink.emit("pop {reg}", .{.rax}); // rax = body result
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 32 });
+            try sink.emit("add {reg}, {reg}", .{ .rsi, .rbx }); // restore fuel
+            try sink.emit("add {reg}, {i32}", .{ .rcx, 48 }); // pop entry
+            // Allocate tag leaf (header=1, word=0).
+            try sink.emit("mov {reg}, {reg}", .{ .r8, .rdi }); // r8 = &tag_leaf
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, @as(u64, 1) });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx }); // header
+            try sink.emit("xor {reg}, {reg}", .{ .rbx, .rbx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 8, .rbx }); // word = 0
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 16 });
+            // Allocate wrapper inner(tag_leaf, result).
+            try sink.emit("mov {reg}, {reg}", .{ .r9, .rdi }); // r9 = &wrapper
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, (@as(u64, 1) << 63) | 2 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx }); // header
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 8, .r8 }); // child 0
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 16, .rax }); // child 1
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 24 });
+            try sink.emit("push {reg}", .{.r9});
+            const join_patch_normal = try sink.placeholder("jmp {label}", .{});
+
+            // Crash exit: .crash has already restored data/call/fuel and popped
+            // our entry, and pushed the error on top of the restored data stack.
+            try sink.patch_to_here(crash_target_patch);
+            try sink.emit("pop {reg}", .{.rax}); // rax = error
+            // Allocate tag leaf (header=1, word=1).
+            try sink.emit("mov {reg}, {reg}", .{ .r8, .rdi });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, @as(u64, 1) });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx }); // header
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 8, .rbx }); // word = 1
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 16 });
+            // Allocate wrapper inner(tag_leaf, error).
+            try sink.emit("mov {reg}, {reg}", .{ .r9, .rdi });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, (@as(u64, 1) << 63) | 2 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 8, .r8 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 16, .rax });
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 24 });
+            try sink.emit("push {reg}", .{.r9});
+            const join_patch_crash = try sink.placeholder("jmp {label}", .{});
+
+            // Out-of-fuel exit: .use_fuel's unwinder has already restored
+            // data/call/fuel and popped our entry. No value on top of the
+            // data stack (use_fuel doesn't push one). Wrap as (leaf 2,) —
+            // a single-child inner, matching what the byte-code emits.
+            try sink.patch_to_here(ouf_target_patch);
+            // Allocate tag leaf (header=1, word=2).
+            try sink.emit("mov {reg}, {reg}", .{ .r8, .rdi });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, @as(u64, 1) });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx }); // header
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, @as(u64, 2) });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 8, .rbx }); // word = 2
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 16 });
+            // Allocate wrapper inner(tag_leaf) — single child.
+            try sink.emit("mov {reg}, {reg}", .{ .r9, .rdi });
+            try sink.emit("mov {reg}, {u64}", .{ .rbx, (@as(u64, 1) << 63) | 1 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 8, .r8 });
+            try sink.emit("add {reg}, {i32}", .{ .rdi, 16 });
+            try sink.emit("push {reg}", .{.r9});
+
+            try sink.patch_to_here(join_patch_normal);
+            try sink.patch_to_here(join_patch_crash);
+
+            resolver.pop_stack(); // body result consumed by the wrap
+            try resolver.push_anon(ally); // sandbox result pushed
         },
         .use_fuel => {
-            try emit_expr_to_stack(sink, slots, at, resolver);
+            // Charge `amount` against rsi. The sub may underflow; on borrow
+            // (i.e. rsi < amount before the sub) we unwind to the nearest
+            // sandbox with a non-zero fuel_diff. If it didn't underflow, rsi
+            // already holds the correct new fuel and we run the body normally.
+            try emit_expr_to_stack(sink, slots, at, resolver); // amount
             try sink.emit("pop {reg}", .{.rax});
-            try sink.emit("sub {reg}, {reg}", .{ .rsi, .rax });
             resolver.pop_stack();
-            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("sub {reg}, {reg}", .{ .rsi, .rax });
+            const ouf_unwind_patch = try sink.placeholder("jb {label}", .{});
+            try emit_expr_to_stack(sink, slots, at, resolver); // body (continues normally)
+            const past_unwind_patch = try sink.placeholder("jmp {label}", .{});
+
+            // Out-of-fuel unwind. Walk up the sandbox stack, popping entries
+            // whose fuel_diff == 0 (they didn't cap fuel, so the blame belongs
+            // to an outer sandbox). The translator's outer entry has a
+            // sentinel fuel_diff so the loop always terminates.
+            try sink.patch_to_here(ouf_unwind_patch);
+            const loop = try sink.here();
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 32 });
+            try sink.emit("test {reg}, {reg}", .{ .rbx, .rbx });
+            const keep_popping_patch = try sink.placeholder("jz {label}", .{});
+            // Caught: restore data/call cursors, set rsi to the outer fuel
+            // slack, and jump to the catcher's on_out_of_fuel handler.
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // data
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rcx, 16 }); // call
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rcx, 32 }); // rsi = fuel_diff
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 40 }); // on_out_of_fuel
+            try sink.emit("add {reg}, {i32}", .{ .rcx, 48 }); // pop entry
+            try sink.emit("jmp {reg}", .{.rbx});
+            try sink.patch_to_here(keep_popping_patch);
+            try sink.emit("add {reg}, {i32}", .{ .rcx, 48 }); // pop this entry, keep walking
+            try sink.emit("jmp {back}", .{loop});
+
+            try sink.patch_to_here(past_unwind_patch);
         },
         .crash => {
             try emit_expr_to_stack(sink, slots, at, resolver);
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // rax = error
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // rsp = sandbox.data
             try sink.emit("push {reg}", .{.rax}); // error onto restored stack
-            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rcx, 8 }); // rdi = sandbox.heap
+            // We intentionally do NOT restore rdi from sandbox.heap: the error
+            // we just pushed points into the unwound region, so reclaiming it
+            // would dangle the pointer and any subsequent heap allocation (e.g.
+            // the wrapper inner that .sandbox builds) would overwrite the
+            // error's bytes. Tree-walker uses garbage_collect to copy the
+            // error to the restored heap; the JIT doesn't yet.
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rcx, 16 }); // rbp = sandbox.call
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 32 }); // rbx = fuel_diff
+            try sink.emit("add {reg}, {reg}", .{ .rsi, .rbx }); // restore fuel
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // rbx = crash_target
-            try sink.emit("add {reg}, {i32}", .{ .rcx, 32 }); // pop entry
+            try sink.emit("add {reg}, {i32}", .{ .rcx, 48 }); // pop entry
             try sink.emit("jmp {reg}", .{.rbx});
             // .crash never falls through, so we don't update the resolver
             // (any code following it is dead).
@@ -1899,20 +2061,18 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
             try emit_expr_to_reg(sink, slots, at, resolver, dst);
             try sink.patch_to_here(jmp);
         },
-        .use_fuel => {
-            try emit_expr_to_reg(sink, slots, at, resolver, dst);
-            try sink.emit("sub {reg}, {reg}", .{ .rsi, dst });
-            try emit_expr_to_reg(sink, slots, at, resolver, dst);
-        },
         .crash => {
             try emit_expr_to_stack(sink, slots, at, resolver);
             resolver.pop_stack();
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // error
-            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // on crash handler
-            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rcx, 8 }); // restore call stack
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // restore data stack
-            try sink.emit("add {reg}, {i32}", .{ .rcx, 32 }); // pop sandbox stack entry
             try sink.emit("push {reg}", .{.rax}); // push error
+            // See the stack-variant: we deliberately skip restoring rdi.
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rcx, 16 }); // restore call stack
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 32 }); // fuel_diff
+            try sink.emit("add {reg}, {reg}", .{ .rsi, .rbx }); // restore fuel
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // on crash handler
+            try sink.emit("add {reg}, {i32}", .{ .rcx, 48 }); // pop sandbox stack entry
             try sink.emit("jmp {reg}", .{.rbx}); // jump to crash handler
         },
         .new_leaf, .new_inner => {
