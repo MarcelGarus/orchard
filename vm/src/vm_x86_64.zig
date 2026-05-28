@@ -170,8 +170,8 @@ pub fn init(heap: *Heap, ally: Ally) !Self {
     return .{
         .ally = ally,
         .heap = heap,
-        .data_stack = try Stack.init(ally, 1000),
-        .call_stack = try Stack.init(ally, 1000),
+        .data_stack = try Stack.init(ally, 1000000),
+        .call_stack = try Stack.init(ally, 1000000),
         .sandbox_stack = try Stack.init(ally, 1000),
         .jit_cache = ObjMap([]const u8).empty,
         .run_jitted_wrapper = wrapper: {
@@ -323,10 +323,10 @@ pub fn call(vm: *Self, fun: Vm.Fun, args: []const Obj, fuel: *usize) !Vm.Result 
     };
 }
 pub fn run_jitted(vm: *Self, jitted: []const u8) error{OutOfMemory}!usize {
-    std.debug.print("data stack:", .{});
-    for (vm.data_stack.memory[vm.data_stack.cursor..]) |word| std.debug.print(" {x:016}", .{word});
-    std.debug.print("\n", .{});
-    std.debug.print("running jitted instructions\n", .{});
+    // std.debug.print("data stack:", .{});
+    // for (vm.data_stack.memory[vm.data_stack.cursor..]) |word| std.debug.print(" {x:016}", .{word});
+    // std.debug.print("\n", .{});
+    // std.debug.print("running jitted instructions\n", .{});
 
     var zig_state = ZigState{ .vm = vm };
     var vm_state: VmState = undefined;
@@ -334,10 +334,10 @@ pub fn run_jitted(vm: *Self, jitted: []const u8) error{OutOfMemory}!usize {
     const status = vm.run_jitted_wrapper(&vm_state, &zig_state, @ptrCast(jitted));
     vm_state.store_to_vm(vm);
 
-    std.debug.print("ran jitted instructions (status={d})\n", .{status});
-    std.debug.print("data stack:", .{});
-    for (vm.data_stack.memory[vm.data_stack.cursor..]) |word| std.debug.print(" {x:016}", .{word});
-    std.debug.print("\n", .{});
+    // std.debug.print("ran jitted instructions (status={d})\n", .{status});
+    // std.debug.print("data stack:", .{});
+    // for (vm.data_stack.memory[vm.data_stack.cursor..]) |word| std.debug.print(" {x:016}", .{word});
+    // std.debug.print("\n", .{});
     return status;
 }
 pub fn compile(vm: *Self, fun: Vm.Fun) !([]const u8) {
@@ -359,7 +359,7 @@ pub fn compile_fun(vm: *Self, fun: Vm.Fun) !([]const u8) {
         error.UndefinedBehavior => return error.UndefinedBehavior,
     };
     compute_regs(ir);
-    std.debug.print("== fun ==\n{f}\n", .{fun});
+    // std.debug.print("== fun ==\n{f}\n", .{fun});
     std.debug.print("== jit ir ==\n{f}", .{ir});
 
     var asm_sink = try Asm.init(arena.allocator());
@@ -1193,10 +1193,20 @@ const MachineCode = struct {
             try self.b(0x8d);
             try self.modrm(0b00, low(args[0]), 0b100); // SIB follows
             try self.b((@as(u8, 0b01) << 6) | (@as(u8, 0b001) << 3) | @as(u8, 0b001));
+        } else if (comptime std.mem.eql(u8, instr, "cmovz {reg}, {reg}")) {
+            try self.rex(true, high(args[0]), false, high(args[1]));
+            try self.b(0x0f);
+            try self.b(0x44);
+            try self.modrm(0b11, low(args[0]), low(args[1]));
         } else if (comptime std.mem.eql(u8, instr, "cmovg {reg}, {reg}")) {
             try self.rex(true, high(args[0]), false, high(args[1]));
             try self.b(0x0f);
             try self.b(0x4f);
+            try self.modrm(0b11, low(args[0]), low(args[1]));
+        } else if (comptime std.mem.eql(u8, instr, "cmova {reg}, {reg}")) {
+            try self.rex(true, high(args[0]), false, high(args[1]));
+            try self.b(0x0f);
+            try self.b(0x47);
             try self.modrm(0b11, low(args[0]), low(args[1]));
         } else if (comptime std.mem.eql(u8, instr, "cmovl {reg}, {reg}")) {
             try self.rex(true, high(args[0]), false, high(args[1]));
@@ -1356,10 +1366,14 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
     const header: Header = @bitCast(slots[at.*]);
     const ally = sink.ally;
 
-    if (header.regs != STACK and header.regs <= 8) {
-        try emit_expr_to_reg(sink, slots, at, resolver, .r8);
+    // dst starts past any reg-path lets that already bound r8.., otherwise a
+    // nested reg-path subtree clobbers the outer let's binding.
+    const reg_bindings: u8 = @intCast(resolver.regs.items.len);
+    if (header.regs != STACK and header.regs +| reg_bindings <= 8) {
+        const dst: Reg = @enumFromInt(@intFromEnum(Reg.r8) + reg_bindings);
+        try emit_expr_to_reg(sink, slots, at, resolver, dst);
         sink.indent();
-        try sink.emit("push {reg}", .{.r8});
+        try sink.emit("push {reg}", .{dst});
         sink.deindent();
         try resolver.push_anon(ally);
         return;
@@ -1449,11 +1463,30 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
         .divide, .modulo => {
             try emit_expr_to_stack(sink, slots, at, resolver);
             try emit_expr_to_stack(sink, slots, at, resolver);
+            // cqo/idiv clobber rdx (cqo sign-extends rax into rdx, idiv leaves
+            // the remainder there), but rdx is reserved for the original rsp
+            // marker in our calling convention. Stash it in r8 across the
+            // divide and restore after we've captured the result.
+            try sink.emit("mov {reg}, {reg}", .{ .r8, .rdx });
             try sink.emit("pop {reg}", .{.rbx});
             try sink.emit("pop {reg}", .{.rax});
             try sink.emit("cqo", .{});
             try sink.emit("idiv {reg}", .{.rbx});
+            if (header.tag == .modulo) {
+                // idiv leaves the *truncated* remainder in rdx; convert it to
+                // the *floor* remainder (Zig @mod semantics) by adding the
+                // divisor when sign(rdx) != sign(rbx) and rdx != 0.
+                try sink.emit("mov {reg}, {reg}", .{ .rax, .rdx });
+                try sink.emit("xor {reg}, {reg}", .{ .rax, .rbx });
+                try sink.emit("sar {reg}, {u8}", .{ .rax, @as(u8, 63) }); // -1 if signs differ, else 0
+                try sink.emit("and {reg}, {reg}", .{ .rax, .rbx }); // = divisor or 0
+                try sink.emit("mov {reg}, {u64}", .{ .r9, @as(u64, 0) });
+                try sink.emit("test {reg}, {reg}", .{ .rdx, .rdx });
+                try sink.emit("cmovz {reg}, {reg}", .{ .rax, .r9 }); // if rdx==0, no adjust
+                try sink.emit("add {reg}, {reg}", .{ .rdx, .rax });
+            }
             try sink.emit("push {reg}", .{if (header.tag == .divide) Reg.rax else Reg.rdx});
+            try sink.emit("mov {reg}, {reg}", .{ .rdx, .r8 });
             resolver.pop_stack();
             resolver.pop_stack();
             try resolver.push_anon(ally);
@@ -1728,19 +1761,19 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
         .rec => {
             const n: usize = @intCast(header.rest);
             for (0..n) |_| try emit_expr_to_stack(sink, slots, at, resolver);
-            // Tail call: stack now holds [old args | intermediates | new args].
-            // Copy the N new args from the top down into the old-args slots at
-            // the bottom, then drop everything between by adjusting rsp, then
-            // jump back to .root.
-            const depth = resolver.stack.items.len;
-            for (0..n) |i| {
-                try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rsp, @as(i32, @intCast(i * 8)) });
-                try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rsp, @as(i32, @intCast((depth - n + i) * 8)), .rax });
-            }
-            if (depth > n) {
-                try sink.emit("add {reg}, {i32}", .{ .rsp, @as(i32, @intCast((depth - n) * 8)) });
-            }
+            // .rec is semantically a regular recursive call (tree-walker and
+            // byte-code treat it identically to `.call current_fun args`), so
+            // we set it up exactly like .call_imm: push a return address onto
+            // the call stack and jump back to .root. The function's epilogue
+            // will pop our n args and leave the result on top, just as for
+            // any other call. (A previous tail-call implementation was wrong
+            // for non-tail-position .rec — e.g. `(new-inner head (rec ...))`
+            // — because it discarded intermediates.)
+            try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
+            const ret_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
             try sink.emit("jmp {root}", .{});
+            try sink.patch_to_here(ret_patch);
             for (0..n) |_| resolver.pop_stack();
             try resolver.push_anon(ally);
         },
@@ -1784,10 +1817,12 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try emit_expr_to_stack(sink, slots, at, resolver);
             try sink.emit("pop {reg}", .{.rax}); // rax = limit
             // Cap fuel: rsi = min(rsi, limit). r8 captures the diff so we can
-            // add it back on sandbox exit (normal or crash).
+            // add it back on sandbox exit (normal or crash). Use cmova (above,
+            // unsigned) — cmovg treats Vm.max_fuel (= u64 max = -1 signed) as
+            // smaller than any limit and silently skips the cap.
             try sink.emit("mov {reg}, {reg}", .{ .r8, .rsi }); // r8 = original fuel
             try sink.emit("cmp {reg}, {reg}", .{ .rsi, .rax });
-            try sink.emit("cmovg {reg}, {reg}", .{ .rsi, .rax }); // if rsi>limit: rsi=limit
+            try sink.emit("cmova {reg}, {reg}", .{ .rsi, .rax }); // if rsi>limit (unsigned): rsi=limit
             try sink.emit("sub {reg}, {reg}", .{ .r8, .rsi }); // r8 = original - capped
             resolver.pop_stack();
 
@@ -1994,10 +2029,26 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
         .divide, .modulo => {
             try emit_expr_to_reg(sink, slots, at, resolver, dst);
             try emit_expr_to_reg(sink, slots, at, resolver, dst.next());
+            // cqo/idiv clobber rdx; save it in rbx (intra-instruction temp)
+            // and restore after capturing the result. See the stack-path
+            // variant for the full explanation, including the floor-mod
+            // adjustment for .modulo.
+            try sink.emit("mov {reg}, {reg}", .{ .rbx, .rdx });
             try sink.emit("mov {reg}, {reg}", .{ .rax, dst });
             try sink.emit("cqo", .{});
             try sink.emit("idiv {reg}", .{dst.next()});
+            if (header.tag == .modulo) {
+                try sink.emit("mov {reg}, {reg}", .{ .rax, .rdx });
+                try sink.emit("xor {reg}, {reg}", .{ .rax, dst.next() });
+                try sink.emit("sar {reg}, {u8}", .{ .rax, @as(u8, 63) });
+                try sink.emit("and {reg}, {reg}", .{ .rax, dst.next() });
+                try sink.emit("mov {reg}, {u64}", .{ dst, @as(u64, 0) });
+                try sink.emit("test {reg}, {reg}", .{ .rdx, .rdx });
+                try sink.emit("cmovz {reg}, {reg}", .{ .rax, dst });
+                try sink.emit("add {reg}, {reg}", .{ .rdx, .rax });
+            }
             try sink.emit("mov {reg}, {reg}", .{ dst, if (header.tag == .divide) Reg.rax else Reg.rdx });
+            try sink.emit("mov {reg}, {reg}", .{ .rdx, .rbx });
         },
         .shift_left, .shift_right => {
             try emit_expr_to_reg(sink, slots, at, resolver, dst);

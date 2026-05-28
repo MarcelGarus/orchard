@@ -151,13 +151,6 @@ pub const Obj = packed struct {
     pub fn format(obj: Obj, writer: *Writer) !void {
         try obj.format_indented(writer, 0);
     }
-    pub fn dump(obj: Obj) void {
-        var buffer: [64]u8 = undefined;
-        const bw = std.debug.lockStderrWriter(&buffer);
-        defer std.debug.unlockStderrWriter();
-        obj.format(bw) catch return;
-        bw.print("\n", .{}) catch return;
-    }
 };
 
 pub fn is_same(a: Obj, b: Obj) bool {
@@ -464,7 +457,7 @@ pub fn dump_stats(heap: Heap) void {
 
     std.debug.print(", ", .{});
     const num_bytes = num_words * 8;
-    for ([_][]const u8{ "B", "KiB", "Mib", "GiB", "TiB" }, 0..) |unit, index| {
+    for ([_][]const u8{ "B", "KiB", "MiB", "GiB", "TiB" }, 0..) |unit, index| {
         const amount = num_bytes / std.math.pow(usize, 1024, index);
         if (amount < 1024) {
             std.debug.print("{} {s}", .{ amount, unit });
