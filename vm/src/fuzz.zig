@@ -62,7 +62,7 @@ test "tree-walk vs jit" {
     try std.testing.fuzz({}, tw_vs_jit, .{});
 }
 test "tree-walk vs jit (often)" {
-    for (0..1000) |i| {
+    for (0..1000000) |i| {
         var bytes: [4096]u8 = undefined;
         var prng: std.Random.DefaultPrng = .init(i);
         var off: usize = 0;
