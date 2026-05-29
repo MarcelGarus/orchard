@@ -31,7 +31,7 @@ const get_symbol = Heap.get_symbol;
 pub const TreeWalk = @import("vm_tree_walk.zig");
 pub const ByteCode = @import("vm_byte_code.zig");
 pub const Jit = if (builtin.cpu.arch == .x86_64) @import("vm_x86_64.zig") else void;
-pub const Default = if (builtin.cpu.arch == .x86_64) Jit else ByteCode;
+pub const Default = if (Jit != void) Jit else ByteCode;
 
 pub const max_fuel = std.math.maxInt(usize);
 pub const Result = union(enum) {

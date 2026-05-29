@@ -360,19 +360,19 @@ pub fn compile_fun(vm: *Self, fun: Vm.Fun) !([]const u8) {
     };
     compute_regs(ir);
     // std.debug.print("== fun ==\n{f}\n", .{fun});
-    std.debug.print("== jit ir ==\n{f}", .{ir});
+    // std.debug.print("== jit ir ==\n{f}", .{ir});
 
-    var asm_sink = try Asm.init(arena.allocator());
-    defer asm_sink.deinit();
-    try emit_fun(&asm_sink, ir, fun);
-    std.debug.print("== asm ==\n{s}", .{asm_sink.bytes.items});
+    // var asm_sink = try Asm.init(arena.allocator());
+    // defer asm_sink.deinit();
+    // try emit_fun(&asm_sink, ir, fun);
+    // std.debug.print("== asm ==\n{s}", .{asm_sink.bytes.items});
 
     var mc = MachineCode{ .ally = ally };
     defer mc.deinit();
     try emit_fun(&mc, ir, fun);
-    std.debug.print("== machine code ==\n", .{});
-    for (mc.bytes.items) |b| std.debug.print(" {x:02}", .{b});
-    std.debug.print("\n", .{});
+    // std.debug.print("== machine code ==\n", .{});
+    // for (mc.bytes.items) |b| std.debug.print(" {x:02}", .{b});
+    // std.debug.print("\n", .{});
 
     return try mc.finalize();
 }
@@ -1433,11 +1433,8 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
     const header: Header = @bitCast(slots[at.*]);
     const ally = sink.ally;
 
-    // dst starts past any reg-path lets that already bound r8.., otherwise a
-    // nested reg-path subtree clobbers the outer let's binding.
-    const reg_bindings: u8 = @intCast(resolver.regs.items.len);
-    if (header.regs != STACK and header.regs +| reg_bindings <= 8) {
-        const dst: Reg = @enumFromInt(@intFromEnum(Reg.r8) + reg_bindings);
+    if (header.regs != STACK and header.regs <= 8) {
+        const dst: Reg = @enumFromInt(@intFromEnum(Reg.r8));
         try emit_expr_to_reg(sink, slots, at, resolver, dst);
         sink.indent();
         try sink.emit("push {reg}", .{dst});
@@ -1699,10 +1696,6 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try sink.emit("push {reg}", .{.rax});
         },
         .float_to_int => {
-            // cvttsd2si truncates toward zero (matches @intFromFloat). For
-            // non-finite or out-of-range inputs the tree-walker raises
-            // .UndefinedBehavior at the boundary, so the fuzz harness never
-            // compares against this case — emit the bare instruction.
             try emit_expr_to_stack(sink, slots, at, resolver);
             try sink.emit("pop {reg}", .{.rax});
             try sink.emit("movq xmm0, {reg}", .{.rax});
@@ -1741,8 +1734,6 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try emit_expr_to_stack(sink, slots, at, resolver);
             try emit_expr_to_stack(sink, slots, at, resolver);
             try sink.emit("pop {reg}", .{.rbx});
-            // Word index -> byte offset via shl by 3. Use the imm8 form so
-            // we don't have to touch rcx (the sandbox cursor).
             try sink.emit("shl {reg}, {u8}", .{ .rbx, @as(u8, 3) });
             try sink.emit("pop {reg}", .{.rax});
             try sink.emit("add {reg}, {i32}", .{ .rax, 8 });
@@ -1765,7 +1756,7 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
                 (@as(u64, 1) << 63) | @as(u64, n)
             else
                 @as(u64, n);
-            try sink.emit("mov {reg}, {reg}", .{ .rax, .rdi }); // rax = object address
+            try sink.emit("mov {reg}, {reg}", .{ .rax, .rdi });
             try sink.emit("mov {reg}, {u64}", .{ .rbx, header_val });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, 0, .rbx });
             for (0..n) |i| {
@@ -1833,12 +1824,7 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             const n: usize = @intCast(header.rest);
             for (0..n) |_| try emit_expr_to_stack(sink, slots, at, resolver);
             try emit_expr_to_stack(sink, slots, at, resolver); // callee obj
-            // Stack now holds [..., arg_0, ..., arg_(n-1), callee_obj]. Pop the
-            // callee_obj into rax. The args stay on the data stack where the
-            // callee will find them.
             try sink.emit("pop {reg}", .{.rax});
-            // Bridge to SysV and call hook_compile(*VmState, *ZigState, callee_obj)
-            // to obtain a pointer to the callee's compiled machine code.
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
@@ -1860,10 +1846,6 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rbx, 32 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 });
-            // Push the return address onto the call stack and jump to the
-            // callee's machine code. The callee follows the same convention
-            // as .call_imm: it pops args from the data stack and returns by
-            // reading rbp+0 / adding 8 to rbp.
             try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
             const ret_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
@@ -1942,14 +1924,6 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
         .rec => {
             const n: usize = @intCast(header.rest);
             for (0..n) |_| try emit_expr_to_stack(sink, slots, at, resolver);
-            // .rec is semantically a regular recursive call (tree-walker and
-            // byte-code treat it identically to `.call current_fun args`), so
-            // we set it up exactly like .call_imm: push a return address onto
-            // the call stack and jump back to .root. The function's epilogue
-            // will pop our n args and leave the result on top, just as for
-            // any other call. (A previous tail-call implementation was wrong
-            // for non-tail-position .rec — e.g. `(new-inner head (rec ...))`
-            // — because it discarded intermediates.)
             try sink.emit("sub {reg}, {i32}", .{ .rbp, 8 });
             const ret_patch = try sink.placeholder("lea {reg}, [rip + {label}]", .{.rbx});
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbp, 0, .rbx });
@@ -1962,18 +1936,12 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try sink.emit("push {reg}", .{.rdi}); // heap checkpoint
             try resolver.push_anon(ally);
             try emit_expr_to_stack(sink, slots, at, resolver); // keep
-            // Move registers into *VmState so the hook sees current cursors.
-            // rdx points at the native-stack frame with
-            // [rdx+0] = *ZigState
-            // [rdx+8] = *VmState.
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
             try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 32, .rsi });
-            // Switch to the native stack (rdx, which is 8 mod 16); a single
-            // push lands us 16-aligned for the SysV call.
             try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
             try sink.emit("push {reg}", .{.rdx});
             try sink.emit("mov {reg}, {reg}", .{ .rdi, .rbx }); // arg 0: *VmState
@@ -1982,7 +1950,6 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try sink.emit("call {reg}", .{.rax});
             // (the garbage collection runs)
             try sink.emit("pop {reg}", .{.rdx});
-            // Move state from *VmState into registers.
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 });
@@ -1994,7 +1961,6 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try resolver.push_anon(ally);
         },
         .sandbox => {
-            // Evaluate the fuel limit (a raw word).
             try emit_expr_to_stack(sink, slots, at, resolver);
             try sink.emit("pop {reg}", .{.rax}); // rax = limit
             // Cap fuel: rsi = min(rsi, limit). r8 captures the diff so we can
@@ -2092,8 +2058,7 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
         .use_fuel => {
             // Charge `amount` against rsi. The sub may underflow; on borrow
             // (i.e. rsi < amount before the sub) we unwind to the nearest
-            // sandbox with a non-zero fuel_diff. If it didn't underflow, rsi
-            // already holds the correct new fuel and we run the body normally.
+            // sandbox with a non-zero fuel_diff.
             try emit_expr_to_stack(sink, slots, at, resolver); // amount
             try sink.emit("pop {reg}", .{.rax});
             resolver.pop_stack();
@@ -2102,17 +2067,12 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try emit_expr_to_stack(sink, slots, at, resolver); // body (continues normally)
             const past_unwind_patch = try sink.placeholder("jmp {label}", .{});
 
-            // Out-of-fuel unwind. Walk up the sandbox stack, popping entries
-            // whose fuel_diff == 0 (they didn't cap fuel, so the blame belongs
-            // to an outer sandbox). The translator's outer entry has a
-            // sentinel fuel_diff so the loop always terminates.
+            // Out-of-fuel unwind.
             try sink.patch_to_here(ouf_unwind_patch);
             const loop = try sink.here();
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 32 });
             try sink.emit("test {reg}, {reg}", .{ .rbx, .rbx });
             const keep_popping_patch = try sink.placeholder("jz {label}", .{});
-            // Caught: restore data/call cursors, set rsi to the outer fuel
-            // slack, and jump to the catcher's on_out_of_fuel handler.
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // data
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rcx, 16 }); // call
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rcx, 32 }); // rsi = fuel_diff
@@ -2130,20 +2090,19 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // rax = error
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // rsp = sandbox.data
             try sink.emit("push {reg}", .{.rax}); // error onto restored stack
-            // We intentionally do NOT restore rdi from sandbox.heap: the error
-            // we just pushed points into the unwound region, so reclaiming it
-            // would dangle the pointer and any subsequent heap allocation (e.g.
-            // the wrapper inner that .sandbox builds) would overwrite the
-            // error's bytes. Tree-walker uses garbage_collect to copy the
-            // error to the restored heap; the JIT doesn't yet.
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rcx, 16 }); // rbp = sandbox.call
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 32 }); // rbx = fuel_diff
             try sink.emit("add {reg}, {reg}", .{ .rsi, .rbx }); // restore fuel
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 0 }); // rbx = crash_target
             try sink.emit("add {reg}, {i32}", .{ .rcx, 48 }); // pop entry
             try sink.emit("jmp {reg}", .{.rbx});
-            // .crash never falls through, so we don't update the resolver
-            // (any code following it is dead).
+            // We deliberately leave the err's anon on the resolver instead of
+            // pop+push'ing a "result" anon. The surrounding stack-path parent
+            // (`.if_`, `.add`, `.let`, etc.) is going to consume exactly one
+            // anon as our "result" — the err anon stands in for that on the
+            // non-crashing branch and the machine code never reaches the
+            // parent's post-child code on the crashing branch, so the resolver
+            // ends up at the correct depth for whatever code is emitted next.
         },
         .unreachable_ => {
             try sink.emit("ud2", .{});
@@ -2339,13 +2298,13 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
             var child_reg: Reg = dst;
             for (0..n) |_| {
                 try emit_expr_to_reg(sink, slots, at, resolver, child_reg);
-                if (child_reg != .r15) child_reg = child_reg.next();
+                child_reg = child_reg.next();
             }
             child_reg = dst;
             for (0..n) |i| {
                 const off: i32 = @intCast((i + 1) * 8);
                 try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, off, child_reg });
-                if (child_reg != .r15) child_reg = child_reg.next();
+                child_reg = child_reg.next();
             }
             const header_val: u64 = if (header.tag == .new_inner)
                 (@as(u64, 1) << 63) | @as(u64, n)
@@ -2382,12 +2341,19 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
         },
         .call, .call_imm, .call_indirect, .rec, .collect_garbage, .sandbox, .use_fuel => unreachable,
         .crash => {
+            // Reg-path callers expect their children to be resolver-neutral
+            // (the result lives in `dst`, not on the data stack; the
+            // `emit_expr_to_stack` wrapper that delegates here does its own
+            // `push_anon` afterwards). emit_expr_to_stack(err) above pushed an
+            // anon onto the resolver, so we pop it back off to land neutral.
+            // The stack-path .crash variant leaves the err anon in place
+            // instead, because its parent's bookkeeping pops one anon as the
+            // "child's result" — different convention, same end depth.
             try emit_expr_to_stack(sink, slots, at, resolver);
             resolver.pop_stack();
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rax, .rsp, 0 }); // error
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rcx, 24 }); // restore data stack
             try sink.emit("push {reg}", .{.rax}); // push error
-            // See the stack-variant: we deliberately skip restoring rdi.
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rcx, 16 }); // restore call stack
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rcx, 32 }); // fuel_diff
             try sink.emit("add {reg}, {reg}", .{ .rsi, .rbx }); // restore fuel
