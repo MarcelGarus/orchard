@@ -90,6 +90,13 @@
     (if (= i length) (| empty) (| more (& item item rest (rec rec (+ i 1))))))
    (rec rec 0)))
  filled-array (\ (length item) (list->array (filled-list length item)))
+ list-generate (\ (length generator)
+  (rec 0 (\ (rec i)
+   (if (= i length)
+    (| empty)
+    (| more (& item (generator i) rest (rec (+ i 1))))))))
+ array-generate (\ (length generator)
+  (list->array (list-generate length generator)))
  list-map (\ (list mapper)
   (rec list (\ (rec list)
    (% list
@@ -194,13 +201,15 @@
      (if (checker (.item m))
       (rec (.rest m))
       list)))))
+ list-fold (\ (list initial reducer)
+  (rec-2 initial list (\ (rec state rest)
+   (% rest
+    empty state
+    (more m) (rec (reducer state (.item m)) (.rest m))))))
  list-reduce (\ (list reducer)
   (% list
-   (more m)
-    (rec-2 (.rest m) (.item m) (\ (rec rest acc)
-     (% rest
-      empty acc
-      (more m) (rec (.rest m) (reducer acc (.item m))))))))
+   empty (crash "called list-reduce on empty list")
+   (more m) (list-fold (.rest m) (.item m) reducer)))
  list-length (\ (list)
   (rec list (\ (rec list)
    (% list
@@ -218,8 +227,9 @@
        (rec
         (& list (.rest m) n (- n 1))
         (| more (& item (.item m) rest reversed)))))))))
- list-max (\ (list) (list-reduce list (\ (a b) (max a b))))
- f-list-max (\ (list) (list-reduce list (\ (a b) (f-max a b))))
+ _ "TODO: fix for lists with only negative items"
+ list-max (\ (list) (list-fold list 0 (\ (a b) (max a b))))
+ f-list-max (\ (list) (list-fold list 0. (\ (a b) (f-max a b))))
 
  string->bytes (\ (string) (@string->bytes string))
  bytes->string (\ (bytes) (@bytes->string bytes))
@@ -250,12 +260,14 @@
    (string-slice string index (string-length string))))
  ascii-char (\ (literal) (array-get (string->bytes literal) 0))
  int->string (\ (int)
-  (rec-2 int (| empty) (\ (rec int prev)
-   (if (= 0 int)
-    (bytes->string (list->array prev))
-    (rec
-     (/ int 10)
-     (| more (& item (+ (ascii-char "0") (mod int 10)) rest prev)))))))
+  (if (= int 0)
+   "0"
+   (rec-2 int (| empty) (\ (rec int prev)
+    (if (= 0 int)
+     (bytes->string (list->array prev))
+     (rec
+      (/ int 10)
+      (| more (& item (+ (ascii-char "0") (mod int 10)) rest prev))))))))
  bytes->chars (\ (rec bytes i)
   (if (= i (array-length bytes))
    (| empty)
@@ -391,13 +403,36 @@
  point (\ (x y) (& x x y y))
  fpoint (\ (x y) (& x (int->float x) y (int->float y)))
 
- black (& r 0 g 0 b 0)
- white (& r 255 g 255 b 255)
- red (& r 144 g 32 b 32)
- blue (& r 32 g 97 b 144)
- green (& r 63 g 110 b 16)
- purple (& r 63 g 32 b 144)
- yellow (& r 254 g 228 b 113)
+ parse-hex (\ (string)
+  (rec-2 0 (array->list (string->bytes string)) (\ (rec value chars)
+   (% chars
+    empty value
+    (more m) (:
+     c (.item m)
+     digit
+      (cond
+       (and (>= c (ascii-char "0")) (<= c (ascii-char "9")))
+        (- c (ascii-char "0"))
+       (and (>= c (ascii-char "a")) (<= c (ascii-char "f")))
+        (+ (- c (ascii-char "a")) 10)
+       else (crash "invalid hex char"))
+     (rec (+ (* value 16) digit) (.rest m)))))))
+ color (\ (hex)
+  (:
+   _ (assert (= (string-length hex) 7))
+   _ (assert (= (string-slice hex 0 1) "#"))
+   (&
+    r (parse-hex (string-slice hex 1 3))
+    g (parse-hex (string-slice hex 3 5))
+    b (parse-hex (string-slice hex 5 7)))))
+
+ black (color "#000000")
+ white (color "#ffffff")
+ red (color "#a02020")
+ blue (color "#1099a0")
+ green (color "#50a010")
+ purple (color "#8e31a3")
+ yellow (color "#ffd900")
 
  # "I try to name the rendering functions in a declarative way
   (e.g. row instead of render-next-to-each-other)."
@@ -481,6 +516,13 @@
     draw (| all (list->array (.list res)))
     width (.width res)
     height (.height res))))
+
+ stack (\ (children)
+  (&
+   draw (| all (array-map children (\ (child) (.draw child))))
+   width (f-list-max (list-map (array->list children) (\ (child) (.width child))))
+   height (f-list-max (list-map (array->list children) (\ (child) (.height child))))
+   ))
 
  parse-pixels (\ (width string)
   (:
@@ -568,7 +610,7 @@
   (pixel-glyph "'" 1 "|M|M|M|")
   (pixel-glyph "(" 3 " MM|MM|MM|MM|MM|MM|MM|MM|MM| MM|")
   (pixel-glyph ")" 3 "MM| MM| MM| MM| MM| MM| MM| MM| MM|MM|")
-  (pixel-glyph "*" 6 "||  MM| MMMM|  MM|  MM| MMMM|  MM|")
+  (pixel-glyph "*" 7 "|||MM   MM| MM MM|  MMM| MM MM|MM   MM|")
   (pixel-glyph "+" 6 "||  MM|  MM|MMMMMM|MMMMMM|  MM|  MM|")
   (pixel-glyph "," 2 "|||||||MM|MM| M|M|")
   (pixel-glyph "-" 5 "||||MMMMM|MMMMM|")
@@ -702,15 +744,14 @@
  text (\ (string color)
   (:
    layouted (layout-text string 100000.)
-   draw
-    (| all
-     (list->array
-      (list-map layouted (\ (glyph)
-       (| translate (&
-        by (& x (.x glyph) y (.y glyph))
-        what (draw-glyph (.glyph glyph) color)))))))
    (&
-    draw draw
+    draw
+     (| all
+      (list->array
+       (list-map layouted (\ (glyph)
+        (| translate (&
+         by (& x (.x glyph) y (.y glyph))
+         what (draw-glyph (.glyph glyph) color)))))))
     width
      (f-list-max
       (list-map layouted (\ (glyph) (f+ (.x glyph) (.width (.glyph glyph))))))
@@ -1031,7 +1072,7 @@
       cursor-desired-x (.desired-x cursor)
       cursor-y
        (if (= (.active cursor) 0)
-        0
+        0.
         (.y (list-get layouted-text (- (.active cursor) 1))))
       new-offset (find-offset-below cursor-desired-x cursor-y layouted-text)
       new-offset (% new-offset none 0 (some v) v)
@@ -1073,7 +1114,7 @@
       cursor-desired-x (.desired-x cursor)
       cursor-y
        (if (= (.active cursor) 0)
-        0
+        0.
         (.y (list-get layouted-text (- (.active cursor) 1))))
       new-offset (find-offset-below cursor-desired-x cursor-y layouted-text)
       new-offset (% new-offset none (string-length text) (some v) v)
@@ -1088,7 +1129,7 @@
       cursor-desired-x (.desired-x cursor)
       cursor-y
        (if (= (.active cursor) 0)
-        0
+        0.
         (.y (list-get layouted-text (- (.active cursor) 1))))
       new-offset (find-offset-above cursor-desired-x cursor-y layouted-text)
       new-offset (% new-offset none 0 (some v) v)
@@ -1130,7 +1171,7 @@
       cursor-desired-x (.desired-x cursor)
       cursor-y
        (if (= (.active cursor) 0)
-        0
+        0.
         (.y (list-get layouted-text (- (.active cursor) 1))))
       new-offset (find-offset-above cursor-desired-x cursor-y layouted-text)
       new-offset (% new-offset none (string-length text) (some v) v)
@@ -1204,6 +1245,30 @@
    (char char) (string-concat string char)))
 
  cursor-color yellow
+
+ editable-text (\ (string color cursor)
+  (:
+   layouted (layout-text string 100000.)
+    (&
+     draw
+      (| all ([]
+       (| translate (&
+        by (:
+         glyph (list-get layouted (.anchor cursor))
+         (& x (.x glyph) y (.y glyph)))
+        what (.draw (colored cursor-color (empty-box 5. 10.)))))
+       (| all
+        (list->array
+         (list-map layouted (\ (glyph)
+          (| translate (&
+           by (& x (.x glyph) y (.y glyph))
+           what (draw-glyph (.glyph glyph) color)))))))))
+     width
+      (f-list-max
+       (list-map layouted (\ (glyph) (f+ (.x glyph) (.width (.glyph glyph))))))
+     height
+      (f-list-max
+       (list-map layouted (\ (glyph) (f+ (.y glyph) line-height)))))))
 
  draw-cursor (\ (cursor width layouted-text)
   (if (cursor-has-selection? cursor)
@@ -1825,112 +1890,275 @@
       (folded state) (folded-render state)
       _ (crash (| todo-render code))))))))
 
- initial-state
-  (new-root
-   (new-array ([]
-    (new-name "foo")
-    (new-struct ([]
-     (& name "x" value (new-int 3))
-     (& name "y" value (new-int 5))))
-    (new-enum "some" (| some (new-name "bar")))
-    (new-array ([]
-     (new-name "a")
-     (new-name "b")
-     (new-array ([]
-      (new-name "c")
-      (new-name "d")
-      (new-name "e")))
-     (new-name "f")
-     (new-name "g"))))))
-
- render (\ (code size)
-  (.draw (padding 2. (code-render code (f- (.width size) 4.)))))
- handle (\ (code event)
-  (% (code-handle code event) no-change code (update code) code))
- make-app (\ (state)
-  (rec state (\ (rec state)
+ make-app (\ (initial-state render handle)
+  (rec initial-state (\ (rec state)
    (&
     render (\ (size) (render state size))
     update (\ (event) (rec (handle state event)))
     state state))))
- app (make-app initial-state)
 
- edit (\ (value)
-  (make-app (new-root (| folded value))))
+ editor-app
+  (make-app
+   (new-root
+    (new-array ([]
+     (new-name "foo")
+     (new-struct ([]
+      (& name "x" value (new-int 3))
+      (& name "y" value (new-int 5))))
+     (new-enum "some" (| some (new-name "bar")))
+     (new-array ([]
+      (new-name "a")
+      (new-name "b")
+      (new-array ([]
+       (new-name "c")
+       (new-name "d")
+       (new-name "e")))
+      (new-name "f")
+      (new-name "g"))))))
+   (\ (code size) (.draw (padding 2. (code-render code (f- (.width size) 4.)))))
+   (\ (code event)
+    (% (code-handle code event) no-change code (update code) code)))
 
- _ "Notes App"
-
- render (\ (state size)
-  (.draw
-   (padding 2.
-    (% (.focus state)
-     (at index)
-      (column
-       (array-map-indexed
-        (.notes state)
-        (\ (i note) (text (.title note) (if (= i index) red black)))))
-     (in info) (:
-      note (array-get (.notes state) (.index info))
-      (column ([]
-       (text (.title note) red)
-       (empty-box 0. 5.)
-       (text (.content note) black))))))))
- handle (\ (state event)
-  (:
-   focus (.focus state)
-   notes (.notes state)
-   (% focus
-    (at index)
-     (% event
-      (pressed-key key)
-       (cond
-        (key-down? key)
-         (&
-          focus
-           (| at (if (= index (- (array-length notes) 1)) index (+ index 1)))
-          notes notes)
-        (key-up? key)
-         (& focus (| at (if (= index 0) index (- index 1))) notes notes)
-        (key-enter? key)
-         (& focus (| in (& index index cursor new-cursor)) notes notes)
-        else state)
-      char state)
-    (in info) (:
-     index (.index info)
-     cursor (.cursor info)
-     note (array-get notes index)
-     width 1000
-     (% event
-      (pressed-key key)
-       (if (key-escape? key)
-        (& focus (| at index) notes notes)
-        (:
+ notes-app (\ (notes)
+  (make-app
+   (& focus (| at 0) notes notes)
+   (\ (state size)
+    (.draw
+     (colored
+      (& r 170 g 200 b 150)
+      (padding 2.
+       (% (.focus state)
+        (at index)
+         (column
+          (array-map-indexed
+           (.notes state)
+           (\ (i note)
+            (text (.title note) (if (= i index) cursor-color black)))))
+        (in info) (:
+         note (array-get (.notes state) (.index info))
+         (column ([]
+          (text (.title note) red)
+          (empty-box 0. 5.)
+          (editable-text (.content note) black (.cursor info))))))))))
+   (\ (state event)
+    (:
+     focus (.focus state)
+     notes (.notes state)
+     (% focus
+      (at index)
+       (% event
+        (pressed-key key)
+         (cond
+          (key-down? key)
+           (&
+            focus
+             (| at (if (= index (- (array-length notes) 1)) index (+ index 1)))
+            notes notes)
+          (key-up? key)
+           (& focus (| at (if (= index 0) index (- index 1))) notes notes)
+          (key-enter? key)
+           (& focus (| in (& index index cursor new-cursor)) notes notes)
+          else state)
+        char state)
+      (in info) (:
+       index (.index info)
+       cursor (.cursor info)
+       note (array-get notes index)
+       width 1000.
+       (% event
+        (pressed-key key)
+         (if (key-escape? key)
+          (& focus (| at index) notes notes)
+          (:
+           result
+            (handle-text-edit-with-cursor (.content note) width cursor event)
+           new-note (& title (.title note) content (.string result))
+           (&
+            focus (| in (& index index cursor (.cursor result)))
+            notes (array-update notes index new-note))))
+        (char c) (:
          result
           (handle-text-edit-with-cursor (.content note) width cursor event)
          new-note (& title (.title note) content (.string result))
          (&
           focus (| in (& index index cursor (.cursor result)))
-          notes (array-update notes index new-note))))
-      (char c) (:
-       result (handle-text-edit-with-cursor (.content note) width cursor event)
-       new-note (& title (.title note) content (.string result))
-       (&
-        focus (| in (& index index cursor (.cursor result)))
-        notes (array-update notes index new-note))))))))
- make-app (\ (state)
-  (rec state (\ (rec state)
-   (&
-    render (\ (size) (render state size))
-    update (\ (event) (rec (handle state event)))
-    state state))))
- notes-app (\ (notes) (make-app (& focus (| at 0) notes notes)))
+          notes (array-update notes index new-note))))))))))
 
- (&
-  render (.render app)
-  update (.update app)
-  state initial-state
-  edit edit
-  notes-app notes-app)
+ calculator-app (:
+  parse (\ (chars)
+   (rec-2 (| expr) chars (\ (parse mode chars)
+    (% mode
+     tight (:
+      parse-int (\ (chars)
+       (rec-2 chars 0 (\ (recurse chars num)
+        (% chars
+         empty (& num num rest (| empty))
+         (more m) (:
+          c (ascii-char (.item m))
+          (if (and (>= c (ascii-char "0")) (<= c (ascii-char "9")))
+           (recurse (.rest m) (+ (* num 10) (- c (ascii-char "0"))))
+           (& num num rest chars)))))))
+      (% chars
+       empty (| none)
+       (more m) (:
+        c (ascii-char (.item m))
+        (cond
+         (and (>= c (ascii-char "0")) (<= c (ascii-char "9")))
+          (: res (parse-int chars)
+           (| some (& term (| number (.num res)) rest (.rest res))))
+         (= c (ascii-char "x")) (| some (& term (| x) rest (.rest m)))
+         else (| none)))))
+     multiply-divide (:
+      (% (parse (| tight) chars)
+       none (| none)
+       (some result)
+        (rec result (\ (rec so-far)
+         (% (.rest so-far)
+          empty (| some so-far)
+          (more m) (:
+           c (.item m)
+           (cond
+            (= c "*")
+             (% (parse (| tight) (.rest m))
+              none (| error "* needs operand")
+              (some result)
+               (rec (&
+                term (| multiply (& left (.term so-far) right (.term result)))
+                rest (.rest result))))
+            (= c "/")
+             (% (parse (| tight) (.rest m))
+              none (| error "/ needs operand")
+              (some result)
+               (rec (&
+                term (| divide (& left (.term so-far) right (.term result)))
+                rest (.rest result))))
+            else (| some so-far))))))))
+     add-subtract (:
+      (% (parse (| multiply-divide) chars)
+       none (| none)
+       (error e) (| error e)
+       (some result)
+        (rec result (\ (rec so-far)
+         (% (.rest so-far)
+          empty (| some so-far)
+          (more m) (:
+           c (.item m)
+           (cond
+            (= c "+")
+             (% (parse (| multiply-divide) (.rest m))
+              none (| error "+ needs operand")
+              (error e) (| error e)
+              (some result)
+               (rec (&
+                term (| add (& left (.term so-far) right (.term result)))
+                rest (.rest result))))
+            (= c "-")
+             (% (parse (| multiply-divide) (.rest m))
+              none (| error "- needs operand")
+              (error e) (| error e)
+              (some result)
+               (rec (&
+                term (| subtract (& left (.term so-far) right (.term result)))
+                rest (.rest result))))
+            else (| some so-far))))))))
+     expr (parse (| add-subtract) chars)))))
+  eval (\ (term)
+   (rec term (\ (eval term)
+    (% term
+     (number n) n
+     (add args) (+ (eval (.left args)) (eval (.right args)))
+     (subtract args) (- (eval (.left args)) (eval (.right args)))
+     (multiply args) (* (eval (.left args)) (eval (.right args)))
+     (divide args) (/ (eval (.left args)) (eval (.right args)))
+     ))))
+  contains-x (\ (term)
+   (rec term (\ (rec term)
+    (% term
+     number false
+     x true
+     (add args) (or (rec (.left args)) (rec (.right args)))
+     (subtract args) (or (rec (.left args)) (rec (.right args)))
+     (multiply args) (or (rec (.left args)) (rec (.right args)))
+     (divide args) (or (rec (.left args)) (rec (.right args)))
+     ))))
+  sample (\ (term) (:
+   compiled
+    (@function
+     ([] "x")
+     (rec term (\ (rec term)
+      (% term
+       (number n) (| value n)
+       x (| name "x")
+       (add args) (| add (& left (rec (.left args)) right (rec (.right args))))
+       (subtract args) (| subtract (& left (rec (.left args)) right (rec (.right args))))
+       (multiply args) (| multiply (& left (rec (.left args)) right (rec (.right args))))
+       (divide args) (| divide (& left (rec (.left args)) right (rec (.right args))))
+       )))
+     nil)
+   (array-generate 100 (\ (x) (& x x y (compiled x))))))
+  calculate-output (\ (input) (:
+   (if (= input "")
+    (| empty)
+    (% (parse (string->chars-list input))
+     (error error) (| error error)
+     none (| error "error")
+     (some result)
+      (% (.rest result)
+       more (| error "unparsed rest")
+       empty (:
+        term (.term result)
+        (if (contains-x term)
+         (| graph (sample term))
+         (% (@sandbox 1000000 (\ () (eval (.term result))))
+          timeout (| error "timeout")
+          (returned n)  (| number n)
+          (crashed e)  (| error e)))))))))
+  (make-app
+   (& input "" output (calculate-output ""))
+   (\ (state size)
+    (.draw
+     (column ([]
+      (colored (color "#cbddaa") (padding 2. (text (.input state) black)))
+      (% (.output state)
+       empty (colored (color "#ffc85b") (padding 2. (text "moin" black)))
+       (error e) (colored (color "#ff7d7a") (padding 2. (text e white)))
+       (number n)
+        (colored (color "#ffc85b") (padding 2. (text (int->string n) black)))
+       (graph samples) (:
+        xs (list-map (array->list samples) (\ (sample) (.x sample)))
+        ys (list-map (array->list samples) (\ (sample) (.y sample)))
+        x-max (list-max xs)
+        y-max (list-max ys)
+        scale-x (f/ 100. (int->float x-max))
+        scale-y (f/ 100. (int->float y-max))
+        (colored (color "#9977ff")
+         (sized-box 100. 100.
+          (stack
+           (array-map samples (\ (sample)
+            (padding
+             (&
+              left (f* scale-x (int->float (.x sample)))
+              top  (f- 100. (f* scale-y (int->float (.y sample))))
+              right 0.
+              bottom 0.)
+             (colored white (empty-box 1. 1.))))))))))))))
+   (\ (state event) (:
+    input (.input state)
+    output (.output state)
+    (%
+     (% event
+      (pressed-key key)
+       (cond
+        (key-backspace? key)
+         (if (= input "")
+          (| no-change)
+          (| new-input (string-slice input 0 (- (string-length input) 1))))
+        else (| no-change))
+      (char c) (| new-input (string-concat input c)))
+     no-change state
+     (new-input input) (& input input output (calculate-output input)))))))
+
+ calculator-app
 )
 
 ===
@@ -1944,8 +2172,6 @@ General TODO:
 - structured editor for tools
 - syncing data between devices
 - provide optimize function that is then applied to every Pear function
-- fuzz
-- jit compiler
 - add more comments/documentation to bootstrapping pipeline
 - add asserts to bootstrapping pipeline
 - sort struct fields?

@@ -820,7 +820,10 @@ const Reg = enum(u4) {
     r15 = 15,
 
     fn next(self: Reg) Reg {
-        return @enumFromInt(@intFromEnum(self) + 1);
+        return self.add(1);
+    }
+    fn add(self: Reg, i: usize) Reg {
+        return @enumFromInt(@intFromEnum(self) + i);
     }
 };
 
@@ -2295,16 +2298,12 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
         },
         .new_leaf, .new_inner => {
             const n: usize = @intCast(header.rest);
-            var child_reg: Reg = dst;
-            for (0..n) |_| {
-                try emit_expr_to_reg(sink, slots, at, resolver, child_reg);
-                child_reg = child_reg.next();
+            for (0..n) |i| {
+                try emit_expr_to_reg(sink, slots, at, resolver, dst.add(i));
             }
-            child_reg = dst;
             for (0..n) |i| {
                 const off: i32 = @intCast((i + 1) * 8);
-                try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, off, child_reg });
-                child_reg = child_reg.next();
+                try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rdi, off, dst.add(i) });
             }
             const header_val: u64 = if (header.tag == .new_inner)
                 (@as(u64, 1) << 63) | @as(u64, n)
