@@ -1331,29 +1331,47 @@
     (text ")" color)))
    child))
 
- new-root (\ (child) (| root (& child child focus (| here))))
+ new-root (\ (name child) (| root (& name name child child focus (| at-child))))
  root-handle (\ (code-focus code-handle state event)
-  (% (.focus state)
-   here
-    (% event
-     (pressed-key key)
-      (cond
-       (key-down? key)
-        (| update
-         (| root (& child (code-focus (.child state)) focus (| inside))))
-       else (| no-change))
-     char (| no-change))
-   inside
-    (% (code-handle (.child state))
-     no-change (| no-change)
-     (update child) (| update (| root (& child child focus (| inside))))
-     (yield-focus child) (| update (| root (& child child focus (| here)))))))
- root-render-singleline (\ (code-render-singleline state space-allowed)
-  (maybe-render-cursor (% (.focus state) here true inside false)
-   (code-render-singleline (.child state) space-allowed)))
+  (:
+   name (.name state)
+   child (.child state)
+   (% (.focus state)
+    at-name
+     (% event
+      (pressed-key key)
+       (cond
+        (key-right? key)
+         (| update (| root (& name name child child focus (| at-child))))
+        (key-down? key) (| no-change)
+        else (| no-change))
+      char (| no-change))
+    in-name (| no-change)
+    at-child
+     (% event
+      (pressed-key key)
+       (cond
+        (key-left? key)
+         (| update (| root (& name name child child focus (| at-name))))
+        (key-down? key)
+         (| update
+          (| root (& name name child (code-focus child) focus (| in-child))))
+        else (| no-change))
+      char (| no-change))
+    in-child
+     (% (code-handle child)
+      no-change (| no-change)
+      (update child)
+       (| update (| root (& name name child child focus (| in-child))))
+      (yield-focus child)
+       (| update (| root (& name name child child focus (| at-child))))))))
  root-render (\ (code-render state width)
-  (maybe-render-cursor (% (.focus state) here true inside false)
-   (code-render (.child state) width)))
+  (column ([]
+   (maybe-render-cursor (% (.focus state) at-name true _ false)
+    (text (.name state) green))
+   (empty-box 0. 2.)
+   (maybe-render-cursor (% (.focus state) at-child true _ false)
+    (code-render (.child state) width)))))
 
  new-code-node-from-char (\ (char)
   (:
@@ -1825,6 +1843,204 @@
        (empty-box 0. (% (.rest m) empty 0. more 2.))
        (rec (.rest m) (+ index 1))))))))))
 
+ new-function (\ (arguments body)
+  (| function (& arguments arguments body body focus (| outside))))
+ function-focus (\ (state)
+  (| function
+   (& arguments (.arguments state) body (.body state) focus (| at-arguments))))
+ function-handle (\ (code-focus code-handle state event)
+  (:
+   arguments (.arguments state)
+   body (.body state)
+   focus (.focus state)
+   (| no-change)))
+ function-color purple
+ function-render-singleline (\ (code-render-singleline state space-allowed)
+  (maybe-render-parenthesized (not space-allowed) function-color
+   (row ([]
+    (maybe-render-cursor (% (.focus state) at-start true _ false)
+     (text "\\" function-color))
+    (row
+     (array-map-indexed (.arguments state) (\ (index argument)
+      (row ([]
+       (empty-box 5. 0.)
+       (maybe-render-cursor
+        (% (.focus state) (at-argument i) (= i index) _ false)
+        (text argument function-color)))))))
+    (empty-box 5. 0.)
+    (code-render-singleline (.body state) false)))))
+ function-render (\ (code-render state width)
+  (column ([]
+   (row ([]
+    (maybe-render-cursor (% (.focus state) at-start true _ false)
+     (text "\\" function-color))
+    (row
+     (array-map-indexed (.arguments state) (\ (index argument)
+      (row ([]
+       (empty-box 5. 0.)
+       (maybe-render-cursor
+        (% (.focus state) (at-argument i) (= i index) _ false)
+        (text argument function-color)))))))))
+   (row ([] (empty-box 10. 0.) (code-render (.body state) (f- width 10.)))))))
+
+ new-call (\ (function arguments)
+  (| call (& function function arguments arguments focus (| outside))))
+ call-focus (\ (state)
+  (| call (&
+   function (.function state)
+   arguments (.arguments state)
+   focus (| at-function))))
+ call-handle (\ (code-focus code-handle state event)
+  (:
+   function (.function state)
+   arguments (.arguments state)
+   focus (.focus state)
+   (% focus
+    outside (| no-change)
+    at-function
+     (% event
+      (pressed-key key)
+       (cond
+        (key-up? key)
+         (| yield-focus
+          (| call (& function function arguments arguments focus (| outside))))
+        (key-right? key)
+         (if (= (array-length arguments) 0)
+          (| no-change)
+          (| update
+           (| call (& function function arguments arguments focus (| at 0)))))
+        else (| no-change))
+      (char char)
+       (% (new-code-node-from-char char)
+        (some node)
+         (| update
+          (| call (&
+           function function
+           arguments (array-insert arguments 0 node)
+           focus (| in-argument 0))))
+        none (| no-change)))
+    (at-argument index)
+     (% event
+      (pressed-key key)
+       (cond
+        (key-up? key)
+         (| yield-focus
+          (| call (& function function arguments arguments focus (| outside))))
+        (key-left? key)
+         (if (= index 0)
+          (| update
+           (| call
+            (& function function arguments arguments focus (| at-function))))
+          (| update
+           (| call (&
+            function function
+            arguments arguments
+            focus (| at-argument (- index 1))))))
+        (key-right? key)
+         (if (= index (- (array-length arguments) 1))
+          (| no-change)
+          (| update
+           (| call (&
+            function function
+            arguments arguments
+            focus (| at-argument (+ index 1))))))
+        (key-down? key)
+         (| update
+          (| call (&
+           function function
+           arguments
+            (array-update
+             arguments
+             index
+             (code-focus (array-get arguments index)))
+           focus (| in-argument index))))
+        (key-backspace? key)
+         (| update
+          (| call (&
+           function function
+           arguments (array-remove arguments index)
+           focus (if (= index 0) (| at-function) (| at-argument (- index 1))))))
+        (key-delete? key)
+         (| update
+          (| call (&
+           function function
+           arguments (array-remove arguments index)
+           focus
+            (if (= index (- (array-length arguments) 1))
+             (if (= index 0) (| at-function) (| at-argument (- index 1)))
+             (| at-argument index)))))
+        (key-alt-left? key)
+         (if (= index 0)
+          (| no-change)
+          (| update
+           (| call (&
+            function function
+            arguments (array-swap arguments index (- index 1))
+            focus (| at-argument (- index 1))))))
+        (key-alt-right? key)
+         (if (= index (- (array-length arguments) 1))
+          (| no-change)
+          (| update
+           (| call (&
+            function function
+            arguments (array-swap arguments index (+ index 1))
+            focus (| at-argument (+ index 1))))))
+        else (| no-change))
+      (char char)
+       (% (new-code-node-from-char char)
+        (some node)
+         (| update
+          (| call (&
+           function function
+           arguments (array-insert arguments (+ index 1) node)
+           focus (| in-argument (+ index 1)))))
+        none (| no-change)))
+    (in-argument index)
+     (% (code-handle (array-get arguments index))
+      no-change (| no-change)
+      (update new-argument)
+       (| update
+        (| call (&
+         function function
+         arguments (array-update arguments index new-argument)
+         focus focus)))
+      (yield-focus new-argument)
+       (| update
+        (| call (&
+         function function
+         arguments (array-update arguments index new-argument)
+         focus (| at-argument index))))))))
+ call-color function-color
+ call-render-singleline (\ (code-render-singleline state space-allowed)
+  (maybe-render-parenthesized
+   (or (not space-allowed) (= 0 (array-length (.arguments state))))
+   call-color
+   (row ([]
+    (maybe-render-cursor (% (.focus state) at-function true _ false)
+     (code-render-singleline (.function state) false))
+    (row
+     (array-map-indexed (.arguments state) (\ (index argument)
+      (row ([]
+       (empty-box 5. 0.)
+       (maybe-render-cursor
+        (% (.focus state) (at-argument i) (= i index) _ false)
+        (code-render-singleline argument false)))))))))))
+ call-render (\ (code-render state width)
+  (column ([]
+   (code-render (.function state) width)
+   (row ([]
+    (empty-box 10. 0.)
+    (rec-2 (array->list (.arguments state)) 0 (\ (rec arguments index)
+     (% arguments
+      empty (empty-box 0. 0.)
+      (more m)
+       (column ([]
+        (maybe-render-cursor
+         (% (.focus state) (at-argument i) (= i index) _ false)
+         (code-render (.item m) (f- width 10.)))
+        (empty-box 0. (% (.rest m) empty 0. more 2.))
+        (rec (.rest m) (+ index 1))))))))))))
+
  new-folded (\ (value) (| folded value))
  folded-focus (\ (focus value)
   (focus
@@ -1852,6 +2068,8 @@
     (enum state) (enum-focus state)
     (array state) (array-focus state)
     (folded state) (folded-focus focus state)
+    (function state) (function-focus focus state)
+    (call state) (call-focus focus state)
     _ (crash (| todo-focus code))))))
  code-handle (\ (code event)
   (rec code (\ (handle code)
@@ -1862,16 +2080,20 @@
     (struct state) (struct-handle code-focus handle state event)
     (enum state) (enum-handle code-focus handle state event)
     (array state) (array-handle code-focus handle state event)
+    (function state) (function-handle code-focus handle state event)
+    (call state) (call-handle code-focus handle state event)
     _ (crash (| todo-handle code))))))
  code-render-singleline (\ (code space-allowed)
   (rec-2 code space-allowed (\ (render code space-allowed)
    (% code
-    (root state) (root-render-singleline render state space-allowed)
+    (root state) (empty-box 100000000. 0.)
     (name state) (name-render-singleline state)
     (int state) (int-render-singleline state)
     (struct state) (struct-render-singleline render state space-allowed)
     (enum state) (enum-render-singleline render state space-allowed)
     (array state) (array-render-singleline render state space-allowed)
+    (function state) (function-render-singleline render state space-allowed)
+    (call state) (call-render-singleline render state space-allowed)
     (folded state) (folded-render-singleline state)
     _ (crash (| todo-render code))))))
  code-render (\ (code width)
@@ -1887,6 +2109,8 @@
       (struct state) (struct-render render code-render-singleline state width)
       (enum state) (enum-render render state width)
       (array state) (array-render render state width)
+      (function state) (function-render render state width)
+      (call state) (call-render render state width)
       (folded state) (folded-render state)
       _ (crash (| todo-render code))))))))
 
@@ -1897,27 +2121,73 @@
     update (\ (event) (rec (handle state event)))
     state state))))
 
- editor-app
+ create-editor-state (\ (name code)
+  (new-root
+   name
+   (rec code (\ (rec code)
+    (% code
+     (name name) (new-name name)
+     (struct struct)
+      (new-struct
+       (array-map struct (\ (field)
+        (& name (.name field) value (rec (.value field))))))
+     (function function)
+      (new-function (.arguments function) (rec (.body function)))
+     (call call)
+      (new-call
+       (rec (.function call))
+       (array-map (.arguments call) (\ (argument) (rec argument))))
+     _ (crash (| todo code))
+     )))))
+ editor-app (\ (defs)
   (make-app
-   (new-root
-    (new-array ([]
-     (new-name "foo")
-     (new-struct ([]
-      (& name "x" value (new-int 3))
-      (& name "y" value (new-int 5))))
-     (new-enum "some" (| some (new-name "bar")))
-     (new-array ([]
-      (new-name "a")
-      (new-name "b")
-      (new-array ([]
-       (new-name "c")
-       (new-name "d")
-       (new-name "e")))
-      (new-name "f")
-      (new-name "g"))))))
-   (\ (code size) (.draw (padding 2. (code-render code (f- (.width size) 4.)))))
-   (\ (code event)
-    (% (code-handle code event) no-change code (update code) code)))
+   (& defs defs focus (| overview 0))
+   (\ (state size) (:
+    defs (.defs state)
+    focus (.focus state)
+    (% focus
+     (overview index)
+      (.draw
+       (column
+        (array-concat
+         ([] (colored green (padding 2. (text "Orchard" black))))
+         (array-map-indexed defs (\ (i def)
+          (padding 2. (text (.name def) (if (= i index) green black)))))
+        )))
+     (in-def state)
+      (.draw (padding 2. (code-render (.def state) (f- (.width size) 4.)))))))
+   (\ (state event) (:
+    defs (.defs state)
+    focus (.focus state)
+    (% focus
+     (overview index)
+      (% event
+       (pressed-key key)
+        (cond
+         (key-left? key)
+          (if (= index 0) state (& defs defs focus (| overview (- index 1))))
+         (key-right? key)
+          (if (= index (- (array-length defs) 1))
+           state
+           (& defs defs focus (| overview (+ index 1))))
+         (key-down? key) (:
+          def (array-get defs index)
+          (&
+           defs defs
+           focus
+            (| in-def (&
+             index index
+             def (create-editor-state (.name def) (.code def))))))
+         else state
+         )
+       _ state)
+     (in-def s) (:
+      index (.index s)
+      def (.def s)
+      (% (code-handle def event)
+       no-change state
+       (update def) (& defs defs focus (| in-def (& index index def def)))))
+     )))))
 
  notes-app (\ (notes)
   (make-app
@@ -2158,7 +2428,7 @@
      no-change state
      (new-input input) (& input input output (calculate-output input)))))))
 
- calculator-app
+ editor-app
 )
 
 ===
