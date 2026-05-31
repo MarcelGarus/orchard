@@ -340,12 +340,12 @@ const NameGenerator = struct {
     count: usize = 0,
     fn generate(gen: *NameGenerator, ally: Ally) ![]const u8 {
         var buffer: [10]u8 = undefined;
-        var i = gen.count;
+        var i: i64 = @intCast(gen.count);
         var j = buffer.len;
         while (i >= 0) {
             j -= 1;
             buffer[j] = @intCast('a' + @mod(i, 26));
-            i = (i / 26) - 1;
+            i = @divTrunc(i, 26) - 1;
         }
         const name = buffer[j..];
         const copy = try ally.alloc(u8, name.len);

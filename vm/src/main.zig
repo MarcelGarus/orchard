@@ -182,7 +182,8 @@ pub fn main(init: std.process.Init) !void {
         try Io.Dir.cwd().readFileAlloc(io, "src/data.objects", ally, Io.Limit.unlimited),
     ));
     std.debug.print("data: {f}\n", .{data});
-    var app = try pear_export.get_field("notes-app").call(&vm, &.{data.get_field("notes")});
+    var app = try pear_export.call(&vm, &.{data});
+    // var app = pear_export;
 
     // if (true) return;
 
