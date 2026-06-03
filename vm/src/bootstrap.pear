@@ -31,8 +31,8 @@
  not (\ (a) (if a false true))
  and (\ (a b) (if a b false))
  and-3 (\ (a b c) (and (and a b) c))
- and-4 (\ (a b c d) (and (and a b c) d))
- and-5 (\ (a b c d e) (and (and a b c d) e))
+ and-4 (\ (a b c d) (and (and-3 a b c) d))
+ and-5 (\ (a b c d e) (and (and-4 a b c d) e))
  or (\ (a b) (if a true b))
  or-3 (\ (a b c) (or (or a b) c))
  or-4 (\ (a b c d) (or (or a b c) d))
@@ -796,6 +796,13 @@
   (and (= (.keycode key) 262) (ctrl-shift-modifiers? key)))
  key-ctrl-shift-left? (\ (key)
   (and (= (.keycode key) 263) (ctrl-shift-modifiers? key)))
+ key-space? (\ (key) (and (= (.keycode key) 32) (no-modifiers? key)))
+ key-a? (\ (key) (and (= (.keycode key) 65) (no-modifiers? key)))
+ key-d? (\ (key) (and (= (.keycode key) 68) (no-modifiers? key)))
+ key-n? (\ (key) (and (= (.keycode key) 78) (no-modifiers? key)))
+ key-r? (\ (key) (and (= (.keycode key) 82) (no-modifiers? key)))
+ key-s? (\ (key) (and (= (.keycode key) 83) (no-modifiers? key)))
+ key-w? (\ (key) (and (= (.keycode key) 87) (no-modifiers? key)))
 
  # "Text editing
 
@@ -1321,6 +1328,16 @@
 
  maybe-render-cursor (\ (enabled node)
   (if enabled (colored cursor-color node) node))
+ maybe-render-trailing-cursor (\ (enabled node)
+  (if enabled
+   (sized-box
+    (.width node)
+    (.height node)
+    (stack ([]
+     (padding (& top 0. left (.width node) bottom 0. right 0.)
+      (colored cursor-color (empty-box 2. line-height)))
+     node)))
+   node))
  maybe-render-parenthesized (\ (enabled color child)
   (if enabled
    (row ([]
@@ -1330,6 +1347,37 @@
     (empty-box 1. 0.)
     (text ")" color)))
    child))
+
+ action-up? (\ (key) (or (key-up? key) (key-space? key)))
+ action-down? (\ (key) (key-down? key))
+ action-left? (\ (key) (key-left? key))
+ action-right? (\ (key) (key-right? key))
+ action-new? (\ (key) (key-enter? key))
+ action-remove? (\ (key) (key-backspace? key))
+ action-delete? (\ (key) (key-delete? key))
+ action-swap-left? (\ (key) (key-alt-left? key))
+ action-swap-right? (\ (key) (key-alt-right? key))
+
+ is-identifier-char? (\ (char)
+  (and-4 (!= char " ") (!= char "\n") (!= char "(") (!= char ")")))
+ identifier-handle (\ (identifier event)
+  (% event
+   (pressed-key key)
+    (cond
+     (action-up? key) (| yield-focus identifier)
+     else (| update (handle-text-edit identifier event)))
+   (char char)
+    (if (= char " ")
+     (| yield-focus identifier)
+     (if (is-identifier-char? char)
+      (| update (handle-text-edit identifier event))
+      (| update identifier)))))
+ identifier-render (\ (identifier color focused)
+  (if (= identifier "")
+   (sized-box 5. line-height
+   (padding (& top 4. left 0. right 0. bottom 0.)
+    (colored (if focused cursor-color color) (empty-box 5. 5.))))
+   (maybe-render-trailing-cursor focused (text identifier color))))
 
  new-root (\ (name child) (| root (& name name child child focus (| at-child))))
  root-handle (\ (code-focus code-handle state event)
@@ -1341,23 +1389,29 @@
      (% event
       (pressed-key key)
        (cond
-        (key-right? key)
+        (action-up? key) (| done (& name name child child))
+        (action-down? key)
+         (| update (| root (& name name child child focus (| in-name))))
+        (action-right? key)
          (| update (| root (& name name child child focus (| at-child))))
-        (key-down? key) (| no-change)
         else (| no-change))
-      char (| no-change))
-    in-name (| no-change)
+      (char char) (| no-change))
     at-child
      (% event
       (pressed-key key)
        (cond
-        (key-left? key)
-         (| update (| root (& name name child child focus (| at-name))))
-        (key-down? key)
+        (action-up? key) (| done (& name name child child))
+        (action-down? key)
          (| update
           (| root (& name name child (code-focus child) focus (| in-child))))
+        (action-left? key)
+         (| update (| root (& name name child child focus (| at-name))))
         else (| no-change))
-      char (| no-change))
+      (char char) (| no-change))
+    in-name
+     (% (identifier-handle name event)
+      (update name) (| update (& name name child child focus (| in-name)))
+      (yield-focus name) (| update (& name name child child focus (| at-name))))
     in-child
      (% (code-handle child)
       no-change (| no-change)
@@ -1388,6 +1442,28 @@
     (= char "[") (| some (| array (& items ([]) focus (| at-start))))
     else (| none))))
 
+ new-hole (\ () (| hole (| unfocused)))
+ hole-focus (\ (state) (| hole (| focused)))
+ hole-handle (\ (state event)
+  (% state
+   unfocused (| no-change)
+   focused
+    (% event
+     (pressed-key key)
+      (cond
+       (action-up? key) (| yield-focus (| hole (| unfocused)))
+       else (| no-change))
+     (char char)
+      (% (new-code-node-from-char char)
+       (some node) (| update node)
+       none (| no-change)))))
+ hole-render-singleline (\ (state)
+  (sized-box 5. line-height
+   (padding (& top 4. left 0. right 0. bottom 0.)
+    (colored (% state unfocused black focused cursor-color)
+     (empty-box 5. 5.)))))
+ hole-render (\ (state) (hole-render-singleline state))
+
  new-int (\ (int) (| int (& int int focus (| outside))))
  int-focus (\ (state) (| int (& int (.int state) focus (| inside))))
  int-handle (\ (state event)
@@ -1398,9 +1474,12 @@
     (% event
      (pressed-key key)
       (cond
-       (key-up? key) (| yield-focus (| int (& int int focus (| outside))))
-       (key-backspace? key)
-        (| update (| int (& int (/ int 10) focus (| inside))))
+       (action-up? key) (| yield-focus (| int (& int int focus (| outside))))
+       (key-backspace? key) (:
+        new-int (/ int 10)
+        (if (= new-int 0)
+         (| delete)
+         (| update (| int (& int new-int focus (| inside))))))
        else (| no-change))
      (char char) (:
       c (ascii-char char)
@@ -1410,10 +1489,10 @@
         (| update
          (| int (& int (+ (* int 10) (- c (ascii-char "0"))) focus (| inside))))
        else (| no-change)))))))
+ int-color blue
  int-render-singleline (\ (state)
-  (text
-   (int->string (.int state))
-   (% (.focus state) outside blue inside cursor-color)))
+  (maybe-render-trailing-cursor (% (.focus state) inside true outside false)
+   (text (int->string (.int state)) int-color)))
  int-render (\ (state) (int-render-singleline state))
 
  new-name (\ (name) (| name (& name name focus (| outside))))
@@ -1423,21 +1502,199 @@
    outside (| no-change)
    inside (:
     name (.name state)
-    (% event
-     (pressed-key key)
-      (cond
-       (key-up? key) (| yield-focus (| name (& name name focus (| outside))))
-       else
-        (| update
-         (| name (& name (handle-text-edit name event) focus (| inside)))))
-     (char char)
-      (if (= char " ")
-       (| yield-focus (| name (& name name focus (| outside))))
-       (| update
-        (| name (& name (handle-text-edit name event) focus (| inside)))))))))
+    (% (identifier-handle name event)
+     (yield-focus name) (| yield-focus (| name (& name name focus (| outside))))
+     (update name)
+      (if (= name "")
+       (| delete)
+       (| update (| name (& name name focus (| inside)))))))))
  name-render-singleline (\ (state)
-  (text (.name state) (% (.focus state) outside black inside cursor-color)))
+  (identifier-render
+   (.name state)
+   black
+   (% (.focus state) inside true outside false)))
  name-render (\ (state) (name-render-singleline state))
+
+ new-struct (\ (fields) (| struct (& fields fields focus (| outside))))
+ struct-focus (\ (state)
+  (| struct (&
+   fields (.fields state)
+   focus (if (= (array-length (.fields state)) 0) (| at-start) (| at-name 0)))))
+ struct-handle (\ (code-focus code-handle state event)
+  (:
+   fields (.fields state)
+   focus (.focus state)
+   (% focus
+    outside (| no-change)
+    at-start
+     (% event
+      (pressed-key key)
+       (cond
+        (action-up? key)
+         (| yield-focus (| struct (& fields fields focus (| outside))))
+        (action-right? key)
+         (if (= (array-length fields) 0)
+          (| no-change)
+          (| update (| struct (& fields fields focus (| at-name 0)))))
+        else (| no-change))
+      (char char) (:
+       new-field (& name char value (| hole (| unfocused)))
+       (| update
+        (| struct (&
+         fields (array-insert fields 0 new-field)
+         focus (| in-name 0))))))
+    (at-name index)
+     (% event
+      (pressed-key key)
+       (cond
+        (action-up? key)
+         (| yield-focus (| struct (& fields fields focus (| outside))))
+        (action-down? key)
+         (| update (| struct (& fields fields focus (| in-name index))))
+        (action-left? key)
+         (if (= index 0)
+          (| update (| struct (& fields fields focus (| at-start))))
+          (| update
+           (| struct (& fields fields focus (| at-value (- index 1))))))
+        (action-right? key)
+         (| update (| struct (& fields fields focus (| at-value index))))
+        (action-remove? key)
+         (| update
+          (| struct
+           (&
+            fields (array-remove fields index)
+            focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
+        (action-delete? key)
+         (| update
+          (| struct
+           (&
+            fields (array-remove fields index)
+            focus
+             (if (= index (- (array-length fields) 1))
+              (if (= index 0) (| at-start) (| at-value (- index 1)))
+              (| at-name index)))))
+        else (| no-change))
+      (char char) (:
+       field (array-get fields index)
+       (% (.value field)
+        hole
+         (% (new-code-node-from-char char)
+          (some value)
+           (| update
+            (| struct (&
+             fields
+              (array-update fields index (& name (.name field) value value))
+             focus (| in-value index))))
+          none (| no-change))
+        _ (| no-change))))
+    (at-value index)
+     (% event
+      (pressed-key key)
+       (cond
+        (action-up? key)
+         (| yield-focus (| struct (& fields fields focus (| outside))))
+        (action-down? key) (:
+         field (array-get fields index)
+         new-field (& name (.name field) value (code-focus (.value field)))
+         (| update
+          (| struct (&
+           fields (array-update fields index new-field)
+           focus (| in-value index)))))
+        (action-left? key)
+         (| update (| struct (& fields fields focus (| at-name index))))
+        (action-right? key)
+         (if (= index (- (array-length fields) 1))
+          (| no-change)
+          (| update (| struct (& fields fields focus (| at-name (+ index 1))))))
+        (action-remove? key)
+         (| update
+          (| struct
+           (&
+            fields (array-remove fields index)
+            focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
+        else (| no-change))
+      (char char) 
+       (if (is-identifier-char? char)
+        (: new-field (& name char value (| hole (| unfocused)))
+         (| update
+          (| struct (&
+           fields (array-insert fields (+ index 1) new-field)
+           focus (| in-name (+ index 1))))))
+        (| no-change)))
+    (in-name index) (:
+     field (array-get fields index)
+     (% (identifier-handle (.name field) event)
+      (update name) (:
+       new-fields (array-update fields index (& name name value (.value field)))
+       (| update (| struct (& fields new-fields focus (| in-name index)))))
+      (yield-focus name) (:
+       new-fields (array-update fields index (& name name value (.value field)))
+       (| update (| struct (& fields new-fields focus (| at-name index)))))))
+    (in-value index) (:
+     field (array-get fields index)
+     (% (code-handle (.value field))
+      no-change (| no-change)
+      (update new-value)
+       (| update
+        (| struct (&
+         fields
+          (array-update fields index (& name (.name field) value new-value))
+         focus focus)))
+      (yield-focus new-value)
+       (| update
+        (| struct (&
+         fields
+          (array-update fields index (& name (.name field) value new-value))
+         focus (| at-value index))))
+      delete
+       (| update
+        (| struct (&
+         fields
+          (array-update
+           fields
+           index
+           (& name (.name field) value (| hole (| focused))))
+         focus (| in-value index)))))))))
+ struct-color green
+ struct-render-singleline (\ (code-render-singleline state space-allowed)
+  (maybe-render-parenthesized (not space-allowed) struct-color
+   (row ([]
+    (maybe-render-cursor (% (.focus state) at-start true _ false)
+     (text "&" struct-color))
+    (row
+     (array-map-indexed (.fields state) (\ (index field)
+      (row ([]
+       (empty-box 5. 0.)
+       (maybe-render-cursor (% (.focus state) (at-name i) (= i index) _ false)
+        (identifier-render
+         (.name field)
+         struct-color
+         (% (.focus state) (in-name i) (= i index) _ false)))
+       (empty-box 5. 0.)
+       (maybe-render-cursor (% (.focus state) (at-value i) (= i index) _ false)
+        (code-render-singleline (.value field) false)))))))))))
+ struct-render (\ (code-render code-render-singleline state width)
+  (row ([]
+   (sized-box 10. 10. (text "&" struct-color))
+   (column
+    (array-map-indexed (.fields state) (\ (index field) (:
+     name
+      (maybe-render-cursor (% (.focus state) (at-name i) (= i index) _ false)
+       (identifier-render
+        (.name field)
+        struct-color
+        (% (.focus state) (in-name i) (= i index) _ false)))
+     singleline
+      (row ([]
+       name
+       (empty-box 5. 0.)
+       (code-render-singleline (.value field) false)))
+     (if (f<= (.width singleline) (f- width 10.))
+      singleline
+      (column ([]
+       name
+       (empty-box 0. 2.)
+       (code-render (.value field) (f- width 20.))))))))))))
 
  new-enum (\ (variant payload)
   (| enum (& variant variant payload payload focus (| outside))))
@@ -1455,13 +1712,13 @@
      (% event
       (pressed-key key)
        (cond
-        (key-up? key)
+        (action-up? key)
          (| yield-focus
           (| enum (& variant variant payload payload focus (| outside))))
-        (key-down? key)
+        (action-down? key)
          (| update
           (| enum (& variant variant payload payload focus (| in-variant))))
-        (key-right? key)
+        (action-right? key)
          (| update
           (| enum (& variant variant payload payload focus (| at-payload))))
         else (| no-change))
@@ -1475,46 +1732,35 @@
             (| enum
              (& variant variant payload (| some node) focus (| in-payload))))
           none (| no-change))))
-    in-variant
-     (% event
-      (pressed-key key)
-       (cond
-        (key-up? key)
-         (| update
-          (| enum (& variant variant payload payload focus (| at-variant))))
-        else
-         (| update
-          (| enum (&
-           variant (handle-text-edit variant event)
-           payload payload
-           focus (| in-variant)))))
-      char
-       (| update
-        (| enum (&
-         variant (handle-text-edit variant event)
-         payload payload
-         focus (| in-variant)))))
     at-payload
      (% event
       (pressed-key key)
        (cond
-        (key-up? key)
+        (action-up? key)
          (| yield-focus
           (| enum (& variant variant payload payload focus (| outside))))
-        (key-down? key)
+        (action-left? key)
+         (| update
+          (| enum (& variant variant payload payload focus (| at-variant))))
+        (action-down? key)
          (| update
           (| enum (&
            variant variant
            payload (| some (code-focus (% payload (some p) p)))
            focus (| in-payload))))
-        (key-left? key)
-         (| update
-          (| enum (& variant variant payload payload focus (| at-variant))))
-        (key-backspace? key)
+        (action-remove? key)
          (| update
           (| enum (& variant variant payload (| none) focus (| at-variant))))
         else (| no-change))
       (char char) (| no-change))
+    in-variant
+     (% (identifier-handle variant event)
+      (yield-focus variant)
+       (| update
+        (| enum (& variant variant payload payload focus (| at-variant))))
+      (update variant)
+       (| update
+        (| enum (& variant variant payload payload focus (| in-variant)))))
     in-payload
      (% (code-handle (% payload (some p) p))
       no-change (| no-change)
@@ -1527,7 +1773,10 @@
          (&
           variant variant
           payload (| some new-payload)
-          focus (| at-payload))))))))
+          focus (| at-payload))))
+      delete
+       (| update
+        (| enum (& variant variant payload (| none) focus (| at-variant))))))))
  enum-color purple
  enum-render-singleline (\ (code-render-singleline state space-allowed)
   (maybe-render-parenthesized (not space-allowed) enum-color
@@ -1535,7 +1784,10 @@
     (text "|" enum-color)
     (empty-box 5. 0.)
     (maybe-render-cursor (% (.focus state) at-variant true _ false)
-     (text (.variant state) enum-color))
+     (identifier-render
+      (.variant state)
+      enum-color
+      (% (.focus state) in-variant true _ false)))
     (% (.payload state)
      (some payload)
       (row ([]
@@ -1560,168 +1812,6 @@
       (maybe-render-cursor (% (.focus state) at-payload true _ false)
        (code-render payload (f- width 10.)))))))))
 
- new-struct (\ (fields) (| struct (& fields fields focus (| outside))))
- struct-focus (\ (state)
-  (| struct (&
-   fields (.fields state)
-   focus (if (= (array-length (.fields state)) 0) (| at-start) (| at-name 0)))))
- struct-handle (\ (code-focus code-handle state event)
-  (:
-   fields (.fields state)
-   focus (.focus state)
-   (% focus
-    outside (| no-change)
-    at-start
-     (% event
-      (pressed-key key)
-       (cond
-        (key-up? key)
-         (| yield-focus (| struct (& fields fields focus (| outside))))
-        (key-right? key)
-         (if (= (array-length fields) 0)
-          (| no-change)
-          (| update (| struct (& fields fields focus (| at-name 0)))))
-        else (| no-change))
-      (char char) (:
-       new-field (&
-        name (bytes->string ([] char))
-        value (| int (& int 1 focus (| outside))))
-       (| update
-        (| struct (&
-         fields (array-insert fields 0 new-field)
-         focus (| in-name 0))))))
-    (at-name index)
-     (% event
-      (pressed-key key)
-       (cond
-        (key-up? key)
-         (| yield-focus (| struct (& fields fields focus (| outside))))
-        (key-left? key)
-         (if (= index 0)
-          (| update (| struct (& fields fields focus (| at-start))))
-          (| update
-           (| struct (& fields fields focus (| at-value (- index 1))))))
-        (key-right? key)
-         (| update (| struct (& fields fields focus (| at-value index))))
-        (key-down? key)
-         (| update (| struct (& fields fields focus (| in-name index))))
-        (key-backspace? key)
-         (| update
-          (| struct
-           (&
-            fields (array-remove fields index)
-            focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
-        (key-delete? key)
-         (| update
-          (| struct
-           (&
-            fields (array-remove fields index)
-            focus
-             (if (= index (- (array-length fields) 1))
-              (if (= index 0) (| at-start) (| at-value (- index 1)))
-              (| at-name index)))))
-        else (| no-change))
-      (char char) (| no-change))
-    (in-name index)
-     (% event
-      (pressed-key key)
-       (cond
-        (key-up? key)
-         (| update (| struct (& fields fields focus (| at-name index))))
-        else (:
-         field (array-get fields index)
-         new-field (&
-          name (handle-text-edit (.name field) event)
-          value (.value field))
-         (| update
-          (| struct (&
-           fields (array-update fields index new-field)
-           focus (| in-name index))))))
-      char (:
-       field (array-get fields index)
-       new-field (&
-        name (handle-text-edit (.name field) event)
-        value (.value field))
-       (| update
-        (| struct (&
-         fields (array-update fields index new-field)
-         focus (| in-name index))))))
-    (at-value index)
-     (% event
-      (pressed-key key)
-       (cond
-        (key-up? key)
-         (| yield-focus (| struct (& fields fields focus (| outside))))
-        (key-down? key) (:
-         field (array-get fields index)
-         new-field (& name (.name field) value (code-focus (.value field)))
-         (| update
-          (| struct (&
-           fields (array-update fields index new-field)
-           focus (| in-value index)))))
-        (key-left? key)
-         (| update (| struct (& fields fields focus (| at-name index))))
-        (key-right? key)
-         (if (= index (- (array-length fields) 1))
-          (| no-change)
-          (| update (| struct (& fields fields focus (| at-name (+ index 1))))))
-        (key-backspace? key)
-         (| update
-          (| struct
-           (&
-            fields (array-remove fields index)
-            focus (if (= index 0) (| at-start) (| at-value (- index 1))))))
-        else (| no-change))
-      (char char) (| no-change))
-    (in-value index) (:
-     field (array-get fields index)
-     (% (code-handle (.value field))
-      no-change (| no-change)
-      (update new-value)
-       (| update
-        (| struct (&
-         fields
-          (array-update fields index (& name (.name field) value new-value))
-         focus focus)))
-      (yield-focus new-value)
-       (| update
-        (| struct (&
-         fields
-          (array-update fields index (& name (.name field) value new-value))
-         focus (| at-value index)))))))))
- struct-color green
- struct-render-singleline (\ (code-render-singleline state space-allowed)
-  (maybe-render-parenthesized (not space-allowed) struct-color
-   (row ([]
-    (maybe-render-cursor (% (.focus state) at-start true _ false)
-     (text "&" struct-color))
-    (row
-     (array-map-indexed (.fields state) (\ (index field)
-      (row ([]
-       (empty-box 5. 0.)
-       (maybe-render-cursor (% (.focus state) (at-name i) (= i index) _ false)
-        (text (.name field) struct-color))
-       (empty-box 5. 0.)
-       (maybe-render-cursor (% (.focus state) (at-value i) (= i index) _ false)
-        (code-render-singleline (.value field) false)))))))))))
- struct-render (\ (code-render code-render-singleline state width)
-  (row ([]
-   (sized-box 10. 10. (text "&" struct-color))
-   (column
-    (array-map (.fields state) (\ (field) (:
-     name (text (.name field) struct-color)
-     singleline
-      (row ([]
-       name
-       (empty-box 5. 0.)
-       (code-render-singleline (.value field) false)))
-     (if (f<= (.width singleline) (f- width 10.))
-      singleline
-      (column ([]
-       name
-       (empty-box 0. 2.)
-       (code-render (.value field) (f- width 20.))))))))))))
-
  new-array (\ (items) (| array (& items items focus (| outside))))
  array-focus (\ (state)
   (| array (&
@@ -1737,9 +1827,9 @@
      (% event
       (pressed-key key)
        (cond
-        (key-up? key)
+        (action-up? key)
          (| yield-focus (| array (& items items focus (| outside))))
-        (key-right? key)
+        (action-right? key)
          (if (= (array-length items) 0)
           (| no-change)
           (| update (| array (& items items focus (| at 0)))))
@@ -1754,28 +1844,28 @@
      (% event
       (pressed-key key)
        (cond
-        (key-up? key)
+        (action-up? key)
          (| yield-focus (| array (& items items focus (| outside))))
-        (key-left? key)
+        (action-left? key)
          (if (= index 0)
           (| update (| array (& items items focus (| at-start))))
           (| update (| array (& items items focus (| at (- index 1))))))
-        (key-right? key)
+        (action-right? key)
          (if (= index (- (array-length items) 1))
           (| no-change)
           (| update (| array (& items items focus (| at (+ index 1))))))
-        (key-down? key)
+        (action-down? key)
          (| update
           (| array (&
            items (array-update items index (code-focus (array-get items index)))
            focus (| in index))))
-        (key-backspace? key)
+        (action-remove? key)
          (| update
           (| array
            (&
             items (array-remove items index)
             focus (if (= index 0) (| at-start) (| at (- index 1))))))
-        (key-delete? key)
+        (action-delete? key)
          (| update
           (| array
            (&
@@ -1784,14 +1874,14 @@
              (if (= index (- (array-length items) 1))
               (if (= index 0) (| at-start) (| at (- index 1)))
               (| at index)))))
-        (key-alt-left? key)
+        (action-swap-left? key)
          (if (= index 0)
           (| no-change)
           (| update
            (| array (&
             items (array-swap items index (- index 1))
             focus (| at (- index 1))))))
-        (key-alt-right? key)
+        (action-swap-right? key)
          (if (= index (- (array-length items) 1))
           (| no-change)
           (| update
@@ -1817,7 +1907,13 @@
       (yield-focus new-item)
        (| update
         (| array
-         (& items (array-update items index new-item) focus (| at index))))))))
+         (& items (array-update items index new-item) focus (| at index))))
+      delete
+       (| update
+        (| array
+         (&
+          items (array-remove items index)
+          focus (if (= index 0) (| at-start) (| at (- index 1))))))))))
  array-color red
  array-render-singleline (\ (code-render-singleline state space-allowed)
   (maybe-render-parenthesized (not space-allowed) array-color
@@ -1847,19 +1943,111 @@
   (| function (& arguments arguments body body focus (| outside))))
  function-focus (\ (state)
   (| function
-   (& arguments (.arguments state) body (.body state) focus (| at-arguments))))
- function-handle (\ (code-focus code-handle state event)
+   (& arguments (.arguments state) body (.body state) focus (| at-start))))
+ function-handle (\ (code-handle state event)
   (:
    arguments (.arguments state)
    body (.body state)
    focus (.focus state)
-   (| no-change)))
+   (% focus
+    at-start
+     (% event
+      (pressed-key key)
+       (cond
+        (action-up? key)
+         (| yield-focus
+          (| function (& arguments arguments body body focus (| outside))))
+        (action-right? key)
+         (if (= (array-length arguments) 0)
+          (| update
+           (| function (& arguments arguments body body focus (| at-body))))
+          (| update
+           (| function
+            (& arguments arguments body body focus (| at-argument 0)))))
+        else (| no-change))
+      char (| no-change))
+    (at-argument index)
+     (% event
+      (pressed-key key)
+       (cond
+        (action-up? key)
+         (| yield-focus
+          (| function (& arguments arguments body body focus (| outside))))
+        (action-down? key)
+         (| update
+          (| function
+           (& arguments arguments body body focus (| in-argument index))))
+        (action-left? key)
+         (| update
+          (| function (&
+           arguments arguments
+           body body
+           focus (if (= index 0) (| at-start) (| at-argument (- index 1))))))
+        (action-right? key)
+         (| update
+          (| function (&
+           arguments arguments
+           body body
+           focus
+            (if (= index (- (array-length arguments) 1))
+             (| at-body)
+             (| at-argument (+ index 1))))))
+        else (| no-change))
+      char (| no-change))
+    at-body
+     (% event
+      (pressed-key key)
+       (cond
+        (action-up? key)
+         (| yield-focus
+          (| function (& arguments arguments body body focus (| outside))))
+        (action-down? key)
+         (| update
+          (| function
+           (& arguments arguments body body focus (| in-body))))
+        (action-left? key)
+         (| update
+          (| function (&
+           arguments arguments
+           body body
+           focus
+            (if (= (array-length arguments) 0)
+             (| at-start)
+             (| at-argument (- (array-length arguments) 1))))))
+        else (| no-change))
+      char (| no-change))
+    (in-argument index)
+     (% (identifier-handle (array-get arguments index) event)
+      (yield-focus argument)
+       (| update
+        (| function (&
+         arguments (array-update arguments index argument)
+         body body
+         focus (| at-argument index))))
+      (update argument)
+       (| update
+        (| function (&
+         arguments (array-update arguments index argument)
+         body body
+         focus (| in-argument index)))))
+    in-body
+     (% (code-handle body)
+      no-change (| no-change)
+      (update new-body)
+       (| update
+        (| function (& arguments arguments body new-body focus focus)))
+      (yield-focus new-body)
+       (| update
+        (| function (&
+         arguments arguments
+         body (| some new-body)
+         focus (| at-body)))))
+    )))
  function-color purple
  function-render-singleline (\ (code-render-singleline state space-allowed)
   (maybe-render-parenthesized (not space-allowed) function-color
    (row ([]
-    (maybe-render-cursor (% (.focus state) at-start true _ false)
-     (text "\\" function-color))
+    (text "\\" (% (.focus state) at-start cursor-color _ function-color))
     (row
      (array-map-indexed (.arguments state) (\ (index argument)
       (row ([]
@@ -1868,12 +2056,12 @@
         (% (.focus state) (at-argument i) (= i index) _ false)
         (text argument function-color)))))))
     (empty-box 5. 0.)
-    (code-render-singleline (.body state) false)))))
+    (maybe-render-cursor (% (.focus state) at-body true _ false)
+     (code-render-singleline (.body state) false))))))
  function-render (\ (code-render state width)
   (column ([]
    (row ([]
-    (maybe-render-cursor (% (.focus state) at-start true _ false)
-     (text "\\" function-color))
+    (text "\\" (% (.focus state) at-start cursor-color _ function-color))
     (row
      (array-map-indexed (.arguments state) (\ (index argument)
       (row ([]
@@ -1881,7 +2069,10 @@
        (maybe-render-cursor
         (% (.focus state) (at-argument i) (= i index) _ false)
         (text argument function-color)))))))))
-   (row ([] (empty-box 10. 0.) (code-render (.body state) (f- width 10.)))))))
+   (row ([]
+    (empty-box 10. 0.)
+    (maybe-render-cursor (% (.focus state) at-body true _ false)
+     (code-render (.body state) (f- width 10.))))))))
 
  new-call (\ (function arguments)
   (| call (& function function arguments arguments focus (| outside))))
@@ -1901,10 +2092,10 @@
      (% event
       (pressed-key key)
        (cond
-        (key-up? key)
+        (action-up? key)
          (| yield-focus
           (| call (& function function arguments arguments focus (| outside))))
-        (key-right? key)
+        (action-right? key)
          (if (= (array-length arguments) 0)
           (| no-change)
           (| update
@@ -1923,10 +2114,10 @@
      (% event
       (pressed-key key)
        (cond
-        (key-up? key)
+        (action-up? key)
          (| yield-focus
           (| call (& function function arguments arguments focus (| outside))))
-        (key-left? key)
+        (action-left? key)
          (if (= index 0)
           (| update
            (| call
@@ -1936,7 +2127,7 @@
             function function
             arguments arguments
             focus (| at-argument (- index 1))))))
-        (key-right? key)
+        (action-right? key)
          (if (= index (- (array-length arguments) 1))
           (| no-change)
           (| update
@@ -1944,7 +2135,7 @@
             function function
             arguments arguments
             focus (| at-argument (+ index 1))))))
-        (key-down? key)
+        (action-down? key)
          (| update
           (| call (&
            function function
@@ -1954,13 +2145,13 @@
              index
              (code-focus (array-get arguments index)))
            focus (| in-argument index))))
-        (key-backspace? key)
+        (action-remove? key)
          (| update
           (| call (&
            function function
            arguments (array-remove arguments index)
            focus (if (= index 0) (| at-function) (| at-argument (- index 1))))))
-        (key-delete? key)
+        (action-delete? key)
          (| update
           (| call (&
            function function
@@ -1969,7 +2160,7 @@
             (if (= index (- (array-length arguments) 1))
              (if (= index 0) (| at-function) (| at-argument (- index 1)))
              (| at-argument index)))))
-        (key-alt-left? key)
+        (action-swap-left? key)
          (if (= index 0)
           (| no-change)
           (| update
@@ -1977,7 +2168,7 @@
             function function
             arguments (array-swap arguments index (- index 1))
             focus (| at-argument (- index 1))))))
-        (key-alt-right? key)
+        (action-swap-right? key)
          (if (= index (- (array-length arguments) 1))
           (| no-change)
           (| update
@@ -2062,30 +2253,33 @@
  code-focus (\ (code)
   (rec code (\ (focus code)
    (% code
+    (hole state) (hole-focus state)
     (name state) (name-focus state)
     (int state) (int-focus state)
     (struct state) (struct-focus state)
     (enum state) (enum-focus state)
     (array state) (array-focus state)
     (folded state) (folded-focus focus state)
-    (function state) (function-focus focus state)
+    (function state) (function-focus state)
     (call state) (call-focus focus state)
     _ (crash (| todo-focus code))))))
  code-handle (\ (code event)
   (rec code (\ (handle code)
    (% code
+    (hole state) (hole-handle state event)
     (root state) (root-handle code-focus handle state event)
     (name state) (name-handle state event)
     (int state) (int-handle state event)
     (struct state) (struct-handle code-focus handle state event)
     (enum state) (enum-handle code-focus handle state event)
     (array state) (array-handle code-focus handle state event)
-    (function state) (function-handle code-focus handle state event)
+    (function state) (function-handle handle state event)
     (call state) (call-handle code-focus handle state event)
     _ (crash (| todo-handle code))))))
  code-render-singleline (\ (code space-allowed)
   (rec-2 code space-allowed (\ (render code space-allowed)
    (% code
+    (hole state) (hole-render-singleline state)
     (root state) (empty-box 100000000. 0.)
     (name state) (name-render-singleline state)
     (int state) (int-render-singleline state)
@@ -2103,6 +2297,7 @@
     (if (f<= (.width singleline) width)
      singleline
      (% code
+      (hole state) (hole-render state)
       (root state) (root-render render state width)
       (name state) (name-render state)
       (int state) (int-render state)
@@ -2164,13 +2359,13 @@
       (% event
        (pressed-key key)
         (cond
-         (key-left? key)
+         (action-left? key)
           (if (= index 0) state (& defs defs focus (| overview (- index 1))))
-         (key-right? key)
+         (action-right? key)
           (if (= index (- (array-length defs) 1))
            state
            (& defs defs focus (| overview (+ index 1))))
-         (key-down? key) (:
+         (action-down? key) (:
           def (array-get defs index)
           (&
            defs defs
@@ -2186,8 +2381,9 @@
       def (.def s)
       (% (code-handle def event)
        no-change state
-       (update def) (& defs defs focus (| in-def (& index index def def)))))
-     )))))
+       (update def) (& defs defs focus (| in-def (& index index def def)))
+       (done def) (& defs defs focus (| overview index))
+       )))))))
 
  notes-app (\ (notes)
   (make-app
