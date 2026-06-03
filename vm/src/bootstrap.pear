@@ -1625,40 +1625,36 @@
           (| no-change)
           (| update
            (| struct (&
-            fields
+            fields (:
+             a-i (- index 1)
+             b-i index
+             a (array-get fields a-i)
+             b (array-get fields b-i)
              (array-map-indexed
               fields
               (\ (i field)
                (cond
-                (= i index)
-                 (&
-                  name (.name field)
-                  value (.value (array-get fields (- index 1))))
-                (= i (- index 1))
-                 (&
-                  name (.name field)
-                  value (.value (array-get fields index)))
-                else field)))
+                (= i a-i) (& name (.name a) value (.value b))
+                (= i b-i) (& name (.name b) value (.value a))
+                else field))))
             focus (| at-value (- index 1))))))
         (action-swap-right? key)
          (if (= index (- (array-length fields) 1))
           (| no-change)
           (| update
            (| struct (&
-            fields
+            fields (:
+             a-i index
+             b-i (+ index 1)
+             a (array-get fields a-i)
+             b (array-get fields b-i)
              (array-map-indexed
               fields
               (\ (i field)
                (cond
-                (= i index)
-                 (&
-                  name (.name field)
-                  value (.value (array-get fields (+ index 1))))
-                (= i (+ index 1))
-                 (&
-                  name (.name field)
-                  value (.value (array-get fields index)))
-                else field)))
+                (= i a-i) (& name (.name a) value (.value b))
+                (= i b-i) (& name (.name b) value (.value a))
+                else field))))
             focus (| at-value (+ index 1))))))
         (action-remove? key)
          (| update
@@ -1997,7 +1993,7 @@
   (| function (& arguments arguments body body focus (| outside))))
  function-focus (\ (state)
   (| function
-   (& arguments (.arguments state) body (.body state) focus (| at-start))))
+   (& arguments (.arguments state) body (.body state) focus (| at-body))))
  function-handle (\ (code-handle state event)
   (:
    arguments (.arguments state)
@@ -2019,7 +2015,14 @@
            (| function
             (& arguments arguments body body focus (| at-argument 0)))))
         else (| no-change))
-      char (| no-change))
+      (char char)
+       (if (is-identifier-char? char)
+        (| update
+         (| function (&
+          arguments (array-insert arguments 0 char)
+          body body
+          focus (| in-argument 0))))
+        (| no-change)))
     (at-argument index)
      (% event
       (pressed-key key)
@@ -2046,8 +2049,46 @@
             (if (= index (- (array-length arguments) 1))
              (| at-body)
              (| at-argument (+ index 1))))))
+        (action-swap-left? key)
+         (if (= index 0)
+          (| no-change)
+          (| update
+           (| function (&
+            arguments (array-swap arguments index (- index 1))
+            body body
+            focus (| at-argument (- index 1))))))
+        (action-swap-right? key)
+         (if (= index (- (array-length arguments) 1))
+          (| no-change)
+          (| update
+           (| function (&
+            arguments (array-swap arguments index (+ index 1))
+            body body
+            focus (| at-argument (+ index 1))))))
+        (action-remove? key)
+         (| update
+          (| function (&
+           arguments (array-remove arguments index)
+           body body
+           focus (if (= index 0) (| at-start) (| at-argument (- index 1))))))
+        (action-delete? key)
+         (| update
+          (| function (&
+           arguments (array-remove arguments index)
+           body body
+           focus
+            (if (= index (- (array-length arguments) 1))
+             (if (= index 0) (| at-start) (| at-argument (- index 1)))
+             (| at-argument index)))))
         else (| no-change))
-      char (| no-change))
+      (char char)
+       (if (is-identifier-char? char)
+        (| update
+         (| function (&
+          arguments (array-insert arguments (+ index 1) char)
+          body body
+          focus (| in-argument (+ index 1)))))
+        (| no-change)))
     at-body
      (% event
       (pressed-key key)
@@ -2080,10 +2121,16 @@
          focus (| at-argument index))))
       (update argument)
        (| update
-        (| function (&
-         arguments (array-update arguments index argument)
-         body body
-         focus (| in-argument index)))))
+        (| function
+         (if (= argument "")
+          (&
+           arguments (array-remove arguments index)
+           body body
+           focus (if (= index 0) (| at-start) (| at-argument (- index 1))))
+          (&
+           arguments (array-update arguments index argument)
+           body body
+           focus (| in-argument index))))))
     in-body
      (% (code-handle body)
       no-change (| no-change)
@@ -2108,7 +2155,9 @@
        (empty-box 5. 0.)
        (maybe-render-cursor
         (% (.focus state) (at-argument i) (= i index) _ false)
-        (text argument function-color)))))))
+        (maybe-render-trailing-cursor
+         (% (.focus state) (in-argument i) (= i index) _ false)
+         (text argument function-color))))))))
     (empty-box 5. 0.)
     (maybe-render-cursor (% (.focus state) at-body true _ false)
      (code-render-singleline (.body state) false))))))
@@ -2122,7 +2171,9 @@
        (empty-box 5. 0.)
        (maybe-render-cursor
         (% (.focus state) (at-argument i) (= i index) _ false)
-        (text argument function-color)))))))))
+        (maybe-render-trailing-cursor
+         (% (.focus state) (in-argument i) (= i index) _ false)
+         (text argument function-color))))))))))
    (row ([]
     (empty-box 10. 0.)
     (maybe-render-cursor (% (.focus state) at-body true _ false)
