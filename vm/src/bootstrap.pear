@@ -129,7 +129,7 @@
     (more m) (| more (& item (.item m) rest (rec (.rest m)))))))))
  concat-3 (\ (a b c) (concat a (concat b c)))
  concat-4 (\ (a b c d) (concat a (concat-3 b c d)))
- concat-5 (\ (a b c d) (concat a (concat-4 b c d e)))
+ concat-5 (\ (a b c d e) (concat a (concat-4 b c d e)))
  take (\ (iter n)
   (rec-2 iter n (\ (rec iter n)
    (\ () (if (= n 0)
@@ -2563,6 +2563,16 @@
        (% (.payload state)
         none (| none)
         (some payload) (| some (rec payload)))))
+    (function state)
+     (| function
+      (& arguments (.arguments state) body (rec (.body state))))
+    (call state)
+     (| call (&
+      function (rec (.function state))
+      arguments
+       (iter->array (map
+        (array->iter (.arguments state))
+        (\ (argument) (rec argument))))))
     _ (crash (| todo-tear-down state))
     ))))
  editor-app (&
@@ -2589,43 +2599,43 @@
       (some i) (array-remove defs i))
     _ defs))
   handle (\ (state event)
-   (&
-    state (:
-     defs (.defs state)
-     focus (.focus state)
-     (% focus
-      (overview index)
-       (% event
-        (pressed-key key)
-         (cond
-          (action-left? key)
+   (:
+    defs (.defs state)
+    focus (.focus state)
+    (% focus
+     (overview index)
+      (% event
+       (pressed-key key)
+        (cond
+         (action-left? key)
+          (& state
            (if (= index 0) state (& defs defs focus (| overview (- index 1))))
-          (action-right? key)
+           action (| none))
+         (action-right? key)
+          (& state
            (if (= index (- (array-length defs) 1))
             state
             (& defs defs focus (| overview (+ index 1))))
-          (action-down? key) (:
-           def (array-get defs index)
-           (&
-            defs defs
-            focus
-             (| in-def (&
-              index index
-              def (create-editor-state def)))))
-          else state)
-        _ state)
-      (in-def s) (:
-       index (.index s)
-       def (.def s)
-       (% (code-handle def event)
-        no-change state
-        (update def) (& defs defs focus (| in-def (& index index def def)))
-        (done def)
-         (&
-          defs (array-update defs index (tear-down-editor-state def))
-          focus (| overview index))
-        ))))
-    action (| none)))
+           action (| none))
+         (action-down? key) (:
+          def (array-get defs index)
+          (& state
+           (& defs defs focus (| in-def (& index index def (create-editor-state def))))
+           action (| none)))
+         else (& state state action (| none)))
+       _ (& state state action (| none)))
+     (in-def s) (:
+      index (.index s)
+      def (.def s)
+      (% (code-handle def event)
+       no-change (& state state action (| none))
+       (update def)
+        (& state (& defs defs focus (| in-def (& index index def def))) action (| none))
+       (done def) (:
+        torn-down (tear-down-editor-state def)
+        (& state
+         (& defs (array-update defs index torn-down) focus (| overview index))
+         action (| some (| update torn-down)))))))))
   render
    (\ (state size) (:
     defs (.defs state)
