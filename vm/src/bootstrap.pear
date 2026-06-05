@@ -2575,22 +2575,35 @@
         (\ (argument) (rec argument))))))
     _ (crash (| todo-tear-down state))
     ))))
+
+ def-name-free? (\ (defs name)
+  (not (any (array->iter defs) (\ (def) (= (.name def) name)))))
+ unique-def-name (\ (defs base)
+  (if (def-name-free? defs base)
+   base
+   (rec 1 (\ (rec i)
+    (:
+     candidate (string-concat base (string-concat "-" (int->string i)))
+     (if (def-name-free? defs candidate) candidate (rec (+ i 1))))))))
+
  editor-app (&
   create (\ (defs) (& defs defs focus (| overview 0)))
   apply (\ (defs action)
    (% action
-    (new args) (:
+    (insert args) (:
      name (.name args)
      after (.after args)
      code (.code args)
-     index (% (find-index (array->iter defs) (\ (def) (= (.name def) after)))
-            none 0
-            (some i) (+ i 1))
+     index
+      (% (find-index (array->iter defs) (\ (def) (= (.name def) after)))
+       none (array-length defs)
+       (some i) (+ i 1))
      (array-insert defs index (& name name code code)))
     (update args) (:
+     original-name (.original-name args)
      name (.name args)
      code (.code args)
-     (% (find-index (array->iter defs) (\ (def) (= (.name def) name)))
+     (% (find-index (array->iter defs) (\ (def) (= (.name def) original-name)))
       none defs
       (some i) (array-update defs i (& name name code code))))
     (remove name)
@@ -2619,23 +2632,68 @@
            action (| none))
          (action-down? key) (:
           def (array-get defs index)
-          (& state
-           (& defs defs focus (| in-def (& index index def (create-editor-state def))))
+          (&
+           state (&
+            defs defs
+            focus
+             (| in-def
+              (& index index name (.name def) def (create-editor-state def))))
            action (| none)))
+         (action-new? key) (:
+          after (.name (array-get defs index))
+          name (unique-def-name defs "new")
+          code (| struct ([]))
+          def (& name name code code)
+          (&
+           state (&
+            defs (array-insert defs (+ index 1) def)
+            focus
+             (| in-def
+              (& index (+ index 1) name name def (create-editor-state def))))
+           action (| some (| insert (& name name after after code code)))))
+         (action-remove? key)
+          (if (= (array-length defs) 1)
+           (& state state action (| none))
+           (:
+            name (.name (array-get defs index))
+            new-defs (array-remove defs index)
+            new-index (max 0 (min (- index 1) (- (array-length new-defs) 1)))
+            (&
+             state (& defs new-defs focus (| overview new-index))
+             action (| some (| remove name)))))
          else (& state state action (| none)))
        _ (& state state action (| none)))
      (in-def s) (:
       index (.index s)
+      name (.name s)
       def (.def s)
-      (% (code-handle def event)
-       no-change (& state state action (| none))
-       (update def)
-        (& state (& defs defs focus (| in-def (& index index def def))) action (| none))
-       (done def) (:
-        torn-down (tear-down-editor-state def)
-        (& state
-         (& defs (array-update defs index torn-down) focus (| overview index))
-         action (| some (| update torn-down)))))))))
+      forward-to-code (% event new-state false _ true)
+      (if forward-to-code
+       (% (code-handle def event)
+        no-change (& state state action (| none))
+        (update def)
+         (& state
+          (& defs defs focus (| in-def (& index index name name def def)))
+          action (| none))
+        (done def) (:
+         torn-down (tear-down-editor-state def)
+         new-name (.name torn-down)
+         (if
+          (or
+           (= new-name "")
+           (% (find-index (array->iter defs) (\ (def) (= (.name def) new-name)))
+             none false
+             (some i) (!= i index)))
+          (& state state action (| none))
+          (& state
+           (& defs (array-update defs index torn-down) focus (| overview index))
+           action
+            (| some
+             (| update (&
+              original-name name
+              name new-name
+              code (.code torn-down))))))))
+       (& state state action (| none)))))))
   render
    (\ (state size) (:
     defs (.defs state)

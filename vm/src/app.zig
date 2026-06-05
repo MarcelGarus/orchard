@@ -74,6 +74,8 @@ const FileStore = struct {
     }
     fn add_action(self: *@This(), ally: Ally, io: Io, vm: anytype, action: Value) !void {
         self.state = try self.apply.call(vm, &.{ self.state, action });
+        std.debug.print("Action: {f}\n", .{action});
+        std.debug.print("global state: {f}\n", .{self.state});
 
         const out = try std.Io.Dir.cwd().createFile(io, self.path, .{});
         var out_buf: [1000]u8 = undefined;
