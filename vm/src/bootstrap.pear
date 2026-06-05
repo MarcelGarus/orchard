@@ -20,6 +20,10 @@
   (:
    rec (\ (rec a b c) (function (\ (a b c) (rec rec a b c)) a b c))
    (rec rec a b c)))
+ rec-4 (\ (a b c d function)
+  (:
+   rec (\ (rec a b c d) (function (\ (a b c d) (rec rec a b c d)) a b c d))
+   (rec rec a b c d)))
 
  true (| true)
  false (| false)
@@ -591,6 +595,30 @@
    width (fold (map (array->iter children) (\ (child) (.width child))) 0. f-max)
    height (fold (map (array->iter children) (\ (child) (.height child))) 0. f-max)
    ))
+
+ flow (\ (max-width children)
+  (:
+   res
+    (rec-4 (array->list children) 0. 0. 0. (\ (rec items x y line-height)
+     (% items
+      empty (& draws (| empty) bottom (f+ y line-height))
+      (more m) (:
+       child (.item m)
+       wrap? (and (f> x 0.) (f> (f+ x (.width child)) max-width))
+       x (if wrap? 0. x)
+       y (if wrap? (f+ y line-height) y)
+       line-height (if wrap? (.height child) (f-max line-height (.height child)))
+       rest (rec (.rest m) (f+ x (.width child)) y line-height)
+       (&
+        draws
+         (| more (&
+          item (| translate (& by (& x x y y) what (.draw child)))
+          rest (.draws rest)))
+        bottom (.bottom rest))))))
+   (&
+    draw (| all (list->array (.draws res)))
+    width max-width
+    height (.bottom res))))
 
  parse-pixels (\ (width string)
   (:
@@ -2718,18 +2746,17 @@
     (% focus
      (overview index)
       (.draw
-       (column
-        (iter->array
-         (concat
-          (array->iter ([]
-           (colored orchard-color
-            (sized-box (.width size) (f+ line-height 4.)
-             (padding 2. (text "Orchard" white))))))
+       (column ([]
+        (colored orchard-color
+         (sized-box (.width size) (f+ line-height 4.)
+          (padding 2. (text "Orchard" white))))
+        (flow (.width size)
+         (iter->array
           (map-indexed
            (array->iter defs)
            (\ (i def)
             (padding 2.
-             (text (.name def) (if (= i index) orchard-color black)))))))))
+             (text (.name def) (if (= i index) orchard-color black))))))))))
      (in-def state)
       (.draw (padding 2. (code-render (.def state) (f- (.width size) 4.)))))))
   )
