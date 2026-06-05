@@ -43,7 +43,7 @@ pub fn new_int(heap: *Heap, value: i64) !Value {
     return .{ .obj = int_obj };
 }
 
-pub fn get_int(self: Value) i64 {
+pub fn int(self: Value) i64 {
     std.debug.assert(self.kind() == .int);
     return @bitCast(self.obj.child(1).word(0));
 }
@@ -58,21 +58,21 @@ pub fn new_float(heap: *Heap, value: f64) !Value {
     return .{ .obj = float_obj };
 }
 
-pub fn get_float(self: Value) f64 {
+pub fn float(self: Value) f64 {
     std.debug.assert(self.kind() == .float);
     return @bitCast(self.obj.child(1).word(0));
 }
 
 // String stuff.
 
-pub fn new_string(heap: *Heap, string: []const u8) !Value {
+pub fn new_string(heap: *Heap, string_: []const u8) !Value {
     const string_symbol = try heap.new_symbol("string");
     const ty = try heap.new_inner(&.{string_symbol});
-    const symbol = try heap.new_symbol(string);
+    const symbol = try heap.new_symbol(string_);
     return .{ .obj = try heap.new_inner(&.{ ty, symbol }) };
 }
 
-pub fn get_string(self: Value) []const u8 {
+pub fn string(self: Value) []const u8 {
     std.debug.assert(self.kind() == .string);
     return Heap.get_symbol(self.obj.child(1));
 }
@@ -103,74 +103,106 @@ pub fn new_struct(heap: *Heap, data: anytype) !Value {
     return Value{ .obj = val };
 }
 
-pub fn get_field(self: Value, name: []const u8) Value {
+pub fn field(self: Value, name: []const u8) Value {
     std.debug.assert(self.kind() == .struct_);
     const ty = self.obj.child(0).children();
-    for (ty[1..], 1..) |field, i| {
-        if (std.mem.eql(u8, Heap.get_symbol(field), name)) {
+    for (ty[1..], 1..) |field_, i| {
+        if (std.mem.eql(u8, Heap.get_symbol(field_), name)) {
             return Value.from(self.obj.child(i));
         }
     }
     @panic("field");
 }
 
-// Enum stuff.
-
-pub fn new_enum(heap: *Heap, variant: []const u8, payload: Value) !Value {
-    const enum_symbol = try heap.new_symbol("enum");
-    const variant_symbol = try heap.new_symbol(variant);
-    const ty = try heap.new_inner(&.{ enum_symbol, variant_symbol });
-    return Value.from(try heap.new_inner(&.{ ty, payload.obj }));
+pub fn new_nil(heap: *Heap) !Value {
+    return try Value.new_struct(heap, .{});
 }
 
-pub fn get_variant(self: Value) []const u8 {
+// Enum stuff.
+
+pub fn new_enum(heap: *Heap, variant_: []const u8, payload_: Value) !Value {
+    const enum_symbol = try heap.new_symbol("enum");
+    const variant_symbol = try heap.new_symbol(variant_);
+    const ty = try heap.new_inner(&.{ enum_symbol, variant_symbol });
+    return Value.from(try heap.new_inner(&.{ ty, payload_.obj }));
+}
+
+pub fn variant(self: Value) []const u8 {
     std.debug.assert(self.kind() == .enum_);
     return Heap.get_symbol(self.obj.child(0).child(1));
 }
-pub fn get_payload(self: Value) Value {
+pub fn payload(self: Value) Value {
     std.debug.assert(self.kind() == .enum_);
     return .{ .obj = self.obj.child(1) };
 }
 
+pub fn new_bool(heap: *Heap, b: bool) !Value {
+    return try Value.new_enum(
+        heap,
+        if (b) "true" else "false",
+        try Value.new_nil(heap),
+    );
+}
+pub fn bool_(self: Value) bool {
+    const variant_ = self.variant();
+    if (std.mem.eql(u8, variant_, "true")) return true;
+    if (std.mem.eql(u8, variant_, "false")) return false;
+    @panic("not a bool");
+}
+
+pub fn new_option(heap: *Heap, option_: ?Value) !Value {
+    if (option_) |payload_| {
+        return try Value.new_enum(heap, "some", payload_);
+    } else {
+        return try Value.new_enum(heap, "none", try Value.new_nil(heap));
+    }
+}
+pub fn option(self: Value) ?Value {
+    const variant_ = self.variant();
+    if (std.mem.eql(u8, variant_, "some")) return self.payload();
+    if (std.mem.eql(u8, variant_, "none")) return null;
+    @panic("not an option");
+}
+
 // Array stuff.
 
-pub fn get_items(self: Value) []const Value {
+pub fn items(self: Value) []const Value {
     std.debug.assert(self.kind() == .array);
     return @ptrCast(self.obj.children()[1..]);
 }
 
 // Function stuff.
 
-pub fn new_function(heap: *Heap, args: Obj, ir: Obj, compiled: Obj, captured: Obj) !Value {
+pub fn new_function(heap: *Heap, args: Obj, ir_: Obj, compiled: Obj, captured_: Obj) !Value {
     const function_symbol = try heap.new_symbol("function");
     const ty = obj: {
         var b = try heap.build_inner();
         try b.emit(function_symbol);
         try b.emit(args);
-        try b.emit(ir);
+        try b.emit(ir_);
         try b.emit(compiled);
         break :obj b.finish();
     };
-    return try heap.new_inner(&.{ ty, captured });
+    return try heap.new_inner(&.{ ty, captured_ });
 }
-pub fn get_args(self: Value) Obj {
+pub fn arguments(self: Value) Obj {
     return self.obj.child(0).child(1);
 }
-pub fn get_ir(self: Value) Obj {
+pub fn ir(self: Value) Obj {
     return self.obj.child(0).child(2);
 }
-pub fn get_fun(self: Value) Vm.Fun {
+pub fn vm_fun(self: Value) Vm.Fun {
     return Vm.Fun{ .obj = self.obj.child(0).child(3) };
 }
-pub fn get_captured(self: Value) Value {
+pub fn captured(self: Value) Value {
     return Value.from(self.obj.child(1));
 }
 
 pub fn call(function: Value, vm: anytype, args: []const Value) !Value {
     std.debug.assert(function.kind() == .function);
-    std.debug.assert(function.get_args().size() == args.len);
-    const fun = function.get_fun();
-    const closure = function.get_captured().obj;
+    std.debug.assert(function.arguments().size() == args.len);
+    const fun = function.vm_fun();
+    const closure = function.captured().obj;
     const all_args = try vm.ally.alloc(Obj, args.len + 1);
     defer vm.ally.free(all_args);
     for (args, 0..) |arg, i| all_args[i] = arg.obj;
@@ -195,11 +227,11 @@ pub fn format(self: Value, writer: *std.Io.Writer) !void {
 pub fn format_singleline(self: Value, writer: *std.Io.Writer) error{WriteFailed}!void {
     const ty = self.obj.child(0);
     switch (self.kind()) {
-        .int => try writer.print("{d}", .{self.get_int()}),
-        .float => try writer.print("{d}", .{self.get_float()}),
+        .int => try writer.print("{d}", .{self.int()}),
+        .float => try writer.print("{d}", .{self.float()}),
         .string => {
             try writer.print("\"", .{});
-            for (self.get_string()) |byte| {
+            for (self.string()) |byte| {
                 switch (byte) {
                     '\n' => try writer.print("\\n", .{}),
                     32...127 => try writer.print("{c}", .{byte}),
@@ -210,26 +242,26 @@ pub fn format_singleline(self: Value, writer: *std.Io.Writer) error{WriteFailed}
         },
         .struct_ => {
             try writer.print("(&", .{});
-            for (ty.children()[1..], self.obj.children()[1..]) |field_name, field| {
+            for (ty.children()[1..], self.obj.children()[1..]) |field_name, field_| {
                 try writer.print(" {s} ", .{Heap.get_symbol(field_name)});
-                try (Value{ .obj = field }).format_singleline(writer);
+                try (Value{ .obj = field_ }).format_singleline(writer);
             }
             try writer.print(")", .{});
         },
         .enum_ => {
-            try writer.print("(| {s}", .{self.get_variant()});
-            const payload = self.get_payload();
-            if (payload.kind() == .struct_ and payload.obj.size() == 1) {
+            try writer.print("(| {s}", .{self.variant()});
+            const payload_ = self.payload();
+            if (payload_.kind() == .struct_ and payload_.obj.size() == 1) {
                 // The payload is (&), don't print it.
             } else {
                 try writer.print(" ", .{});
-                try payload.format_singleline(writer);
+                try payload_.format_singleline(writer);
             }
             try writer.print(")", .{});
         },
         .array => {
             try writer.print("([]", .{});
-            for (self.get_items()) |item| {
+            for (self.items()) |item| {
                 try writer.print(" ", .{});
                 try item.format_singleline(writer);
             }
@@ -237,7 +269,7 @@ pub fn format_singleline(self: Value, writer: *std.Io.Writer) error{WriteFailed}
         },
         .function => {
             try writer.print("(\\ (", .{});
-            for (self.get_args().children(), 0..) |arg, i| {
+            for (self.arguments().children(), 0..) |arg, i| {
                 if (i > 0) try writer.print(" ", .{});
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
@@ -256,52 +288,52 @@ pub fn format_singleline(self: Value, writer: *std.Io.Writer) error{WriteFailed}
     }
 }
 pub fn format_singleline_code(self: Value, writer: *std.Io.Writer) !void {
-    const variant = self.get_variant();
-    const payload = self.get_payload();
-    if (std.mem.eql(u8, variant, "value")) {
-        try payload.format_singleline(writer);
+    const variant_ = self.variant();
+    const payload_ = self.payload();
+    if (std.mem.eql(u8, variant_, "value")) {
+        try payload_.format_singleline(writer);
         return;
     }
-    if (std.mem.eql(u8, variant, "name")) {
-        try writer.print("{s}", .{payload.get_string()});
+    if (std.mem.eql(u8, variant_, "name")) {
+        try writer.print("{s}", .{payload_.string()});
         return;
     }
-    if (std.mem.eql(u8, variant, "let")) {
-        try writer.print("(: {s} ", .{payload.get_field("name").get_string()});
-        try payload.get_field("definition").format_singleline_code(writer);
+    if (std.mem.eql(u8, variant_, "let")) {
+        try writer.print("(: {s} ", .{payload_.field("name").string()});
+        try payload_.field("definition").format_singleline_code(writer);
         try writer.print(" ", .{});
-        try payload.get_field("body").format_singleline_code(writer);
+        try payload_.field("body").format_singleline_code(writer);
         try writer.print(")", .{});
         return;
     }
-    if (std.mem.eql(u8, variant, "add") or
-        std.mem.eql(u8, variant, "subtract") or
-        std.mem.eql(u8, variant, "multiply") or
-        std.mem.eql(u8, variant, "divide") or
-        std.mem.eql(u8, variant, "modulo") or
-        std.mem.eql(u8, variant, "compare"))
+    if (std.mem.eql(u8, variant_, "add") or
+        std.mem.eql(u8, variant_, "subtract") or
+        std.mem.eql(u8, variant_, "multiply") or
+        std.mem.eql(u8, variant_, "divide") or
+        std.mem.eql(u8, variant_, "modulo") or
+        std.mem.eql(u8, variant_, "compare"))
     {
-        try writer.print("(@{s} ", .{variant});
-        try payload.get_field("left").format_singleline_code(writer);
+        try writer.print("(@{s} ", .{variant_});
+        try payload_.field("left").format_singleline_code(writer);
         try writer.print(" ", .{});
-        try payload.get_field("right").format_singleline_code(writer);
+        try payload_.field("right").format_singleline_code(writer);
         try writer.print(")", .{});
         return;
     }
-    if (std.mem.eql(u8, variant, "struct")) {
+    if (std.mem.eql(u8, variant_, "struct")) {
         try writer.print("(&", .{});
-        for (payload.get_items()) |field| {
-            try writer.print(" {s} ", .{field.get_field("name").get_string()});
-            try field.get_field("value").format_singleline_code(writer);
+        for (payload_.get_items()) |field_| {
+            try writer.print(" {s} ", .{field_.field("name").string()});
+            try field_.field("value").format_singleline_code(writer);
         }
         try writer.print(")", .{});
         return;
     }
-    if (std.mem.eql(u8, variant, "field")) {
-        const of = payload.get_field("of");
-        const name = payload.get_field("name");
-        if (name.kind() == .enum_ and std.mem.eql(u8, name.get_variant(), "value") and name.get_payload().kind() == .string) {
-            try writer.print("(.{s} ", .{name.get_payload().get_string()});
+    if (std.mem.eql(u8, variant_, "field")) {
+        const of = payload_.field("of");
+        const name = payload_.field("name");
+        if (name.kind() == .enum_ and std.mem.eql(u8, name.variant_(), "value") and name.payload().kind() == .string) {
+            try writer.print("(.{s} ", .{name.payload().string()});
             try of.format_singleline_code(writer);
             try writer.print(")", .{});
         } else {
@@ -313,27 +345,27 @@ pub fn format_singleline_code(self: Value, writer: *std.Io.Writer) !void {
         }
         return;
     }
-    if (std.mem.eql(u8, variant, "enum")) {
-        const actual_variant = payload.get_field("variant").get_string();
-        const actual_payload = payload.get_field("payload");
+    if (std.mem.eql(u8, variant_, "enum")) {
+        const actual_variant = payload_.field("variant").string();
+        const actual_payload = payload_.field("payload");
         try writer.print("(| {s} ", .{actual_variant});
         try actual_payload.format_singleline_code(writer);
         try writer.print(")", .{});
         return;
     }
-    if (std.mem.eql(u8, variant, "switch")) {
+    if (std.mem.eql(u8, variant_, "switch")) {
         try writer.print("(% ", .{});
-        try payload.get_field("condition").format_singleline_code(writer);
-        for (payload.get_field("cases").get_items()) |case| {
-            const case_variant = case.get_field("variant").get_string();
-            const binding_val = case.get_field("payload");
+        try payload_.field("condition").format_singleline_code(writer);
+        for (payload_.field("cases").items()) |case| {
+            const case_variant = case.field("variant").string();
+            const binding_val = case.field("payload");
             const binding = bind: {
-                const bind = binding_val.get_variant();
+                const bind = binding_val.variant();
                 if (std.mem.eql(u8, bind, "none")) break :bind null;
-                if (std.mem.eql(u8, bind, "some")) break :bind binding_val.get_payload().get_string();
+                if (std.mem.eql(u8, bind, "some")) break :bind binding_val.payload().string();
                 @panic("invalid IR");
             };
-            const body = case.get_field("body");
+            const body = case.field("body");
             if (binding) |name| {
                 try writer.print(" ({s} {s}) ", .{ case_variant, name });
             } else {
@@ -344,43 +376,43 @@ pub fn format_singleline_code(self: Value, writer: *std.Io.Writer) !void {
         try writer.print(")", .{});
         return;
     }
-    if (std.mem.eql(u8, variant, "make_function")) {
-        const arguments = payload.get_field("arguments");
-        const captured = payload.get_field("captured");
-        const body = payload.get_field("body");
-        if (std.mem.eql(u8, arguments.get_variant(), "value") and std.mem.eql(u8, body.get_variant(), "value")) {
+    if (std.mem.eql(u8, variant_, "make_function")) {
+        const args = payload_.field("arguments");
+        const captured_ = payload_.field("captured");
+        const body = payload_.field("body");
+        if (std.mem.eql(u8, args.variant(), "value") and std.mem.eql(u8, body.variant(), "value")) {
             try writer.print("(\\ (", .{});
-            for (arguments.get_payload().get_items(), 0..) |arg, i| {
+            for (args.payload().items(), 0..) |arg, i| {
                 if (i > 0) try writer.print(" ", .{});
-                try writer.print("{s}", .{arg.get_string()});
+                try writer.print("{s}", .{arg.string()});
             }
             try writer.print(") [", .{});
-            try captured.format_singleline_code(writer);
+            try captured_.format_singleline_code(writer);
             try writer.print("] ", .{});
-            try body.get_payload().format_singleline_code(writer);
+            try body.payload().format_singleline_code(writer);
             try writer.print(")", .{});
         } else {
             try writer.print("(@function ", .{});
-            try arguments.format_singleline_code(writer);
+            try args.format_singleline_code(writer);
             try writer.print(" ", .{});
-            try captured.format_singleline_code(writer);
+            try captured_.format_singleline_code(writer);
             try writer.print(" ", .{});
             try body.format_singleline_code(writer);
             try writer.print(")", .{});
         }
         return;
     }
-    if (std.mem.eql(u8, variant, "call")) {
+    if (std.mem.eql(u8, variant_, "call")) {
         try writer.print("(", .{});
-        try payload.get_field("function").format_singleline_code(writer);
-        for (payload.get_field("arguments").get_items()) |arg| {
+        try payload.field("function").format_singleline_code(writer);
+        for (payload.field("arguments").items()) |arg| {
             try writer.print(" ", .{});
             try arg.format_singleline_code(writer);
         }
         try writer.print(")", .{});
         return;
     }
-    if (std.mem.eql(u8, variant, "crash")) {
+    if (std.mem.eql(u8, variant_, "crash")) {
         try writer.print("(@crash ", .{});
         try payload.format_singleline_code(writer);
         try writer.print(")", .{});
@@ -404,11 +436,11 @@ pub fn format_indented(self: Value, writer: *std.Io.Writer, indentation: usize) 
 
     const ty = self.obj.child(0);
     switch (self.kind()) {
-        .int => try writer.print("{d}", .{self.get_int()}),
-        .float => try writer.print("{d}", .{self.get_float()}),
+        .int => try writer.print("{d}", .{self.int()}),
+        .float => try writer.print("{d}", .{self.float()}),
         .string => {
             try writer.print("\"", .{});
-            for (self.get_string()) |byte| {
+            for (self.string()) |byte| {
                 switch (byte) {
                     '\n' => try writer.print("\\n", .{}),
                     32...127 => try writer.print("{c}", .{byte}),
@@ -436,20 +468,20 @@ pub fn format_indented(self: Value, writer: *std.Io.Writer, indentation: usize) 
             try writer.print(")", .{});
         },
         .enum_ => {
-            try writer.print("(| {s}", .{self.get_variant()});
-            const payload = self.get_payload();
-            if (payload.kind() == .struct_ and payload.obj.size() == 1) {
+            try writer.print("(| {s}", .{self.variant()});
+            const payload_ = self.payload();
+            if (payload_.kind() == .struct_ and payload_.obj.size() == 1) {
                 // The payload is (&), don't print it.
             } else {
                 try writer.print("\n", .{});
                 for (0..indentation + 1) |_| try writer.writeAll(" ");
-                try self.get_payload().format_indented(writer, indentation + 1);
+                try payload_.format_indented(writer, indentation + 1);
             }
             try writer.print(")", .{});
         },
         .array => {
             try writer.print("([]", .{});
-            for (self.get_items()) |item| {
+            for (self.items()) |item| {
                 try writer.print("\n", .{});
                 for (0..indentation + 1) |_| try writer.writeAll(" ");
                 try item.format_indented(writer, indentation + 1);
@@ -458,7 +490,7 @@ pub fn format_indented(self: Value, writer: *std.Io.Writer, indentation: usize) 
         },
         .function => {
             try writer.print("(\\ (", .{});
-            for (self.get_args().children(), 0..) |arg, i| {
+            for (self.arguments().children(), 0..) |arg, i| {
                 if (i > 0) try writer.print(" ", .{});
                 try writer.print("{s}", .{Heap.get_symbol(arg)});
             }
@@ -467,12 +499,12 @@ pub fn format_indented(self: Value, writer: *std.Io.Writer, indentation: usize) 
             // try writer.print("\n", .{});
             // for (0..indentation + 1) |_| try writer.print(" ", .{});
             // try writer.print("[", .{});
-            // try self.get_captured().format_indented(writer, indentation + 1);
+            // try self.captured().format_indented(writer, indentation + 1);
             // try writer.print("]\n", .{});
             // for (0..indentation + 1) |_| try writer.print(" ", .{});
-            // const ir = self.get_ir();
-            // if (ir.size() > 0) {
-            //     try Value.from(ir).format_singleline_code(writer);
+            // const ir_ = self.ir();
+            // if (ir_.size() > 0) {
+            //     try Value.from(ir_).format_singleline_code(writer);
             // } else {
             //     try writer.print("...", .{});
             // }

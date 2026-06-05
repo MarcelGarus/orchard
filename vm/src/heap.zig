@@ -182,9 +182,9 @@ fn emit(heap: *Heap, word: Word) !void {
 }
 
 pub fn build_leaf(heap: *Heap) !LeafObjBuilder {
-    const start = heap.used;
+    const address = heap.used;
     try heap.emit(@bitCast(Header{ .num_words = 0, .is_inner = 0 }));
-    return .{ .heap = heap, .start = start, .num_words = 0 };
+    return .{ .heap = heap, .start = address, .num_words = 0 };
 }
 pub const LeafObjBuilder = struct {
     heap: *Heap,
@@ -208,9 +208,9 @@ pub fn new_leaf(heap: *Heap, words: []const Word) !Obj {
 }
 
 pub fn build_inner(heap: *Heap) !InnerObjBuilder {
-    const start = heap.used;
+    const address = heap.used;
     try heap.emit(@bitCast(Header{ .num_words = 0, .is_inner = 1 }));
-    return .{ .heap = heap, .start = start, .num_words = 0 };
+    return .{ .heap = heap, .start = address, .num_words = 0 };
 }
 pub const InnerObjBuilder = struct {
     heap: *Heap,
@@ -235,6 +235,9 @@ pub fn new_inner(heap: *Heap, objs: []const Obj) !Obj {
 
 pub const Checkpoint = struct { address: Word };
 
+pub fn start(heap: Heap) Checkpoint {
+    return .{ .address = @intFromPtr(heap.memory.ptr) };
+}
 pub fn checkpoint(heap: Heap) Checkpoint {
     return .{ .address = @intFromPtr(heap.memory.ptr) + 8 * heap.used };
 }

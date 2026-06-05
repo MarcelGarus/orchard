@@ -25,20 +25,20 @@ pub const DrawingInstruction = union(enum) {
 
 pub fn parse_position(value: Value) !Position {
     return .{
-        .x = value.get_field("x").get_float(),
-        .y = value.get_field("y").get_float(),
+        .x = value.field("x").float(),
+        .y = value.field("y").float(),
     };
 }
 pub fn parse_color(value: Value) !Color {
     return .{
-        .r = @intCast(value.get_field("r").get_int()),
-        .g = @intCast(value.get_field("g").get_int()),
-        .b = @intCast(value.get_field("b").get_int()),
+        .r = @intCast(value.field("r").int()),
+        .g = @intCast(value.field("g").int()),
+        .b = @intCast(value.field("b").int()),
     };
 }
 pub fn parse_segment(value: Value) !PathSegment {
-    const variant = value.get_variant();
-    const payload = value.get_payload();
+    const variant = value.variant();
+    const payload = value.payload();
     if (std.mem.eql(u8, variant, "move-to")) {
         return .{ .move_to = try parse_position(payload) };
     }
@@ -49,7 +49,7 @@ pub fn parse_segment(value: Value) !PathSegment {
     return error.UnknownPathSegment;
 }
 pub fn parse_path(ally: Ally, value: Value) !Path {
-    const items = value.get_items();
+    const items = value.items();
     var path = try ally.alloc(PathSegment, items.len);
     for (items, 0..) |item, i| {
         path[i] = try parse_segment(item);
@@ -61,28 +61,28 @@ pub fn parse_drawing_instructions_rec(
     instructions: *ArrayList(DrawingInstruction),
     value: Value,
 ) error{ OutOfMemory, UnknownPathSegment }!void {
-    const variant = value.get_variant();
-    const payload = value.get_payload();
+    const variant = value.variant();
+    const payload = value.payload();
     if (std.mem.eql(u8, variant, "nothing")) {
         return;
     }
     if (std.mem.eql(u8, variant, "fill-path")) {
         try instructions.append(ally, .{ .fill_path = .{
-            .path = try parse_path(ally, payload.get_field("path")),
-            .color = try parse_color(payload.get_field("color")),
+            .path = try parse_path(ally, payload.field("path")),
+            .color = try parse_color(payload.field("color")),
         } });
         return;
     }
     if (std.mem.eql(u8, variant, "all")) {
-        for (payload.get_items()) |item| {
+        for (payload.items()) |item| {
             try parse_drawing_instructions_rec(ally, instructions, item);
         }
         return;
     }
     if (std.mem.eql(u8, variant, "translate")) {
-        const by = try parse_position(payload.get_field("by"));
+        const by = try parse_position(payload.field("by"));
         var children = ArrayList(DrawingInstruction).empty;
-        try parse_drawing_instructions_rec(ally, &children, payload.get_field("what"));
+        try parse_drawing_instructions_rec(ally, &children, payload.field("what"));
         try instructions.append(ally, .{ .translate = .{
             .by = by,
             .children = children.items,
