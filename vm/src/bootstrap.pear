@@ -1451,6 +1451,32 @@
     (colored (if focused cursor-color color) (empty-box 5. 5.))))
    (maybe-render-trailing-cursor focused (text identifier color))))
 
+ new-code-node-from-char (\ (char)
+  (:
+   c (ascii-char char)
+   (cond
+    (and (>= c (ascii-char "0")) (<= c (ascii-char "9")))
+     (| some (| int (& int (- c (ascii-char "0")) focus (| inside))))
+    (= char "&") (| some (| struct (& fields ([]) focus (| at-start))))
+    (= char "|")
+     (| some (| enum (& variant "" payload (| none) focus (| in-variant))))
+    (= char "[") (| some (| array (& items ([]) focus (| at-start))))
+    (= char "\\")
+     (| some
+      (| function (&
+       arguments ([])
+       body (| hole (| unfocused))
+       focus (| at-start))))
+    (= char "(")
+     (| some
+      (| call (&
+       function (| hole (| unfocused))
+       arguments ([])
+       focus (| at-function))))
+    (= char " ") (| none)
+    (= char "\n") (| none)
+    else (| some (| name (& name char focus (| inside)))))))
+
  new-root (\ (name code) (| root (& name name code code focus (| at-code))))
  root-handle (\ (code-focus code-handle state event)
   (:
@@ -1478,8 +1504,16 @@
           (| root (& name name code (code-focus code) focus (| in-code))))
         (action-left? key)
          (| update (| root (& name name code code focus (| at-name))))
+        (action-remove? key)
+         (| update (| root (& name name code (| hole (| unfocused)) focus (| at-code))))
         else (| no-change))
-      (char char) (| no-change))
+      (char char)
+       (% code
+        (hole h)
+         (% (new-code-node-from-char char)
+          (some node) (| update (| root (& name name code node focus (| in-code))))
+          none (| no-change))
+        _ (| no-change)))
     in-name
      (% (identifier-handle name event)
       (update name)
@@ -1501,32 +1535,6 @@
    (empty-box 0. 2.)
    (maybe-render-cursor (% (.focus state) at-code true _ false)
     (code-render (.code state) width)))))
-
- new-code-node-from-char (\ (char)
-  (:
-   c (ascii-char char)
-   (cond
-    (and (>= c (ascii-char "0")) (<= c (ascii-char "9")))
-     (| some (| int (& int (- c (ascii-char "0")) focus (| inside))))
-    (= char "&") (| some (| struct (& fields ([]) focus (| at-start))))
-    (= char "|")
-     (| some (| enum (& variant "" payload (| none) focus (| in-variant))))
-    (= char "[") (| some (| array (& items ([]) focus (| at-start))))
-    (= char "\\")
-     (| some
-      (| function (&
-       arguments ([])
-       body (| hole (| unfocused))
-       focus (| at-start))))
-    (= char "(")
-     (| some
-      (| call (&
-       function (| hole (| unfocused))
-       arguments ([])
-       focus (| at-function))))
-    (= char " ") (| none)
-    (= char "\n") (| none)
-    else (| some (| name (& name char focus (| inside)))))))
 
  new-hole (\ () (| hole (| unfocused)))
  hole-focus (\ (state) (| hole (| focused)))
@@ -2181,9 +2189,11 @@
          (| yield-focus
           (| function (& arguments arguments body body focus (| outside))))
         (action-down? key)
-         (| update
-          (| function
-           (& arguments arguments body (code-focus body) focus (| in-body))))
+         (% body
+          (hole h) (| no-change)
+          _ (| update
+             (| function
+              (& arguments arguments body (code-focus body) focus (| in-body)))))
         (action-left? key)
          (| update
           (| function (&
@@ -2194,7 +2204,14 @@
              (| at-start)
              (| at-argument (- (array-length arguments) 1))))))
         else (| no-change))
-      char (| no-change))
+      (char char)
+       (% body
+        (hole h)
+         (% (new-code-node-from-char char)
+          (some node)
+           (| update (| function (& arguments arguments body node focus (| in-body))))
+          none (| no-change))
+        _ (| no-change)))
     (in-argument index)
      (% (identifier-handle (array-get arguments index) event)
       (yield-focus argument)
