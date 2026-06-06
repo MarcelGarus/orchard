@@ -1348,6 +1348,7 @@
  orchard-color (color "#2e6402")
  cursor-color (color "#ffcb10")
  int-color (color "#009ccb")
+ string-color (color "#a86400")
  struct-color (color "#2eae00")
  enum-color (color "#db003e")
  array-color (color "#ff6d1e")
@@ -1507,11 +1508,15 @@
        condition (| hole (| unfocused))
        cases ([])
        focus (| at-condition))))
+    (= char "\"")
+     (| some (| string (& value "" focus (| inside))))
     (= char " ") (| none)
     (= char "\n") (| none)
     else (| some (| name (& name char focus (| inside)))))))
 
  new-root (\ (name code) (| root (& name name code code focus (| at-code))))
+ new-root-in-name (\ (name code)
+  (| root (& name name code code focus (| in-name))))
  root-handle (\ (code-focus code-handle state event)
   (:
    name (.name state)
@@ -1560,7 +1565,11 @@
       (update code)
        (| update (| root (& name name code code focus (| in-code))))
       (yield-focus code)
-       (| update (| root (& name name code code focus (| at-code))))))))
+       (| update (| root (& name name code code focus (| at-code))))
+      delete
+       (| update
+        (| root
+         (& name name code (| hole (| unfocused)) focus (| at-code))))))))
  root-render (\ (code-render state width)
   (column ([]
    (maybe-render-cursor (% (.focus state) at-name true _ false)
@@ -1641,6 +1650,30 @@
    black
    (% (.focus state) inside true outside false)))
  name-render (\ (state) (name-render-singleline state))
+
+ new-string-node (\ (value) (| string (& value value focus (| outside))))
+ string-focus (\ (state) (| string (& value (.value state) focus (| inside))))
+ string-handle (\ (state event)
+  (% (.focus state)
+   outside (| no-change)
+   inside (:
+    value (.value state)
+    (% event
+     (pressed-key key)
+      (if (action-up? key)
+       (| yield-focus (| string (& value value focus (| outside))))
+       (| update
+        (| string (& value (handle-text-edit value event) focus (| inside)))))
+     (char char)
+      (| update
+       (| string (& value (handle-text-edit value event) focus (| inside))))))))
+ string-render-singleline (\ (state)
+  (row ([]
+   (text "\"" string-color)
+   (maybe-render-trailing-cursor (% (.focus state) inside true outside false)
+    (text (.value state) string-color))
+   (text "\"" string-color))))
+ string-render (\ (state) (string-render-singleline state))
 
  new-struct (\ (fields) (| struct (& fields fields focus (| outside))))
  struct-focus (\ (state)
@@ -2839,6 +2872,7 @@
     (hole state) (hole-focus state)
     (name state) (name-focus state)
     (int state) (int-focus state)
+    (string state) (string-focus state)
     (struct state) (struct-focus state)
     (enum state) (enum-focus state)
     (array state) (array-focus state)
@@ -2850,30 +2884,32 @@
  code-handle (\ (code event)
   (rec code (\ (handle code)
    (% code
-    (hole state) (hole-handle state event)
     (root state) (root-handle code-focus handle state event)
+    (hole state) (hole-handle state event)
     (name state) (name-handle state event)
     (int state) (int-handle state event)
+    (string state) (string-handle state event)
     (struct state) (struct-handle code-focus handle state event)
     (enum state) (enum-handle code-focus handle state event)
+    (switch state) (switch-handle code-focus handle state event)
     (array state) (array-handle code-focus handle state event)
     (function state) (function-handle code-focus handle state event)
     (call state) (call-handle code-focus handle state event)
-    (switch state) (switch-handle code-focus handle state event)
     _ (crash (| todo-handle code))))))
  code-render-singleline (\ (code space-allowed)
   (rec-2 code space-allowed (\ (render code space-allowed)
    (% code
-    (hole state) (hole-render-singleline state)
     (root state) (empty-box 100000000. 0.)
+    (hole state) (hole-render-singleline state)
     (name state) (name-render-singleline state)
     (int state) (int-render-singleline state)
+    (string state) (string-render-singleline state)
     (struct state) (struct-render-singleline render state space-allowed)
     (enum state) (enum-render-singleline render state space-allowed)
+    (switch state) (switch-render-singleline render state space-allowed)
     (array state) (array-render-singleline render state space-allowed)
     (function state) (function-render-singleline render state space-allowed)
     (call state) (call-render-singleline render state space-allowed)
-    (switch state) (switch-render-singleline render state space-allowed)
     (folded state) (folded-render-singleline state)
     _ (crash (| todo-render code))))))
  code-render (\ (code width)
@@ -2883,58 +2919,64 @@
     (if (f<= (.width singleline) width)
      singleline
      (% code
-      (hole state) (hole-render state)
       (root state) (root-render render state width)
+      (hole state) (hole-render state)
       (name state) (name-render state)
       (int state) (int-render state)
+      (string state) (string-render state)
       (struct state) (struct-render render code-render-singleline state width)
       (enum state) (enum-render render state width)
+      (switch state) (switch-render render code-render-singleline state width)
       (array state) (array-render render state width)
       (function state) (function-render render state width)
       (call state) (call-render render state width)
-      (switch state) (switch-render render code-render-singleline state width)
       (folded state) (folded-render state)
       _ (crash (| todo-render code))))))))
 
+ create-editor-code-state (\ (code)
+  (rec code (\ (rec code)
+   (% code
+    (hole h) (| hole (| unfocused))
+    (name name) (new-name name)
+    (int int) (new-int int)
+    (string string) (new-string-node string)
+    (struct struct)
+     (new-struct
+      (iter->array (map (array->iter struct) (\ (field)
+       (& name (.name field) value (rec (.value field)))))))
+    (enum enum)
+     (new-enum
+      (.variant enum)
+      (% (.payload enum)
+       none (| none)
+       (some payload) (| some (rec payload))))
+    (switch switch)
+     (new-switch
+      (rec (.condition switch))
+      (iter->array (map (array->iter (.cases switch)) (\ (case)
+       (& variant (.variant case)
+          binding (% (.binding case) none "" (some b) b)
+          body (rec (.body case)))))))
+    (function function)
+     (new-function (.arguments function) (rec (.body function)))
+    (call call)
+     (new-call
+      (rec (.function call))
+      (iter->array (map (array->iter (.arguments call)) (\ (argument) (rec argument)))))
+    _ (crash (| todo code))
+    ))))
  create-editor-state (\ (def)
-  (new-root
-   (.name def)
-   (rec (.code def) (\ (rec code)
-    (% code
-     (name name) (new-name name)
-     (int int) (new-int int)
-     (struct struct)
-      (new-struct
-       (iter->array (map (array->iter struct) (\ (field)
-        (& name (.name field) value (rec (.value field)))))))
-     (function function)
-      (new-function (.arguments function) (rec (.body function)))
-     (call call)
-      (new-call
-       (rec (.function call))
-       (iter->array (map (array->iter (.arguments call)) (\ (argument) (rec argument)))))
-     (switch switch)
-      (new-switch
-       (rec (.condition switch))
-       (iter->array (map (array->iter (.cases switch)) (\ (case)
-        (& variant (.variant case)
-           binding (% (.binding case) none "" (some b) b)
-           body (rec (.body case)))))))
-     (enum enum)
-      (new-enum
-       (.variant enum)
-       (% (.payload enum)
-        none (| none)
-        (some payload) (| some (rec payload))))
-     (hole h) (| hole (| unfocused))
-     _ (crash (| todo code))
-     )))))
+  (new-root (.name def) (create-editor-code-state (.code def))))
+ create-editor-state-in-name (\ (def)
+  (new-root-in-name (.name def) (create-editor-code-state (.code def))))
  tear-down-editor-state (\ (state)
   (rec state (\ (rec state)
    (% state
     (root state) (& name (.name state) code (rec (.code state)))
+    (hole h) (| hole (| unfocused))
     (name state) (| name (.name state))
     (int state) (| int (.int state))
+    (string state) (| string (.value state))
     (struct state)
      (| struct
       (iter->array (map
@@ -2947,16 +2989,6 @@
        (% (.payload state)
         none (| none)
         (some payload) (| some (rec payload)))))
-    (function state)
-     (| function
-      (& arguments (.arguments state) body (rec (.body state))))
-    (call state)
-     (| call (&
-      function (rec (.function state))
-      arguments
-       (iter->array (map
-        (array->iter (.arguments state))
-        (\ (argument) (rec argument))))))
     (switch state)
      (| switch (&
       condition (rec (.condition state))
@@ -2967,7 +2999,16 @@
          (& variant (.variant case)
             binding (if (= (.binding case) "") (| none) (| some (.binding case)))
             body (rec (.body case))))))))
-    (hole h) (| hole (| unfocused))
+    (function state)
+     (| function
+      (& arguments (.arguments state) body (rec (.body state))))
+    (call state)
+     (| call (&
+      function (rec (.function state))
+      arguments
+       (iter->array (map
+        (array->iter (.arguments state))
+        (\ (argument) (rec argument))))))
     _ (crash (| todo-tear-down state))
     ))))
 
@@ -3037,14 +3078,16 @@
          (action-new? key) (:
           after (.name (array-get defs index))
           name (unique-def-name defs "new")
-          code (| struct ([]))
+          code (| hole)
           def (& name name code code)
           (&
            state (&
             defs (array-insert defs (+ index 1) def)
             focus
-             (| in-def
-              (& index (+ index 1) name name def (create-editor-state def))))
+             (| in-def (&
+              index (+ index 1)
+              name name
+              def (create-editor-state-in-name def))))
            action (| some (| insert (& name name after after code code)))))
          (action-remove? key)
           (if (= (array-length defs) 1)
@@ -3106,7 +3149,7 @@
            (array->iter defs)
            (\ (i def)
             (padding 2.
-             (text (.name def) (if (= i index) orchard-color black))))))))))
+             (maybe-render-cursor (= i index) (text (.name def) black))))))))))
      (in-def state)
       (.draw (padding 2. (code-render (.def state) (f- (.width size) 4.)))))))
   )
