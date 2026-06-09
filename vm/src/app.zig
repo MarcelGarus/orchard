@@ -143,6 +143,7 @@ pub fn run(ally: Ally, io: Io, heap: *Heap, vm: anytype, app_: Value, data_file:
                 };
                 std.debug.print("Event: {f}\n", .{pear_event});
                 var result = try app.field("handle").call(vm, &.{ state, pear_event });
+                std.debug.print("Handled: {f}\n", .{result});
                 state = result.field("state");
                 if (result.field("action").option()) |action| {
                     try global.add_action(ally, io, vm, action);

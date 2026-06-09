@@ -3290,239 +3290,162 @@
      (if (def-name-free? defs candidate) candidate (rec (+ i 1))))))))
 
  editor-app (&
-  create (\ (defs) (& defs defs focus (| overview 0)))
-  apply (\ (defs action)
-   (% action
-    (insert args) (:
-     name (.name args)
-     after (.after args)
-     code (.code args)
-     index
-      (% (find-index (array->iter defs) (\ (def) (= (.name def) after)))
-       none (array-length defs)
-       (some i) (+ i 1))
-     (array-insert defs index (& name name code code)))
-    (update args) (:
-     original-name (.original-name args)
-     name (.name args)
-     code (.code args)
-     (% (find-index (array->iter defs) (\ (def) (= (.name def) original-name)))
-      none defs
-      (some i) (array-update defs i (& name name code code))))
-    (remove name)
-     (% (find-index (array->iter defs) (\ (def) (= (.name def) name)))
-      none defs
-      (some i) (array-remove defs i))
-    _ defs))
+  create (\ (data) (& data data focus (| at 0)))
+  apply (\ (data action)
+   data)
   handle (\ (state event)
-   (:
-    defs (.defs state)
-    focus (.focus state)
-    (% focus
-     (overview index)
-      (% event
-       (pressed-key key)
-        (cond
-         (action-left? key)
-          (& state
-           (if (= index 0) state (& defs defs focus (| overview (- index 1))))
-           action (| none))
-         (action-right? key)
-          (& state
-           (if (= index (- (array-length defs) 1))
-            state
-            (& defs defs focus (| overview (+ index 1))))
-           action (| none))
-         (action-down? key) (:
-          def (array-get defs index)
-          (&
-           state (&
-            defs defs
-            focus
-             (| in-def
-              (& index index name (.name def) def (create-editor-state def))))
-           action (| none)))
-         (action-new? key) (:
-          after (.name (array-get defs index))
-          name (unique-def-name defs "new")
-          code (| hole)
-          def (& name name code code)
-          (&
-           state (&
-            defs (array-insert defs (+ index 1) def)
-            focus
-             (| in-def (&
-              index (+ index 1)
-              name name
-              def (create-editor-state-in-name def))))
-           action (| some (| insert (& name name after after code code)))))
-         (action-remove? key)
-          (if (= (array-length defs) 1)
-           (& state state action (| none))
-           (:
-            name (.name (array-get defs index))
-            new-defs (array-remove defs index)
-            new-index (max 0 (min (- index 1) (- (array-length new-defs) 1)))
-            (&
-             state (& defs new-defs focus (| overview new-index))
-             action (| some (| remove name)))))
-         else (& state state action (| none)))
-       _ (& state state action (| none)))
-     (in-def s) (:
-      index (.index s)
-      name (.name s)
-      def (.def s)
-      forward-to-code (% event new-state false _ true)
-      (if forward-to-code
-       (% (code-handle def event)
-        no-change (& state state action (| none))
-        (update def)
-         (& state
-          (& defs defs focus (| in-def (& index index name name def def)))
-          action (| none))
-        (done def) (:
-         torn-down (tear-down-editor-state def)
-         new-name (.name torn-down)
-         (if
-          (or
-           (= new-name "")
-           (% (find-index (array->iter defs) (\ (def) (= (.name def) new-name)))
-             none false
-             (some i) (!= i index)))
-          (& state state action (| none))
-          (& state
-           (& defs (array-update defs index torn-down) focus (| overview index))
-           action
-            (| some
-             (| update (&
-              original-name name
-              name new-name
-              code (.code torn-down))))))))
-       (& state state action (| none)))))))
-  render
-   (\ (state size) (:
-    defs (.defs state)
-    focus (.focus state)
-    (% focus
-     (overview index)
-      (.draw
+   state)
+  render (\ (state size) (:
+   data (.data state)
+   focus (.focus state)
+   (.draw (rec-2 data (.width size) (\ (render data width)
+    (% (@kind data)
+     int (text (int->string data) int-color)
+     string (text data string-color)
+     struct
+      (row ([]
+       (sized-box 10. 10. (text "&" struct-color))
+       (column
+        (iter->array (map-indexed (array->iter (@fields data)) (\ (index field) (:
+         name (text (.name field) struct-color)
+         (column ([]
+          name
+          (empty-box 0. 2.)
+          (row ([]
+           (empty-box 10. 0.)
+           (render (.value field) (f- width 10.)))))))))))))
+     (enum enum)
+      (row ([]
+       (sized-box 10. 10. (text "|" enum-color))
        (column ([]
-        (colored orchard-color
-         (sized-box (.width size) (f+ line-height 4.)
-          (padding 2. (text "Orchard" white))))
-        (flow (.width size)
-         (iter->array
-          (map-indexed
-           (array->iter defs)
-           (\ (i def)
-            (padding 2.
-             (maybe-render-cursor (= i index) (text (.name def) black))))))))))
-     (in-def state)
-      (.draw (padding 2. (code-render (.def state) (f- (.width size) 4.)))))))
-  )
-
- render-part (\ (part width focus)
-  (% part
-   (text string)
-    (padding 2.
-     (% focus
-      (inside cursor) (editable-text string black cursor)
-      outside (text string black)))
-   _ (colored red (text "unknown part" white))))
- render-chapter (\ (title parts focus size)
-  (column ([]
-   (colored orchard-color
-    (sized-box (.width size) (f+ line-height 4.)
-     (padding 2. (text "Orchard" white))))
-   (column
-    (iter->array
-     (map-indexed (array->iter parts) (\ (index part)
-      (maybe-render-cursor (% focus (at i) (= i index) _ false)
-       (render-part part
-        (.width size)
-        (% focus
-         (in args)
-          (if (= (.index args) index) (| inside (.inner args)) (| outside))
-         _ (| outside)))))))))))
- handle (\ (book focus event)
-  (% focus
-   (at i)
-    (% event
-     (pressed-key key)
-      (cond
-       (action-up? key)
-        (&
-         state (& book book focus (if (= i 0) focus (| at (- i 1))))
-         action (| none))
-       (action-down? key)
-        (&
-         state (&
-          book book
-          focus (if (= i (- (array-length book) 1)) focus (| at (+ i 1))))
-         action (| none))
-       (key-enter? key)
-        (&
-         state (&
-          book book
-          focus
-           (% (array-get book i)
-            (text string)
-             (| in (&
-              index i
-              inner (&
-               anchor (string-length string)
-               active (string-length string)
-               desired-x (text-x-offset string 10000. (string-length string)))))
-            _ focus))
-         action (| none))
-       else (& state (& book book focus focus) action (| none)))
-     _ (& book book focus focus))
-   (in f) (:
-    index (.index f)
-    (% (array-get book index)
-     (text string) (:
-      is-escape (% event (pressed-key key) (key-escape? key) _ false)
-      (if is-escape
-       (& state (& book book focus (| at index)) action (| none))
-       (: edited (handle-text-edit-with-cursor string 100. (.inner f) event)
-        (&
-         state (&
-          book (array-update book index (| text (.string edited)))
-          focus (| in (& index index inner (.cursor edited))))
-         action
-          (| some (| in (& index index action (| update (.string edited)))))))))
-     ))
-   ))
- apply (\ (book action)
-  (: res (rec-2 (| chapter book) action (\ (rec node action)
-   (% node
-    (chapter parts)
-     (% action
-      (in args) (:
-       index (.index args)
-       action (.action args)
-       (| chapter (array-update parts index (rec (crash (array-get parts index)) action))))
-      )
-    _ (crash "unhandled node type in apply")
-    )))
-   (% (crash res) (chapter parts) parts)
-  ))
+        (text (@variant data) enum-color)
+        (empty-box 0. 2.)
+        (render (@payload data) (f- width 10.))))))
+     array
+      (row ([]
+       (sized-box 10. 10. (text "[]" array-color))
+       (rec-2 (array->list data) 0 (\ (rec items index)
+        (% items
+         empty (empty-box 0. 0.)
+         (more m)
+          (column ([]
+           (render (.item m) (f- width 10.))
+           (empty-box 0. (% (.rest m) empty 0. more 2.))
+           (rec (.rest m) (+ index 1)))))))))
+     _ (text "..." black))))))))
 
  notebook-app (&
-  create (\ (book)
-   (& book ([] (| text "hi there") (| text "wow")) focus (| at 0)))
-  apply (\ (book action) (apply book action))
+  create (\ (book) (& book book focus (| at 0)))
+  apply (\ (book action) action)
   handle (\ (state event) (:
-   book (.book state)
-   focus (.focus state)
-   (handle book focus event)))
-  render
-   (\ (state size) (:
-    book (.book state)
-    focus (.focus state)
-    (.draw (render-chapter "Orchard" book focus size)))))
+   (% event
+    (new-state s) (& state state action (| none))
+    _ (:
+     result
+      (rec-2 (.book state) (.focus state) (\ (handle node focus)
+       (% node
+        (chapter chapter) (:
+         title (.title chapter)
+         parts (.parts chapter)
+         (% focus
+          (at i)
+           (% event
+            (pressed-key key)
+             (cond
+              (key-up? key)
+               (& node node focus (if (= i 0) focus (| at (- i 1))))
+              (key-down? key)
+               (&
+                node node
+                focus
+                 (if (= i (- (array-length parts) 1)) focus (| at (+ i 1))))
+              (key-enter? key)
+               (&
+                node node
+                focus
+                 (% (array-get parts i)
+                  (text string)
+                   (| in (&
+                    index i
+                    inner (&
+                     anchor (string-length string)
+                     active (string-length string)
+                     desired-x
+                      (text-x-offset string 10000. (string-length string)))))
+                  _ focus))
+              else (& node node focus focus))
+            _ (& node node focus focus))
+          (in f) (:
+           index (.index f)
+           inner-state (handle (array-get parts index) (.inner f))
+           inner-node (.node inner-state)
+           inner-focus (.focus inner-state)
+           (&
+            node
+             (| chapter (&
+              title (.title chapter)
+              parts (array-update parts index inner-node)))
+            focus
+             (% inner-focus
+              yield (| at index)
+              (here focus) (| in (& index index inner focus)))))))
+        (text string) (:
+         is-escape (% event (pressed-key key) (key-escape? key) _ false)
+         (if is-escape
+          (& node (| text string) focus (| yield))
+          (: edited (handle-text-edit-with-cursor string 100. focus event)
+           (& node (| text (.string edited)) focus (| here (.cursor edited))))))
+        _ (crash "handle node type")
+        )))
+      (&
+       state (& book (.node result) focus (.focus result))
+       action (| some (.node result)))))))
+  render (\ (state size) (:
+   chapter-and-focus
+    (rec-2 (.book state) (.focus state) (\ (rec node focus)
+     (: chapter (% node (chapter chapter) chapter _ (crash "bad"))
+      (% focus
+       (in args) (:
+        part (array-get (.parts chapter) (.index args))
+        (% part
+         chapter (rec part (.inner args))
+         _ (& chapter chapter focus focus)))
+       _ (& chapter chapter focus focus)))))
+   chapter (.chapter chapter-and-focus)
+   focus (.focus chapter-and-focus)
+   render-part (\ (part width focus)
+    (% part
+     (text string)
+      (padding 2.
+       (% focus
+        (inside cursor) (editable-text string black cursor)
+        outside (text string black)))
+     _ (colored red (text "unknown part" white))))
+   rendered
+    (column ([]
+     (colored orchard-color
+      (sized-box (.width size) (f+ line-height 4.)
+       (padding 2. (text (.title chapter) white))))
+     (column
+      (iter->array
+       (map-indexed (array->iter (.parts chapter)) (\ (index part)
+        (maybe-render-cursor (% focus (at i) (= i index) _ false)
+         (render-part
+          part
+          (.width size)
+          (% focus
+           (in args)
+            (if (= (.index args) index) (| inside (.inner args)) (| outside))
+           _ (| outside))))))))))
+   (.draw rendered))))
 
- editor-app
+ overwrite-app (&
+  create (\ (state) (&))
+  apply (\ (state action) (| chapter (& title "Orchard" parts ([] (| text "Hello, world!") (| text "Example text.")))))
+  handle (\ (state event) (& state state action (| some (&))))
+  render (\ (state size) (| nothing)))
+
+ notebook-app
 )
 
 ===
