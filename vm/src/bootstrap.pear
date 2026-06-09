@@ -3416,6 +3416,107 @@
       (.draw (padding 2. (code-render (.def state) (f- (.width size) 4.)))))))
   )
 
+ render-part (\ (part width focus)
+  (% part
+   (text string)
+    (padding 2.
+     (% focus
+      (inside cursor) (editable-text string black cursor)
+      outside (text string black)))
+   _ (colored red (text "unknown part" white))))
+ render-chapter (\ (title parts focus size)
+  (column ([]
+   (colored orchard-color
+    (sized-box (.width size) (f+ line-height 4.)
+     (padding 2. (text "Orchard" white))))
+   (column
+    (iter->array
+     (map-indexed (array->iter parts) (\ (index part)
+      (maybe-render-cursor (% focus (at i) (= i index) _ false)
+       (render-part part
+        (.width size)
+        (% focus
+         (in args)
+          (if (= (.index args) index) (| inside (.inner args)) (| outside))
+         _ (| outside)))))))))))
+ handle (\ (book focus event)
+  (% focus
+   (at i)
+    (% event
+     (pressed-key key)
+      (cond
+       (action-up? key)
+        (&
+         state (& book book focus (if (= i 0) focus (| at (- i 1))))
+         action (| none))
+       (action-down? key)
+        (&
+         state (&
+          book book
+          focus (if (= i (- (array-length book) 1)) focus (| at (+ i 1))))
+         action (| none))
+       (key-enter? key)
+        (&
+         state (&
+          book book
+          focus
+           (% (array-get book i)
+            (text string)
+             (| in (&
+              index i
+              inner (&
+               anchor (string-length string)
+               active (string-length string)
+               desired-x (text-x-offset string 10000. (string-length string)))))
+            _ focus))
+         action (| none))
+       else (& state (& book book focus focus) action (| none)))
+     _ (& book book focus focus))
+   (in f) (:
+    index (.index f)
+    (% (array-get book index)
+     (text string) (:
+      is-escape (% event (pressed-key key) (key-escape? key) _ false)
+      (if is-escape
+       (& state (& book book focus (| at index)) action (| none))
+       (: edited (handle-text-edit-with-cursor string 100. (.inner f) event)
+        (&
+         state (&
+          book (array-update book index (| text (.string edited)))
+          focus (| in (& index index inner (.cursor edited))))
+         action
+          (| some (| in (& index index action (| update (.string edited)))))))))
+     ))
+   ))
+ apply (\ (book action)
+  (: res (rec-2 (| chapter book) action (\ (rec node action)
+   (% node
+    (chapter parts)
+     (% action
+      (in args) (:
+       index (.index args)
+       action (.action args)
+       (| chapter (array-update parts index (rec (crash (array-get parts index)) action))))
+      )
+    _ (crash "unhandled node type in apply")
+    )))
+   (% (crash res) (chapter parts) parts)
+  ))
+
+ notebook-app (&
+  create (\ (book)
+   (& book ([] (| text "hi there") (| text "wow")) focus (| at 0)))
+  apply (\ (book action) (apply book action))
+  handle (\ (state event) (:
+   book (.book state)
+   focus (.focus state)
+   (handle book focus event)))
+  render
+   (\ (state size) (:
+    book (.book state)
+    focus (.focus state)
+    (.draw (render-chapter "Orchard" book focus size)))))
+
  editor-app
 )
 

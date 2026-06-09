@@ -50,7 +50,7 @@ pub fn main(init: std.process.Init) !void {
     // const stdout = &stdout_w.interface;
     // const stdin = &stdin_r.interface;
 
-    var heap = try Heap.init(ally, 200_000_000);
+    var heap = try Heap.init(ally, 300_000_000);
     const start_of_heap = heap.checkpoint();
     var vm = try Vm.Default.init(&heap, ally);
 
