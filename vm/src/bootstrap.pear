@@ -39,8 +39,8 @@
  and-5 (\ (a b c d e) (and (and-4 a b c d) e))
  or (\ (a b) (if a true b))
  or-3 (\ (a b c) (or (or a b) c))
- or-4 (\ (a b c d) (or (or a b c) d))
- or-5 (\ (a b c d e) (or (or a b c d) e))
+ or-4 (\ (a b c d) (or (or-3 a b c) d))
+ or-5 (\ (a b c d e) (or (or-4 a b c d) e))
 
  + (\ (a b) (@add a b))
  - (\ (a b) (@subtract a b))
@@ -1015,17 +1015,23 @@
         (more next-m)
          (if (punctuation-char? (.item next-m))
           (num-leading-punctuation-chars chars)
-          (+ (num-leading-word-chars (.rest next-m)) 1)))))))))
+          (+ (num-leading-word-chars rest) 1)))))))))
  find-word-boundary-after (\ (string offset)
   (+
    offset
    (num-leading-skip-chars
-    (list-skip (array->list (string->bytes string)) offset))))
+    (list-skip (string->chars-list string) offset))))
  find-word-boundary-before (\ (string offset)
   (-
    offset
    (num-leading-skip-chars
-    (list-take-and-reverse (array->list (string->bytes string)) offset))))
+    (list-take-and-reverse (string->chars-list string) offset))))
+ _ (assert (= (find-word-boundary-after "hello world" 0) 5))
+ _ (assert (= (find-word-boundary-after "hello world" 5) 11))
+ _ (assert (= (find-word-boundary-before "hello world" 11) 6))
+ _ (assert (= (find-word-boundary-before "hello world" 5) 0))
+ _ (assert (= (find-word-boundary-before "Hello world!" 12) 6))
+ _ (assert (= (find-word-boundary-after "!hello" 0) 6))
 
  handle-text-edit-with-cursor (\ (string width cursor event)
   (% event
@@ -1159,7 +1165,7 @@
          active (- offset 1)
          desired-x (text-x-offset string width (- offset 1))))))
      (key-ctrl-left? key) (:
-      new-offset (find-word-boundary-before (.active cursor) text)
+      new-offset (find-word-boundary-before string (.active cursor))
       (&
        string string
        cursor (&
@@ -3335,6 +3341,18 @@
            (rec (.rest m) (+ index 1)))))))))
      _ (text "..." black))))))))
 
+ compile (\ (code)
+  (\ () (string-length code))
+ )
+ any-to-string (\ (value)
+  (% (@kind value)
+   int (int->string value)
+   float "float"
+   string (string-concat-3 "\"" value "\"")
+   struct "struct"
+   enum "enum"
+   function "(\\ ...)"))
+
  notebook-app (&
   create (\ (book) (& book book focus (| at 0)))
   apply (\ (book action) action)
@@ -3348,6 +3366,11 @@
        active (string-length string)
        desired-x (text-x-offset string 10000. (string-length string)))
      (chapter chapter) (| at-title)
+     (code string)
+      (&
+       anchor (string-length string)
+       active (string-length string)
+       desired-x (text-x-offset string 10000. (string-length string)))
      _ (crash "what's the focus for entering this node?")
      ))
    (% event
@@ -3366,16 +3389,21 @@
              (% focus
               text (| text "")
               chapter (| chapter (& title "" parts ([])))
+              code (| code "")
               )
             (& node new-node focus (| here (enter-focus new-node))))
            (key-left? key)
             (&
              node node
-             focus (| here (% focus text (| text) chapter (| text))))
+             focus
+              (| here
+               (% focus text (| text) chapter (| text) code (| chapter))))
            (key-right? key)
             (&
              node node
-             focus (| here (% focus text (| chapter) chapter (| chapter))))
+             focus
+              (| here
+               (% focus text (| chapter) chapter (| code) code (| code))))
            else (& node node focus (| here focus)))
           _ (& node node focus (| here focus)))
         (text string) (:
@@ -3461,6 +3489,12 @@
                (here focus) (| in (& index index inner focus))
                _ (crash "weird inner focus")))))
           _ (crash "bad chapter focus")))
+        (code string) (:
+         is-escape (% event (pressed-key key) (key-escape? key) _ false)
+         (if is-escape
+          (& node (| code string) focus (| yield))
+          (: edited (handle-text-edit-with-cursor string 100. focus event)
+           (& node (| code (.string edited)) focus (| here (.cursor edited))))))
         _ (crash "handle node type")
         )))
       (&
@@ -3494,13 +3528,23 @@
          (% focus outside false (inside f) (% f chapter true _ false))
          (text "chapter" blue))
         (empty-box 5. 0.)
-        (text "code" blue))))
-     (chapter chapter) (padding 2. (text (.title chapter) orchard-color))
+        (maybe-render-cursor
+         (% focus outside false (inside f) (% f code true _ false))
+         (text "code" blue))
+        )))
      (text string)
       (padding 2.
        (% focus
         (inside cursor) (editable-text string black cursor)
         outside (text string black)))
+     (chapter chapter) (padding 2. (text (.title chapter) orchard-color))
+     (code string)
+      (column ([]
+       (padding 2.
+        (% focus
+         (inside cursor) (editable-text string green cursor)
+         outside (text string green)))
+       (padding 2. (text (any-to-string ((compile string))) blue))))
      _ (colored red (text "unknown part" white))))
    rendered
     (column ([]

@@ -156,8 +156,8 @@ pub fn init(ally: Ally) !*Graphics {
 
     // Create a window.
     const window = gl.glfwCreateWindow(
-        @as(i32, @intFromFloat(scale * 160)),
-        @as(i32, @intFromFloat(scale * 220)),
+        @as(i32, @intFromFloat(scale * 500)),
+        @as(i32, @intFromFloat(scale * 300)),
         "Orchard",
         null,
         null,
