@@ -127,7 +127,7 @@ pub fn dump_drawing_instructions_indented(instructions: []const DrawingInstructi
 
 ally: Ally,
 window: ?*gl.GLFWwindow = null,
-scale: f32 = 1,
+scale: f32,
 vg: nvg,
 event_queue: ArrayList(Event),
 
@@ -152,6 +152,7 @@ pub fn init(ally: Ally) !*Graphics {
     var scale: f32 = 1;
     if (!builtin.target.os.tag.isDarwin())
         gl.glfwGetMonitorContentScale(monitor, &scale, null);
+    scale *= 0.7;
 
     // Create a window.
     const window = gl.glfwCreateWindow(

@@ -365,7 +365,7 @@ fn file_out_rec(obj: Obj, ally: Ally, writer: *std.Io.Writer, name_generator: *N
         try writer.print("{s} \"", .{name});
         var bytes: []const u8 = @ptrCast(obj.words());
         for (0..7) |_| {
-            if (bytes[bytes.len - 1] == 0) bytes.len -= 1;
+            if (bytes.len > 0 and bytes[bytes.len - 1] == 0) bytes.len -= 1;
         }
         for (bytes) |byte| {
             if (byte >= ' ' and byte <= '~') {

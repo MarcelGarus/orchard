@@ -901,6 +901,7 @@
  key-r? (\ (key) (and (= (.keycode key) 82) (no-modifiers? key)))
  key-s? (\ (key) (and (= (.keycode key) 83) (no-modifiers? key)))
  key-w? (\ (key) (and (= (.keycode key) 87) (no-modifiers? key)))
+ key-ctrl-n? (\ (key) (and (= (.keycode key) 78) (ctrl-modifier? key)))
 
  # "Text editing
 
@@ -3338,43 +3339,111 @@
   create (\ (book) (& book book focus (| at 0)))
   apply (\ (book action) action)
   handle (\ (state event) (:
+   enter-focus (\ (node)
+    (% node
+     new (| text)
+     (text string)
+      (&
+       anchor (string-length string)
+       active (string-length string)
+       desired-x (text-x-offset string 10000. (string-length string)))
+     (chapter chapter) (| at-title)
+     _ (crash "what's the focus for entering this node?")
+     ))
    (% event
     (new-state s) (& state state action (| none))
     _ (:
      result
       (rec-2 (.book state) (.focus state) (\ (handle node focus)
        (% node
+        new
+         (% event
+          (pressed-key key)
+          (cond
+           (key-escape? key) (& node node focus (| yield))
+           (key-enter? key) (:
+            new-node
+             (% focus
+              text (| text "")
+              chapter (| chapter (& title "" parts ([])))
+              )
+            (& node new-node focus (| here (enter-focus new-node))))
+           (key-left? key)
+            (&
+             node node
+             focus (| here (% focus text (| text) chapter (| text))))
+           (key-right? key)
+            (&
+             node node
+             focus (| here (% focus text (| chapter) chapter (| chapter))))
+           else (& node node focus (| here focus)))
+          _ (& node node focus (| here focus)))
+        (text string) (:
+         is-escape (% event (pressed-key key) (key-escape? key) _ false)
+         (if is-escape
+          (& node (| text string) focus (| yield))
+          (: edited (handle-text-edit-with-cursor string 100. focus event)
+           (& node (| text (.string edited)) focus (| here (.cursor edited))))))
         (chapter chapter) (:
          title (.title chapter)
          parts (.parts chapter)
          (% focus
+          at-title
+           (% event
+            (pressed-key key)
+             (cond
+              (key-escape? key) (& node node focus (| yield))
+              (key-down? key)
+               (&
+                node node
+                focus (| here (if (= (array-length parts) 0) focus (| at 0))))
+              (key-ctrl-n? key)
+               (&
+                node
+                 (| chapter (&
+                  title title
+                  parts (array-insert parts 0 (| new))))
+                focus (| here (| in (& index 0 inner (| text)))))
+              else (&
+               node
+                (| chapter (& title (handle-text-edit title event) parts parts))
+               focus (| here (| at-title)))
+              )
+            char (&
+             node
+              (| chapter (& title (handle-text-edit title event) parts parts))
+             focus (| here (| at-title)))
+            )
           (at i)
            (% event
             (pressed-key key)
              (cond
+              (key-escape? key) (& node node focus (| yield))
               (key-up? key)
-               (& node node focus (if (= i 0) focus (| at (- i 1))))
+               (&
+                node node
+                focus (| here (if (= i 0) (| at-title) (| at (- i 1)))))
               (key-down? key)
                (&
                 node node
                 focus
-                 (if (= i (- (array-length parts) 1)) focus (| at (+ i 1))))
+                 (| here
+                  (if (= i (- (array-length parts) 1)) focus (| at (+ i 1)))))
               (key-enter? key)
                (&
                 node node
                 focus
-                 (% (array-get parts i)
-                  (text string)
-                   (| in (&
-                    index i
-                    inner (&
-                     anchor (string-length string)
-                     active (string-length string)
-                     desired-x
-                      (text-x-offset string 10000. (string-length string)))))
-                  _ focus))
-              else (& node node focus focus))
-            _ (& node node focus focus))
+                 (| here
+                  (| in (& index i inner (enter-focus (array-get parts i))))))
+              (key-ctrl-n? key)
+               (&
+                node
+                 (| chapter (&
+                  title title
+                  parts (array-insert parts (+ i 1) (| new))))
+                focus (| here (| in (& index (+ i 1) inner (| text)))))
+              else (& node node focus (| here focus)))
+            _ (& node node focus (| here focus)))
           (in f) (:
            index (.index f)
            inner-state (handle (array-get parts index) (.inner f))
@@ -3386,19 +3455,18 @@
               title (.title chapter)
               parts (array-update parts index inner-node)))
             focus
-             (% inner-focus
-              yield (| at index)
-              (here focus) (| in (& index index inner focus)))))))
-        (text string) (:
-         is-escape (% event (pressed-key key) (key-escape? key) _ false)
-         (if is-escape
-          (& node (| text string) focus (| yield))
-          (: edited (handle-text-edit-with-cursor string 100. focus event)
-           (& node (| text (.string edited)) focus (| here (.cursor edited))))))
+             (| here
+              (% inner-focus
+               yield (| at index)
+               (here focus) (| in (& index index inner focus))
+               _ (crash "weird inner focus")))))
+          _ (crash "bad chapter focus")))
         _ (crash "handle node type")
         )))
       (&
-       state (& book (.node result) focus (.focus result))
+       state (&
+        book (.node result)
+        focus (% (.focus result) (here f) f yield (enter-focus (.node result))))
        action (| some (.node result)))))))
   render (\ (state size) (:
    chapter-and-focus
@@ -3415,6 +3483,19 @@
    focus (.focus chapter-and-focus)
    render-part (\ (part width focus)
     (% part
+     new
+      (padding 2.
+       (row ([]
+        (maybe-render-cursor
+         (% focus outside false (inside f) (% f text true _ false))
+         (text "text" blue))
+        (empty-box 5. 0.)
+        (maybe-render-cursor
+         (% focus outside false (inside f) (% f chapter true _ false))
+         (text "chapter" blue))
+        (empty-box 5. 0.)
+        (text "code" blue))))
+     (chapter chapter) (padding 2. (text (.title chapter) orchard-color))
      (text string)
       (padding 2.
        (% focus
