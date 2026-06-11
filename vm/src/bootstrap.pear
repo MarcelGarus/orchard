@@ -81,6 +81,9 @@
  float->int (\ (f) (@float->int f))
  f-abs (\ (n) (if (f< n 0.) (f- 0. n) n))
 
+ even? (\ (n) (= (mod n 2) 0))
+ odd? (\ (n) (= (mod n 2) 1))
+
  array-length (\ (array) (@array-length array))
  array-get (\ (array index) (@array-get array index))
  array->list (\ (array) (@array->list array))
@@ -258,6 +261,8 @@
     (take (array->iter array) index)
     (list->iter (| more (& item item rest (| empty))))
     (skip (array->iter array) index))))
+ list-append (\ (list item) (list-insert list (list-length list) item))
+ array-append (\ (array item) (array-insert array (array-length array) item))
  list-get (\ (list index) (% ((skip (list->iter list) index)) (more m) (.item m)))
  list-swap (\ (list a b)
   (iter->list
@@ -286,7 +291,6 @@
         (& list (.rest m) n (- n 1))
         (| more (& item (.item m) rest reversed)))))))))
 
- # "Unit tests for the positional ops rebuilt on iterators."
  _ (assert (= (list-get (array->list ([] 5 6 7)) 1) 6))
  _ (assert (= (list->array (list-skip (array->list ([] 1 2 3 4)) 2)) ([] 3 4)))
  _ (assert (= (list->array (list-take (array->list ([] 1 2 3 4)) 2)) ([] 1 2)))
@@ -312,6 +316,8 @@
      (array->iter (string->bytes a))
      (array->iter (string->bytes b))))))
  string-concat-3 (\ (a b c) (string-concat a (string-concat b c)))
+ string-concat-4 (\ (a b c d) (string-concat a (string-concat-3 b c d)))
+ string-concat-5 (\ (a b c d e) (string-concat a (string-concat-4 b c d e)))
  string-slice (\ (string from to)
   (bytes->string (array-slice (string->bytes string) from to)))
  string-replace-range (\ (string range replacement)
@@ -332,6 +338,7 @@
    (string-slice string 0 index)
    text
    (string-slice string index (string-length string))))
+ string-starts-with (\ (string prefix) false)
  ascii-char (\ (literal) (array-get (string->bytes literal) 0))
  int->string (\ (int)
   (if (= int 0)
@@ -3293,7 +3300,7 @@
    base
    (rec 1 (\ (rec i)
     (:
-     candidate (string-concat base (string-concat "-" (int->string i)))
+     candidate (string-concat-3 base "-" (int->string i))
      (if (def-name-free? defs candidate) candidate (rec (+ i 1))))))))
 
  editor-app (&
@@ -3341,17 +3348,275 @@
            (rec (.rest m) (+ index 1)))))))))
      _ (text "..." black))))))))
 
- compile (\ (code)
-  (\ () (string-length code))
+ parse (\ (code) (:
+  chars (string->chars-array code)
+  char-at (\ (i) (array-get chars i))
+  at-end? (\ (i) (= i (array-length chars)))
+  is-digit (\ (char)
+   (and
+    (>= (ascii-char char) (ascii-char "0"))
+    (<= (ascii-char char) (ascii-char "9"))))
+  is-name (\ (char)
+   (and-5
+    (!= char "\n")
+    (!= char " ")
+    (!= char "(")
+    (!= char ")")
+    (!= char "\"")))
+  digit-value (\ (char) (- (ascii-char char) (ascii-char "0")))
+  consume-whitespace (\ (start)
+   (rec start (\ (rec i)
+    (if (at-end? i)
+     i
+     (if (or (= (char-at i) "\n") (= (char-at i) " "))
+      (rec (+ i 1))
+      i)))))
+  parse-int (\ (start)
+   (rec-2 start 0 (\ (rec i num)
+    (if (at-end? i)
+     (& offset i num num)
+     (if (is-digit (char-at i))
+      (rec (+ i 1) (+ (* num 10) (digit-value (char-at i))))
+      (& offset i num num))))))
+  parse-frac (\ (start)
+   (rec-3 start 0 0 (\ (rec i frac digits)
+    (if (at-end? i)
+     (& offset i frac frac digits digits)
+     (if (is-digit (char-at i))
+      (rec (+ i 1) (+ (* frac 10) (digit-value (char-at i))) (+ digits 1))
+      (& offset i frac frac digits digits))))))
+  pow10 (\ (k)
+   (rec k (\ (rec k)
+    (if (= k 0) 1. (f* 10. (rec (- k 1)))))))
+  finish-float (\ (start int-part)
+   (: r (parse-frac start)
+    float-val
+     (f+ (int->float int-part) (f/ (int->float (.frac r)) (pow10 (.digits r))))
+    (& offset (.offset r) ast (| float float-val))))
+  parse-string (\ (start)
+   (rec-2 start "" (\ (rec i acc)
+    (if (at-end? i)
+     (crash "string doesn't end")
+     (: c (char-at i)
+      (cond
+       (= c "\"") (& offset (+ i 1) value acc)
+       (= c "\\")
+        (if (at-end? (+ i 1))
+         (crash "expected escape char")
+         (: e (char-at (+ i 1))
+          escaped
+           (cond
+            (= e "\\") "\\"
+            (= e "\"") "\""
+            (= e "n") "\n"
+            else (crash "unknown escape sequence"))
+          (rec (+ i 2) (string-concat acc escaped))))
+       else (rec (+ i 1) (string-concat acc c))))))))
+  parse-name (\ (start)
+   (rec-2 start "" (\ (rec i acc)
+    (if (at-end? i)
+     (& offset i value acc)
+     (if (is-name (char-at i))
+      (rec (+ i 1) (string-concat acc (char-at i)))
+      (& offset i value acc))))))
+  parse-rec (\ (mode start)
+   (rec-2 mode start (\ (rec mode i)
+    (% mode
+     (list acc) (:
+      e (rec (| expr) i)
+      (% e
+       none (& offset i items acc)
+       (some s) (rec (| list (array-append acc (.ast s))) (.offset s))))
+     expr (:
+      i (consume-whitespace i)
+      (if (at-end? i)
+       (| none)
+       (: c (char-at i)
+        (cond
+         (= c ")") (| none)
+         (is-digit c) (:
+          r (parse-int i)
+          j (.offset r)
+          (if (at-end? j)
+           (| some (& offset j ast (| int (.num r))))
+           (if (= (char-at j) ".")
+            (: f (finish-float (+ j 1) (.num r))
+             (| some (& offset (.offset f) ast (.ast f))))
+            (| some (& offset j ast (| int (.num r)))))))
+         (= c "\"") (:
+          r (parse-string (+ i 1))
+          (| some (& offset (.offset r) ast (| string (.value r)))))
+         (= c "(") (:
+          g (rec (| list ([])) (+ i 1))
+          after (consume-whitespace (.offset g))
+          (if (at-end? after)
+           (crash "expected closing paren")
+           (if (= (char-at after) ")")
+            (| some (& offset (+ after 1) ast (| group (.items g))))
+            (crash "expected closing paren"))))
+         else (:
+          r (parse-name i)
+          (| some (& offset (.offset r) ast (| name (.value r)))))))))))))
+  (% (parse-rec (| expr) 0)
+   (some s) (:
+    end (consume-whitespace (.offset s))
+    (if (at-end? end)
+     (.ast s)
+     (crash "unexpected trailing input")))
+   none (crash "expected an expression"))
+  ))
+ _ (assert (= (parse "42") (| int 42)))
+ _ (assert (= (parse "  42  ") (| int 42)))
+ _ (assert (= (parse "foo") (| name "foo")))
+ _ (assert (= (parse "\"hi\"") (| string "hi")))
+ _ (assert (= (parse "1.5") (| float 1.5)))
+ _ (assert (= (parse "(a b)") (| group ([] (| name "a") (| name "b")))))
+ _ (assert
+  (= (parse "(a 7 (b))")
+   (| group ([] (| name "a") (| int 7) (| group ([] (| name "b")))))))
+
+ analyze (\ (node)
+  (rec node (\ (analyze node)
+   (% node
+    (name string) (| name string)
+    (group children) (:
+     _ (if (= (array-length children) 0) (crash "empty group") nil)
+     first (array-get children 0)
+     rest (array-skip children 1)
+     (% first
+      (name name)
+       (cond
+        (= name ":")
+         (if (odd? (array-length children)) (crash "let") (crash "let"))
+        (= name "[]") (| array (iter->array (map (array->iter rest) analyze)))
+        (= name "&") (| struct (crash "fields"))
+        (string-starts-with name ".") (:
+         _ (if (= (array-length rest) 1) nil (crash "bad field"))
+         (| field (&
+          of (analyze (array-get rest 0))
+          name (| value (string-slice name 1 (string-length name))))))
+        (= name "|") (:
+         _ (if (= (array-length rest) 0) (crash "bad enum") nil)
+         variant (% (array-get rest 0) (name n) n _ (crash "bad enum"))
+         payload
+          (if (= (array-length rest) 2)
+           (analyze (array-get rest 1))
+           (| value nil))
+         (| enum (& variant variant payload payload)))
+        (= name "%") (:
+         _ (if (odd? (array-length rest)) nil (crash "bad switch"))
+         condition (analyze (array-get rest 0))
+         cases (crash "cases")
+         (| switch (& condition condition cases cases default (crash "default"))))
+        (= name "if") (:
+         _ (if (= (array-length rest) 3) nil (crash "bad if"))
+         (| switch (&
+          condition (analyze (array-get (rest) 0))
+          cases ([]
+           (& variant "true" payload (| none) body (analyze (array-get (rest) 1)))
+           (& variant "false" payload (| none) body (analyze (array-get (rest) 2))))
+          default (| some (| crash (| value "if on non-bool"))))))
+        (= name "cond") (:
+         _ (if (even? (array-length rest)) nil (crash "bad cond"))
+         (crash "cond"))
+        (= name "\\") (:
+         _ (if (= (array-length rest) 2) nil (crash "bad function"))
+         arguments
+          (% (array-get rest 0)
+           (group g)
+            (iter->array (map (array->iter g) (\ (arg) (% arg (name n) n _ (crash "bad function")))))
+           _ (crash "bad function"))
+         body (analyze (array-get rest 1))
+         (crash "function"))
+        else
+         (| call
+          (& function (analyze first) arguments (iter->array (map (array->iter rest) analyze))))
+       )
+      _
+       (| call
+        (& function (analyze first) arguments (iter->array (map (array->iter rest) analyze))))))
+    (int i) (| value i)
+    (float f) (| value f)
+    (string s) (| value s))
+  ))
  )
+
+ eval (\ (code env) (:
+  lookup (\ (env name)
+   (rec env (\ (rec env)
+    (% env
+     empty (crash (string-concat "unknown name " name))
+     (more m)
+      (if (= (.name (.item m)) name) (.definition (.item m)) (rec (.rest m)))))))
+  (rec-2 code env (\ (eval code env)
+   (% code
+    (value v) v
+    (name n) (lookup env n)
+    (call call) (:
+     function (eval (.function call) env)
+     args
+      (iter->array (map (array->iter (.arguments call)) (\ (arg) (eval arg env))))
+     (@call function args))
+    _ (crash (| unknown-code code))
+   )))))
+
+ compile (\ (code) (:
+  compiled (analyze (parse code))
+  (\ ()
+   (eval
+    compiled
+    (array->list ([] (& name "@add" definition (\ (a b) (@add a b)))))))))
+
  any-to-string (\ (value)
-  (% (@kind value)
-   int (int->string value)
-   float "float"
-   string (string-concat-3 "\"" value "\"")
-   struct "struct"
-   enum "enum"
-   function "(\\ ...)"))
+  (rec value (\ (recurse value)
+   (% (@kind value)
+    int (int->string value)
+    float "float"
+    string (string-concat-3 "\"" value "\"")
+    struct
+     (string-concat
+      (fold (array->iter (@fields value)) "(&"
+       (\ (acc field)
+        (string-concat-5
+         acc
+         " "
+         (.name field)
+         " "
+         (recurse (.value field)))))
+      ")")
+    enum
+     (: variant (@variant value)
+      payload (@payload value)
+      empty-payload?
+       (if (= (@kind payload) (| struct))
+        (= (array-length (@fields payload)) 0)
+        false)
+      (if empty-payload?
+       (string-concat-3 "(| " variant ")")
+       (string-concat-5 "(| " variant " " (recurse payload) ")")))
+    array
+     (string-concat
+      (fold (array->iter value) "([]"
+       (\ (acc item) (string-concat-3 acc " " (recurse item))))
+      ")")
+    function
+     (: args (@arguments value)
+      (string-concat-3 "(\\ ("
+       (rec 0 (\ (rec i)
+        (if (= i (array-length args))
+         ""
+         (string-concat-3
+          (if (= i 0) "" " ")
+          (array-get args i)
+          (rec (+ i 1))))))
+       ") ...)"))))))
+ _ (assert (= (any-to-string (& a 1 b 2)) "(& a 1 b 2)"))
+ _ (assert (= (any-to-string (& x (| some 3))) "(& x (| some 3))"))
+ _ (assert (= (any-to-string (| some 5)) "(| some 5)"))
+ _ (assert (= (any-to-string (| empty)) "(| empty)"))
+ _ (assert (= (any-to-string ([] 1 2)) "([] 1 2)"))
+ _ (assert (= (any-to-string (\ (x y) x)) "(\\ (x y) ...)"))
+ _ (assert (= (any-to-string (\ () 0)) "(\\ () ...)"))
 
  notebook-app (&
   create (\ (book) (& book book focus (| at 0)))
@@ -3544,7 +3809,15 @@
         (% focus
          (inside cursor) (editable-text string green cursor)
          outside (text string green)))
-       (padding 2. (text (any-to-string ((compile string))) blue))))
+       (padding 2.
+        (% (@sandbox 100000 (\ () (compile string)))
+         (returned code)
+          (% (@sandbox 100000 (\ () (code)))
+           (returned value) (text (any-to-string (code)) blue)
+           (crashed error) (text error red)
+           out-of-fuel (text "timeout" yellow))
+         (crashed error) (text error red)
+         out-of-fuel (text "timeout" yellow)))))
      _ (colored red (text "unknown part" white))))
    rendered
     (column ([]
