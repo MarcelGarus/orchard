@@ -170,8 +170,8 @@ pub fn init(heap: *Heap, ally: Ally) !Self {
     return .{
         .ally = ally,
         .heap = heap,
-        .data_stack = try Stack.init(ally, 1000000),
-        .call_stack = try Stack.init(ally, 1000000),
+        .data_stack = try Stack.init(ally, 10000000),
+        .call_stack = try Stack.init(ally, 10000000),
         .sandbox_stack = try Stack.init(ally, 1000),
         .jit_cache = ObjMap([]const u8).empty,
         .run_jitted_wrapper = wrapper: {
