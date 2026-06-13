@@ -3349,7 +3349,7 @@
            (rec (.rest m) (+ index 1)))))))))
      _ (text "..." black))))))))
 
- parse (\ (code) (:
+ parse-many (\ (code) (:
   chars (string->chars-array code)
   char-at (\ (i) (array-get chars i))
   at-end? (\ (i) (= i (array-length chars)))
@@ -3458,14 +3458,15 @@
          else (:
           r (parse-name i)
           (| some (& offset (.offset r) ast (| name (.value r)))))))))))))
-  (% (parse-rec (| expr) 0)
-   (some s) (:
-    end (consume-whitespace (.offset s))
-    (if (at-end? end)
-     (.ast s)
-     (crash "unexpected trailing input")))
-   none (crash "expected an expression"))
-  ))
+  result (parse-rec (| list ([])) 0)
+  end (consume-whitespace (.offset result))
+  (if (at-end? end) (.items result) (crash "unexpected trailing input"))))
+ parse (\ (code) (:
+  items (parse-many code)
+  (if (= (array-length items) 1)
+   (array-get items 0)
+   (crash "expected a single expression"))))
+
  _ (assert (= (parse "42") (| int 42)))
  _ (assert (= (parse "  42  ") (| int 42)))
  _ (assert (= (parse "foo") (| name "foo")))
@@ -3475,6 +3476,18 @@
  _ (assert
   (= (parse "(a 7 (b))")
    (| group ([] (| name "a") (| int 7) (| group ([] (| name "b")))))))
+
+ parse-code-block (\ (code) (:
+  items (parse-many code)
+  count (array-length items)
+  (cond
+   (= count 0) (| empty)
+   (= count 1) (| expr (array-get items 0))
+   (= count 2)
+    (% (array-get items 0)
+     (name n) (| bind (& name n expr (array-get items 1)))
+     _ (crash "a code block must start with a name to bind a value"))
+   else (crash "a code block has too many expressions"))))
 
  analyze (\ (node)
   (rec node (\ (analyze node)
@@ -3490,7 +3503,19 @@
         (= name ":")
          (if (odd? (array-length children)) (crash "let") (crash "let"))
         (= name "[]") (| array (iter->array (map (array->iter rest) analyze)))
-        (= name "&") (| struct (crash "fields"))
+        (= name "&") (:
+         _ (if (even? (array-length rest)) nil (crash "bad struct"))
+         fields
+          (rec 0 (\ (recurse i)
+           (if (= i (array-length rest))
+            ([])
+            (array-insert
+             (recurse (+ i 2))
+             0
+             (&
+              name (% (array-get rest i) (name n) n _ (crash "bad struct field"))
+              value (analyze (array-get rest (+ i 1))))))))
+         (| struct fields))
         (string-starts-with name ".") (:
          _ (if (= (array-length rest) 1) nil (crash "bad field"))
          (| field (&
@@ -3528,7 +3553,7 @@
             (iter->array (map (array->iter g) (\ (arg) (% arg (name n) n _ (crash "bad function")))))
            _ (crash "bad function"))
          body (analyze (array-get rest 1))
-         (crash "function"))
+         (| function (& arguments arguments body body)))
         else
          (| call
           (& function (analyze first) arguments (iter->array (map (array->iter rest) analyze))))
@@ -3541,6 +3566,14 @@
     (string s) (| value s))
   ))
  )
+
+ extend-env (\ (params args env)
+  (rec 0 (\ (recurse i)
+   (if (= i (array-length params))
+    env
+    (| more (&
+     item (& name (array-get params i) definition (array-get args i))
+     rest (recurse (+ i 1))))))))
 
  eval (\ (code env) (:
   lookup (\ (env name)
@@ -3557,16 +3590,282 @@
      function (eval (.function call) env)
      args
       (iter->array (map (array->iter (.arguments call)) (\ (arg) (eval arg env))))
-     (@call function args))
+     (function args))
+    (function f)
+     (\ (args)
+      (: params (.arguments f)
+       _ (if (= (array-length params) (array-length args)) nil
+          (crash (| wrong-number-of-arguments)))
+       (eval (.body f) (extend-env params args env))))
+    (enum e) (@enum (.variant e) (eval (.payload e) env))
+    (struct fields)
+     (@struct
+      (iter->array
+       (map (array->iter fields)
+        (\ (field) (& name (.name field) value (eval (.value field) env))))))
     _ (crash (| unknown-code code))
    )))))
 
- compile (\ (code) (:
-  compiled (analyze (parse code))
-  (\ ()
-   (eval
-    compiled
-    (array->list ([] (& name "@add" definition (\ (a b) (@add a b)))))))))
+ base-env
+  (array->list ([]
+   (& name "@add" definition (\ (args) (@add (array-get args 0) (array-get args 1))))
+   (& name "@subtract" definition (\ (args) (@subtract (array-get args 0) (array-get args 1))))
+   (& name "@multiply" definition (\ (args) (@multiply (array-get args 0) (array-get args 1))))
+   (& name "@divide" definition (\ (args) (@divide (array-get args 0) (array-get args 1))))
+   (& name "@modulo" definition (\ (args) (@modulo (array-get args 0) (array-get args 1))))
+   (& name "@shift-left" definition (\ (args) (@shift-left (array-get args 0) (array-get args 1))))
+   (& name "@shift-right" definition (\ (args) (@shift-right (array-get args 0) (array-get args 1))))
+   (& name "@and" definition (\ (args) (@and (array-get args 0) (array-get args 1))))
+   (& name "@or" definition (\ (args) (@or (array-get args 0) (array-get args 1))))
+   (& name "@xor" definition (\ (args) (@xor (array-get args 0) (array-get args 1))))
+   (& name "@compare" definition (\ (args) (@compare (array-get args 0) (array-get args 1))))))
+
+ names-of-env (\ (env)
+  (rec env (\ (recurse env)
+   (% env
+    empty (| empty)
+    (more m) (| more (& item (.name (.item m)) rest (recurse (.rest m))))))))
+ name-in-scope? (\ (scope name)
+  (rec scope (\ (recurse scope)
+   (% scope
+    empty false
+    (more m) (if (= (.item m) name) true (recurse (.rest m)))))))
+ add-to-scope (\ (names scope)
+  (rec 0 (\ (recurse i)
+   (if (= i (array-length names))
+    scope
+    (| more (& item (array-get names i) rest (recurse (+ i 1))))))))
+ check-scope (\ (node scope)
+  (rec-2 node scope (\ (check node scope)
+   (% node
+    (value v) nil
+    (name n)
+     (if (name-in-scope? scope n) nil (crash (string-concat "unknown name " n)))
+    (call c) (:
+     _ (check (.function c) scope)
+     (fold (array->iter (.arguments c)) nil (\ (acc arg) (check arg scope))))
+    (function f) (check (.body f) (add-to-scope (.arguments f) scope))
+    (enum e) (check (.payload e) scope)
+    (struct fields)
+     (fold (array->iter fields) nil (\ (acc field) (check (.value field) scope)))
+    (array items)
+     (fold (array->iter items) nil (\ (acc item) (check item scope)))
+    (field f) (check (.of f) scope)
+    (switch s) (:
+     _ (check (.condition s) scope)
+     _ (fold (array->iter (.cases s)) nil (\ (acc case) (check (.body case) scope)))
+     (% (.default s) (some d) (check d scope) _ nil))
+    _ nil))))
+
+ eval-expr (\ (ast env)
+  (% (@sandbox 100000 (\ ()
+       (: analyzed (analyze ast)
+        _ (check-scope analyzed (names-of-env env))
+        analyzed)))
+   (returned analyzed)
+    (% (@sandbox 100000 (\ () (eval analyzed env)))
+     (returned value) (| ok value)
+     (crashed error) (| run-error error)
+     out-of-fuel (| timeout))
+   (crashed message) (| compile-error message)
+   out-of-fuel (| timeout)))
+
+ eval-code (\ (source env)
+  (% (@sandbox 100000 (\ () (parse-code-block source)))
+   (returned block)
+    (% block
+     empty (& binding? false name "" outcome (| empty) next-env env)
+     (expr ast) (& binding? false name "" outcome (eval-expr ast env) next-env env)
+     (bind b) (:
+      outcome (eval-expr (.expr b) env)
+      next-env
+       (% outcome
+        (ok value)
+         (| more (& item (& name (.name b) definition value) rest env))
+        _ env)
+      (& binding? true name (.name b) outcome outcome next-env next-env)))
+   (crashed message) (& binding? false name "" outcome (| compile-error message) next-env env)
+   out-of-fuel (& binding? false name "" outcome (| timeout) next-env env)))
+
+ # "A computation cache is a flat linked list of code-block results in document
+   order, ignoring text/chapter structure. Each entry is either
+   (| definition (& name code result)) for a name-binding block, or
+   (| code (& code result)) for a plain expression block."
+ cache-entry-code (\ (entry) (% entry (definition d) (.code d) (code c) (.code c)))
+ cache-entry-result (\ (entry) (% entry (definition d) (.result d) (code c) (.result c)))
+ bind-from-result (\ (env name result)
+  (% result
+   (ok value) (| more (& item (& name name definition value) rest env))
+   _ env))
+
+ # "Incrementally process one code block against the old cache. The state carries
+   the current env, the not-yet-consumed tail of the old cache, and the new cache
+   being built up in reverse."
+ eval-code-incremental (\ (source state) (:
+  env (.env state)
+  old (.old state)
+  prev (% old (more m) (| some (.item m)) _ (| none))
+  reuse?
+   (% prev (some e) (= (cache-entry-code e) source) _ false)
+  (if reuse?
+   (: entry (% prev (some e) e _ (crash "unreachable"))
+      next-env
+       (% entry
+        (definition d) (bind-from-result env (.name d) (.result d))
+        (code c) env)
+      (&
+       env next-env
+       old (% old (more m) (.rest m) _ (| empty))
+       new (| more (& item entry rest (.new state)))))
+   (: r (eval-code source env)
+      entry
+       (if (.binding? r)
+        (| definition (& name (.name r) code source result (.outcome r)))
+        (| code (& code source result (.outcome r))))
+      # "If a definition's result changed, everything after it might reference
+         the old value, so clear the cache and re-evaluate the rest."
+      cleared?
+       (and
+        (.binding? r)
+        (% prev (some e) (not (= (cache-entry-result e) (.outcome r))) _ true))
+      (&
+       env (.next-env r)
+       old (if cleared? (| empty) (% old (more m) (.rest m) _ (| empty)))
+       new (| more (& item entry rest (.new state))))))))
+
+ eval-book (\ (book old-cache) (:
+  result
+   (rec-2 book (& env base-env old old-cache new (| empty))
+    (\ (walk node state)
+     (% node
+      (chapter chapter)
+       (fold (array->iter (.parts chapter)) state (\ (acc part) (walk part acc)))
+      (code source) (eval-code-incremental source state)
+      _ state)))
+  (list-reverse (.new result))))
+
+ # "Re-associate a flat cache with the notebook tree for rendering: produces a
+   tree mirroring the book where each code part holds its cache entry, each other
+   part is (| skip), and each chapter is (| chapter array-of-children)."
+ inflate-cache (\ (book cache) (:
+  result
+   (rec-2 book cache (\ (inflate node cache)
+    (% node
+     (chapter chapter) (:
+      acc
+       (fold (array->iter (.parts chapter)) (& cache cache nodes (| empty))
+        (\ (a part) (:
+         r (inflate part (.cache a))
+         (& cache (.cache r) nodes (| more (& item (.node r) rest (.nodes a)))))))
+      (& cache (.cache acc) node (| chapter (list->array (list-reverse (.nodes acc))))))
+     (code source)
+      (% cache
+       (more m) (& cache (.rest m) node (| entry (.item m)))
+       empty (& cache (| empty) node (| entry (| code (& code source result (| empty))))))
+     _ (& cache cache node (| skip)))))
+  (.node result)))
+
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "t" parts ([]
+        (| code "foo (@add 2 3)")
+        (| text "ignored")
+        (| code "foo"))))
+       (| empty))
+   (array->list ([]
+    (| definition (& name "foo" code "foo (@add 2 3)" result (| ok 5)))
+    (| code (& code "foo" result (| ok 5)))))))
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "root" parts ([]
+        (| chapter (& title "sub" parts ([] (| code "bar (@add 1 1)"))))
+        (| code "bar"))))
+       (| empty))
+   (array->list ([]
+    (| definition (& name "bar" code "bar (@add 1 1)" result (| ok 2)))
+    (| code (& code "bar" result (| ok 2)))))))
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "t" parts ([]
+        (| code "foo (@add 2 3)")
+        (| code "(& x foo y 2)"))))
+       (| empty))
+   (array->list ([]
+    (| definition (& name "foo" code "foo (@add 2 3)" result (| ok 5)))
+    (| code (& code "(& x foo y 2)" result (| ok (& x 5 y 2))))))))
+ # "Editing a text node leaves all results reusable; editing a definition
+   re-evaluates everything after it."
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "t" parts ([]
+        (| code "foo 5")
+        (| code "(@add foo 1)"))))
+       (eval-book
+        (| chapter (& title "t" parts ([]
+         (| code "foo 5")
+         (| code "(@add foo 1)"))))
+        (| empty)))
+   (array->list ([]
+    (| definition (& name "foo" code "foo 5" result (| ok 5)))
+    (| code (& code "(@add foo 1)" result (| ok 6)))))))
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "t" parts ([]
+        (| code "foo 9")
+        (| code "(@add foo 1)"))))
+       (eval-book
+        (| chapter (& title "t" parts ([]
+         (| code "foo 5")
+         (| code "(@add foo 1)"))))
+        (| empty)))
+   (array->list ([]
+    (| definition (& name "foo" code "foo 9" result (| ok 9)))
+    (| code (& code "(@add foo 1)" result (| ok 10)))))))
+ # "Functions: inline lambdas, multiple arguments, and closures that capture the
+    surrounding environment."
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "t" parts ([]
+        (| code "((\\ (x) (@add x x)) 21)"))))
+       (| empty))
+   (array->list ([]
+    (| code (& code "((\\ (x) (@add x x)) 21)" result (| ok 42)))))))
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "t" parts ([]
+        (| code "((\\ (a b) (@add a b)) 3 4)"))))
+       (| empty))
+   (array->list ([]
+    (| code (& code "((\\ (a b) (@add a b)) 3 4)" result (| ok 7)))))))
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "t" parts ([]
+        (| code "n 10")
+        (| code "((\\ (x) (@add x n)) 5)"))))
+       (| empty))
+   (array->list ([]
+    (| definition (& name "n" code "n 10" result (| ok 10)))
+    (| code (& code "((\\ (x) (@add x n)) 5)" result (| ok 15)))))))
+ # "Referencing an unbound name is a compile error at the defining block, not a
+    run error later. The function body is never run, so its result is the error."
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "t" parts ([]
+        (| code "minus (\\ (a b) (@nope a b))"))))
+       (| empty))
+   (array->list ([]
+    (| definition (&
+     name "minus"
+     code "minus (\\ (a b) (@nope a b))"
+     result (| compile-error "unknown name @nope")))))))
+ # "The arithmetic built-ins are in scope and evaluate."
+ _ (assert
+  (= (eval-book
+       (| chapter (& title "t" parts ([]
+        (| code "(@multiply (@subtract 5 2) 4)"))))
+       (| empty))
+   (array->list ([]
+    (| code (& code "(@multiply (@subtract 5 2) 4)" result (| ok 12)))))))
 
  any-to-string (\ (value)
   (rec value (\ (recurse value)
@@ -3585,16 +3884,16 @@
          " "
          (recurse (.value field)))))
       ")")
-    enum
-     (: variant (@variant value)
-      payload (@payload value)
-      empty-payload?
-       (if (= (@kind payload) (| struct))
-        (= (array-length (@fields payload)) 0)
-        false)
-      (if empty-payload?
-       (string-concat-3 "(| " variant ")")
-       (string-concat-5 "(| " variant " " (recurse payload) ")")))
+    enum (:
+     variant (@variant value)
+     payload (@payload value)
+     empty-payload?
+      (if (= (@kind payload) (| struct))
+       (= (array-length (@fields payload)) 0)
+       false)
+     (if empty-payload?
+      (string-concat-3 "(| " variant ")")
+      (string-concat-5 "(| " variant " " (recurse payload) ")")))
     array
      (string-concat
       (fold (array->iter value) "([]"
@@ -3620,7 +3919,7 @@
  _ (assert (= (any-to-string (\ () 0)) "(\\ () ...)"))
 
  notebook-app (&
-  create (\ (book) (& book book focus (| at 0)))
+  create (\ (book) (& book book focus (| at 0) eval (eval-book book (| empty))))
   apply (\ (book action) action)
   handle (\ (state event) (:
    enter-focus (\ (node)
@@ -3766,7 +4065,8 @@
       (&
        state (&
         book (.node result)
-        focus (% (.focus result) (here f) f yield (enter-focus (.node result))))
+        focus (% (.focus result) (here f) f yield (enter-focus (.node result)))
+        eval (eval-book (.node result) (.eval state)))
        action (| some (.node result)))))))
   render (\ (state size) (:
    chapter-and-focus
@@ -3781,7 +4081,17 @@
        _ (& chapter chapter focus focus)))))
    chapter (.chapter chapter-and-focus)
    focus (.focus chapter-and-focus)
-   render-part (\ (part width focus)
+   current-caches
+    (rec-2 (inflate-cache (.book state) (.eval state)) (.focus state) (\ (rec cache focus)
+     (: caches (% cache (chapter caches) caches _ (crash "bad cache"))
+      (% focus
+       (in args) (:
+        child (array-get caches (.index args))
+        (% child
+         chapter (rec child (.inner args))
+         _ caches))
+       _ caches))))
+   render-part (\ (part cache width focus)
     (% part
      new
       (padding 2.
@@ -3804,21 +4114,30 @@
         (inside cursor) (editable-text string black cursor)
         outside (text string black)))
      (chapter chapter) (padding 2. (text (.title chapter) orchard-color))
-     (code string)
-      (column ([]
+     (code string) (:
+      entry (% cache (entry e) e _ (| code (& code string result (| empty))))
+      info
+       (% entry
+        (definition d) (& binding? true result (.result d))
+        (code c) (& binding? false result (.result c)))
+      code-element
        (padding 2.
         (% focus
          (inside cursor) (editable-text string green cursor)
          outside (text string green)))
-       (padding 2.
-        (% (@sandbox 100000 (\ () (compile string)))
-         (returned code)
-          (% (@sandbox 100000 (\ () (code)))
-           (returned value) (text (any-to-string (code)) blue)
-           (crashed error) (text error red)
-           out-of-fuel (text "timeout" yellow))
-         (crashed error) (text error red)
-         out-of-fuel (text "timeout" yellow)))))
+      hide-result?
+       (and (.binding? info) (% (.result info) (ok value) true _ false))
+      (if hide-result?
+       code-element
+       (column ([]
+        code-element
+        (padding 2.
+         (% (.result info)
+          (ok value) (text (any-to-string value) blue)
+          (compile-error message) (text message red)
+          (run-error value) (text (any-to-string value) red)
+          timeout (text "timeout" yellow)
+          empty (text "" black)))))))
      _ (colored red (text "unknown part" white))))
    rendered
     (column ([]
@@ -3831,6 +4150,7 @@
         (maybe-render-cursor (% focus (at i) (= i index) _ false)
          (render-part
           part
+          (array-get current-caches index)
           (.width size)
           (% focus
            (in args)
