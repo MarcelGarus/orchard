@@ -368,10 +368,12 @@ fn file_out_rec(obj: Obj, ally: Ally, writer: *std.Io.Writer, name_generator: *N
             if (bytes.len > 0 and bytes[bytes.len - 1] == 0) bytes.len -= 1;
         }
         for (bytes) |byte| {
-            if (byte >= ' ' and byte <= '~') {
-                try writer.print("{c}", .{byte});
-            } else {
-                try writer.print("\\{x:02}", .{byte});
+            switch (byte) {
+                '\\' => try writer.print("\\\\", .{}),
+                '"' => try writer.print("\\\"", .{}),
+                '\n' => try writer.print("\\n", .{}),
+                ' '...'!', '#'...'[', ']'...'~' => try writer.print("{c}", .{byte}),
+                else => try writer.print("\\{x:02}", .{byte}),
             }
         }
         try writer.print("\"\n", .{});
