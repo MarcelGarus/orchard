@@ -111,13 +111,17 @@ pub fn run(ally: Ally, io: Io, heap: *Heap, vm: anytype, app_: Value, data_file:
 
     // Cached drawing instructions.
     var previous_size = gfx.get_size();
+    var first_frame = true;
     var drawing_instructions: ?[]const Graphics.DrawingInstruction = null;
     var drawing_instructions_ally: ?std.heap.ArenaAllocator = null;
 
     while (!gfx.should_close()) {
         const there_are_events = gfx.event_queue.items.len > 0;
+        const size = gfx.get_size();
+        const size_changed = first_frame or
+            size.width != previous_size.width or size.height != previous_size.height;
 
-        if (there_are_events) {
+        if (there_are_events or size_changed) {
             var global_state_changed = false;
             for (gfx.event_queue.items) |event| {
                 const pear_event = switch (event) {
@@ -152,6 +156,14 @@ pub fn run(ally: Ally, io: Io, heap: *Heap, vm: anytype, app_: Value, data_file:
             }
             gfx.event_queue.items.len = 0;
 
+            if (size_changed) {
+                const resize_event = try Value.new_enum(heap, "resize", try Value.new_struct(heap, .{
+                    .width = try Value.new_float(heap, size.width),
+                    .height = try Value.new_float(heap, size.height),
+                }));
+                state = (try app.field("handle").call(vm, &.{ state, resize_event })).field("state");
+            }
+
             if (global_state_changed) {
                 const event = try Value.new_enum(heap, "new-state", global.state);
                 state = (try app.field("handle").call(vm, &.{ state, event })).field("state");
@@ -170,10 +182,7 @@ pub fn run(ally: Ally, io: Io, heap: *Heap, vm: anytype, app_: Value, data_file:
             global.apply = mapped.field("global_apply");
             app = mapped.field("app");
             state = mapped.field("local_state");
-        }
 
-        const size = gfx.get_size();
-        if (there_are_events or size.width != previous_size.width or size.height != previous_size.height) {
             if (drawing_instructions) |_| {
                 // Clear cached drawing instructions.
                 drawing_instructions = null;
@@ -181,6 +190,7 @@ pub fn run(ally: Ally, io: Io, heap: *Heap, vm: anytype, app_: Value, data_file:
             }
         }
         previous_size = size;
+        first_frame = false;
 
         if (drawing_instructions == null) {
             std.debug.print("rendering\n", .{});
@@ -188,13 +198,7 @@ pub fn run(ally: Ally, io: Io, heap: *Heap, vm: anytype, app_: Value, data_file:
             const frame_checkpoint = heap.checkpoint();
             defer heap.restore(frame_checkpoint);
 
-            const instructions = try app.field("render").call(vm, &[_]Value{
-                state,
-                try Value.new_struct(heap, .{
-                    .width = try Value.new_float(heap, size.width),
-                    .height = try Value.new_float(heap, size.height),
-                }),
-            });
+            const instructions = try app.field("render").call(vm, &[_]Value{state});
             // std.debug.print("Rendered: {f}\n", .{instructions});
 
             drawing_instructions_ally = std.heap.ArenaAllocator.init(ally);

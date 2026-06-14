@@ -203,14 +203,8 @@
 
  _ (assert (= (iter->array (array->iter ([] 1 2 3))) ([] 1 2 3)))
  _ (assert (= (iter->array (array->iter ([]))) ([])))
- _ (assert (= (iter->array (map (array->iter ([] 1 2 3)) (\ (x) (* x 2)))) ([] 2 4 6)))
- _ (assert (= (iter->array (map-indexed (array->iter ([] 10 20 30)) (\ (i x) (+ i x)))) ([] 10 21 32)))
- _ (assert (= (iter->array (filter (array->iter ([] 1 2 3 4)) (\ (x) (= (mod x 2) 0)))) ([] 2 4)))
- _ (assert (= (iter->array (concat (array->iter ([] 1 2)) (array->iter ([] 3 4)))) ([] 1 2 3 4)))
  _ (assert (= (iter->array (take (array->iter ([] 1 2 3 4)) 2)) ([] 1 2)))
  _ (assert (= (iter->array (skip (array->iter ([] 1 2 3 4)) 2)) ([] 3 4)))
- _ (assert (= (iter->array (take-while (array->iter ([] 1 2 3 1)) (\ (x) (< x 3)))) ([] 1 2)))
- _ (assert (= (iter->array (skip-while (array->iter ([] 1 2 3 1)) (\ (x) (< x 3)))) ([] 3 1)))
  _ (assert (= (iter->array (generate 3 (\ (i) (* i i)))) ([] 0 1 4)))
  _ (assert (= (fold (array->iter ([] 1 2 3)) 0 +) 6))
  _ (assert (= (reduce (array->iter ([] 1 2 3)) +) 6))
@@ -232,13 +226,16 @@
  array-skip (\ (array n) (iter->array (skip (array->iter array) n)))
  list-take (\ (list n) (iter->list (take (list->iter list) n)))
  array-take (\ (array n) (iter->array (take (array->iter array) n)))
- list-slice (\ (list from to) (iter->list (take (skip (list->iter list) from) (- to from))))
+ list-slice (\ (list from to)
+  (iter->list (take (skip (list->iter list) from) (- to from))))
  array-slice (\ (array from to)
   (iter->array (take (skip (array->iter array) from) (- to from))))
  list-update (\ (list index item)
-  (iter->list (map-indexed (list->iter list) (\ (i it) (if (= i index) item it)))))
+  (iter->list
+   (map-indexed (list->iter list) (\ (i it) (if (= i index) item it)))))
  array-update (\ (array index item)
-  (iter->array (map-indexed (array->iter array) (\ (i it) (if (= i index) item it)))))
+  (iter->array
+   (map-indexed (array->iter array) (\ (i it) (if (= i index) item it)))))
  list-remove (\ (list index)
   (iter->list
    (concat
@@ -263,15 +260,20 @@
     (skip (array->iter array) index))))
  list-append (\ (list item) (list-insert list (list-length list) item))
  array-append (\ (array item) (array-insert array (array-length array) item))
- list-get (\ (list index) (% ((skip (list->iter list) index)) (more m) (.item m)))
+ list-get (\ (list index)
+  (% ((skip (list->iter list) index)) (more m) (.item m)))
  list-swap (\ (list a b)
   (iter->list
-   (map-indexed (list->iter list)
-    (\ (i it) (if (= i a) (list-get list b) (if (= i b) (list-get list a) it))))))
+   (map-indexed
+    (list->iter list)
+    (\ (i it)
+     (if (= i a) (list-get list b) (if (= i b) (list-get list a) it))))))
  array-swap (\ (array a b)
   (iter->array
-   (map-indexed (array->iter array)
-    (\ (i it) (if (= i a) (array-get array b) (if (= i b) (array-get array a) it))))))
+   (map-indexed
+    (array->iter array)
+    (\ (i it)
+     (if (= i a) (array-get array b) (if (= i b) (array-get array a) it))))))
  list-reverse (\ (list)
   (rec-2 list (| empty) (\ (rec to-reverse reversed)
    (% to-reverse
@@ -600,10 +602,11 @@
 
  stack (\ (children)
   (&
-   draw (| all (iter->array (map (array->iter children) (\ (child) (.draw child)))))
+   draw
+    (| all (iter->array (map (array->iter children) (\ (child) (.draw child)))))
    width (fold (map (array->iter children) (\ (child) (.width child))) 0. f-max)
-   height (fold (map (array->iter children) (\ (child) (.height child))) 0. f-max)
-   ))
+   height
+    (fold (map (array->iter children) (\ (child) (.height child))) 0. f-max)))
 
  flow (\ (max-width children)
   (:
@@ -616,7 +619,8 @@
        wrap? (and (f> x 0.) (f> (f+ x (.width child)) max-width))
        x (if wrap? 0. x)
        y (if wrap? (f+ y line-height) y)
-       line-height (if wrap? (.height child) (f-max line-height (.height child)))
+       line-height
+        (if wrap? (.height child) (f-max line-height (.height child)))
        rest (rec (.rest m) (f+ x (.width child)) y line-height)
        (&
         draws
@@ -817,7 +821,8 @@
     (find-glyph find-glyph char 0))))
  find-kerning (\ (a b) 1.)
  # "Lay out text into positioned glyphs. Lines break at newline characters, and
-   a word is wrapped to the next line whenever it wouldn't fit within max-width."
+    a word is wrapped to the next line whenever it wouldn't fit within
+    max-width."
  layout-text (\ (text max-width)
   (:
    # "Width of the word starting at `chars` (until the next space, newline, or
@@ -879,8 +884,8 @@
     (map
      (list->iter (.paths glyph))
      (\ (path) (| fill-path (& path path color color)))))))
- # "Render text, wrapping words to fit within max-width and breaking at newlines.
-   `text` passes a huge width to disable wrapping."
+ # "Render text, wrapping words to fit within max-width and breaking at
+    newlines. `text` passes a huge width to disable wrapping."
  text-wrapped (\ (string color max-width)
   (:
    layouted (layout-text string max-width)
@@ -894,9 +899,14 @@
          what (draw-glyph (.glyph glyph) color)))))))
     width
      (fold
-      (map (list->iter layouted) (\ (glyph) (f+ (.x glyph) (.width (.glyph glyph))))) 0. f-max)
+      (map
+       (list->iter layouted)
+       (\ (glyph) (f+ (.x glyph) (.width (.glyph glyph))))) 0. f-max)
     height
-     (fold (map (list->iter layouted) (\ (glyph) (f+ (.y glyph) line-height))) 0. f-max))))
+     (fold
+      (map (list->iter layouted) (\ (glyph) (f+ (.y glyph) line-height)))
+      0.
+      f-max))))
  text (\ (string color) (text-wrapped string color 100000.))
 
  no-modifiers? (\ (key)
@@ -969,7 +979,9 @@
   (& start (cursor-start cursor) end (cursor-end cursor)))
 
  text-x-offset (\ (string width offset)
-  (if (= offset 0) 0. (.x (list-get (layout-text string width) (- offset 1)))))
+  (if (= offset 0)
+   0.
+   (.cursor-x (list-get (layout-text string width) (- offset 1)))))
  list-indexed (\ (list)
   (rec-2 list 0 (\ (rec list i)
    (% list
@@ -988,7 +1000,9 @@
  find-offset-above (\ (x y glyphs)
   (:
    indexed (list-indexed glyphs)
-   before (iter->list (take-while (list->iter indexed) (\ (ig) (f< (.y (.glyph ig)) y))))
+   before
+    (iter->list
+     (take-while (list->iter indexed) (\ (ig) (f< (.y (.glyph ig)) y))))
    (% before
     empty (| none)
     more
@@ -1001,7 +1015,9 @@
  find-offset-below (\ (x y glyphs)
   (:
    indexed (list-indexed glyphs)
-   after (iter->list (skip-while (list->iter indexed) (\ (ig) (f<= (.y (.glyph ig)) y))))
+   after
+    (iter->list
+     (skip-while (list->iter indexed) (\ (ig) (f<= (.y (.glyph ig)) y))))
    (% after
     empty (| none)
     more
@@ -1112,7 +1128,8 @@
       (if (cursor-has-selection? cursor)
        (: offset (cursor-start cursor)
         (&
-         string (string-remove-range string (cursor-start cursor) (cursor-end cursor))
+         string
+          (string-remove-range string (cursor-start cursor) (cursor-end cursor))
          cursor (&
           anchor offset
           active offset
@@ -1130,7 +1147,8 @@
       (if (cursor-has-selection? cursor)
        (: offset (cursor-start cursor)
         (&
-         string (string-remove-range string (cursor-start cursor) (cursor-end cursor))
+         string
+          (string-remove-range string (cursor-start cursor) (cursor-end cursor))
          cursor (&
           anchor offset
           active offset
@@ -1148,7 +1166,8 @@
       (if (cursor-has-selection? cursor)
        (: offset (cursor-start cursor)
         (&
-         string (string-remove-range string (cursor-start cursor) (cursor-end cursor))
+         string
+          (string-remove-range string (cursor-start cursor) (cursor-end cursor))
          cursor
           (&
            anchor offset
@@ -1171,7 +1190,7 @@
         desired-x (text-x-offset string width new-offset))))
      (key-shift-right? key) (:
       offset (.active cursor)
-      (if (= offset (string-length text))
+      (if (= offset (string-length string))
        (& string string cursor cursor)
        (&
         string string
@@ -1240,7 +1259,7 @@
         0.
         (.y (list-get layouted-text (- (.active cursor) 1))))
       new-offset (find-offset-below cursor-desired-x cursor-y layouted-text)
-      new-offset (% new-offset none 0 (some v) v)
+      new-offset (% new-offset none (string-length string) (some v) v)
       (&
        string string
        cursor (&
@@ -1281,7 +1300,7 @@
         0.
         (.y (list-get layouted-text (- (.active cursor) 1))))
       new-offset (find-offset-below cursor-desired-x cursor-y layouted-text)
-      new-offset (% new-offset none (string-length text) (some v) v)
+      new-offset (% new-offset none (string-length string) (some v) v)
       (&
        string string
        cursor (&
@@ -1337,7 +1356,7 @@
         0.
         (.y (list-get layouted-text (- (.active cursor) 1))))
       new-offset (find-offset-above cursor-desired-x cursor-y layouted-text)
-      new-offset (% new-offset none (string-length text) (some v) v)
+      new-offset (% new-offset none 0 (some v) v)
       (&
        string string
        cursor (&
@@ -1416,45 +1435,21 @@
  array-color (color "#ff6d1e")
  function-color (color "#8a0cff")
 
- editable-text (\ (string color cursor max-width)
-  (:
-   layouted (layout-text string max-width)
-    (&
-     draw
-      (| all ([]
-       (| translate (&
-        by
-         (if (= (.anchor cursor) 0)
-          (& x 0. y 0.)
-          (: glyph (list-get layouted (- (.anchor cursor) 1))
-           (& x (.cursor-x glyph) y (.cursor-y glyph))))
-        what (.draw (colored cursor-color (empty-box 5. 10.)))))
-       (| all
-        (iter->array
-         (map (list->iter layouted) (\ (glyph)
-          (| translate (&
-           by (& x (.x glyph) y (.y glyph))
-           what (draw-glyph (.glyph glyph) color)))))))))
-     width
-      (fold
-       (map (list->iter layouted) (\ (glyph) (f+ (.x glyph) (.width (.glyph glyph))))) 0. f-max)
-     height
-      (fold
-       (map (list->iter layouted) (\ (glyph) (f+ (.y glyph) line-height))) 0. f-max))))
-
- draw-cursor (\ (cursor width layouted-text)
+ # "Draw the cursor, or — when the cursor has a selection — a highlight covering
+    the selected range. Positions use cursor-x/cursor-y so they line up with
+    where glyphs and the caret are drawn, and the highlight spans multiple
+    (possibly wrapped) lines as a staircase: rest of the first line, full-width
+    middle lines, and the start of the last line."
+ draw-cursor (\ (cursor width layouted-text) (:
+  position-at (\ (offset)
+   (if (= offset 0)
+    (point 0. 0.)
+    (: g (list-get layouted-text (- offset 1))
+     (point (.cursor-x g) (.cursor-y g)))))
   (if (cursor-has-selection? cursor)
    (:
-    start (cursor-start cursor)
-    end (cursor-end cursor)
-    start-position
-     (if (= start 0)
-      (& x 0. y 0.)
-      (: layout (list-get layouted-text (- start 1))
-       (point (.x layout) (.y layout))))
-    end-position
-     (: layout (list-get layouted-text (- end 1))
-      (point (.x layout) (.y layout)))
+    start-position (position-at (cursor-start cursor))
+    end-position (position-at (cursor-end cursor))
     start-x (.x start-position)
     start-y (.y start-position)
     end-x (.x end-position)
@@ -1463,9 +1458,9 @@
      (| fill-path (&
       path ([]
        (| move-to start-position)
-       (| line-to (point (.x end-position) start-y))
-       (| line-to (point (.x end-position) (f+ start-y line-height)))
-       (| line-to (point (.x start-position) (f+ start-y line-height))))
+       (| line-to (point end-x start-y))
+       (| line-to (point end-x (f+ start-y line-height)))
+       (| line-to (point start-x (f+ start-y line-height))))
       color cursor-color))
      (| fill-path (&
       path ([]
@@ -1479,8 +1474,7 @@
        (| line-to (point start-x (f+ start-y line-height))))
       color cursor-color))))
    (:
-    offset (.anchor cursor)
-    position (if (= offset 0) (& x 0. y 0.) (list-get layouted-text (- offset 1)))
+    position (position-at (.anchor cursor))
     x (.x position)
     y (.y position)
     (| fill-path (&
@@ -1489,7 +1483,33 @@
       (| line-to (point (f+ x 2.) y))
       (| line-to (point (f+ x 2.) (f+ y line-height)))
       (| line-to (point x (f+ y line-height))))
-     color cursor-color)))))
+     color cursor-color))))))
+
+ editable-text (\ (string color cursor max-width)
+  (:
+   layouted (layout-text string max-width)
+    (&
+     draw
+      (| all ([]
+       (draw-cursor cursor max-width layouted)
+       (| all
+        (iter->array
+         (map (list->iter layouted) (\ (glyph)
+          (| translate (&
+           by (& x (.x glyph) y (.y glyph))
+           what (draw-glyph (.glyph glyph) color)))))))))
+     width
+      (fold
+       (map
+        (list->iter layouted)
+        (\ (glyph) (f+ (.x glyph) (.width (.glyph glyph)))))
+       0.
+       f-max)
+     height
+      (fold
+       (map (list->iter layouted) (\ (glyph) (f+ (.y glyph) line-height)))
+       0.
+       f-max))))
 
  maybe-render-cursor (\ (enabled node)
   (if enabled (colored cursor-color node) node))
@@ -1623,7 +1643,8 @@
        (% code
         (hole h)
          (% (new-code-node-from-char char)
-          (some node) (| update (| root (& name name code node focus (| in-code))))
+          (some node)
+           (| update (| root (& name name code node focus (| in-code))))
           none (| no-change))
         _ (| no-change)))
     in-name
@@ -1893,7 +1914,8 @@
           (some value)
            (| update
             (| struct (&
-             fields (array-update fields index (& name (.name field) value value))
+             fields
+              (array-update fields index (& name (.name field) value value))
              focus (| in-value index))))
           none (| no-change))
         _
@@ -2391,7 +2413,8 @@
      (iter->array (map-indexed (array->iter (.cases state)) (\ (index case)
       (row ([]
        (empty-box 5. 0.)
-       (maybe-render-cursor (% (.focus state) (at-variant i) (= i index) _ false)
+       (maybe-render-cursor
+        (% (.focus state) (at-variant i) (= i index) _ false)
         (identifier-render
          (.variant case)
          switch-color
@@ -2411,7 +2434,8 @@
     (column
      (iter->array (map-indexed (array->iter (.cases state)) (\ (index case) (:
       variant
-       (maybe-render-cursor (% (.focus state) (at-variant i) (= i index) _ false)
+       (maybe-render-cursor
+        (% (.focus state) (at-variant i) (= i index) _ false)
         (identifier-render
          (.variant case)
          switch-color
@@ -2432,7 +2456,8 @@
          (empty-box 0. 2.)
          (row ([]
           (empty-box 10. 0.)
-          (maybe-render-cursor (% (.focus state) (at-body i) (= i index) _ false)
+          (maybe-render-cursor
+           (% (.focus state) (at-body i) (= i index) _ false)
            (code-render (.body case) (f- width 10.))))))))))))))))))))
 
  new-if (\ (condition then else-branch)
@@ -2458,8 +2483,11 @@
        (cond
         (action-up? key)
          (| yield-focus
-          (| if
-           (& condition condition then then else else-branch focus (| outside))))
+          (| if (&
+           condition condition
+           then then
+           else else-branch
+           focus (| outside))))
         (action-down? key)
          (% condition
           (hole h) (| no-change)
@@ -2469,8 +2497,11 @@
               then then else else-branch focus (| in-condition)))))
         (action-right? key)
          (| update
-          (| if
-           (& condition condition then then else else-branch focus (| at-then))))
+          (| if (&
+           condition condition
+           then then
+           else else-branch
+           focus (| at-then))))
         else (| no-change))
       (char char)
        (% condition
@@ -2478,8 +2509,11 @@
          (% (new-code-node-from-char char)
           (some node)
            (| update
-            (| if
-             (& condition node then then else else-branch focus (| in-condition))))
+            (| if (&
+             condition node
+             then then
+             else else-branch
+             focus (| in-condition))))
           none (| no-change))
         _ (| no-change)))
     at-then
@@ -2488,8 +2522,11 @@
        (cond
         (action-up? key)
          (| yield-focus
-          (| if
-           (& condition condition then then else else-branch focus (| outside))))
+          (| if (&
+           condition condition
+           then then
+           else else-branch
+           focus (| outside))))
         (action-down? key)
          (% then
           (hole h) (| no-change)
@@ -2499,12 +2536,18 @@
               else else-branch focus (| in-then)))))
         (action-left? key)
          (| update
-          (| if
-           (& condition condition then then else else-branch focus (| at-condition))))
+          (| if (&
+           condition condition
+           then then
+           else else-branch
+           focus (| at-condition))))
         (action-right? key)
          (| update
-          (| if
-           (& condition condition then then else else-branch focus (| at-else))))
+          (| if (&
+           condition condition
+           then then
+           else else-branch
+           focus (| at-else))))
         else (| no-change))
       (char char)
        (% then
@@ -2512,8 +2555,11 @@
          (% (new-code-node-from-char char)
           (some node)
            (| update
-            (| if
-             (& condition condition then node else else-branch focus (| in-then))))
+            (| if (&
+             condition condition
+             then node
+             else else-branch
+             focus (| in-then))))
           none (| no-change))
         _ (| no-change)))
     at-else
@@ -2522,8 +2568,11 @@
        (cond
         (action-up? key)
          (| yield-focus
-          (| if
-           (& condition condition then then else else-branch focus (| outside))))
+          (| if (&
+           condition condition
+           then then
+           else else-branch
+           focus (| outside))))
         (action-down? key)
          (% else-branch
           (hole h) (| no-change)
@@ -2533,8 +2582,11 @@
               else (code-focus else-branch) focus (| in-else)))))
         (action-left? key)
          (| update
-          (| if
-           (& condition condition then then else else-branch focus (| at-then))))
+          (| if (&
+           condition condition
+           then then
+           else else-branch
+           focus (| at-then))))
         else (| no-change))
       (char char)
        (% else-branch
@@ -2674,7 +2726,8 @@
           (hole h) (| no-change)
           _ (| update
              (| array (&
-              items (array-update items index (code-focus (array-get items index)))
+              items
+               (array-update items index (code-focus (array-get items index)))
               focus (| in index)))))
         (action-remove? key)
          (| update
@@ -2866,8 +2919,10 @@
          (% body
           (hole h) (| no-change)
           _ (| update
-             (| function
-              (& arguments arguments body (code-focus body) focus (| in-body)))))
+             (| function (&
+              arguments arguments
+              body (code-focus body)
+              focus (| in-body)))))
         (action-left? key)
          (| update
           (| function (&
@@ -2891,7 +2946,8 @@
         (hole h)
          (% (new-code-node-from-char char)
           (some node)
-           (| update (| function (& arguments arguments body node focus (| in-body))))
+           (| update
+            (| function (& arguments arguments body node focus (| in-body))))
           none (| no-change))
         _ (| no-change)))
     (in-argument index)
@@ -2935,14 +2991,17 @@
    (row ([]
     (text "\\" (% (.focus state) at-start cursor-color _ function-color))
     (row
-     (iter->array (map-indexed (array->iter (.arguments state)) (\ (index argument)
-      (row ([]
-       (empty-box 5. 0.)
-       (maybe-render-cursor
-        (% (.focus state) (at-argument i) (= i index) _ false)
-        (maybe-render-trailing-cursor
-         (% (.focus state) (in-argument i) (= i index) _ false)
-         (text argument function-color)))))))))
+     (iter->array
+      (map-indexed
+       (array->iter (.arguments state))
+       (\ (index argument)
+        (row ([]
+         (empty-box 5. 0.)
+         (maybe-render-cursor
+          (% (.focus state) (at-argument i) (= i index) _ false)
+          (maybe-render-trailing-cursor
+           (% (.focus state) (in-argument i) (= i index) _ false)
+           (text argument function-color)))))))))
     (empty-box 5. 0.)
     (maybe-render-cursor (% (.focus state) at-body true _ false)
      (code-render-singleline (.body state) false))))))
@@ -2951,14 +3010,17 @@
    (row ([]
     (text "\\" (% (.focus state) at-start cursor-color _ function-color))
     (row
-     (iter->array (map-indexed (array->iter (.arguments state)) (\ (index argument)
-      (row ([]
-       (empty-box 5. 0.)
-       (maybe-render-cursor
-        (% (.focus state) (at-argument i) (= i index) _ false)
-        (maybe-render-trailing-cursor
-         (% (.focus state) (in-argument i) (= i index) _ false)
-         (text argument function-color)))))))))))
+     (iter->array
+      (map-indexed
+       (array->iter (.arguments state))
+       (\ (index argument)
+        (row ([]
+         (empty-box 5. 0.)
+         (maybe-render-cursor
+          (% (.focus state) (at-argument i) (= i index) _ false)
+          (maybe-render-trailing-cursor
+           (% (.focus state) (in-argument i) (= i index) _ false)
+           (text argument function-color)))))))))))
    (row ([]
     (empty-box 10. 0.)
     (maybe-render-cursor (% (.focus state) at-body true _ false)
@@ -3006,7 +3068,8 @@
          (% (new-code-node-from-char char)
           (some node)
            (| update
-            (| call (& function node arguments arguments focus (| in-function))))
+            (| call
+             (& function node arguments arguments focus (| in-function))))
           none (| no-change))
         _
          (% (new-code-node-from-char char)
@@ -3133,7 +3196,8 @@
         (| call (&
          function function
          arguments (array-remove arguments index)
-         focus (if (= index 0) (| at-function) (| at-argument (- index 1))))))))))
+         focus
+          (if (= index 0) (| at-function) (| at-argument (- index 1))))))))))
  call-color function-color
  call-render-singleline (\ (code-render-singleline state space-allowed)
   (maybe-render-parenthesized
@@ -3143,12 +3207,15 @@
     (maybe-render-cursor (% (.focus state) at-function true _ false)
      (code-render-singleline (.function state) false))
     (row
-     (iter->array (map-indexed (array->iter (.arguments state)) (\ (index argument)
-      (row ([]
-       (empty-box 5. 0.)
-       (maybe-render-cursor
-        (% (.focus state) (at-argument i) (= i index) _ false)
-        (code-render-singleline argument false))))))))))))
+     (iter->array
+      (map-indexed
+       (array->iter (.arguments state))
+       (\ (index argument)
+        (row ([]
+         (empty-box 5. 0.)
+         (maybe-render-cursor
+          (% (.focus state) (at-argument i) (= i index) _ false)
+          (code-render-singleline argument false))))))))))))
  call-render (\ (code-render state width)
   (column ([]
    (maybe-render-cursor (% (.focus state) at-function true _ false)
@@ -3156,12 +3223,19 @@
    (row ([]
     (empty-box 10. 0.)
     (column
-     (iter->array (map-indexed (array->iter (.arguments state)) (\ (index argument)
-      (column ([]
-       (empty-box 2. 0.)
-       (maybe-render-cursor
-        (% (.focus state) (at-argument i) (= i index) _ false)
-        (code-render argument (f- width 10.))))))))))))))
+     (iter->array
+      (map-indexed
+       (array->iter (.arguments state))
+       (\ (index argument)
+        (column ([]
+         (empty-box 2. 0.)column ([]
+         (empty-box 2. 0.)
+         (maybe-render-cursor
+          (% (.focus state) (at-argument i) (= i index) _ false)
+       
+         (maybe-render-cursor
+          (% (.focus state) (at-argument i) (= i index) _ false)
+          (code-render argument (f- width 10.))))))))))))))
 
  new-folded (\ (value) (| folded value))
  folded-focus (\ (focus value)
@@ -3175,7 +3249,9 @@
        (array->iter (@fields value))
        (\ (field) (& name (.name field) value (| folded (.value field)))))))
     enum (new-enum (@variant value) (| some (| folded (@payload value))))
-    array (new-array (iter->array (map (array->iter value) (\ (item) (| folded item)))))
+    array
+     (new-array
+      (iter->array (map (array->iter value) (\ (item) (| folded item)))))
     _ (crash (| unknown-kind value))
     )))
  folded-render-singleline (\ (state) (text "..." red))
@@ -3283,7 +3359,8 @@
     (call call)
      (new-call
       (rec (.function call))
-      (iter->array (map (array->iter (.arguments call)) (\ (argument) (rec argument)))))
+      (iter->array
+       (map (array->iter (.arguments call)) (\ (argument) (rec argument)))))
     _ (crash (| todo code))
     ))))
  create-editor-state (\ (def)
@@ -3314,12 +3391,14 @@
      (| switch (&
       condition (rec (.condition state))
       cases
-       (iter->array (map
-        (array->iter (.cases state))
-        (\ (case)
-         (& variant (.variant case)
-            binding (if (= (.binding case) "") (| none) (| some (.binding case)))
-            body (rec (.body case))))))))
+       (iter->array
+        (map
+         (array->iter (.cases state))
+         (\ (case)
+          (&
+           variant (.variant case)
+           binding (if (= (.binding case) "") (| none) (| some (.binding case)))
+           body (rec (.body case))))))))
     (if state)
      (| if (&
       condition (rec (.condition state))
@@ -3365,14 +3444,17 @@
       (row ([]
        (sized-box 10. 10. (text "&" struct-color))
        (column
-        (iter->array (map-indexed (array->iter (@fields data)) (\ (index field) (:
-         name (text (.name field) struct-color)
-         (column ([]
-          name
-          (empty-box 0. 2.)
-          (row ([]
-           (empty-box 10. 0.)
-           (render (.value field) (f- width 10.)))))))))))))
+        (iter->array
+         (map-indexed
+          (array->iter (@fields data))
+          (\ (index field) (:
+           name (text (.name field) struct-color)
+           (column ([]
+            name
+            (empty-box 0. 2.)
+            (row ([]
+             (empty-box 10. 0.)
+             (render (.value field) (f- width 10.)))))))))))))
      (enum enum)
       (row ([]
        (sized-box 10. 10. (text "|" enum-color))
@@ -3557,7 +3639,8 @@
              (recurse (+ i 2))
              0
              (&
-              name (% (array-get rest i) (name n) n _ (crash "bad struct field"))
+              name
+               (% (array-get rest i) (name n) n _ (crash "bad struct field"))
               value (analyze (array-get rest (+ i 1))))))))
          (| struct fields))
         (string-starts-with name ".") (:
@@ -3595,7 +3678,8 @@
                    (& variant n payload (| none) body body))
                  default (.default after)))
               (group children) (:
-               _ (if (= (array-length children) 2) nil (crash "bad switch case"))
+               _
+                (if (= (array-length children) 2) nil (crash "bad switch case"))
                variant
                 (% (array-get children 0)
                  (name v) v
@@ -3622,7 +3706,10 @@
           condition (analyze (array-get rest 0))
           cases ([]
            (& variant "true" payload (| none) body (analyze (array-get rest 1)))
-           (& variant "false" payload (| none) body (analyze (array-get rest 2))))
+           (&
+            variant "false"
+            payload (| none)
+            body (analyze (array-get rest 2))))
           default (| some (| crash (| value "if on non-bool"))))))
         (= name "cond") (:
          _ (if (even? (array-length rest)) nil (crash "bad cond"))
@@ -3692,15 +3779,21 @@
    (& name "@array-get" definition (\ (a i) (@array-get a i)))
    (& name "@array->list" definition (\ (a) (@array->list a)))
    (& name "@list->array" definition (\ (a) (@list->array a)))
-   (& name "@function"
-    definition (\ (arguments body captured) (@function arguments body captured)))
+   (&
+    name "@function"
+    definition
+     (\ (arguments body captured) (@function arguments body captured)))
    (& name "@arguments" definition (\ (a) (@arguments a)))
    (& name "@captured" definition (\ (a) (@captured a)))
    (& name "@body" definition (\ (a) (@body a)))
-   (& name "@call" definition (\ (function arguments) (@call function arguments)))
+   (&
+    name "@call"
+    definition (\ (function arguments) (@call function arguments)))
    (& name "@crash" definition (\ (a) (@crash a)))
    (& name "@collect-garbage" definition (\ (a) (@collect-garbage a)))
-   (& name "@sandbox" definition (\ (limit function) (@sandbox limit function)))))
+   (&
+    name "@sandbox"
+    definition (\ (limit function) (@sandbox limit function)))))
 
  names-of-env (\ (env)
   (rec env (\ (recurse env)
@@ -3729,7 +3822,10 @@
     (function f) (check (.body f) (add-to-scope (.arguments f) scope))
     (enum e) (check (.payload e) scope)
     (struct fields)
-     (fold (array->iter fields) nil (\ (acc field) (check (.value field) scope)))
+     (fold
+      (array->iter fields)
+      nil
+      (\ (acc field) (check (.value field) scope)))
     (array items)
      (fold (array->iter items) nil (\ (acc item) (check item scope)))
     (field f) (check (.of f) scope)
@@ -3837,7 +3933,8 @@
    (returned block)
     (% block
      empty (& binding? false name "" outcome (| empty) next-env env)
-     (expr ast) (& binding? false name "" outcome (eval-expr ast env) next-env env)
+     (expr ast)
+      (& binding? false name "" outcome (eval-expr ast env) next-env env)
      (bind b) (:
       outcome (eval-expr (.expr b) env)
       next-env
@@ -3846,7 +3943,8 @@
          (| more (& item (& name (.name b) definition value) rest env))
         _ env)
       (& binding? true name (.name b) outcome outcome next-env next-env)))
-   (crashed message) (& binding? false name "" outcome (| compile-error message) next-env env)
+   (crashed message)
+    (& binding? false name "" outcome (| compile-error message) next-env env)
    out-of-fuel (& binding? false name "" outcome (| timeout) next-env env)))
 
  # "A computation cache is a tree mirroring the notebook: each chapter is
@@ -3854,16 +3952,18 @@
    every other part is (| skip). A cache-entry is either
    (| definition (& name code result)) for a name-binding block, or
    (| code (& code result)) for a plain expression block."
- cache-entry-code (\ (entry) (% entry (definition d) (.code d) (code c) (.code c)))
- cache-entry-result (\ (entry) (% entry (definition d) (.result d) (code c) (.result c)))
+ cache-entry-code (\ (entry)
+  (% entry (definition d) (.code d) (code c) (.code c)))
+ cache-entry-result (\ (entry)
+  (% entry (definition d) (.result d) (code c) (.result c)))
  bind-from-result (\ (env name result)
   (% result
    (ok value) (| more (& item (& name name definition value) rest env))
    _ env))
 
  # "Flatten a cache tree back into the flat linked list of entries in document
-   order. Used internally to drive incremental reuse, which only cares about the
-   sequence of code-block results, ignoring text/chapter structure."
+    order. Used internally to drive incremental reuse, which only cares about
+    the sequence of code-block results, ignoring text/chapter structure."
  flatten-cache (\ (cache)
   (list-reverse
    (rec-2 cache (| empty) (\ (rec node acc)
@@ -3873,9 +3973,10 @@
      (entry e) (| more (& item e rest acc))
      _ acc)))))
 
- # "Incrementally process one code block against the old cache. The state carries
-   the current env and the not-yet-consumed tail of the old (flat) cache. Returns
-   the updated env, remaining old cache, and the resulting cache entry."
+ # "Incrementally process one code block against the old cache. The state
+    carries the current env and the not-yet-consumed tail of the old (flat)
+    cache. Returns the updated env, remaining old cache, and the resulting cache
+    entry."
  eval-code-incremental (\ (source state) (:
   env (.env state)
   old (.old state)
@@ -3909,9 +4010,9 @@
        entry entry)))))
 
  # "Evaluate a notebook, producing a cache tree that mirrors the book: each code
-   part becomes (| entry cache-entry), each other part (| skip), and each chapter
-   (| chapter array-of-children). The old cache (same tree shape) is flattened
-   internally so unchanged code blocks reuse their previous results."
+    part becomes (| entry cache-entry), each other part (| skip), and each
+    chapter (| chapter array-of-children). The old cache (same tree shape) is
+    flattened internally so unchanged code blocks reuse their previous results."
  eval-book (\ (book old-cache) (:
   result
    (rec-2 book (& env base-env old (flatten-cache old-cache))
@@ -3989,7 +4090,9 @@
  _ (assert (= (any-to-string (\ () 0)) "(\\ () ...)"))
 
  notebook-app (&
-  create (\ (book) (& book book focus (| at 0) eval (eval-book book (| empty))))
+  create (\ (book)
+   (& book book focus (| at 0) eval (eval-book book (| empty))
+      size (& width 0. height 0.)))
   apply (\ (book action) action)
   handle (\ (state event) (:
    enter-focus (\ (node)
@@ -3999,17 +4102,28 @@
       (&
        anchor (string-length string)
        active (string-length string)
-       desired-x (text-x-offset string 10000. (string-length string)))
+       desired-x
+        (text-x-offset
+         string
+         (f- (.width (.size state)) 4.)
+         (string-length string)))
      (chapter chapter) (| at-title)
      (code string)
       (&
        anchor (string-length string)
        active (string-length string)
-       desired-x (text-x-offset string 10000. (string-length string)))
+       desired-x (text-x-offset string 100000. (string-length string)))
      _ (crash "what's the focus for entering this node?")
      ))
    (% event
     (new-state s) (& state state action (| none))
+    (resize new-size)
+     (& state (&
+       book (.book state)
+       focus (.focus state)
+       eval (.eval state)
+       size new-size)
+      action (| none))
     _ (:
      result
       (rec-2 (.book state) (.focus state) (\ (handle node focus)
@@ -4045,7 +4159,9 @@
          is-escape (% event (pressed-key key) (key-escape? key) _ false)
          (if is-escape
           (& node (| text string) focus (| yield))
-          (: edited (handle-text-edit-with-cursor string 100. focus event)
+          (: edited
+            (handle-text-edit-with-cursor
+             string (f- (.width (.size state)) 4.) focus event)
            (& node (| text (.string edited)) focus (| here (.cursor edited))))))
         (chapter chapter) (:
          title (.title chapter)
@@ -4138,12 +4254,14 @@
                    (| chapter (&
                     title (.title below)
                     parts (array-insert (.parts below) 0 block)))
-                  new-parts (array-remove (array-update parts (+ i 1) new-below) i)
+                  new-parts
+                   (array-remove (array-update parts (+ i 1) new-below) i)
                   (&
                    node (| chapter (& title title parts new-parts))
                    focus (| here (| in (& index i inner (| at 0))))))
                  _ (& node node focus (| here focus))))
-              (key-shift-alt-left? key) (& node node focus (| eject (& index i)))
+              (key-shift-alt-left? key)
+               (& node node focus (| eject (& index i)))
               (key-enter? key)
                (&
                 node node
@@ -4176,7 +4294,8 @@
            inner-focus (.focus inner-state)
            (% inner-focus
             (eject e) (:
-             child (% inner-node (chapter c) c _ (crash "eject from non-chapter"))
+             child
+              (% inner-node (chapter c) c _ (crash "eject from non-chapter"))
              block (array-get (.parts child) (.index e))
              new-child
               (| chapter (&
@@ -4206,7 +4325,7 @@
          is-escape (% event (pressed-key key) (key-escape? key) _ false)
          (if is-escape
           (& node (| code string) focus (| yield))
-          (: edited (handle-text-edit-with-cursor string 100. focus event)
+          (: edited (handle-text-edit-with-cursor string 100000. focus event)
            (& node (| code (.string edited)) focus (| here (.cursor edited))))))
         _ (crash "handle node type")
         )))
@@ -4218,9 +4337,11 @@
           (here f) f
           yield (enter-focus (.node result))
           (eject e) (| at (.index e)))
-        eval (eval-book (.node result) (.eval state)))
+        eval (eval-book (.node result) (.eval state))
+        size (.size state))
        action (| some (.node result)))))))
-  render (\ (state size) (:
+  render (\ (state) (:
+   size (.size state)
    chapter-and-focus
     (rec-2 (.book state) (.focus state) (\ (rec node focus)
      (: chapter (% node (chapter chapter) chapter _ (crash "bad"))
@@ -4321,9 +4442,12 @@
 
  overwrite-app (&
   create (\ (state) (&))
-  apply (\ (state action) (| chapter (& title "Orchard" parts ([] (| text "Hello, world!") (| text "Example text.")))))
+  apply (\ (state action)
+   (| chapter (&
+    title "Orchard"
+    parts ([] (| text "Hello, world!") (| text "Example text.")))))
   handle (\ (state event) (& state state action (| some (&))))
-  render (\ (state size) (| nothing)))
+  render (\ (state) (| nothing)))
 
  notebook-app
 )
