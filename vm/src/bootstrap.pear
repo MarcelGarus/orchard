@@ -3567,82 +3567,19 @@
   ))
  )
 
- extend-env (\ (params args env)
-  (rec 0 (\ (recurse i)
-   (if (= i (array-length params))
-    env
-    (| more (&
-     item (& name (array-get params i) definition (array-get args i))
-     rest (recurse (+ i 1))))))))
-
- eval (\ (code env) (:
-  lookup (\ (env name)
-   (rec env (\ (rec env)
-    (% env
-     empty (crash (string-concat "unknown name " name))
-     (more m)
-      (if (= (.name (.item m)) name) (.definition (.item m)) (rec (.rest m)))))))
-  (rec-2 code env (\ (eval code env)
-   (% code
-    (value v) v
-    (name n) (lookup env n)
-    (call call) (:
-     function (eval (.function call) env)
-     args
-      (iter->array (map (array->iter (.arguments call)) (\ (arg) (eval arg env))))
-     (function args))
-    (function f)
-     (\ (args)
-      (: params (.arguments f)
-       _ (if (= (array-length params) (array-length args)) nil
-          (crash (| wrong-number-of-arguments)))
-       (eval (.body f) (extend-env params args env))))
-    (enum e) (@enum (.variant e) (eval (.payload e) env))
-    (struct fields)
-     (@struct
-      (iter->array
-       (map (array->iter fields)
-        (\ (field) (& name (.name field) value (eval (.value field) env))))))
-    (switch s) (:
-     condition (eval (.condition s) env)
-     cases (.cases s)
-     take-default (\ ()
-      (% (.default s)
-       (some d) (eval d env)
-       none (crash (| no-matching-case))))
-     (if (= (@kind condition) (| enum))
-      (: variant (@variant condition)
-       (rec 0 (\ (recurse i)
-        (if (= i (array-length cases))
-         (take-default)
-         (: case (array-get cases i)
-          (if (= (.variant case) variant)
-           (% (.payload case)
-            none (eval (.body case) env)
-            (some name)
-             (eval (.body case)
-              (| more
-               (& item (& name name definition (@payload condition)) rest env))))
-           (recurse (+ i 1))))))))
-      (take-default)))
-    (crash c) (crash (eval c env))
-    _ (crash (| unknown-code code))
-   )))))
-
  base-env
   (array->list ([]
-   (& name "@add" definition (\ (args) (@add (array-get args 0) (array-get args 1))))
-   (& name "@subtract" definition (\ (args) (@subtract (array-get args 0) (array-get args 1))))
-   (& name "@multiply" definition (\ (args) (@multiply (array-get args 0) (array-get args 1))))
-   (& name "@divide" definition (\ (args) (@divide (array-get args 0) (array-get args 1))))
-   (& name "@modulo" definition (\ (args) (@modulo (array-get args 0) (array-get args 1))))
-   (& name "@shift-left" definition (\ (args) (@shift-left (array-get args 0) (array-get args 1))))
-   (& name "@shift-right" definition (\ (args) (@shift-right (array-get args 0) (array-get args 1))))
-   (& name "@and" definition (\ (args) (@and (array-get args 0) (array-get args 1))))
-   (& name "@or" definition (\ (args) (@or (array-get args 0) (array-get args 1))))
-   (& name "@xor" definition (\ (args) (@xor (array-get args 0) (array-get args 1))))
-   (& name "@compare" definition (\ (args) (@compare (array-get args 0) (array-get args 1))))))
-
+   (& name "@add" definition (\ (a b) (@add a b)))
+   (& name "@subtract" definition (\ (a b) (@subtract a b)))
+   (& name "@multiply" definition (\ (a b) (@multiply a b)))
+   (& name "@divide" definition (\ (a b) (@divide a b)))
+   (& name "@modulo" definition (\ (a b) (@modulo a b)))
+   (& name "@shift-left" definition (\ (a b) (@shift-left a b)))
+   (& name "@shift-right" definition (\ (a b) (@shift-right a b)))
+   (& name "@and" definition (\ (a b) (@and a b)))
+   (& name "@or" definition (\ (a b) (@or a b)))
+   (& name "@xor" definition (\ (a b) (@xor a b)))
+   (& name "@compare" definition (\ (a b) (@compare a b)))))
 
  names-of-env (\ (env)
   (rec env (\ (recurse env)
@@ -3681,13 +3618,82 @@
      (% (.default s) (some d) (check d scope) _ nil))
     _ nil))))
 
+ env-lookup (\ (env name)
+  (rec env (\ (rec env)
+   (% env
+    empty (crash (string-concat "unknown name " name))
+    (more m)
+     (if (= (.name (.item m)) name) (.definition (.item m)) (rec (.rest m)))))))
+
+ wrap-captured (\ (body names)
+  (rec names (\ (wrap names)
+   (% names
+    empty body
+    (more m)
+     (| let (&
+      name (.item m)
+      definition (| field (& of (| name "@captured") name (| value (.item m))))
+      body (wrap (.rest m))))))))
+ captured-struct (\ (names)
+  (| struct
+   (iter->array
+    (map (list->iter names) (\ (name) (& name name value (| name name)))))))
+
+ compile (\ (node bound env)
+  (@function
+   ([])
+   (rec-2 node bound (\ (compile node bound)
+    (% node
+     (value v) (| value v)
+     (name n)
+      (if (name-in-scope? bound n) (| name n) (| value (env-lookup env n)))
+     (struct fields)
+      (| struct
+       (iter->array
+        (map
+         (array->iter fields)
+         (\ (field)
+          (& name (.name field) value (compile (.value field) bound))))))
+     (field f) (| field (& of (compile (.of f) bound) name (.name f)))
+     (enum e)
+      (| enum (& variant (.variant e) payload (compile (.payload e) bound)))
+     (switch s)
+      (| switch (&
+       condition (compile (.condition s) bound)
+       cases
+        (iter->array
+         (map (array->iter (.cases s)) (\ (case)
+          (& variant (.variant case) payload (.payload case)
+             body (compile (.body case) bound)))))
+       default (% (.default s) (some d) (| some (compile d bound)) _ (| none))))
+     (array items)
+      (| array
+       (iter->array (map (array->iter items) (\ (item) (compile item bound)))))
+     (function f) (:
+      params (.arguments f)
+      (| make-function (&
+       arguments (| value params)
+       body
+        (| value
+         (wrap-captured (compile (.body f) (add-to-scope params bound)) bound))
+       captured (captured-struct bound))))
+     (call c)
+      (| call (&
+       function (compile (.function c) bound)
+       arguments
+        (iter->array
+         (map (array->iter (.arguments c)) (\ (a) (compile a bound))))))
+     (crash c) (| crash (compile c bound))
+     _ (crash (| cannot-compile node)))))
+   nil))
+
  eval-expr (\ (ast env)
   (% (@sandbox 100000 (\ ()
        (: analyzed (analyze ast)
         _ (check-scope analyzed (names-of-env env))
-        analyzed)))
-   (returned analyzed)
-    (% (@sandbox 100000 (\ () (eval analyzed env)))
+        (compile analyzed (| empty) env))))
+   (returned compiled)
+    (% (@sandbox 100000 compiled)
      (returned value) (| ok value)
      (crashed error) (| run-error error)
      out-of-fuel (| timeout))
