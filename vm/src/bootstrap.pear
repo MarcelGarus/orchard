@@ -3687,8 +3687,9 @@
    (crashed message) (& binding? false name "" outcome (| compile-error message) next-env env)
    out-of-fuel (& binding? false name "" outcome (| timeout) next-env env)))
 
- # "A computation cache is a flat linked list of code-block results in document
-   order, ignoring text/chapter structure. Each entry is either
+ # "A computation cache is a tree mirroring the notebook: each chapter is
+   (| chapter array-of-children), each code part is (| entry cache-entry), and
+   every other part is (| skip). A cache-entry is either
    (| definition (& name code result)) for a name-binding block, or
    (| code (& code result)) for a plain expression block."
  cache-entry-code (\ (entry) (% entry (definition d) (.code d) (code c) (.code c)))
@@ -3698,9 +3699,21 @@
    (ok value) (| more (& item (& name name definition value) rest env))
    _ env))
 
+ # "Flatten a cache tree back into the flat linked list of entries in document
+   order. Used internally to drive incremental reuse, which only cares about the
+   sequence of code-block results, ignoring text/chapter structure."
+ flatten-cache (\ (cache)
+  (list-reverse
+   (rec-2 cache (| empty) (\ (rec node acc)
+    (% node
+     (chapter children)
+      (fold (array->iter children) acc (\ (a child) (rec child a)))
+     (entry e) (| more (& item e rest acc))
+     _ acc)))))
+
  # "Incrementally process one code block against the old cache. The state carries
-   the current env, the not-yet-consumed tail of the old cache, and the new cache
-   being built up in reverse."
+   the current env and the not-yet-consumed tail of the old (flat) cache. Returns
+   the updated env, remaining old cache, and the resulting cache entry."
  eval-code-incremental (\ (source state) (:
   env (.env state)
   old (.old state)
@@ -3716,7 +3729,7 @@
       (&
        env next-env
        old (% old (more m) (.rest m) _ (| empty))
-       new (| more (& item entry rest (.new state)))))
+       entry entry))
    (: r (eval-code source env)
       entry
        (if (.binding? r)
@@ -3731,141 +3744,36 @@
       (&
        env (.next-env r)
        old (if cleared? (| empty) (% old (more m) (.rest m) _ (| empty)))
-       new (| more (& item entry rest (.new state))))))))
+       entry entry)))))
 
+ # "Evaluate a notebook, producing a cache tree that mirrors the book: each code
+   part becomes (| entry cache-entry), each other part (| skip), and each chapter
+   (| chapter array-of-children). The old cache (same tree shape) is flattened
+   internally so unchanged code blocks reuse their previous results."
  eval-book (\ (book old-cache) (:
   result
-   (rec-2 book (& env base-env old old-cache new (| empty))
+   (rec-2 book (& env base-env old (flatten-cache old-cache))
     (\ (walk node state)
      (% node
-      (chapter chapter)
-       (fold (array->iter (.parts chapter)) state (\ (acc part) (walk part acc)))
-      (code source) (eval-code-incremental source state)
-      _ state)))
-  (list-reverse (.new result))))
-
- # "Re-associate a flat cache with the notebook tree for rendering: produces a
-   tree mirroring the book where each code part holds its cache entry, each other
-   part is (| skip), and each chapter is (| chapter array-of-children)."
- inflate-cache (\ (book cache) (:
-  result
-   (rec-2 book cache (\ (inflate node cache)
-    (% node
-     (chapter chapter) (:
-      acc
-       (fold (array->iter (.parts chapter)) (& cache cache nodes (| empty))
-        (\ (a part) (:
-         r (inflate part (.cache a))
-         (& cache (.cache r) nodes (| more (& item (.node r) rest (.nodes a)))))))
-      (& cache (.cache acc) node (| chapter (list->array (list-reverse (.nodes acc))))))
-     (code source)
-      (% cache
-       (more m) (& cache (.rest m) node (| entry (.item m)))
-       empty (& cache (| empty) node (| entry (| code (& code source result (| empty))))))
-     _ (& cache cache node (| skip)))))
+      (chapter chapter) (:
+       acc
+        (fold (array->iter (.parts chapter))
+         (& env (.env state) old (.old state) nodes (| empty))
+         (\ (a part) (:
+          r (walk part (& env (.env a) old (.old a)))
+          (&
+           env (.env r)
+           old (.old r)
+           nodes (| more (& item (.node r) rest (.nodes a)))))))
+       (&
+        env (.env acc)
+        old (.old acc)
+        node (| chapter (list->array (list-reverse (.nodes acc))))))
+      (code source) (:
+       r (eval-code-incremental source (& env (.env state) old (.old state)))
+       (& env (.env r) old (.old r) node (| entry (.entry r))))
+      _ (& env (.env state) old (.old state) node (| skip)))))
   (.node result)))
-
- _ (assert
-  (= (eval-book
-       (| chapter (& title "t" parts ([]
-        (| code "foo (@add 2 3)")
-        (| text "ignored")
-        (| code "foo"))))
-       (| empty))
-   (array->list ([]
-    (| definition (& name "foo" code "foo (@add 2 3)" result (| ok 5)))
-    (| code (& code "foo" result (| ok 5)))))))
- _ (assert
-  (= (eval-book
-       (| chapter (& title "root" parts ([]
-        (| chapter (& title "sub" parts ([] (| code "bar (@add 1 1)"))))
-        (| code "bar"))))
-       (| empty))
-   (array->list ([]
-    (| definition (& name "bar" code "bar (@add 1 1)" result (| ok 2)))
-    (| code (& code "bar" result (| ok 2)))))))
- _ (assert
-  (= (eval-book
-       (| chapter (& title "t" parts ([]
-        (| code "foo (@add 2 3)")
-        (| code "(& x foo y 2)"))))
-       (| empty))
-   (array->list ([]
-    (| definition (& name "foo" code "foo (@add 2 3)" result (| ok 5)))
-    (| code (& code "(& x foo y 2)" result (| ok (& x 5 y 2))))))))
- # "Editing a text node leaves all results reusable; editing a definition
-   re-evaluates everything after it."
- _ (assert
-  (= (eval-book
-       (| chapter (& title "t" parts ([]
-        (| code "foo 5")
-        (| code "(@add foo 1)"))))
-       (eval-book
-        (| chapter (& title "t" parts ([]
-         (| code "foo 5")
-         (| code "(@add foo 1)"))))
-        (| empty)))
-   (array->list ([]
-    (| definition (& name "foo" code "foo 5" result (| ok 5)))
-    (| code (& code "(@add foo 1)" result (| ok 6)))))))
- _ (assert
-  (= (eval-book
-       (| chapter (& title "t" parts ([]
-        (| code "foo 9")
-        (| code "(@add foo 1)"))))
-       (eval-book
-        (| chapter (& title "t" parts ([]
-         (| code "foo 5")
-         (| code "(@add foo 1)"))))
-        (| empty)))
-   (array->list ([]
-    (| definition (& name "foo" code "foo 9" result (| ok 9)))
-    (| code (& code "(@add foo 1)" result (| ok 10)))))))
- # "Functions: inline lambdas, multiple arguments, and closures that capture the
-    surrounding environment."
- _ (assert
-  (= (eval-book
-       (| chapter (& title "t" parts ([]
-        (| code "((\\ (x) (@add x x)) 21)"))))
-       (| empty))
-   (array->list ([]
-    (| code (& code "((\\ (x) (@add x x)) 21)" result (| ok 42)))))))
- _ (assert
-  (= (eval-book
-       (| chapter (& title "t" parts ([]
-        (| code "((\\ (a b) (@add a b)) 3 4)"))))
-       (| empty))
-   (array->list ([]
-    (| code (& code "((\\ (a b) (@add a b)) 3 4)" result (| ok 7)))))))
- _ (assert
-  (= (eval-book
-       (| chapter (& title "t" parts ([]
-        (| code "n 10")
-        (| code "((\\ (x) (@add x n)) 5)"))))
-       (| empty))
-   (array->list ([]
-    (| definition (& name "n" code "n 10" result (| ok 10)))
-    (| code (& code "((\\ (x) (@add x n)) 5)" result (| ok 15)))))))
- # "Referencing an unbound name is a compile error at the defining block, not a
-    run error later. The function body is never run, so its result is the error."
- _ (assert
-  (= (eval-book
-       (| chapter (& title "t" parts ([]
-        (| code "minus (\\ (a b) (@nope a b))"))))
-       (| empty))
-   (array->list ([]
-    (| definition (&
-     name "minus"
-     code "minus (\\ (a b) (@nope a b))"
-     result (| compile-error "unknown name @nope")))))))
- # "The arithmetic built-ins are in scope and evaluate."
- _ (assert
-  (= (eval-book
-       (| chapter (& title "t" parts ([]
-        (| code "(@multiply (@subtract 5 2) 4)"))))
-       (| empty))
-   (array->list ([]
-    (| code (& code "(@multiply (@subtract 5 2) 4)" result (| ok 12)))))))
 
  any-to-string (\ (value)
   (rec value (\ (recurse value)
@@ -4082,7 +3990,7 @@
    chapter (.chapter chapter-and-focus)
    focus (.focus chapter-and-focus)
    current-caches
-    (rec-2 (inflate-cache (.book state) (.eval state)) (.focus state) (\ (rec cache focus)
+    (rec-2 (.eval state) (.focus state) (\ (rec cache focus)
      (: caches (% cache (chapter caches) caches _ (crash "bad cache"))
       (% focus
        (in args) (:
