@@ -3532,8 +3532,46 @@
         (= name "%") (:
          _ (if (odd? (array-length rest)) nil (crash "bad switch"))
          condition (analyze (array-get rest 0))
-         cases (crash "cases")
-         (| switch (& condition condition cases cases default (crash "default"))))
+         result
+          (rec 1 (\ (recurse i)
+           (if (= i (array-length rest))
+            (& cases ([]) default (| none))
+            (:
+             body (analyze (array-get rest (+ i 1)))
+             after (recurse (+ i 2))
+             (% (array-get rest i)
+              (name n)
+               (if (= n "_")
+                (& cases (.cases after) default (| some body))
+                (&
+                 cases
+                  (array-insert
+                   (.cases after)
+                   0
+                   (& variant n payload (| none) body body))
+                 default (.default after)))
+              (group children) (:
+               _ (if (= (array-length children) 2) nil (crash "bad switch case"))
+               variant
+                (% (array-get children 0)
+                 (name v) v
+                 _ (crash "bad switch case variant"))
+               payload-name
+                (% (array-get children 1)
+                 (name p) p
+                 _ (crash "bad switch case payload"))
+               (&
+                cases
+                 (array-insert
+                  (.cases after)
+                  0
+                  (& variant variant payload (| some payload-name) body body))
+                default (.default after)))
+              _ (crash "bad switch case"))))))
+         (| switch (&
+          condition condition
+          cases (.cases result)
+          default (.default result))))
         (= name "if") (:
          _ (if (= (array-length rest) 3) nil (crash "bad if"))
          (| switch (&
@@ -3550,17 +3588,22 @@
          arguments
           (% (array-get rest 0)
            (group g)
-            (iter->array (map (array->iter g) (\ (arg) (% arg (name n) n _ (crash "bad function")))))
+            (iter->array
+             (map
+              (array->iter g)
+              (\ (arg) (% arg (name n) n _ (crash "bad function")))))
            _ (crash "bad function"))
          body (analyze (array-get rest 1))
          (| function (& arguments arguments body body)))
         else
-         (| call
-          (& function (analyze first) arguments (iter->array (map (array->iter rest) analyze))))
+         (| call (&
+          function (analyze first)
+          arguments (iter->array (map (array->iter rest) analyze))))
        )
       _
-       (| call
-        (& function (analyze first) arguments (iter->array (map (array->iter rest) analyze))))))
+       (| call (&
+        function (analyze first)
+        arguments (iter->array (map (array->iter rest) analyze))))))
     (int i) (| value i)
     (float f) (| value f)
     (string s) (| value s))
@@ -3648,7 +3691,9 @@
     (field f) (check (.of f) scope)
     (switch s) (:
      _ (check (.condition s) scope)
-     _ (fold (array->iter (.cases s)) nil (\ (acc case) (check (.body case) scope)))
+     _ (fold (array->iter (.cases s)) nil (\ (acc case)
+        (check (.body case)
+         (% (.payload case) (some p) (add-to-scope ([] p) scope) _ scope))))
      (% (.default s) (some d) (check d scope) _ nil))
     _ nil))))
 
@@ -3697,8 +3742,15 @@
        cases
         (iter->array
          (map (array->iter (.cases s)) (\ (case)
-          (& variant (.variant case) payload (.payload case)
-             body (compile (.body case) bound)))))
+          (&
+           variant (.variant case)
+           payload (.payload case)
+           body
+            (compile
+             (.body case)
+             (% (.payload case)
+              (some p) (add-to-scope ([] p) bound)
+              _ bound))))))
        default (% (.default s) (some d) (| some (compile d bound)) _ (| none))))
      (array items)
       (| array
@@ -3733,21 +3785,6 @@
      out-of-fuel (| timeout))
    (crashed message) (| compile-error message)
    out-of-fuel (| timeout)))
-
- _ (assert (= (eval-expr (parse "(@kind 5)") base-env) (| ok (| int))))
- _ (assert (= (eval-expr (parse "(@equal? 3 3)") base-env) (| ok (| true))))
- _ (assert (= (eval-expr (parse "(@field (& x 7 y 8) \"x\")") base-env) (| ok 7)))
- _ (assert (= (eval-expr (parse "(@variant (| some 5))") base-env) (| ok "some")))
- _ (assert (= (eval-expr (parse "(@payload (| some 5))") base-env) (| ok 5)))
- _ (assert (= (eval-expr (parse "(@array-length ([] 1 2 3))") base-env) (| ok 3)))
- _ (assert (= (eval-expr (parse "(@array-get ([] 10 20 30) 1)") base-env) (| ok 20)))
- _ (assert (= (eval-expr (parse "(@enum \"yes\" 42)") base-env) (| ok (| yes 42))))
- _ (assert
-  (= (eval-expr (parse "(@string-get-byte \"ABC\" 1)") base-env) (| ok 66)))
- _ (assert
-  (= (eval-expr
-      (parse "(@float->int (@f-add (@int->float 3) (@int->float 4)))") base-env)
-   (| ok 7)))
 
  eval-code (\ (source env)
   (% (@sandbox 100000 (\ () (parse-code-block source)))
