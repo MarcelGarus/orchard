@@ -816,39 +816,74 @@
      glyph)
     (find-glyph find-glyph char 0))))
  find-kerning (\ (a b) 1.)
+ # "Lay out text into positioned glyphs. Lines break at newline characters, and
+   a word is wrapped to the next line whenever it wouldn't fit within max-width."
  layout-text (\ (text max-width)
-  (rec-3 (string->chars-list text) 0. 0. (\ (rec chars x y)
-   (% chars
-    empty (| empty)
-    (more m) (:
-     char (.item m)
-     rest (.rest m)
-     glyph (find-glyph char)
-     (if (= char "\n")
-      (:
-       next-x 0.
-       next-y (f+ y line-height)
-       (| more (&
-        item (& x x y y char char glyph glyph cursor-x next-x cursor-y next-y)
-        rest (rec rest next-x next-y))))
-      (:
-       width (.width glyph)
-       kerning (% rest empty 0. (more next) (find-kerning char (.item next)))
-       next-x (f+ x (f+ width kerning))
-       next-y y
-       next-cursor-x (f+ x (f- width (f/ kerning 2.)))
-       (| more (&
-        item (& x x y y char char glyph glyph cursor-x next-cursor-x cursor-y y)
-        rest (rec rest next-x next-y))))))))))
+  (:
+   # "Width of the word starting at `chars` (until the next space, newline, or
+     end), used to decide whether the word fits on the current line."
+   word-width (\ (chars)
+    (rec-2 chars 0. (\ (recurse chars acc)
+     (% chars
+      empty acc
+      (more m) (:
+       char (.item m)
+       rest (.rest m)
+       (if (or (= char " ") (= char "\n"))
+        acc
+        (:
+         glyph (find-glyph char)
+         kerning
+          (% rest
+           empty 0.
+           (more n)
+            (if (or (= (.item n) " ") (= (.item n) "\n"))
+             0.
+             (find-kerning char (.item n))))
+         (recurse rest (f+ acc (f+ (.width glyph) kerning))))))))))
+   (rec-4 (string->chars-list text) 0. 0. true (\ (rec chars x y at-word-start)
+    (% chars
+     empty (| empty)
+     (more m) (:
+      char (.item m)
+      rest (.rest m)
+      glyph (find-glyph char)
+      (if (= char "\n")
+       (:
+        next-x 0.
+        next-y (f+ y line-height)
+        (| more (&
+         item (& x x y y char char glyph glyph cursor-x next-x cursor-y next-y)
+         rest (rec rest next-x next-y true))))
+       (:
+        wrap?
+         (if at-word-start
+          (if (= char " ")
+           false
+           (if (f> x 0.) (f> (f+ x (word-width chars)) max-width) false))
+          false)
+        line-x (if wrap? 0. x)
+        line-y (if wrap? (f+ y line-height) y)
+        width (.width glyph)
+        kerning (% rest empty 0. (more next) (find-kerning char (.item next)))
+        next-x (f+ line-x (f+ width kerning))
+        next-cursor-x (f+ line-x (f- width (f/ kerning 2.)))
+        (| more (&
+         item
+          (& x line-x y line-y char char glyph glyph
+             cursor-x next-cursor-x cursor-y line-y)
+         rest (rec rest next-x line-y (= char " "))))))))))))
  draw-glyph (\ (glyph color)
   (| all
    (iter->array
     (map
      (list->iter (.paths glyph))
      (\ (path) (| fill-path (& path path color color)))))))
- text (\ (string color)
+ # "Render text, wrapping words to fit within max-width and breaking at newlines.
+   `text` passes a huge width to disable wrapping."
+ text-wrapped (\ (string color max-width)
   (:
-   layouted (layout-text string 100000.)
+   layouted (layout-text string max-width)
    (&
     draw
      (| all
@@ -862,6 +897,7 @@
       (map (list->iter layouted) (\ (glyph) (f+ (.x glyph) (.width (.glyph glyph))))) 0. f-max)
     height
      (fold (map (list->iter layouted) (\ (glyph) (f+ (.y glyph) line-height))) 0. f-max))))
+ text (\ (string color) (text-wrapped string color 100000.))
 
  no-modifiers? (\ (key)
   (and-3 (not (.control key)) (not (.shift key)) (not (.alt key))))
@@ -1380,9 +1416,9 @@
  array-color (color "#ff6d1e")
  function-color (color "#8a0cff")
 
- editable-text (\ (string color cursor)
+ editable-text (\ (string color cursor max-width)
   (:
-   layouted (layout-text string 100000.)
+   layouted (layout-text string max-width)
     (&
      draw
       (| all ([]
@@ -4227,8 +4263,8 @@
      (text string)
       (padding 2.
        (% focus
-        (inside cursor) (editable-text string black cursor)
-        outside (text string black)))
+        (inside cursor) (editable-text string black cursor (f- width 4.))
+        outside (text-wrapped string black (f- width 4.))))
      (chapter chapter) (padding 2. (text (.title chapter) orchard-color))
      (code string) (:
       entry (% cache (entry e) e _ (| code (& code string result (| empty))))
@@ -4239,7 +4275,7 @@
       code-element
        (padding 2.
         (% focus
-         (inside cursor) (editable-text string green cursor)
+         (inside cursor) (editable-text string green cursor 100000.)
          outside (text string green)))
       result-element
        (padding 2.
