@@ -873,6 +873,8 @@
   (and-3 (not (.control key)) (.shift key) (not (.alt key))))
  ctrl-shift-modifiers? (\ (key)
   (and-3 (.control key) (.shift key) (not (.alt key))))
+ shift-alt-modifiers? (\ (key)
+  (and-3 (not (.control key)) (.shift key) (.alt key)))
  key-escape? (\ (key) (and (= (.keycode key) 256) (no-modifiers? key)))
  key-enter? (\ (key) (and (= (.keycode key) 257) (no-modifiers? key)))
  key-backspace? (\ (key) (and (= (.keycode key) 259) (no-modifiers? key)))
@@ -895,6 +897,12 @@
  key-shift-left? (\ (key) (and (= (.keycode key) 263) (shift-modifier? key)))
  key-shift-down? (\ (key) (and (= (.keycode key) 264) (shift-modifier? key)))
  key-shift-up? (\ (key) (and (= (.keycode key) 265) (shift-modifier? key)))
+ key-shift-alt-down? (\ (key)
+  (and (= (.keycode key) 264) (shift-alt-modifiers? key)))
+ key-shift-alt-up? (\ (key)
+  (and (= (.keycode key) 265) (shift-alt-modifiers? key)))
+ key-shift-alt-left? (\ (key)
+  (and (= (.keycode key) 263) (shift-alt-modifiers? key)))
  key-shift-start? (\ (key) (and (= (.keycode key) 268) (shift-modifier? key)))
  key-shift-end? (\ (key) (and (= (.keycode key) 269) (shift-modifier? key)))
  key-ctrl-shift-right? (\ (key)
@@ -3774,12 +3782,14 @@
    nil))
 
  eval-expr (\ (ast env)
-  (% (@sandbox 100000 (\ ()
-       (: analyzed (analyze ast)
-        _ (check-scope analyzed (names-of-env env))
-        (compile analyzed (| empty) env))))
+  (%
+   (@sandbox
+    10000000
+    (\ () (: analyzed (analyze ast)
+     _ (check-scope analyzed (names-of-env env))
+     (compile analyzed (| empty) env))))
    (returned compiled)
-    (% (@sandbox 100000 compiled)
+    (% (@sandbox 1000000 compiled)
      (returned value) (| ok value)
      (crashed error) (| run-error error)
      out-of-fuel (| timeout))
@@ -3787,7 +3797,7 @@
    out-of-fuel (| timeout)))
 
  eval-code (\ (source env)
-  (% (@sandbox 100000 (\ () (parse-code-block source)))
+  (% (@sandbox 10000000 (\ () (parse-code-block source)))
    (returned block)
     (% block
      empty (& binding? false name "" outcome (| empty) next-env env)
@@ -4060,6 +4070,44 @@
                  node
                   (| chapter (& title title parts (array-swap parts i (+ i 1))))
                  focus (| here (| at (+ i 1)))))
+              (key-shift-alt-up? key)
+               (if (= i 0)
+                (& node node focus (| here focus))
+                (% (array-get parts (- i 1))
+                 (chapter above) (:
+                  block (array-get parts i)
+                  new-above
+                   (| chapter (&
+                    title (.title above)
+                    parts
+                     (array-insert
+                      (.parts above) (array-length (.parts above)) block)))
+                  new-parts
+                   (array-remove (array-update parts (- i 1) new-above) i)
+                  (&
+                   node (| chapter (& title title parts new-parts))
+                   focus
+                    (| here
+                     (| in (&
+                      index (- i 1)
+                      inner (| at (array-length (.parts above))))))))
+                 _ (& node node focus (| here focus))))
+              (key-shift-alt-down? key)
+               (if (= i (- (array-length parts) 1))
+                (& node node focus (| here focus))
+                (% (array-get parts (+ i 1))
+                 (chapter below) (:
+                  block (array-get parts i)
+                  new-below
+                   (| chapter (&
+                    title (.title below)
+                    parts (array-insert (.parts below) 0 block)))
+                  new-parts (array-remove (array-update parts (+ i 1) new-below) i)
+                  (&
+                   node (| chapter (& title title parts new-parts))
+                   focus (| here (| in (& index i inner (| at 0))))))
+                 _ (& node node focus (| here focus))))
+              (key-shift-alt-left? key) (& node node focus (| eject (& index i)))
               (key-enter? key)
                (&
                 node node
@@ -4090,17 +4138,33 @@
            inner-state (handle (array-get parts index) (.inner f))
            inner-node (.node inner-state)
            inner-focus (.focus inner-state)
-           (&
-            node
-             (| chapter (&
-              title (.title chapter)
-              parts (array-update parts index inner-node)))
-            focus
-             (| here
-              (% inner-focus
-               yield (| at index)
-               (here focus) (| in (& index index inner focus))
-               _ (crash "weird inner focus")))))
+           (% inner-focus
+            (eject e) (:
+             child (% inner-node (chapter c) c _ (crash "eject from non-chapter"))
+             block (array-get (.parts child) (.index e))
+             new-child
+              (| chapter (&
+               title (.title child)
+               parts (array-remove (.parts child) (.index e))))
+             (&
+              node
+               (| chapter (&
+                title (.title chapter)
+                parts
+                 (array-insert
+                  (array-update parts index new-child) (+ index 1) block)))
+              focus (| here (| at (+ index 1)))))
+            _ (&
+             node
+              (| chapter (&
+               title (.title chapter)
+               parts (array-update parts index inner-node)))
+             focus
+              (| here
+               (% inner-focus
+                yield (| at index)
+                (here focus) (| in (& index index inner focus))
+                _ (crash "weird inner focus"))))))
           _ (crash "bad chapter focus")))
         (code string) (:
          is-escape (% event (pressed-key key) (key-escape? key) _ false)
@@ -4113,7 +4177,11 @@
       (&
        state (&
         book (.node result)
-        focus (% (.focus result) (here f) f yield (enter-focus (.node result)))
+        focus
+         (% (.focus result)
+          (here f) f
+          yield (enter-focus (.node result))
+          (eject e) (| at (.index e)))
         eval (eval-book (.node result) (.eval state)))
        action (| some (.node result)))))))
   render (\ (state size) (:
