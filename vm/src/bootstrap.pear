@@ -131,14 +131,6 @@
       (if (checker (.item m))
        (| more (& item (.item m) rest (next (.rest m))))
        (seek (.rest m))))))))))
- concat (\ (a b)
-  (rec a (\ (rec a)
-   (\ () (% (a)
-    empty (b)
-    (more m) (| more (& item (.item m) rest (rec (.rest m)))))))))
- concat-3 (\ (a b c) (concat a (concat b c)))
- concat-4 (\ (a b c d) (concat a (concat-3 b c d)))
- concat-5 (\ (a b c d e) (concat a (concat-4 b c d e)))
  take (\ (iter n)
   (rec-2 iter n (\ (rec iter n)
    (\ () (if (= n 0)
@@ -183,6 +175,16 @@
   (% (iter)
    empty (crash "called reduce on empty iterator")
    (more m) (fold (.rest m) (.item m) reducer)))
+ concat (\ (a b)
+  (rec a (\ (rec a)
+   (\ () (% (a)
+    empty (b)
+    (more m) (| more (& item (.item m) rest (rec (.rest m)))))))))
+ concat-3 (\ (a b c) (concat a (concat b c)))
+ concat-4 (\ (a b c d) (concat a (concat-3 b c d)))
+ concat-5 (\ (a b c d e) (concat a (concat-4 b c d e)))
+ concat-all (\ (iters)
+  (fold iters (array->iter ([])) (\ (acc it) (concat acc it))))
  length (\ (iter) (fold iter 0 (\ (n it) (+ n 1))))
  any (\ (iter checker)
   (rec iter (\ (rec iter)
@@ -3228,11 +3230,7 @@
        (array->iter (.arguments state))
        (\ (index argument)
         (column ([]
-         (empty-box 2. 0.)column ([]
          (empty-box 2. 0.)
-         (maybe-render-cursor
-          (% (.focus state) (at-argument i) (= i index) _ false)
-       
          (maybe-render-cursor
           (% (.focus state) (at-argument i) (= i index) _ false)
           (code-render argument (f- width 10.))))))))))))))
@@ -3626,8 +3624,22 @@
      (% first
       (name name)
        (cond
-        (= name ":")
-         (if (odd? (array-length children)) (crash "let") (crash "let"))
+        (= name ":") (:
+         # "rest is a sequence of (name value) binding pairs followed by a
+            single body expression, so its length must be odd. We desugar a
+            multi-binding let into nested single-binding lets right here."
+         _ (if (even? (array-length rest)) (crash "bad let") nil)
+         body-index (- (array-length rest) 1)
+         (rec 0 (\ (recurse i)
+          (if (= i body-index)
+           (analyze (array-get rest body-index))
+           (| let (&
+            name
+             (% (array-get rest i)
+              (name n) n
+              _ (crash "a let binding name must be a name"))
+            value (analyze (array-get rest (+ i 1)))
+            body (recurse (+ i 2))))))))
         (= name "[]") (| array (iter->array (map (array->iter rest) analyze)))
         (= name "&") (:
          _ (if (even? (array-length rest)) nil (crash "bad struct"))
@@ -3737,9 +3749,7 @@
         arguments (iter->array (map (array->iter rest) analyze))))))
     (int i) (| value i)
     (float f) (| value f)
-    (string s) (| value s))
-  ))
- )
+    (string s) (| value s)))))
 
  base-env
   (array->list ([]
@@ -3810,32 +3820,41 @@
    (if (= i (array-length names))
     scope
     (| more (& item (array-get names i) rest (recurse (+ i 1))))))))
- check-scope (\ (node scope)
+ collect-errors (\ (node scope)
   (rec-2 node scope (\ (check node scope)
    (% node
-    (value v) nil
+    (value v) (array->iter ([]))
     (name n)
-     (if (name-in-scope? scope n) nil (crash (string-concat "unknown name " n)))
-    (call c) (:
-     _ (check (.function c) scope)
-     (fold (array->iter (.arguments c)) nil (\ (acc arg) (check arg scope))))
+     (if (name-in-scope? scope n)
+      (array->iter ([]))
+      (array->iter ([] (string-concat "unknown name " n))))
+    (error message) (array->iter ([] message))
+    (call c)
+     (concat
+      (check (.function c) scope)
+      (concat-all
+       (map (array->iter (.arguments c)) (\ (arg) (check arg scope)))))
     (function f) (check (.body f) (add-to-scope (.arguments f) scope))
     (enum e) (check (.payload e) scope)
     (struct fields)
-     (fold
-      (array->iter fields)
-      nil
-      (\ (acc field) (check (.value field) scope)))
+     (concat-all
+      (map (array->iter fields) (\ (field) (check (.value field) scope))))
     (array items)
-     (fold (array->iter items) nil (\ (acc item) (check item scope)))
+     (concat-all
+      (map (array->iter items) (\ (item) (check item scope))))
     (field f) (check (.of f) scope)
-    (switch s) (:
-     _ (check (.condition s) scope)
-     _ (fold (array->iter (.cases s)) nil (\ (acc case)
-        (check (.body case)
-         (% (.payload case) (some p) (add-to-scope ([] p) scope) _ scope))))
-     (% (.default s) (some d) (check d scope) _ nil))
-    _ nil))))
+    (switch s)
+     (concat-3
+      (check (.condition s) scope)
+      (concat-all (map (array->iter (.cases s)) (\ (case)
+       (check (.body case)
+        (% (.payload case) (some p) (add-to-scope ([] p) scope) _ scope)))))
+      (% (.default s) (some d) (check d scope) _ (array->iter ([]))))
+    (let l)
+     (concat
+      (check (.value l) scope)
+      (check (.body l) (add-to-scope ([] (.name l)) scope)))
+    _ (array->iter ([]))))))
 
  env-lookup (\ (env name)
   (rec env (\ (rec env)
@@ -3843,6 +3862,11 @@
     empty (crash (string-concat "unknown name " name))
     (more m)
      (if (= (.name (.item m)) name) (.definition (.item m)) (rec (.rest m)))))))
+ env-has? (\ (env name)
+  (rec env (\ (rec env)
+   (% env
+    empty false
+    (more m) (if (= (.name (.item m)) name) true (rec (.rest m)))))))
 
  wrap-captured (\ (body names)
   (rec names (\ (wrap names)
@@ -3863,9 +3887,14 @@
    ([])
    (rec-2 node bound (\ (compile node bound)
     (% node
+     (error message) (| crash (| value message))
      (value v) (| value v)
      (name n)
-      (if (name-in-scope? bound n) (| name n) (| value (env-lookup env n)))
+      (if (name-in-scope? bound n)
+       (| name n)
+       (if (env-has? env n)
+        (| value (env-lookup env n))
+        (| crash (| value (string-concat "unknown name " n)))))
      (struct fields)
       (| struct
        (iter->array
@@ -3909,57 +3938,75 @@
        arguments
         (iter->array
          (map (array->iter (.arguments c)) (\ (a) (compile a bound))))))
+     (let l)
+      (| let (&
+       name (.name l)
+       definition (compile (.value l) bound)
+       body (compile (.body l) (add-to-scope ([] (.name l)) bound))))
      (crash c) (| crash (compile c bound))
      _ (crash (| cannot-compile node)))))
    nil))
 
- eval-expr (\ (ast env)
-  (%
-   (@sandbox
-    10000000
-    (\ () (: analyzed (analyze ast)
-     _ (check-scope analyzed (names-of-env env))
-     (compile analyzed (| empty) env))))
-   (returned compiled)
-    (% (@sandbox 1000000 compiled)
-     (returned value) (| ok value)
-     (crashed error) (| run-error error)
-     out-of-fuel (| timeout))
-   (crashed message) (| compile-error message)
-   out-of-fuel (| timeout)))
-
+ compile-fuel 10000000
+ run-fuel 10000000
  eval-code (\ (source env)
-  (% (@sandbox 10000000 (\ () (parse-code-block source)))
+  (% (@sandbox compile-fuel (\ () (parse-code-block source)))
+   (crashed e) (& name (| none) errors ([] e) result (| empty))
+   out-of-fuel (& name (| none) errors ([] "timeout") result (| empty))
    (returned block)
     (% block
-     empty (& binding? false name "" outcome (| empty) next-env env)
+     empty (& name (| none) errors ([]) result (| empty))
      (expr ast)
-      (& binding? false name "" outcome (eval-expr ast env) next-env env)
-     (bind b) (:
-      outcome (eval-expr (.expr b) env)
-      next-env
-       (% outcome
-        (ok value)
-         (| more (& item (& name (.name b) definition value) rest env))
-        _ env)
-      (& binding? true name (.name b) outcome outcome next-env next-env)))
-   (crashed message)
-    (& binding? false name "" outcome (| compile-error message) next-env env)
-   out-of-fuel (& binding? false name "" outcome (| timeout) next-env env)))
+      (% (@sandbox compile-fuel (\ () (analyze ast)))
+       (crashed e) (& name (| none) errors ([] e) result (| empty))
+       out-of-fuel (& name (| none) errors ([] "timeout") result (| empty))
+       (returned analyzed)
+        (&
+         name (| none)
+         errors (iter->array (collect-errors analyzed (names-of-env env)))
+         result 
+          (% (@sandbox run-fuel (compile analyzed (| empty) env))
+           (returned value) (| ok value)
+           (crashed error) (| error error)
+           out-of-fuel (| timeout))))
+     (bind b)
+      (% (@sandbox compile-fuel (\ () (analyze (.expr b))))
+       (crashed e) (& name (| some (.name b)) errors ([] e) result (| empty))
+       out-of-fuel
+        (& name (| some (.name b)) errors ([] "timeout") result (| empty))
+       (returned analyzed)
+        (&
+         name (| some (.name b))
+         errors (iter->array (collect-errors analyzed (names-of-env env)))
+         result 
+          (% (@sandbox run-fuel (compile analyzed (| empty) env))
+           (returned value) (| ok value)
+           (crashed error) (| error error)
+           out-of-fuel (| timeout)))))))
 
- # "A computation cache is a tree mirroring the notebook: each chapter is
-   (| chapter array-of-children), each code part is (| entry cache-entry), and
-   every other part is (| skip). A cache-entry is either
-   (| definition (& name code result)) for a name-binding block, or
-   (| code (& code result)) for a plain expression block."
- cache-entry-code (\ (entry)
-  (% entry (definition d) (.code d) (code c) (.code c)))
- cache-entry-result (\ (entry)
-  (% entry (definition d) (.result d) (code c) (.result c)))
- bind-from-result (\ (env name result)
-  (% result
-   (ok value) (| more (& item (& name name definition value) rest env))
+ _ (assert (= (.result (eval-code "(: x 5 x)" base-env)) (| ok 5)))
+ _ (assert
+  (= (.result (eval-code "(: a 5 b (@add a 3) b)" base-env)) (| ok 8)))
+ _ (assert
+  (= (.errors (eval-code "(: x 5 y)" base-env)) ([] "unknown name y")))
+
+ # "A computation cache is a tree mirroring the notebook:
+    Cache = (| chapter ([] Cache) entry CacheEntry skip (&)),
+      where chapters become chapters, code parts become entries, and other nodes
+      get skipped.
+    CacheEntry = (& code String evald <result of eval-code>)"
+ # "Extend the environment with the binding produced by an eval-code result, if
+    any: only named blocks whose body ran successfully add a definition."
+ extend-env (\ (env r)
+  (% (.name r)
+   (some name)
+    (% (.result r)
+     (ok value) (| more (& item (& name name definition value) rest env))
+     _ env)
    _ env))
+ join-lines (\ (lines)
+  (fold (array->iter lines) "" (\ (acc line)
+   (if (= acc "") line (string-concat-3 acc "\n" line)))))
 
  # "Flatten a cache tree back into the flat linked list of entries in document
     order. Used internally to drive incremental reuse, which only cares about
@@ -3981,33 +4028,27 @@
   env (.env state)
   old (.old state)
   prev (% old (more m) (| some (.item m)) _ (| none))
-  reuse?
-   (% prev (some e) (= (cache-entry-code e) source) _ false)
+  reuse? (% prev (some e) (= (.code e) source) _ false)
   (if reuse?
-   (: entry (% prev (some e) e _ (crash "unreachable"))
-      next-env
-       (% entry
-        (definition d) (bind-from-result env (.name d) (.result d))
-        (code c) env)
-      (&
-       env next-env
-       old (% old (more m) (.rest m) _ (| empty))
-       entry entry))
-   (: r (eval-code source env)
-      entry
-       (if (.binding? r)
-        (| definition (& name (.name r) code source result (.outcome r)))
-        (| code (& code source result (.outcome r))))
-      # "If a definition's result changed, everything after it might reference
-         the old value, so clear the cache and re-evaluate the rest."
-      cleared?
-       (and
-        (.binding? r)
-        (% prev (some e) (not (= (cache-entry-result e) (.outcome r))) _ true))
-      (&
-       env (.next-env r)
-       old (if cleared? (| empty) (% old (more m) (.rest m) _ (| empty)))
-       entry entry)))))
+   (:
+    entry (% prev (some e) e _ (crash "unreachable"))
+    (&
+     env (extend-env env (.evald entry))
+     old (% old (more m) (.rest m) _ (| empty))
+     entry entry))
+   (:
+    r (eval-code source env)
+    entry (& code source evald r)
+    # "If a definition's result changed, everything after it might reference
+       the old value, so clear the cache and re-evaluate the rest."
+    cleared?
+     (and
+      (% (.name r) (some n) true _ false)
+      (% prev (some e) (not (= (.result (.evald e)) (.result r))) _ true))
+    (&
+     env (extend-env env r)
+     old (if cleared? (| empty) (% old (more m) (.rest m) _ (| empty)))
+     entry entry)))))
 
  # "Evaluate a notebook, producing a cache tree that mirrors the book: each code
     part becomes (| entry cache-entry), each other part (| skip), and each
@@ -4015,27 +4056,27 @@
     flattened internally so unchanged code blocks reuse their previous results."
  eval-book (\ (book old-cache) (:
   result
-   (rec-2 book (& env base-env old (flatten-cache old-cache))
-    (\ (walk node state)
-     (% node
-      (chapter chapter) (:
-       acc
-        (fold (array->iter (.parts chapter))
-         (& env (.env state) old (.old state) nodes (| empty))
-         (\ (a part) (:
-          r (walk part (& env (.env a) old (.old a)))
-          (&
-           env (.env r)
-           old (.old r)
-           nodes (| more (& item (.node r) rest (.nodes a)))))))
-       (&
-        env (.env acc)
-        old (.old acc)
-        node (| chapter (list->array (list-reverse (.nodes acc))))))
-      (code source) (:
-       r (eval-code-incremental source (& env (.env state) old (.old state)))
-       (& env (.env r) old (.old r) node (| entry (.entry r))))
-      _ (& env (.env state) old (.old state) node (| skip)))))
+   (rec-3 book base-env (flatten-cache old-cache) (\ (walk node env old)
+    (% node
+     (chapter chapter) (:
+      acc
+       (fold
+        (array->iter (.parts chapter))
+        (& env env old old nodes (| empty))
+        (\ (state part) (:
+         r (walk part (.env state) (.old state))
+         (&
+          env (.env r)
+          old (.old r)
+          nodes (| more (& item (.node r) rest (.nodes state)))))))
+      (&
+       env (.env acc)
+       old (.old acc)
+       node (| chapter (list->array (list-reverse (.nodes acc))))))
+     (code source) (:
+      r (eval-code-incremental source (& env env old old))
+      (& env (.env r) old (.old r) node (| entry (.entry r))))
+     _ (& env env old old node (| skip)))))
   (.node result)))
 
  any-to-string (\ (value)
@@ -4388,26 +4429,37 @@
         outside (text-wrapped string black (f- width 4.))))
      (chapter chapter) (padding 2. (text (.title chapter) orchard-color))
      (code string) (:
-      entry (% cache (entry e) e _ (| code (& code string result (| empty))))
-      info
-       (% entry
-        (definition d) (& binding? true result (.result d))
-        (code c) (& binding? false result (.result c)))
+      evald
+       (% cache
+        (entry e) (.evald e)
+        _ (& name (| none) errors ([]) result (| empty)))
+      binding? (% (.name evald) (some n) true _ false)
       code-element
        (padding 2.
         (% focus
          (inside cursor) (editable-text string green cursor 100000.)
          outside (text string green)))
+      run-element
+       (% (.result evald)
+        (ok value) (text (any-to-string value) blue)
+        (error value) (text (any-to-string value) red)
+        timeout (text "timeout" yellow)
+        empty (text "" black))
+      errors-element (text (join-lines (.errors evald)) red)
+      has-errors? (> (array-length (.errors evald)) 0)
+      # "For definitions we don't surface the bound value, but we still show
+         runtime crashes and timeouts. Plain expressions always show their run."
+      show-run?
+       (% (.result evald)
+        (ok value) (not binding?)
+        empty false
+        _ true)
       result-element
        (padding 2.
-        (% (.result info)
-         (ok value) (text (any-to-string value) blue)
-         (compile-error message) (text message red)
-         (run-error value) (text (any-to-string value) red)
-         timeout (text "timeout" yellow)
-         empty (text "" black)))
-      hide-result?
-       (and (.binding? info) (% (.result info) (ok value) true _ false))
+        (if has-errors?
+         (if show-run? (column ([] errors-element run-element)) errors-element)
+         (if show-run? run-element (text "" black))))
+      hide-result? (and (not has-errors?) (not show-run?))
       is-outside (% focus outside true _ false)
       single-line?
        (and
