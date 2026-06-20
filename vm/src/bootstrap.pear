@@ -342,7 +342,10 @@
    (string-slice string 0 index)
    text
    (string-slice string index (string-length string))))
- string-starts-with (\ (string prefix) false)
+ string-starts-with (\ (string prefix)
+  (if (> (string-length prefix) (string-length string))
+   false
+   (= (string-slice string 0 (string-length prefix)) prefix)))
  ascii-char (\ (literal) (array-get (string->bytes literal) 0))
  int->string (\ (int)
   (if (= int 0)
@@ -3820,6 +3823,14 @@
    (if (= i (array-length names))
     scope
     (| more (& item (array-get names i) rest (recurse (+ i 1))))))))
+ scope-without (\ (scope names)
+  (rec scope (\ (recurse scope)
+   (% scope
+    empty (| empty)
+    (more m)
+     (if (any (array->iter names) (\ (n) (= n (.item m))))
+      (recurse (.rest m))
+      (| more (& item (.item m) rest (recurse (.rest m)))))))))
  collect-errors (\ (node scope)
   (rec-2 node scope (\ (check node scope)
    (% node
@@ -3902,7 +3913,10 @@
          (array->iter fields)
          (\ (field)
           (& name (.name field) value (compile (.value field) bound))))))
-     (field f) (| field (& of (compile (.of f) bound) name (.name f)))
+     (field f)
+      (| call (&
+       function (| value (env-lookup env "@field"))
+       arguments ([] (compile (.of f) bound) (.name f))))
      (enum e)
       (| enum (& variant (.variant e) payload (compile (.payload e) bound)))
      (switch s)
@@ -3926,12 +3940,16 @@
        (iter->array (map (array->iter items) (\ (item) (compile item bound)))))
      (function f) (:
       params (.arguments f)
+      # "Parameters shadow enclosing names, so they must not be captured: a
+         captured name equal to a parameter would otherwise be re-bound over
+         the parameter, silently ignoring the argument."
+      outer (scope-without bound params)
       (| make-function (&
        arguments (| value params)
        body
         (| value
-         (wrap-captured (compile (.body f) (add-to-scope params bound)) bound))
-       captured (captured-struct bound))))
+         (wrap-captured (compile (.body f) (add-to-scope params bound)) outer))
+       captured (captured-struct outer))))
      (call c)
       (| call (&
        function (compile (.function c) bound)
@@ -3947,7 +3965,7 @@
      _ (crash (| cannot-compile node)))))
    nil))
 
- compile-fuel 10000000
+ compile-fuel 100000000
  run-fuel 10000000
  eval-code (\ (source env)
   (% (@sandbox compile-fuel (\ () (parse-code-block source)))
