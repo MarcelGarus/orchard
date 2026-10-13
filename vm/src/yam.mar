@@ -443,14 +443,13 @@ fun /(left: Int, right: Int): Int asm {
   load c sp | return value address
   div a b store c a ret
 }
-fun %(left: Int, right: Int): Int asm {
-  moveib a 8  add a sp load a a | left
-  moveib b 16 add b sp load b b | right
-  load c sp | return value address
-  rem a b
-  moveib d 0 cmp a d isless cjump .make_positive jump .done
-  .make_positive: add a b
-  .done: store c a ret
+fun %(left: Int, right: Int): Int {
+  if right == 0 then panic("Integer modulo by zero.")
+  | These divisors always give zero, including min_int % -1.
+  if right == 1 or right == -1 then return 0
+  var remainder = left - {{left / right} * right}
+  if remainder != 0 and {{remainder < 0} != {right < 0}}
+  then remainder + right else remainder
 }
 fun &(left: Int, right: Int): Int asm {
   moveib a 8  add a sp load a a | left
@@ -527,25 +526,21 @@ fun parse_int(string: String): Int {
   num
 }
 
-fun write[W](writer: W, int: Int) {
-  if int < 0
-  then writer."-{ {0 - int}.radix(10)}"
-  else writer."{int.radix(10)}"
-}
+fun write[W](writer: W, int: Int) { writer.write(int.radix(10)) }
 fun radix(int: Int, radix: Int): RadixFormat { RadixFormat { radix, int } }
 struct RadixFormat { radix: Int, int: Int }
 fun write[W](writer: W, format: RadixFormat) {
-  var divisor = 1
-  loop {
-    if format.int / divisor < format.radix then break
-    divisor = divisor * format.radix
-  }
-  loop {
-    writer.write(
-      {format.int / divisor % format.radix}.lower_byte().digit_to_char())
-    if divisor == 1 then break
-    divisor = divisor / format.radix
-  }
+  | Keep the magnitude negative: every positive Int can be negated, whereas
+  | the smallest negative Int has no positive counterpart.
+  var negative = format.int
+  if negative < 0 then writer."-" else negative = 0 - negative
+  writer.write_int_digits(negative, format.radix)
+}
+fun write_int_digits[W](writer: W, negative: Int, radix: Int) {
+  var quotient = negative / radix
+  if quotient != 0 then writer.write_int_digits(quotient, radix)
+  var digit = quotient * radix - negative
+  writer.write(digit.lower_byte().digit_to_char())
 }
 
 
