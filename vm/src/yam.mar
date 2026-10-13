@@ -2648,23 +2648,16 @@ fun parse_expr_suffix(parser: &Parser, expr: AstExpr, precedence: Precedence): M
   none[AstExpr]()
 }
 
-fun parse_digits(parser: &Parser, radix: Int): Maybe[Int] {
+fun parse_digits(parser: &Parser): Maybe[Int] {
   var start = parser.cursor
   var num = 0
-  if radix > {10 + 26} then panic("The radix is too big.")
   loop {
     var char = parser.current()
-    if {#0 ..+ min(radix, 10).lower_byte()}.contains(char) then {
-      num = num * radix + {char - #0}.to_int()
+    if char.is_digit() then {
+      num = num * 10 + {char - #0}.to_int()
       parser.advance()
       continue
     }
-    if radix >= 10 and {#a ..+ min(radix - 10, 26).lower_byte()}.contains(char)
-    then {
-        num = num * radix + {char - #a + 10.lower_byte()}.to_int()
-        parser.advance()
-        continue
-      }
     if char == #_ then parser.advance() else break
   }
   if parser.cursor == start then return none[Int]()
@@ -2673,23 +2666,17 @@ fun parse_digits(parser: &Parser, radix: Int): Maybe[Int] {
 
 fun parse_number(parser: &Parser): Maybe[AstExpr] {
   parser.consume_whitespace()
-  var radix = 10
   var sign = if parser.consume_prefix("-") then -1 else 1
-  var value = parser.parse_digits(radix) or
+  var value = parser.parse_digits() or
     return
       if sign == 1
       then none[AstExpr]()
       else panic("Expected number after the minus sign.")
-  if parser.consume_prefix("#") then {
-    radix = value
-    value = parser.parse_digits(radix)
-      or panic("Expected the value of the number after the radix pound.")
-  }
   var expr = AstExpr.int(sign * value)
   var cursor_before_dot = parser.cursor
   if parser.consume_prefix(".") then {
     var start_of_decimals = parser.cursor
-    var decimals = parser.parse_digits(radix) or {
+    var decimals = parser.parse_digits() or {
       parser.cursor = cursor_before_dot
       return some(expr)
     }
