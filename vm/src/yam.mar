@@ -2027,6 +2027,10 @@ fun remove[T](list: &List[T], range: Range[Int]) {
 fun insert[T](list: &List[T], index: Int, item: T) {
   list.make_space_at(index, 1, item)
 }
+fun contains[T](values: List[T], value: T): Bool {
+  for item in values do if item == value then return true
+  false
+}
 
 fun ==[T](a: List[T], b: List[T]): Bool { a.to_slice() == b.to_slice() }
 fun iter[T](list: List[T]): Iter[T, _] { list.to_slice().iter() }
@@ -2320,7 +2324,6 @@ struct AstEnumVariant { name: String, type: Type }
 
 struct AstFun {
   name: String,
-  is_fallback: Bool,
   type_args: List[String],
   args: List[AstFunArg],
   returns: Type,
@@ -2328,6 +2331,11 @@ struct AstFun {
 }
 struct AstFunArg { name: String, type: Type }
 enum AstFunKind { builtin, body: List[AstExpr] }
+fun signature(f: AstFun): String {
+  var args = list[Type]()
+  for arg in f.args do args.&.push(arg.type)
+  "{f.name}{type_args(f.type_args)}({comma_separated(args)})"
+}
 enum AstExpr {
   int: Int,                   | 42
   float: Float,               | 1.2
@@ -2338,7 +2346,7 @@ enum AstExpr {
   make_enum: AstMakeEnum,     | Maybe.some(5)
   member: AstMember,          | foo.bar
   var_: AstVar,               | var foo = ...
-  switch_: AstSwitch,         | switch foo case a ... case b(bar) ...
+  switch_: AstSwitch,         | foo switch { a ... b(bar) ... }
   block: List[AstExpr],       | { ... }
   try_scope: &AstExpr,        | try ...
 }
@@ -2600,10 +2608,10 @@ fun parse_type_params(parser: &Parser): Maybe[List[String]] {
 | that are written behind other expressions and wrap them, for example
 | `foo or bar` being parsed into an or of foo and bar.
 fun parse_expr(parser: &Parser): Maybe[AstExpr] {
-  parser.parse_expr(Precedence.is)
+  parser.parse_expr(Precedence.switch_)
 }
 
-enum Precedence { immediate, operator, and, or, is }
+enum Precedence { immediate, operator, and, or, is, switch_ }
 fun to_int(precedence: Precedence): Int {
   switch precedence
   case immediate 4
@@ -2611,6 +2619,7 @@ fun to_int(precedence: Precedence): Int {
   case and 2
   case or 1
   case is 0
+  case switch_ -1
 }
 fun <=>(a: Precedence, b: Precedence): Ordering { a.to_int() <=> b.to_int() }
 
@@ -2627,12 +2636,13 @@ fun parse_expr_without_suffix(parser: &Parser): Maybe[AstExpr] {
   if parser.parse_block() is some(blck) then return some(AstExpr.block(blck))
   if parser.parse_var() is some(var_) then return some(AstExpr.var_(var_))
   if parser.parse_if() is some(if_) then return some(if_)
-  if parser.parse_switch() is some(switch_) then return some(switch_)
   if parser.parse_try_scope() is some(try_) then return some(try_)
   if parser.parse_lower_name() is some(n) then return some(AstExpr.name(n))
   none[AstExpr]()
 }
 fun parse_expr_suffix(parser: &Parser, expr: AstExpr, precedence: Precedence): Maybe[AstExpr] {
+  if precedence <= Precedence.switch_ then
+    if parser.parse_expr_suffix_switch(expr) is some(switch_) then return some(switch_)
   if precedence <= Precedence.is then
     if parser.parse_expr_suffix_is(expr) is some(is_) then return some(is_)
   if precedence <= Precedence.or then
@@ -2859,15 +2869,23 @@ fun parse_if(parser: &Parser): Maybe[AstExpr] {
   }))
 }
 
-fun parse_switch(parser: &Parser): Maybe[AstExpr] {
-  var keyword = parser.consume_keyword("switch") or return none[AstExpr]()
-  var value = parser.parse_expr() or panic(
-    "Expected the value that is switched over.")
+| Switch binds after operators so `a <=> b switch { ... }` switches on
+| the comparison result. Arm bodies are expressions, including nested switches.
+fun parse_expr_suffix_switch(parser: &Parser, value: AstExpr): Maybe[AstExpr] {
+  parser.consume_keyword("switch") or return none[AstExpr]()
+  parser.consume_prefix("\{") or panic("Expected an opening brace after switch.")
   var cases = list[AstCase]()
+  var default_ = none[&AstExpr]()
   loop {
-    parser.consume_keyword("case") or break
+    if parser.consume_prefix("}") then break
+    if parser.consume_keyword("default") then {
+      var body = parser.parse_expr() or panic("Expected a default expression.")
+      default_ = some(body.put_on_heap())
+      parser.consume_prefix("}") or panic("Expected a closing brace after the default expression.")
+      break
+    }
     var variant = parser.parse_lower_name()
-      or panic("Expected a variant.")
+      or panic("Expected a variant or the closing brace of the switch.")
     var binding = none[String]()
     if parser.consume_prefix("(") then {
       binding = some(parser.parse_lower_name()
@@ -2876,15 +2894,8 @@ fun parse_switch(parser: &Parser): Maybe[AstExpr] {
         or panic("Expected a closing parenthesis.")
       {}
     }
-    var body = parser.parse_expr()
-      or panic("Expected a case expression.")
+    var body = parser.parse_expr() or panic("Expected a case expression.")
     cases.&.push(AstCase { variant, binding, body })
-  }
-  var default_ = none[&AstExpr]()
-  if parser.consume_keyword("default") then {
-    var body = parser.parse_expr()
-      or panic("Expected a default expression.")
-    default_ = some(body.put_on_heap())
   }
   some(AstExpr.switch_(AstSwitch {
     value = value.put_on_heap(), cases, default_,
@@ -2998,11 +3009,7 @@ fun parse_expr_suffix_try(parser: &Parser, current: AstExpr): Maybe[AstExpr] {
 }
 
 fun parse_fun(parser: &Parser): Maybe[AstFun] {
-  var is_fallback = parser.consume_keyword("fallback")
-  parser.consume_keyword("fun")
-    or return if is_fallback
-      then panic("Expected a fun keyword after fallback.")
-      else none[AstFun]()
+  parser.consume_keyword("fun") or return none[AstFun]()
   var fun_name = parser.parse_lower_name()
     or parser.parse_operator_name()
     or panic("Expected a lowercase name or operator name of the function.")
@@ -3027,7 +3034,7 @@ fun parse_fun(parser: &Parser): Maybe[AstFun] {
     else if parser.parse_block() is some(block) then AstFunKind.body(block)
     else panic("Expected a function body.")
   some(AstFun {
-    name = fun_name, is_fallback, type_args, args, returns, kind
+    name = fun_name, type_args, args, returns, kind
   })
 }
 
@@ -3300,10 +3307,51 @@ fun write[W](writer: W, object: ObjectId) {
 
 struct NotebookState {
   types: Map[String, TypeDef],
-  funs: List[String],
-  vars: Map[String, ObjectId],
+  funs: List[FunDef],
+  compiled_funs: Map[Int, ObjectId],
+  vars: Map[String, TypedObject],
 }
-enum TypeDef { int, struct_: StructDef, enum_: EnumDef }
+struct TypedObject { type: Type, object: ObjectId }
+struct CompiledCode { type: Type, object: ObjectId }
+
+struct FormattedObject { value: TypedObject, types: Map[String, TypeDef] }
+fun formatted(value: TypedObject, state: NotebookState): FormattedObject {
+  FormattedObject { value, types = state.types }
+}
+fun write[W](writer: W, formatted: FormattedObject) {
+  var value = formatted.value
+  if value.type == type("String") then {
+    var words = value.object.get().leaf or panic("Expected a string leaf.")
+    writer.write(words.to_string())
+  } else if value.type == type("Int") or value.type == type("Byte") then {
+    writer.write(value.object.int_value())
+  } else if formatted.types.get_maybe(value.type.name) is some(def) then {
+    switch def
+    case enum_(enum_) {
+      var children = value.object.get().inner
+        or panic("Expected an enum object.")
+      var variant = enum_.variants.get(children.get(0).int_value())
+      writer."{value.type}.{variant.name}"
+      var type_env = map[String, Type]()
+      for i in 0..enum_.type_args.len do
+        type_env.&.put(enum_.type_args.get(i), value.type.args.get(i))
+      var payload_type = variant.type.specialize(type_env).unwrap()
+      if not(payload_type.is_nothing()) then {
+        writer."("
+        writer.write(FormattedObject {
+          value = TypedObject { type = payload_type, object = children.get(1) },
+          types = formatted.types,
+        })
+        writer.")"
+      }
+    }
+    case int writer.write(value.object)
+    case byte writer.write(value.object)
+    case string writer.write(value.object)
+    case struct_ writer.write(value.object)
+  } else writer.write(value.object)
+}
+enum TypeDef { int, byte, string, struct_: StructDef, enum_: EnumDef }
 struct StructDef { type_args: List[String], fields: List[StructDefField] }
 struct StructDefField { name: String, type: Type }
 struct EnumDef { type_args: List[String], variants: List[EnumDefVariant] }
@@ -3312,8 +3360,9 @@ struct EnumDefVariant { name: String, type: Type }
 fun eval(ast: Ast): NotebookState {
   var state = NotebookState {
     types = map[String, TypeDef](),
-    funs = list[String](),
-    vars = map[String, ObjectId](),
+    funs = list[FunDef](),
+    compiled_funs = map[Int, ObjectId](),
+    vars = map[String, TypedObject](),
   }
   state.&.eval("", ast.structure)
   state
@@ -3321,110 +3370,678 @@ fun eval(ast: Ast): NotebookState {
 fun eval(state: &NotebookState, path: String, ast: AstStructure) {
   switch ast
   case chapter(chapter) {
-    print("{path}")
-    println(chapter.name)
+    println("{path}{chapter.name}")
     for child in chapter.children do state.eval("{path}  ", child)
   }
   case text {}
   case code(code) {
     for def in code.defs do {
-      print("{path}")
+      print(path)
       switch def
       case builtin(name) {
         println(name)
-        if name == "int" then state.types.&.put(name, TypeDef.int)
-        else panic("unknown builtin type")
+        var def = if name == "Int" then TypeDef.int
+          else if name == "Byte" then TypeDef.byte
+          else if name == "String" then TypeDef.string
+          else panic("Unknown builtin type {name}.")
+        state.types.&.put(name, def)
       }
       case struct_(s) {
         println(s.name)
+        state.type_parameters(s.type_args)
         var fields = list[StructDefField]()
         for field in s.fields do
           fields.&.push(StructDefField { name = field.name, type = field.type })
         state.types.&.put(
-          s.name,
-          TypeDef.struct_(StructDef { type_args = s.type_args, fields })
+          s.name, TypeDef.struct_(StructDef { type_args = s.type_args, fields })
         )
       }
       case enum_(e) {
         println(e.name)
+        state.type_parameters(e.type_args)
         var variants = list[EnumDefVariant]()
         for variant in e.variants do
-          variants.&.push(EnumDefVariant { name = variant.name, type = variant.type })
+          variants.&.push(EnumDefVariant {
+            name = variant.name, type = variant.type
+          })
         state.types.&.put(
-          e.name,
-          TypeDef.enum_(EnumDef { type_args = e.type_args, variants })
+          e.name, TypeDef.enum_(EnumDef { type_args = e.type_args, variants })
         )
-      }
-      case var_(v) {
-        println(v.name)
-        var expr = compile(state, v.value.*)
-        eprintln("{expr}")
-        var result = run(expr)
-        eprintln("{result}")
-        state.vars.&.put(v.name, result)
       }
       case fun_(f) {
         println(f.name)
-        state.funs.&.push(f.name)
+        state.funs.&.push(state.type_check_fun(f))
+      }
+      case var_(v) {
+        println(v.name)
+        var typed = state.type_check(v.value.*)
+        var code = state.compile(typed, set[String]())
+        var value = run(code)
+        eprintln("{value.formatted(state.*)}")
+        state.vars.&.put(v.name, value)
       }
     }
   }
 }
-fun compile(state: &NotebookState, expr: AstExpr): ObjectId {
+
+struct FunDef {
+  name: String,
+  type_args: List[String],
+  args: List[FunArg],
+  returns: Type,
+  kind: FunKind,
+}
+struct FunArg { name: String, type: Type }
+enum FunKind { builtin: ObjectId, body: TypedExpr }
+
+fun type_parameters(state: NotebookState, params: List[String]): Set[String] {
+  var types = set[String]()
+  for param in params do {
+    if types.contains(param) then panic("Duplicate type parameter {param}.")
+    if state.types.contains(param) then
+      panic("Type parameter {param} conflicts with an existing type.")
+    types.&.put(param)
+  }
+  types
+}
+struct TypedExpr { type: Type, kind: TypedExprKind }
+enum TypedExprKind {
+  int: Int,
+  string: String,
+  name: String,
+  global: String,
+  call: TypedCall,
+  make_enum: TypedMakeEnum,
+  var_: TypedVar,
+  switch_: TypedSwitch,
+  block: List[TypedExpr],
+}
+struct TypedCall {
+  key: Int, substitutions: Map[String, Type], args: List[TypedExpr],
+}
+struct TypedMakeEnum { index: Int, arg: &TypedExpr }
+struct TypedVar { name: String, value: &TypedExpr }
+struct TypedSwitch {
+  value: &TypedExpr, cases: List[TypedCase], default_: Maybe[&TypedExpr],
+}
+struct TypedCase { index: Int, binding: Maybe[String], body: TypedExpr }
+
+fun copy_map[K, V](map: Map[K, V]): Map[K, V] {
+  var copy = map[K, V]()
+  for entry in map do copy.&.put(entry.key, entry.value)
+  copy
+}
+fun accepts(expected: Type, actual: Type): Bool {
+  actual.is_never() or expected == actual
+}
+fun join(a: Type, b: Type): Type {
+  if a.is_never() then return b
+  if b.is_never() then return a
+  if a == b then return a
+  panic("Incompatible branch types: {a} and {b}.")
+}
+fun bind_type(
+  pattern: Type, actual: Type, params: List[String],
+  substitutions: &Map[String, Type],
+): Bool {
+  if params.contains(pattern.name) then {
+    if pattern.args.is_not_empty() then return false
+    if substitutions.get_maybe(pattern.name) is some(previous) then
+      return accepts(previous, actual)
+    substitutions.put(pattern.name, actual)
+    return true
+  }
+  if actual.is_never() then return true
+  if pattern.name != actual.name or pattern.args.len != actual.args.len then
+    return false
+  for i in 0..pattern.args.len do
+    if not(bind_type(pattern.args.get(i), actual.args.get(i), params, substitutions))
+    then return false
+  true
+}
+fun type_substitutions(params: List[String], args: List[Type]): Map[String, Type] {
+  if params.len != args.len then panic("Wrong number of type arguments.")
+  var substitutions = map[String, Type]()
+  for i in 0..params.len do substitutions.&.put(params.get(i), args.get(i))
+  substitutions
+}
+fun variant_index(enum_: EnumDef, name: String): Int {
+  for i in 0..enum_.variants.len do
+    if enum_.variants.get(i).name == name then return i
+  panic("Unknown enum variant {name}.")
+}
+fun check_type(state: NotebookState, type: Type, type_params: Set[String]) {
+  if type_params.contains(type.name) then {
+    if type.args.is_not_empty() then panic("Type parameter {type} cannot have arguments.")
+    return {}
+  }
+  var arity = 0
+  if state.types.get_maybe(type.name) is some(def) then {
+    switch def
+    case int {}
+    case byte {}
+    case string {}
+    case struct_(s) { arity = s.type_args.len }
+    case enum_(e) { arity = e.type_args.len }
+  } else
+    panic("Unknown type {type}.")
+  if type.args.len != arity then panic("Wrong number of type arguments for {type}.")
+  for arg in type.args do state.check_type(arg, type_params)
+}
+fun type_check(state: &NotebookState, expr: AstExpr): TypedExpr {
+  var locals = map[String, Type]()
+  state.type_check(expr, set[String](), locals.&)
+}
+fun type_check(
+  state: &NotebookState, expr: AstExpr, type_params: Set[String],
+  locals: &Map[String, Type],
+): TypedExpr {
   switch expr
-  case int(int) inner(list(leaf("object"), leaf(list(int))))
-  case float panic("float")
-  case string panic("string")
-  case name panic("name")
-  case call panic("call")
-  case make_struct panic("make_struct")
-  case member panic("member")
-  case make_enum(make) {
-    var type = state.types.get(make.type.name).enum_
-      or panic("{make.type.name} is not an enum")
-    var index = -1
-    for i in 0..type.variants.len do
-      if type.variants.get(i).name == make.variant then {
-        index = i
-        break
+  case int(value) {
+    var def = state.types.get_maybe("Int")
+      or panic("Integer literals require builtin Int.")
+    if not(def is int) then panic("Integer literals require builtin Int.")
+    TypedExpr { type = type("Int"), kind = TypedExprKind.int(value) }
+  }
+  case string(value) {
+    var def = state.types.get_maybe("String") or panic("String literals require builtin String.")
+    if not(def is string) then panic("String literals require builtin String.")
+    TypedExpr { type = type("String"), kind = TypedExprKind.string(value) }
+  }
+  case float panic("Float expressions are not implemented.")
+  case name(name) {
+    if locals.get_maybe(name) is some(type) then
+      return TypedExpr { type, kind = TypedExprKind.name(name) }
+    var value = state.vars.get_maybe(name) or panic("Unknown variable {name}.")
+    TypedExpr { type = value.type, kind = TypedExprKind.global(name) }
+  }
+  case call(call) {
+    var name = call.callee.name or ""
+    var args = list[TypedExpr]()
+    if call.callee.* is member(member) then {
+      name = member.name
+      args.&.push(state.type_check(member.of.*, type_params, locals))
+    }
+    if name == "" then panic("Expected a named function.")
+    for arg in call.args do args.&.push(state.type_check(arg, type_params, locals))
+    var explicit = none[List[Type]]()
+    if call.type_args is some(types) then {
+      for type in types do state.check_type(type, type_params)
+      explicit = some(types)
+    }
+    var selected = none[TypedCall]()
+    for key in 0..state.funs.len do {
+      var f = state.funs.get(key)
+      if f.name != name or f.args.len != args.len then continue
+      var inferred = map[String, Type]()
+      if explicit is some(types) then {
+        if types.len != f.type_args.len then continue
+        inferred = type_substitutions(f.type_args, types)
       }
-    if index < 0 then panic("variant {make.variant} doesn't exist")
-    inner(list(
-      leaf("new_inner"),
-      inner(list(leaf("object"), leaf(list(index)))),
-      state.compile(make.arg.*),
-    ))
+      var matches = true
+      for i in 0..args.len do {
+        var pattern = f.args.get(i).type
+        if not(bind_type(pattern, args.get(i).type, f.type_args, inferred.&)) then
+          matches = false
+      }
+      for param in f.type_args do if not(inferred.contains(param)) then matches = false
+      if not(matches) then continue
+      if selected is some then panic("Ambiguous function call {name}.")
+      selected = some(TypedCall { key, substitutions = inferred, args })
+    }
+    var resolved = selected or panic("No matching function {name}.")
+    var returns = state.funs.get(resolved.key).returns.specialize(resolved.substitutions).unwrap()
+    state.check_type(returns, type_params)
+    for arg in args do if arg.type.is_never() then returns = type("Never")
+    TypedExpr { type = returns, kind = TypedExprKind.call(resolved) }
   }
-  case var_ panic("var_")
-  case switch_ panic("switch_")
-  case block(block) state.compile_all(block.to_slice())
-  case try_scope panic("try_scope")
+  case make_enum(make) {
+    var concrete = make.type
+    var def = state.types.get_maybe(concrete.name) or panic("Cannot construct abstract type {concrete}.")
+    var enum_ = def.enum_ or panic("{concrete} is not an enum.")
+    var index = enum_.variant_index(make.variant)
+    var arg = state.type_check(make.arg.*, type_params, locals)
+    if concrete.args.is_empty() and enum_.type_args.is_not_empty() then {
+      var inferred = map[String, Type]()
+      if not(bind_type(enum_.variants.get(index).type, arg.type, enum_.type_args, inferred.&))
+      then panic("Cannot infer type arguments for {concrete.name}.{make.variant}.")
+      for param in enum_.type_args do
+        concrete.args.&.push(inferred.get_maybe(param)
+          or panic("Cannot infer {param} for {concrete.name}.{make.variant}."))
+    }
+    state.check_type(concrete, type_params)
+    var type_env = type_substitutions(enum_.type_args, concrete.args)
+    var expected = enum_.variants.get(index).type.specialize(type_env).unwrap()
+    if not(accepts(expected, arg.type)) then
+      panic("Variant {concrete}.{make.variant} expects {expected}, got {arg.type}.")
+    TypedExpr {
+      type = if arg.type.is_never() then type("Never") else concrete,
+      kind = TypedExprKind.make_enum(TypedMakeEnum { index, arg = arg.put_on_heap() }),
+    }
+  }
+  case var_(var_) {
+    var value = state.type_check(var_.value.*, type_params, locals)
+    locals.put(var_.name, value.type)
+    TypedExpr {
+      type = if value.type.is_never() then type("Never") else type("Nothing"),
+      kind = TypedExprKind.var_(TypedVar { name = var_.name, value = value.put_on_heap() }),
+    }
+  }
+  case block(block) {
+    var scope = locals.copy_map()
+    var exprs = list[TypedExpr]()
+    var type = type("Nothing")
+    for ast in block do {
+      var expr = state.type_check(ast, type_params, scope.&)
+      exprs.&.push(expr)
+      if not(type.is_never()) then type = expr.type
+    }
+    TypedExpr { type, kind = TypedExprKind.block(exprs) }
+  }
+  case switch_(switch_) {
+    var value = state.type_check(switch_.value.*, type_params, locals)
+    if value.type.is_never() then {
+      var result = type("Never")
+      for case in switch_.cases do {
+        var scope = locals.copy_map()
+        if case.binding is some(name) then scope.&.put(name, type("Never"))
+        var body = state.type_check(case.body, type_params, scope.&)
+        result = join(result, body.type)
+      }
+      if switch_.default_ is some(ast) then {
+        var scope = locals.copy_map()
+        var body = state.type_check(ast.*, type_params, scope.&)
+        result = join(result, body.type)
+      }
+      return TypedExpr { type = type("Never"), kind = TypedExprKind.block(list(value)) }
+    }
+    var def = state.types.get_maybe(value.type.name) or panic("Cannot switch on {value.type}.")
+    var enum_ = def.enum_ or panic("Cannot switch on {value.type}.")
+    var type_env = type_substitutions(enum_.type_args, value.type.args)
+    var cases = list[TypedCase]()
+    var used = list[Int]()
+    var result = type("Never")
+    for case in switch_.cases do {
+      var index = enum_.variant_index(case.variant)
+      if used.contains(index) then panic("Duplicate case {case.variant}.")
+      used.&.push(index)
+      var scope = locals.copy_map()
+      if case.binding is some(name) then
+        scope.&.put(name, enum_.variants.get(index).type.specialize(type_env).unwrap())
+      var body = state.type_check(case.body, type_params, scope.&)
+      result = join(result, body.type)
+      cases.&.push(TypedCase { index, binding = case.binding, body })
+    }
+    var default_ = none[&TypedExpr]()
+    if switch_.default_ is some(ast) then {
+      var scope = locals.copy_map()
+      var body = state.type_check(ast.*, type_params, scope.&)
+      result = join(result, body.type)
+      default_ = some(body.put_on_heap())
+    } else if used.len != enum_.variants.len then panic("Non-exhaustive switch on {value.type}.")
+    TypedExpr {
+      type = result,
+      kind = TypedExprKind.switch_(TypedSwitch {
+        value = value.put_on_heap(), cases, default_,
+      }),
+    }
+  }
+  case make_struct panic("Struct expressions are not implemented.")
+  case member panic("Member expressions are not implemented.")
+  case try_scope panic("Try expressions are not implemented.")
 }
-fun compile_all(state: &NotebookState, exprs: Slice[AstExpr]): ObjectId {
-  if exprs.len == 0 then {
-    inner(list(leaf("object"), leaf(list[Int]())))
-  } else if exprs.len == 1 then {
-    state.compile(exprs.get(0))
-  } else {
-    inner(list(
-      leaf("also"),
-      state.compile(exprs.get(0)),
-      state.compile_all(exprs.without_first()),
-    ))
+| Convert a declaration to its checked representation before appending it.
+| Its signature and body use the declared parameter names; only earlier entries
+| participate in function lookup, including when overloads share a name.
+fun type_check_fun(state: &NotebookState, f: AstFun): FunDef {
+  var type_params = state.type_parameters(f.type_args)
+  var args = list[FunArg]()
+  var locals = map[String, Type]()
+  for arg in f.args do {
+    if locals.contains(arg.name) then panic("Duplicate parameter {arg.name} in {f.name}.")
+    state.check_type(arg.type, type_params)
+    args.&.push(FunArg { name = arg.name, type = arg.type })
+    locals.&.put(arg.name, arg.type)
+  }
+  var returns = f.returns
+  state.check_type(returns, type_params)
+  var kind = switch f.kind
+    case builtin FunKind.builtin(builtin(f))
+    case body(body) {
+      var checked = state.type_check(AstExpr.block(body), type_params, locals.&)
+      if not(accepts(returns, checked.type)) then
+        panic("Function {f.name} returns {checked.type}, expected {returns}.")
+      FunKind.body(checked)
+    }
+  FunDef {
+    name = f.name, type_args = f.type_args,
+    args, returns, kind,
   }
 }
-fun run(expr: ObjectId): ObjectId {
-  var words = switch expr.get() case leaf panic("bad") case inner(words) words
-  var op = switch words.get(0).get() case inner panic("bad") case leaf(op) op.to_string()
-  if op == "object" then {
-    words.get(1)
-  } else if op == "new_inner" then {
+
+| These helpers construct executable Orchard expressions directly on the heap.
+fun object_expr(object: ObjectId): ObjectId { inner(list(leaf("object"), object)) }
+fun name_expr(name: String): ObjectId { inner(list(leaf("name"), leaf(name))) }
+fun unary_expr(name: String, value: ObjectId): ObjectId { inner(list(leaf(name), value)) }
+fun binary_expr(name: String, left: ObjectId, right: ObjectId): ObjectId {
+  inner(list(leaf(name), left, right))
+}
+fun new_inner_expr(children: List[ObjectId]): ObjectId {
+  inner(list(leaf("new-inner"), inner(children)))
+}
+fun conditional(condition: ObjectId, then_: ObjectId, else_: ObjectId): ObjectId {
+  inner(list(leaf("if"), condition, then_, else_))
+}
+fun let_expr(name: String, value: ObjectId, body: ObjectId): ObjectId {
+  inner(list(leaf("let"), leaf(name), value, body))
+}
+fun builtin(f: AstFun): ObjectId {
+  var signature = f.signature()
+
+  if signature == "panic(String)" then {
+    assert(f.returns == type("Never"), "panic must return Never.")
+    return unary_expr("crash", name_expr(f.args.get(0).name))
+  }
+
+  if signature == "lower_byte(Int)" then {
+    assert(f.returns == type("Byte"), "lower_byte must return Byte.")
+    return binary_expr("and",
+      name_expr(f.args.get(0).name), object_expr(leaf(list(255))),
+    )
+  }
+
+  if signature == "to_int(Byte)" then {
+    assert(f.returns == type("Int"), "to_int must return Int.")
+    return name_expr(f.args.get(0).name)
+  }
+
+  if signature == "+(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin + must return Int.")
+    return binary_expr("add",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+
+  if signature == "-(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin - must return Int.")
+    return binary_expr("subtract",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+
+  if signature == "*(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin * must return Int.")
+    return binary_expr("multiply",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+
+  if signature == "/(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin / must return Int.")
+    return binary_expr("divide",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+
+  if signature == "%(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin % must return Int.")
+    return binary_expr("modulo",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+
+  if signature == "&(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin & must return Int.")
+    return binary_expr("and",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+
+  if signature == "|(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin | must return Int.")
+    return binary_expr("or",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+
+  if signature == "^(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin ^ must return Int.")
+    return binary_expr("xor",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+
+  if signature == "<=>(Int, Int)" then {
+    assert(f.returns == type("Ordering"), "Integer builtin <=> must return Ordering.")
+    var comparison = binary_expr("compare",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    var flags = name_expr("$compare")
+    var equal = binary_expr("and",flags, object_expr(leaf(list(1))))
+    var greater = binary_expr("and",flags, object_expr(leaf(list(2))))
+    var tag = conditional(equal, object_expr(leaf(list(1))), conditional(
+      greater, object_expr(leaf(list(2))), object_expr(leaf(list(0))),
+    ))
+    var result = new_inner_expr(list(tag, object_expr(leaf(list[Int]()))))
+    return let_expr("$compare", comparison, result)
+  }
+
+  if signature == "+(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin + must return Byte.")
+    var value = binary_expr("add",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    return binary_expr("and",value, object_expr(leaf(list(255))))
+  }
+
+  if signature == "-(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin - must return Byte.")
+    var value = binary_expr("subtract",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    return binary_expr("and",value, object_expr(leaf(list(255))))
+  }
+
+  if signature == "*(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin * must return Byte.")
+    var value = binary_expr("multiply",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    return binary_expr("and",value, object_expr(leaf(list(255))))
+  }
+
+  if signature == "/(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin / must return Byte.")
+    var value = binary_expr("divide",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    return binary_expr("and",value, object_expr(leaf(list(255))))
+  }
+
+  if signature == "%(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin % must return Byte.")
+    var value = binary_expr("modulo",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    return binary_expr("and",value, object_expr(leaf(list(255))))
+  }
+
+  if signature == "&(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin & must return Byte.")
+    var value = binary_expr("and",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    return binary_expr("and",value, object_expr(leaf(list(255))))
+  }
+
+  if signature == "|(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin | must return Byte.")
+    var value = binary_expr("or",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    return binary_expr("and",value, object_expr(leaf(list(255))))
+  }
+
+  if signature == "^(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin ^ must return Byte.")
+    var value = binary_expr("xor",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    return binary_expr("and",value, object_expr(leaf(list(255))))
+  }
+
+  if signature == "<=>(Byte, Byte)" then {
+    assert(f.returns == type("Ordering"), "Integer builtin <=> must return Ordering.")
+    | Orchard compare yields flags; the builtin converts them to Ordering.
+    var comparison = binary_expr("compare",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    var flags = name_expr("$compare")
+    var equal = binary_expr("and",flags, object_expr(leaf(list(1))))
+    var greater = binary_expr("and",flags, object_expr(leaf(list(2))))
+    var tag = conditional(equal, object_expr(leaf(list(1))), conditional(
+      greater, object_expr(leaf(list(2))), object_expr(leaf(list(0))),
+    ))
+    var result = new_inner_expr(list(tag, object_expr(leaf(list[Int]()))))
+    return let_expr("$compare", comparison, result)
+  }
+  panic("Unknown builtin function {signature}.")
+}
+
+fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId {
+  state.check_type(expr.type, params)
+  switch expr.kind
+  case int(value) object_expr(leaf(list(value)))
+  case string(value) object_expr(leaf(value))
+  case name(name) name_expr(name)
+  case global(name) object_expr(state.vars.get(name).object)
+  case call(call) {
+    var fun = state.compile_fun(call.key)
+    var args = list[ObjectId]()
+    for arg in call.args do args.&.push(state.lower(arg, params))
+    inner(list(leaf("call"), object_expr(fun), inner(args)))
+  }
+  case make_enum(make) new_inner_expr(list(
+    object_expr(leaf(list(make.index))), state.lower(make.arg.*, params),
+  ))
+  case var_ state.lower_block(list(expr).to_slice(), params)
+  case block(block) state.lower_block(block.to_slice(), params)
+  case switch_(switch_) {
+    var value = state.lower(switch_.value.*, params)
+    var name = "$switch"
+    var ref = name_expr(name)
+    var tag = binary_expr("load", ref, object_expr(leaf(list(0))))
+    var body = inner(list(leaf("unreachable")))
+    if switch_.default_ is some(default_) then body = state.lower(default_.*, params)
+    for case in switch_.cases.to_slice().rev_iter() do {
+      var branch = state.lower(case.body, params)
+      if case.binding is some(binding) then {
+        var payload = binary_expr("load", ref, object_expr(leaf(list(1))))
+        branch = let_expr(binding, payload, branch)
+      }
+      var comparison = binary_expr("compare", tag, object_expr(leaf(list(case.index))))
+      var condition = binary_expr("and", comparison, object_expr(leaf(list(1))))
+      body = conditional(condition, branch, body)
+    }
+    let_expr(name, value, body)
+  }
+}
+fun lower_block(state: &NotebookState, exprs: Slice[TypedExpr], params: Set[String]): ObjectId {
+  if exprs.is_empty() then return object_expr(leaf(list[Int]()))
+  var first = exprs.get(0)
+  if first.kind is var_(var_) then {
+    var value = state.lower(var_.value.*, params)
+    return let_expr(var_.name, value, state.lower_block(exprs.without_first(), params))
+  }
+  var code = state.lower(first, params)
+  if exprs.len == 1 then return code
+  binary_expr("also", code, state.lower_block(exprs.without_first(), params))
+}
+fun compile(state: &NotebookState, expr: TypedExpr, params: Set[String]): CompiledCode {
+  CompiledCode { type = expr.type, object = state.lower(expr, params) }
+}
+fun compile_fun(state: &NotebookState, key: Int): ObjectId {
+  if state.compiled_funs.get_maybe(key) is some(code) then return code
+  var fun = state.funs.get(key)
+  var names = list[ObjectId]()
+  for arg in fun.args do names.&.push(leaf(arg.name))
+  var body = switch fun.kind
+    case builtin(body) body
+    case body(body) state.compile(body, fun.type_args.to_set()).object
+  var code = inner(list(inner(names), body))
+  state.compiled_funs.&.put(key, code)
+  code
+}
+
+fun int_value(object: ObjectId): Int {
+  var words = object.get().leaf or panic("Expected an integer leaf.")
+  if words.len != 1 then panic("Expected a single-word integer.")
+  words.get(0)
+}
+fun comparison(left: Int, right: Int): Int {
+  | Compare signs first to avoid overflow in the host cmp instruction.
+  if left < 0 and right >= 0 then 4
+  else if left >= 0 and right < 0 then 2
+  else if left < right then 4
+  else if left == right then 1 else 2
+}
+fun run(code: CompiledCode): TypedObject {
+  TypedObject { type = code.type, object = eval_code(code.object, map[String, ObjectId]()) }
+}
+fun eval_code(code: ObjectId, locals: Map[String, ObjectId]): ObjectId {
+  var instruction = code.get().inner.unwrap()
+  var name = instruction.get(0).get().leaf.unwrap().to_string()
+  if name == "object" then instruction.get(1)
+  else if name == "name" then locals.get(instruction.get(1).get().leaf.unwrap().to_string())
+  else if name == "let" then {
+    var value = eval_code(instruction.get(2), locals)
+    var scope = locals.copy_map()
+    scope.&.put(instruction.get(1).get().leaf.unwrap().to_string(), value)
+    eval_code(instruction.get(3), scope)
+  } else if name == "call" then {
+    var fun = eval_code(instruction.get(1), locals).get().inner.unwrap()
+    var params = fun.get(0).get().inner.unwrap()
+    var args = instruction.get(2).get().inner.unwrap()
+    var scope = map[String, ObjectId]()
+    for i in 0..params.len do scope.&.put(
+      params.get(i).get().leaf.unwrap().to_string(), eval_code(args.get(i), locals),
+    )
+    eval_code(fun.get(1), scope)
+  } else if name == "new-inner" then {
     var children = list[ObjectId]()
-    for word in words.to_slice().subslice(1..words.len) do
-      children.&.push(run(word))
+    for arg in instruction.get(1).get().inner.unwrap() do
+      children.&.push(eval_code(arg, locals))
     inner(children)
+  } else if name == "load" then {
+    var object = eval_code(instruction.get(1), locals).get().inner.unwrap()
+    var index = eval_code(instruction.get(2), locals).int_value()
+    object.get(index)
+  } else if name == "if" then {
+    var condition = eval_code(instruction.get(1), locals).int_value()
+    eval_code(instruction.get(if condition != 0 then 2 else 3), locals)
+  } else if name == "crash" then {
+    var message = eval_code(instruction.get(1), locals).get().leaf.unwrap().to_string()
+    panic(message)
+  } else if name == "unreachable" then panic("Unreachable expression.")
+  else if name == "also" then {
+    eval_code(instruction.get(1), locals)
+    eval_code(instruction.get(2), locals)
   } else {
-    panic("run {op} {expr}")
+    var left = eval_code(instruction.get(1), locals).int_value()
+    var right = eval_code(instruction.get(2), locals).int_value()
+    var value = if name == "add" then left + right
+      else if name == "subtract" then left - right
+      else if name == "multiply" then left * right
+      else if name == "divide" then {
+        if right == 0 then panic("Integer division by zero.")
+        left / right
+      } else if name == "modulo" then left % right
+      else if name == "and" then left & right
+      else if name == "or" then or(left, right)
+      else if name == "xor" then left ^ right
+      else if name == "compare" then comparison(left, right)
+      else panic("Unknown compiled instruction {name}.")
+    leaf(list(value))
   }
 }
 
@@ -3439,7 +4056,7 @@ fun main(): Never {
   eprintln("Evaling.")
   var state = eval(ast)
   for v in state.vars do {
-    eprintln("{v.key}: {v.value}")
+    eprintln("{v.key}: {v.value.formatted(state)}")
   }
 
   exit(0)

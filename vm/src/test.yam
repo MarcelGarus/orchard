@@ -36,7 +36,7 @@ chapter Root
         accepts an argument of Never, it can never be called (otherwise, the
         caller would have a Never instance).
         Why do we need something like this? Some expressions always abort
-        control flow, for example `crash("hi")`. These evaluate to the Never
+        control flow, for example `panic("hi")`. These evaluate to the Never
         type. Because Never is never instantiated, it can be assigned to
         anything: `fibonacci(todo())`
       code
@@ -63,22 +63,22 @@ chapter Root
         You should implement an ==(T, T): Bool function for types that can be
         compared for equality.
       code
-        fun !=[T](a: T, b: T): Bool { not(a == b) }
+        fun !=(a: Bool, b: Bool): Bool { not(a == b) }
       code
         fun ==(a: Nothing, b: Nothing): Bool { true }
     chapter AndOr
       text
         The "and" and "or" keywords allow short-circuiting.
 
-        Here are cases where the control flow short-circuits and the alternatives
-        don't get evaluated:
+        Here are cases where the control flow short-circuits and the
+        alternatives don't get evaluated:
 
         false and panic() | this is false
         true or panic()   | this is true
         some(2) or 3      | this is 2
 
-        In these cases, the control flow doesn't short-circuit and the alternatives
-        are evaluated as well:
+        In these cases, the control flow doesn't short-circuit and the
+        alternatives are evaluated as well:
 
         false or foo      | this is foo
         true and stuff    | this is stuff
@@ -105,9 +105,23 @@ chapter Root
           else
             ControlFlow[Bool, Nothing].evaluate_alternative
         }
-    chapter Panicking
+    chapter Byte
+      text
+        A byte represents a number between 0 and 255, inclusive. However,
+        because of Orchard's heap, a byte is really just a leaf object that
+        takes up two words (header and data).
       code
-        fun panic[T](message: T): Never { ... }
+        builtin Byte
+    chapter String
+      text
+        A String is what you get from string literals such as "blub".
+      code
+        builtin String
+    chapter Panicking
+      text
+        Panicking stops evaluation with a message.
+      code
+        fun panic(message: String): Never { ... }
         fun panic(): Never { panic("panicked") }
       code
         fun unreachable(): Never { panic("unreachable") }
@@ -115,10 +129,10 @@ chapter Root
         fun todo(): Never { panic("todo") }
     chapter Assert
       code
-        fun assert(condition: Bool) { assert(condition, "assert failed") }
         fun assert(condition: Bool, message: String) {
           if not(condition) then panic(message)
         }
+        fun assert(condition: Bool) { assert(condition, "assert failed") }
     chapter Maybe
       text
         Represents optional values. Like Option in Rust, but with the cooler
@@ -129,14 +143,13 @@ chapter Root
         fun some[T](value: T): Maybe[T] { Maybe.some(value) }
         fun none[T](): Maybe[T] { Maybe[T].none }
       code
-        fun flatten[T](maybe: Maybe[Maybe[T]]): Maybe[T] { maybe or none[T]() }
-      code
         fun or[T](maybe: Maybe[T]): ControlFlow[T, Nothing] {
           if maybe is some(t)
           then ControlFlow[T, Nothing].short_circuit(t)
           else ControlFlow[T, Nothing].evaluate_alternative
         }
       code
+        fun flatten[T](maybe: Maybe[Maybe[T]]): Maybe[T] { maybe or none[T]() }
         fun unwrap[T](maybe: Maybe[T], message: String): T {
           maybe or panic(message)
         }
@@ -154,7 +167,7 @@ chapter Root
       code
         fun or[O, E](result: Result[O, E]): ControlFlow[O, E] {
           result switch {
-            ok(o)    ControlFlow[O, E].short_circuit(o)
+            ok(o) ControlFlow[O, E].short_circuit(o)
             error(e) ControlFlow[O, E].evaluate_alternative(e)
           }
         }
@@ -175,3 +188,49 @@ chapter Root
         fun ==(a: Ordering, b: Ordering): Bool {
           a switch { less b is less equal b is equal greater b is greater }
         }
+    chapter Int
+      text
+        If you write a number such as 42 in the code, it's an Int.
+      code
+        builtin Int
+      code
+        fun +(left: Int, right: Int): Int { ... }
+        fun -(left: Int, right: Int): Int { ... }
+        fun *(left: Int, right: Int): Int { ... }
+        fun /(left: Int, right: Int): Int { ... }
+        fun %(left: Int, right: Int): Int { ... }
+        fun &(left: Int, right: Int): Int { ... }
+        fun |(left: Int, right: Int): Int { ... }
+        fun ^(left: Int, right: Int): Int { ... }
+        fun <=>(left: Int, right: Int): Ordering { ... }
+        fun ==(a: Int, b: Int): Bool { a <=> b is equal }
+        fun <(a: Int, b: Int): Bool { a <=> b is less }
+        fun >(a: Int, b: Int): Bool { a <=> b is greater }
+        fun !=(a: Int, b: Int): Bool { not(a <=> b is equal) }
+        fun >=(a: Int, b: Int): Bool { not(a <=> b is less) }
+        fun <=(a: Int, b: Int): Bool { not(a <=> b is greater) }
+        fun abs(value: Int): Int { if value >= 0 then value else 0 - value }
+        fun round_up_to_multiple_of(number: Int, factor: Int): Int {
+          {number + factor - 1} / factor * factor
+        }
+      code
+        var min_int = -9223372036854775808
+        var max_int = 9223372036854775807
+    chapter ByteOperations
+      text
+        Byte arithmetic wraps into the range 0 to 255.
+      code
+        fun lower_byte(value: Int): Byte { ... }
+        fun to_int(value: Byte): Int { ... }
+        fun +(left: Byte, right: Byte): Byte { ... }
+        fun -(left: Byte, right: Byte): Byte { ... }
+        fun *(left: Byte, right: Byte): Byte { ... }
+        fun /(left: Byte, right: Byte): Byte { ... }
+        fun %(left: Byte, right: Byte): Byte { ... }
+        fun &(left: Byte, right: Byte): Byte { ... }
+        fun |(left: Byte, right: Byte): Byte { ... }
+        fun ^(left: Byte, right: Byte): Byte { ... }
+        fun <=>(left: Byte, right: Byte): Ordering { ... }
+      code
+        var min_byte = lower_byte(0)
+        var max_byte = lower_byte(255)
