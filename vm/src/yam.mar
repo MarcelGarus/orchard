@@ -2910,10 +2910,13 @@ fun parse_try_scope(parser: &Parser): Maybe[AstExpr] {
 }
 
 fun parse_expr_suffix_member(parser: &Parser, current: AstExpr): Maybe[AstExpr] {
+  parser.consume_whitespace()
+  var start = parser.cursor
   var dot = parser.consume_prefix(".") or return none[AstExpr]()
   if parser.parse_lower_name() is some(name) then
     return some(current.member(name))
-  panic("Expected the name of a member.")
+  parser.cursor = start
+  none[AstExpr]()
 }
 
 fun parse_expr_suffix_call(parser: &Parser, current: AstExpr): Maybe[AstExpr] {
@@ -3471,6 +3474,8 @@ enum TypedExprKind {
   global: String,
   call: TypedCall,
   make_enum: TypedMakeEnum,
+  make_struct: List[TypedExpr],
+  field: TypedField,
   var_: TypedVar,
   switch_: TypedSwitch,
   block: List[TypedExpr],
@@ -3479,6 +3484,7 @@ struct TypedCall {
   key: Int, substitutions: Map[String, Type], args: List[TypedExpr],
 }
 struct TypedMakeEnum { index: Int, arg: &TypedExpr }
+struct TypedField { of: &TypedExpr, index: Int }
 struct TypedVar { name: String, value: &TypedExpr }
 struct TypedSwitch {
   value: &TypedExpr, cases: List[TypedCase], default_: Maybe[&TypedExpr],
@@ -3528,6 +3534,11 @@ fun variant_index(enum_: EnumDef, name: String): Int {
   for i in 0..enum_.variants.len do
     if enum_.variants.get(i).name == name then return i
   panic("Unknown enum variant {name}.")
+}
+fun field_index(struct_: StructDef, name: String): Int {
+  for i in 0..struct_.fields.len do
+    if struct_.fields.get(i).name == name then return i
+  panic("Unknown struct field {name}.")
 }
 fun check_type(state: NotebookState, type: Type, type_params: Set[String]) {
   if type_params.contains(type.name) then {
@@ -3706,8 +3717,53 @@ fun type_check(
       }),
     }
   }
-  case make_struct panic("Struct expressions are not implemented.")
-  case member panic("Member expressions are not implemented.")
+  case make_struct(make) {
+    var concrete = make.type
+    var def = state.types.get_maybe(concrete.name) or panic("Cannot construct abstract type {concrete}.")
+    var struct_ = def.struct_ or panic("{concrete} is not a struct.")
+    var values = map[String, TypedExpr]()
+    for field in make.fields do {
+      struct_.field_index(field.name)
+      if values.contains(field.name) then panic("Duplicate struct field {field.name}.")
+      values.&.put(field.name, state.type_check(field.value, type_params, locals))
+    }
+    var infer = concrete.args.is_empty() and struct_.type_args.is_not_empty()
+    var inferred = map[String, Type]()
+    for field in struct_.fields do {
+      var value = values.get_maybe(field.name) or panic("Missing struct field {field.name}.")
+      if infer and not(bind_type(field.type, value.type, struct_.type_args, inferred.&)) then
+        panic("Cannot infer type arguments for {concrete.name}.{field.name}.")
+    }
+    if infer then
+      for param in struct_.type_args do
+        concrete.args.&.push(
+          inferred.get_maybe(param)
+            or panic("Cannot infer {param} for {concrete.name}.")
+        )
+    state.check_type(concrete, type_params)
+    var type_env = type_substitutions(struct_.type_args, concrete.args)
+    var fields = list[TypedExpr]()
+    var result = concrete
+    for field in struct_.fields do {
+      var value = values.get(field.name)
+      var expected = field.type.specialize(type_env).unwrap()
+      if not(accepts(expected, value.type)) then
+        panic("Field {concrete}.{field.name} expects {expected}, got {value.type}.")
+      if value.type.is_never() then result = type("Never")
+      fields.&.push(value)
+    }
+    TypedExpr { type = result, kind = TypedExprKind.make_struct(fields) }
+  }
+  case member(member) {
+    var value = state.type_check(member.of.*, type_params, locals)
+    var def = state.types.get_maybe(value.type.name) or panic("Cannot access a field of {value.type}.")
+    var struct_ = def.struct_ or panic("{value.type} is not a struct.")
+    var index = struct_.field_index(member.name)
+    var type_env = type_substitutions(struct_.type_args, value.type.args)
+    var result = struct_.fields.get(index).type.specialize(type_env).unwrap()
+    state.check_type(result, type_params)
+    TypedExpr { type = result, kind = TypedExprKind.field(TypedField { of = value.put_on_heap(), index }) }
+  }
   case try_scope panic("Try expressions are not implemented.")
 }
 | Convert a declaration to its checked representation before appending it.
@@ -3739,7 +3795,6 @@ fun type_check_fun(state: &NotebookState, f: AstFun): FunDef {
   }
 }
 
-| These helpers construct executable Orchard expressions directly on the heap.
 fun object_expr(object: ObjectId): ObjectId { inner(list(leaf("object"), object)) }
 fun name_expr(name: String): ObjectId { inner(list(leaf("name"), leaf(name))) }
 fun unary_expr(name: String, value: ObjectId): ObjectId { inner(list(leaf(name), value)) }
@@ -4016,18 +4071,19 @@ fun builtin(f: AstFun): ObjectId {
       ),
     )
   }
-  if signature == "slice[T](List[T], Int, Int)" then {
+  if signature == "slice[T](List[T], Range[Int])" then {
     assert(f.returns == type("List", list(type("T"))))
+    var actual_source = name_expr(f.args.get(0).name)
+    var range = name_expr(f.args.get(1).name)
+    var actual_start = binary_expr("load", range, int_expr(0))
+    var actual_end = binary_expr("load", range, int_expr(1))
     var source = name_expr("$source")
     var start = name_expr("$start")
     var body = array_expr(list("$source", "$start", "$end"),
-      list(name_expr(f.args.get(0).name), name_expr(f.args.get(1).name), name_expr(f.args.get(2).name)),
+      list(actual_source, actual_start, actual_end),
       binary_expr("subtract", name_expr("$end"), start),
       binary_expr("load", source, binary_expr("add", start, name_expr("$index"))),
     )
-    var actual_source = name_expr(f.args.get(0).name)
-    var actual_start = name_expr(f.args.get(1).name)
-    var actual_end = name_expr(f.args.get(2).name)
     return require_expr(flag_expr(3, actual_start, int_expr(0)), "List range out of bounds.",
       require_expr(flag_expr(5, actual_start, actual_end), "List range out of bounds.",
         require_expr(flag_expr(5, actual_end, size_expr(actual_source)), "List range out of bounds.", body),
@@ -4092,6 +4148,12 @@ fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId
   case make_enum(make) new_inner_expr(list(
     object_expr(leaf(list(make.index))), state.lower(make.arg.*, params),
   ))
+  case make_struct(fields) {
+    var children = list[ObjectId]()
+    for field in fields do children.&.push(state.lower(field, params))
+    new_inner_expr(children)
+  }
+  case field(field) binary_expr("load", state.lower(field.of.*, params), int_expr(field.index))
   case var_ state.lower_block(list(expr).to_slice(), params)
   case block(block) state.lower_block(block.to_slice(), params)
   case switch_(switch_) {
