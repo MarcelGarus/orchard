@@ -3175,18 +3175,21 @@ fun parse_code(parser: &Parser): AstCode {
   AstCode { defs = defs }
 }
 
-fun parse_builtin_type(parser: &Parser): Maybe[AstBuiltinType] {
-  parser.consume_keyword("builtin") or return none[AstBuiltinType]()
-  var name = parser.parse_upper_name()
-    or panic("Expected an uppercase builtin type name.")
+fun parse_type_def(parser: &Parser): Maybe[AstDef] {
+  parser.consume_keyword("type") or return none[AstDef]()
+  var name = parser.parse_upper_name() or panic("Expected an uppercase type name.")
   var type_args = parser.parse_type_params() or list[String]()
-  some(AstBuiltinType { name, type_args })
+  parser.consume_prefix("=") or panic("Expected an equals sign after the type name.")
+  if parser.consume_prefix("...") then
+    return some(AstDef.builtin(AstBuiltinType { name, type_args }))
+  if parser.consume_keyword("struct") then
+    return some(AstDef.struct_(parser.parse_struct(name, type_args)))
+  if parser.consume_keyword("enum") then
+    return some(AstDef.enum_(parser.parse_enum(name, type_args)))
+  panic("Expected struct, enum, or ... after the equals sign.")
 }
 
-fun parse_struct(parser: &Parser): Maybe[AstStruct] {
-  parser.consume_keyword("struct") or return none[AstStruct]()
-  var name = parser.parse_upper_name() or panic("Expected an uppercase name.")
-  var type_args = parser.parse_type_params() or list[String]()
+fun parse_struct(parser: &Parser, name: String, type_args: List[String]): AstStruct {
   parser.consume_prefix("\{") or panic("Expected an opening brace.")
   var fields = list[AstStructField]()
   loop {
@@ -3199,13 +3202,10 @@ fun parse_struct(parser: &Parser): Maybe[AstStruct] {
   }
   parser.consume_prefix("}")
     or panic("Expected a closing brace to end the struct.")
-  some(AstStruct { name, type_args, fields })
+  AstStruct { name, type_args, fields }
 }
 
-fun parse_enum(parser: &Parser): Maybe[AstEnum] {
-  parser.consume_keyword("enum") or return none[AstEnum]()
-  var name = parser.parse_upper_name() or panic("Expected an uppercase name.")
-  var type_args = parser.parse_type_params() or list[String]()
+fun parse_enum(parser: &Parser, name: String, type_args: List[String]): AstEnum {
   parser.consume_prefix("\{") or panic("Expected an opening brace.")
   var variants = list[AstEnumVariant]()
   loop {
@@ -3219,13 +3219,11 @@ fun parse_enum(parser: &Parser): Maybe[AstEnum] {
   }
   parser.consume_prefix("}")
     or panic("Expected a closing brace to end the enum.")
-  some(AstEnum { name, type_args, variants })
+  AstEnum { name, type_args, variants }
 }
 
 fun parse_def(parser: &Parser): Maybe[AstDef] {
-  if parser.parse_builtin_type() is some(builtin) then return some(AstDef.builtin(builtin))
-  if parser.parse_struct() is some(st) then return some(AstDef.struct_(st))
-  if parser.parse_enum() is some(enum_) then return some(AstDef.enum_(enum_))
+  if parser.parse_type_def() is some(type_) then return some(type_)
   if parser.parse_var() is some(var_) then return some(AstDef.var_(var_))
   if parser.parse_fun() is some(fun_) then return some(AstDef.fun_(fun_))
   none[AstDef]()
