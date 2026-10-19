@@ -349,3 +349,496 @@ chapter Root
           )
           list.first(range.start).push_all(list.without_first(range.end))
         }
+    chapter Functions
+      text
+        Function types can name their parameters. Lambdas require parameter types
+        and always infer their return type. They can capture surrounding values.
+      code
+        type Comparator = fun(Int, Int): Int
+        type IntTransform = fun(value: Int): Int
+        fun apply[T, U](value: T, transform: fun(T): U): U { transform(value) }
+        fun compare_values(a: Int, b: Int, compare: Comparator): Int { compare(a, b) }
+        fun offset(amount: Int): IntTransform { fun(value: Int) { value + amount } }
+        fun map[T, U](value: Maybe[T], transform: fun(T): U): Maybe[U] {
+          value switch {
+            some(item) some(transform(item))
+            none none[U]()
+          }
+        }
+    chapter Float
+      code
+        type Float = ...
+    chapter UserInterface
+      chapter Color
+        text
+          Orchard uses the sRGB color space.
+        code
+          type Color = struct { r: Byte, g: Byte, b: Byte }
+          fun color(r: Byte, g: Byte, b: Byte): Color { Color { r, g, b } }
+        text
+          fun parse_hex(string: String): Int {
+            string.bytes().fold_right(0, fun (state: Int, byte: Byte) {
+              var digit =
+                if byte >= "0".bytes().get(0) and byte <= "9".bytes().get(0) then
+                  byte - "0".bytes().get(0)
+                else byte >= "a".bytes().get(0) and byte <= "f".bytes().get(0) then
+                  byte - "a".bytes().get(0)
+                else
+                  crash("invalid hex char")
+              state * 16 + digit
+            })
+          }
+          fun color(hex: String): Color {
+            assert(hex.length() == 7)
+            assert(hex.slice(0..1) == "#")
+            color(
+              hex.slice(1..3).parse_hex().lower_byte(),
+              hex.slice(3..5).parse_hex().lower_byte(),
+              hex.slice(5..7).parse_hex().lower_byte(),
+            )
+          }
+      chapter Vec2
+        text
+          A mathematical two-dimensional vector with no meaning associated to
+          the components.
+        code
+          type Vec2[T] = struct { x: T, y: T }
+          fun vec[T](x: T, y: T): Vec2[T] { Vec2 { x, y } }
+        text
+          Operations specifically for vectors of floating-point numbers.
+        code
+          fun +(a: Vec2[Float], b: Vec2[Float]): Vec2[Float] {
+            Vec2 { x = a.x + b.x, y = a.y + b.y }
+          }
+          fun -(a: Vec2[Float], b: Vec2[Float]): Vec2[Float] {
+            Vec2 { x = a.x - b.x, y = a.y - b.y }
+          }
+          fun *(f: Float, a: Vec2[Float]): Vec2[Float] {
+            Vec2 { x = f * a.x, y = f * a.y }
+          }
+          fun *(a: Vec2[Float], f: Float): Vec2[Float] { f * a }
+          fun /(a: Vec2[Float], f: Float): Vec2[Float] {
+            Vec2 { x = a.x / f, y = a.y / f }
+          }
+      text
+        Offset
+        text
+          An offset in a two-dimensional plane.
+        code
+          type Offset = struct { x: Float, y: Float }
+          fun @(x: Float, y: Float): Offset { Offset { x, y } }
+          fun to_vec(offset: Offset): Vec2[Float] {
+            Vec2 { x = offset.x, y = offset.y }
+          }
+          fun to_offset(vec: Vec2[Float]): Offset {
+            Offset { x = vec.x, y = vec.y }
+          }
+          fun +(a: Offset, b: Offset): Offset { {a.to_vec() + b.to_vec()}.to_offset() }
+          fun -(a: Offset, b: Offset): Offset { {a.to_vec() + b.to_vec()}.to_offset() }
+          fun *(f: Float, a: Offset): Offset { {f * a.to_vec()}.to_offset() }
+          fun *(a: Offset, f: Float): Offset { {a.to_vec() * f}.to_offset() }
+          fun /(a: Offset, f: Float): Offset { {a.to_vec() / f}.to_offset() }
+      text
+        Position
+        text
+          A position in a two-dimensional plane.
+        code
+          type Position = struct { x: Float, y: Float }
+          fun @(x: Float, y: Float): Position { Position { x, y } }
+          fun to_vec(pos: Position): Vec2[Float] {
+            Vec2 { x = pos.x, y = pos.y }
+          }
+          fun to_position(vec: Vec2[Float]): Position {
+            Position { x = vec.x, y = vec.y }
+          }
+          fun +(pos: Position, offset: Offset): Position {
+            (point.to_vec() + offset.to_vec()).to_position()
+          }
+          fun -(pos: Position, offset: Offset): Position {
+            (point.to_vec() - offset.to_vec()).to_position()
+          }
+      text
+        Size
+        code
+          type Size = struct { width: Float, height: Float }
+          fun size(width: Float, height: Float): Size { Size { width, height } }
+          fun to_vec(size: Size): Vec2[Float] {
+            Vec2 { x = size.width, y = size.height }
+          }
+          fun to_size(vec: Vec2[Float]): Size {
+            Size { width = vec.x, height = vec.y }
+          }
+          fun *(f: Float, size: Size): Size { {f * size.to_vec()}.to_size() }
+          fun *(size: size, f: Float): Size { {size.to_vec() * f}.to_size() }
+          fun /(size: Size, f: Float): Size { {size.to_vec() / f}.to_size() }
+      text
+        Rectangle
+        code
+          type Rectangle = struct {
+            left: Float, top: Float, right: Float, bottom: Float
+          }
+          fun rect(
+            left: Float, top: Float, right: Float, bottom: Float
+          ): Rectangle {
+            Rectangle { left, top, right, bottom }
+          }
+          fun rect(top_left: Position, size: Size): Rectangle {
+            Rectangle {
+              left = top_left.x,
+              top = top_left.y,
+              right = top_left.x + size.width
+              bottom = top_left.y + size.height
+            }
+          }
+          fun top_left(rectangle: Rectangle): Position {
+            Position { x = left, y = top }
+          }
+          fun top_right(rectangle: Rectangle): Position {
+            Position { x = right, y = top }
+          }
+          fun bottom_left(rectangle: Rectangle): Position {
+            Position { x = left, y = bottom }
+          }
+          fun bottom_right(rectangle: Rectangle): Position {
+            Position { x = right, y = bottom }
+          }
+          fun center(rectangle: Rectangle): Position {
+            Position { x = {left + right} / 2., y = {top + bottom} / 2. }
+          }
+      text
+        Drawings
+        text
+          When Pear code is asked to render something for the outside world, it
+          returns drawing instructions. These are just normal Pear values.
+        code
+          type TransformationMatrix = struct {
+            a: Float, b: Float, c: Float, d: Float, e: Float, f: Float
+          }
+          fun transformationMatrix(
+            a: Float, b: Float, c: Float, d: Float, e: Float, f: Float
+          ): TransformationMatrix {
+            TransformationMatrix { a, b, c, d, e, f }
+          }
+          fun transformTranslate(offset: Offset): TransformationMatrix {
+            transformationMatrix(1., 0., 0., 1., offset.x, offset.y)
+          }
+          fun transformScale(factor: Float): TransformationMatrix {
+            transformationMatrix(factor, 0., 0., factor, 0., 0.)
+          }
+        code
+          type PathSegment = enum { move_to: Position, line_to: Position }
+          type Path = struct { segments: List[PathSegment] }
+          type FillPath = struct { path: Path, color: Color }
+          type Transform = struct {
+            by: TransformationMatrix, what: DrawCommand
+          }
+          type DrawCommand = enum {
+            nothing,
+            fill_path: FillPath,
+            transform: Transform,
+            all: List[DrawCommand],
+          }
+        chapter HistoricalNote
+          text
+            Initially, I tried to communicate with the outside world using pixel
+            graphics. However, I believe that's not the right move as pixels are
+            more difficult to handle in code. Having pixels (or some concept of
+            a texture) requires either:
+            - mutable values (which Orchard doesn't have), or
+            - lots of copying on every texture modification (meh), or
+            - a super-smart optimizing compiler (which is useful but it has the
+              sort of slow-by-default-and-you-have-to-trust-the-black-box-to-work
+              feeling I don't like), or
+            - inefficient storage of individual pixels in trees.
+            By communicating the intent on a quite high-level, we can instead
+            make use of GPUs when turning the high-level drawing instructions
+            into pixels. This is also similar to how Flutter works: The Dart VM
+            is decently fast, but not super fast, so it just emits drawing
+            instructions that the lower-level C++ engine takes and turns into
+            pixels.
+        code
+          type Drawing = struct { draw: DrawCommand, size: Size }
+        code
+          fun draw_nothing(size: Size): Drawing {
+            Drawing { draw = DrawCommand.nothing, size }
+          }
+          fun draw_nothing(): Drawing { draw_nothing(size(0., 0.)) }
+          fun draw_stacked(drawings: List[Drawing]): Drawing {
+            var max_size = drawings.iter()
+              .map(fun(drawing: Drawing) { drawing.size })
+              .reduce(fun(a: Size, b: Size) {
+                size(max(a.width, b.width), max(a.height, b.height))
+              })
+            Drawing { draw = DrawCommand.all(drawings), size = max_size }
+          }
+          fun draw_colored_rect(size: Size): Drawing {
+            Drawing {
+              draw = DrawCommand.fill_path(FillPath {
+                path = Path {
+                  segments = list(
+                    PathSegment.move_to(0. @ 0.),
+                    PathSegment.line_to(size.width @ 0.),
+                    PathSegment.line_to(size.width @ size.height),
+                    PathSegment.line_to(0. @ size.height),
+                  )
+                },
+                color = e.color,
+              }),
+              size,
+            }
+          }
+      text
+        WidgetFramework
+        text
+          The widget framework works similar to Flutter: You define your UI by
+          nesting tiny, simple widgets in a declarative way. The framework turns
+          this widget tree into an element tree. Elements are persistent nodes
+          with internal state. On the next frame, you rebuild a widget tree and
+          the framework updates the element tree accordingly.
+        text
+          Constraints (min/max width/height) flow down the tree and concrete
+          renderings with concrete sizes flow up the tree. Parent widgets
+          determine the position of child widgets.
+        chapter Constraints
+          code
+            type AxisConstraints = struct { min: Float, max: Maybe[Float] }
+            type Constraints { width: AxisConstraints, height: AxisConstraints }
+          code
+            fun tight_axis_constraints(size: Float): AxisConstraints {
+              AxisConstraints { min = size, max = some(size) }
+            }
+            fun tight_constraints(size: Size): Constraints {
+              Constraints {
+                width = tight_axis_constraints(size.width),
+                height = tight_axis_constraints(size.height),
+              }
+            }
+            fun loosen_min(axis: AxisConstraints): AxisConstraints {
+              AxisConstraints { min = 0, max = axis.max }
+            }
+            fun loosen_min(constraints: Constraints): Constraints {
+              Constraints {
+                width = constraints.width.loosen_min(),
+                height = constraints.height.loosen_min(),
+              }
+            }
+            fun min(constraints: Constraints): Size {
+              size(constraints.width.min, constraints.height.min)
+            }
+            fun max(constraints: Constraints): Maybe[Size] {
+              constraints.width.max switch {
+                none none[Size]()
+                some(width) {
+                  constraints.height.max switch {
+                    none none[Size]()
+                    some(height) size(width, height)
+                  }
+                }
+              }
+            }
+          code
+            fun clamp(number: Float, low: Float, high: Float): Float {
+              min(high, max(low, number))
+            }
+            fun clamp(number: Float, constraints: AxisConstraints): Float {
+              constraints.max switch {
+                none max(number, constraints.min)
+                some(max) number.clamp(constraints.min, max)
+              }
+            }
+            fun clamp(size: Size, constraints: Constraints): Size {
+              size(
+                size.width.clamp(constraints.width),
+                size.height.clamp(constraints.height),
+              )
+            }
+        chapter Widget
+          text
+            Previously, I just had functions that return Drawings, for example a
+            text function that takes a String and returns a rendered version.
+            However, this is not performant (you have to re-layout and re-render
+            everything every frame) and having internal state is generally
+            useful. For example, if you have a text in a scrollable view, you
+            don't want to re-layout the text every frame, but cache its drawing
+            instructions.
+          code
+            type Widget[M] = struct {
+              new: fun(Constraints): Element[M],
+            }
+            type Element[M] = struct {
+              constraints: Constraints,
+              size: Size,
+              drawing: Drawing,
+              update: fun(Widget[M]): Element[M],
+              new_constraints: fun(Constraints): Element[M],
+              mouse_clicked: fun(Position): MouseClickResult[M],
+            }
+            type MouseClickResult[M] = enum {
+              not_handled, handled: Element[M], message: M
+            }
+          code
+            type WidgetImpl[M, W, E] = struct {
+              new: fun(widget: W, constraints: Constraints): E,
+              update: fun(element: E, widget: W): E,
+              new_constraints: fun(element: E, constraints: Constraints): E,
+              mouse_clicked: fun(element: E, position: Position): MouseClickResult[M],
+              render: fun(e: E): Drawing,
+            }
+            fun widget[M, W, E](
+              impl: WidgetImpl[M, W, E], current: W
+            ): Widget[M] {
+              Widget {
+                new = fun(constraints: Constraints) {
+                  ...
+                },
+              }
+            }
+        chapter EmptyWidget
+          code
+            var empty_widget = widget[Never, Size](
+              fun(constraints: Constraints) { constraints.min() },
+              fun(state: Size) { draw_nothing(size) },
+              fun(size: Size, mouse: Position) { MouseClickResult.not_handled },
+            )
+        chapter ColoredWidget
+          code
+            type ColoredWidget[M] = struct { color: Color, child: Widget[M] }
+            type ColoredElement[M] = struct { color: Color, child: Element[M] }
+            fun colored_impl[M](
+            ): WidgetImpl[M, ColoredWidget[M], ColoredElement[M]] {
+              WidgetImpl {
+                new = fun(w: ColoredWidget[M], constraints: Constraints) {
+                  ColoredElement {
+                    color = w.color, child = w.child.create_element(constraints)
+                  }
+                },
+                update = fun(e: ColoredElement[M], widget: ColoredWidget) {
+                  ColoredElement {
+                    color = widget.color, child = e.child.update(widget.child)
+                  }
+                },
+                new_constraints = fun(
+                  e: ColoredElement[M], constraints: Constraints
+                ) {
+                  ColoredElement {
+                    color = e.color,
+                    child = e.child.new_constraints(constraints),
+                  }
+                },
+                mouse_clicked = fun(e: ColoredElement[M], position: Position) {
+                  e.child.mouse_clicked(position) switch {
+                    not_handled MouseClickResult.not_handled
+                    handled(new_child) {
+                      MouseClickResult.handled(ColoredElement {
+                        color = e.color, child = new_child
+                      })
+                    }
+                    message(m) MouseClickResult.message(m)
+                  }
+                },
+                render = fun(e: ColoredElement[M]) {
+                  draw_stacked(list(
+                    draw_colored_rect(e.color, e.child.size), e.child.drawing
+                  ))
+                }
+              }
+            }
+            fun colored[M](color: Color, child: Widget[M]): Widget[M] {
+              widget(colored_impl[M](), ColoredWidget { color, child })
+            }
+        chapter Align
+          code
+            type AlignWidget[M] = struct { bias: Vec2[Float], child: Widget[M] }
+            type AlignElement[M] = struct {
+              bias: Vec2[Float], child: Element[M], constraints: Constraints
+            }
+            fun align_impl[M](
+            ): WidgetImpl[M, AlignWidget[M], AlignElement[M]] {
+              var calculate_size = fun(
+                child_size: Size, constraints: Constraints
+              ) {
+                size(
+                  constraints.width.max or child_size.width,
+                  constraints.height.max or child_size.height,
+                )
+              }
+              WidgetImpl {
+                new = fun(w: AlignWidget[M], constraints: Constraints) {
+                  AlignElement {
+                    bias = w.bias,
+                    child = w.child.create_element(constraints),
+                    constraints,
+                  }
+                },
+                update = fun(e: AlignElement[M], w: AlignWidget) {
+                  AlignElement {
+                    bias = w.bias,
+                    child = e.child.update(w.child),
+                    constraints = e.constraints,
+                  }
+                },
+                new_constraints = fun(
+                  e: AlignElement[M], constraints: Constraints
+                ) {
+                  AlignElement {
+                    bias = e.bias,
+                    child = e.child.new_constraints(constraints.loosen_min()),
+                    constraints,
+                  }
+                },
+                mouse_clicked = fun(e: AlignElement[M], position: Position) {
+                  var size = calculate_size(e.child.size, e.constraints)
+                  var padding = state.bias
+                    * (size.to_vec() - e.child.size.to_vec())
+                  var position_in_child = position - padding
+                  if rect(0. @ 0., child.size).contains(position_in_child) then
+                    e.child.mouse_clicked(position_in_child) switch {
+                      not_handled MouseClickResult.not_handled
+                      handled(new_child) {
+                        MouseClickResult.handled(AlignElement {
+                          horizontal = e.horizontal,
+                          vertical = e.vertical,
+                          child = new_child,
+                          constraints = e.constraints,
+                        })
+                      }
+                      message(m) MouseClickResult.message(m)
+                    }
+                  else
+                    MouseClickResult.not_handled
+                },
+                render = fun(e: AlignElement[M]) {
+                  var size = calculate_size(e.child.size, e.constraints)
+                  Drawing {
+                    draw = DrawCommand.transform(Transform {
+                      by = transform_translate(
+                        {e.bias * {size.to_vec() - e.child.size.to_vec()}}
+                          .to_offset()
+                      ),
+                      what = child.drawing.draw,
+                    }
+                    size,
+                  }
+                }
+              }
+            }
+            fun align[M](
+              horizontal: Float, vertical: Float, child: Widget[M]
+            ): Widget[M] {
+              widget(
+                align_impl[M](),
+                AlignWidget { bias = vec(horizontal, vertical), child },
+              )
+            }
+            fun center[M](child: Widget[M]): Widget[M] { align(0., 0., child) }
+  chapter Todo
+    text
+      - change function syntax from "fun foo(): Float { ... }" to
+        "fun foo() Float { ... }" (without the colon before the return type).
+        Similar for function types.
+      - support recursion within code blocks
+      - compile to Orchard .objects file instead of interpreting code directly
+      - integrate with Orchard rendering (change the VM to expect a DrawCommand)
+      - support to_dynamic() and to[T]() for downcasting (needed to implement
+        the widget function)
+      - proof of concept for the Widget framework (does a generic M make sense?)

@@ -2257,7 +2257,14 @@ fun is_nothing(type: Type): Bool { type == type("Nothing") }
 fun is_never(type: Type): Bool { type == type("Never") }
 
 fun write[W](writer: W, type: Type) {
-  if type.name == "&"
+  if type.name == "fun" then {
+    writer."fun("
+    for i in 0..{type.args.len - 1} do {
+      if i > 0 then writer.", "
+      writer.write(type.args.get(i))
+    }
+    writer."): {type.args.to_slice().last()}"
+  } else if type.name == "&"
   then writer."&{type.args.get(0)}"
   else writer."{type.name}{type_args(type.args)}"
 }
@@ -2308,11 +2315,13 @@ struct AstChapter { name: String, children: List[AstStructure] }
 struct AstCode { defs: List[AstDef] }
 enum AstDef {
   builtin: AstBuiltinType,
+  function: AstFunctionType,
   struct_: AstStruct,
   enum_: AstEnum,
   var_: AstVar, | same AstVar as in funs
   fun_: AstFun,
 }
+struct AstFunctionType { name: String, signature: Type }
 struct AstBuiltinType { name: String, type_args: List[String] }
 struct AstStruct {
   name: String, type_args: List[String], fields: List[AstStructField]
@@ -2343,6 +2352,7 @@ enum AstExpr {
   string: String,             | "foo"
   name: String,            | foo
   call: AstCall,              | ...(arg)
+  lambda: AstLambda,
   make_struct: AstMakeStruct, | Foo { a = ... }
   make_enum: AstMakeEnum,     | Maybe.some(5)
   member: AstMember,          | foo.bar
@@ -2351,6 +2361,7 @@ enum AstExpr {
   block: List[AstExpr],       | { ... }
   try_scope: &AstExpr,        | try ...
 }
+struct AstLambda { args: List[AstFunArg], body: List[AstExpr] }
 struct AstCall {
   callee: &AstExpr, type_args: Maybe[List[Type]], args: List[AstExpr]
 }
@@ -2572,6 +2583,28 @@ fun parse_operator_name(parser: &Parser): Maybe[String] {
 }
 
 fun parse_type(parser: &Parser): Maybe[Type] {
+  if parser.consume_keyword("fun") then {
+    parser.consume_prefix("(") or panic("Expected an opening parenthesis in function type.")
+    var args = list[Type]()
+    loop {
+      var start = parser.cursor
+      var named = false
+      if parser.parse_lower_name() is some(name) then {
+        named = parser.consume_prefix(":")
+        if not(named) then parser.cursor = start
+      } else parser.cursor = start
+      var arg = parser.parse_type() or {
+        if named then panic("Expected the type of the function parameter.")
+        break
+      }
+      args.&.push(arg)
+      parser.consume_prefix(",") or break
+    }
+    parser.consume_prefix(")") or panic("Expected a closing parenthesis in function type.")
+    parser.consume_prefix(":") or panic("Expected the return type of the function type.")
+    args.&.push(parser.parse_type() or panic("Expected the return type of the function type."))
+    return some(type("fun", args))
+  }
   if parser.consume_keyword("_") then return some(type("_"))
   var name = parser.parse_upper_name() or return none[Type]()
   var args = parser.parse_type_args() or list[Type]()
@@ -2633,6 +2666,7 @@ fun parse_expr(parser: &Parser, precedence: Precedence): Maybe[AstExpr] {
 fun parse_expr_without_suffix(parser: &Parser): Maybe[AstExpr] {
   if parser.parse_number() is some(int) then return some(int)
   if parser.parse_str() is some(string) then return some(string)
+  if parser.parse_lambda() is some(lambda) then return some(AstExpr.lambda(lambda))
   if parser.parse_make() is some(make) then return some(make)
   if parser.parse_block() is some(blck) then return some(AstExpr.block(blck))
   if parser.parse_var() is some(var_) then return some(AstExpr.var_(var_))
@@ -3012,6 +3046,22 @@ fun parse_expr_suffix_try(parser: &Parser, current: AstExpr): Maybe[AstExpr] {
   panic("The try suffix is not supported yet.")
 }
 
+fun parse_lambda(parser: &Parser): Maybe[AstLambda] {
+  parser.consume_keyword("fun") or return none[AstLambda]()
+  parser.consume_prefix("(") or panic("Expected an opening parenthesis after fun.")
+  var args = list[AstFunArg]()
+  loop {
+    var name = parser.parse_lower_name() or break
+    parser.consume_prefix(":") or panic("Lambda parameters require types.")
+    var type = parser.parse_type() or panic("Expected the type of the lambda parameter.")
+    args.&.push(AstFunArg { name, type })
+    parser.consume_prefix(",") or break
+  }
+  parser.consume_prefix(")") or panic("Expected a closing parenthesis after lambda parameters.")
+  var body = parser.parse_block() or panic("Expected a lambda body.")
+  some(AstLambda { args, body })
+}
+
 fun parse_fun(parser: &Parser): Maybe[AstFun] {
   parser.consume_keyword("fun") or return none[AstFun]()
   var fun_name = parser.parse_lower_name()
@@ -3186,7 +3236,12 @@ fun parse_type_def(parser: &Parser): Maybe[AstDef] {
     return some(AstDef.struct_(parser.parse_struct(name, type_args)))
   if parser.consume_keyword("enum") then
     return some(AstDef.enum_(parser.parse_enum(name, type_args)))
-  panic("Expected struct, enum, or ... after the equals sign.")
+  if parser.parse_type() is some(signature) then {
+    if signature.name != "fun" then panic("Expected a function type.")
+    if type_args.is_not_empty() then panic("Function types cannot declare type parameters.")
+    return some(AstDef.function(AstFunctionType { name, signature }))
+  }
+  panic("Expected struct, enum, fun, or ... after the equals sign.")
 }
 
 fun parse_struct(parser: &Parser, name: String, type_args: List[String]): AstStruct {
@@ -3364,9 +3419,10 @@ fun write[W](writer: W, formatted: FormattedObject) {
     case byte writer.write(value.object)
     case string writer.write(value.object)
     case struct_ writer.write(value.object)
+    case function writer.write(value.object)
   } else writer.write(value.object)
 }
-enum TypeDef { int, byte, string, list, struct_: StructDef, enum_: EnumDef }
+enum TypeDef { int, byte, string, list, struct_: StructDef, enum_: EnumDef, function: Type }
 struct StructDef { type_args: List[String], fields: List[StructDefField] }
 struct StructDefField { name: String, type: Type }
 struct EnumDef { type_args: List[String], variants: List[EnumDefVariant] }
@@ -3405,6 +3461,11 @@ fun eval(state: &NotebookState, path: String, ast: AstStructure) {
           else if name == "List" then TypeDef.list
           else panic("Unknown builtin type {name}.")
         state.types.&.put(name, def)
+      }
+      case function(f) {
+        println(f.name)
+        var signature = state.resolve_type(f.signature, set[String]())
+        state.types.&.put(f.name, TypeDef.function(signature))
       }
       case struct_(s) {
         println(s.name)
@@ -3471,6 +3532,8 @@ enum TypedExprKind {
   name: String,
   global: String,
   call: TypedCall,
+  invoke: TypedInvoke,
+  lambda: TypedLambda,
   make_enum: TypedMakeEnum,
   make_struct: List[TypedExpr],
   field: TypedField,
@@ -3478,6 +3541,8 @@ enum TypedExprKind {
   switch_: TypedSwitch,
   block: List[TypedExpr],
 }
+struct TypedInvoke { callee: &TypedExpr, args: List[TypedExpr] }
+struct TypedLambda { args: List[String], captures: List[String], body: &TypedExpr }
 struct TypedCall {
   key: Int, substitutions: Map[String, Type], args: List[TypedExpr],
 }
@@ -3488,6 +3553,45 @@ struct TypedSwitch {
   value: &TypedExpr, cases: List[TypedCase], default_: Maybe[&TypedExpr],
 }
 struct TypedCase { index: Int, binding: Maybe[String], body: TypedExpr }
+
+| Only local references cross a lambda boundary; globals are embedded during lowering.
+fun free_names(expr: TypedExpr, bound: Set[String], free: &Set[String]) {
+  switch expr.kind
+  case int {}
+  case string {}
+  case global {}
+  case name(name) { if not(bound.contains(name)) then free.put(name) }
+  case call(call) { for arg in call.args do arg.free_names(bound, free) }
+  case invoke(call) {
+    call.callee.free_names(bound, free)
+    for arg in call.args do arg.free_names(bound, free)
+  }
+  case lambda(lambda) {
+    for name in lambda.captures do if not(bound.contains(name)) then free.put(name)
+  }
+  case make_enum(make) make.arg.free_names(bound, free)
+  case make_struct(fields) { for field in fields do field.free_names(bound, free) }
+  case field(field) field.of.free_names(bound, free)
+  case var_(var_) var_.value.free_names(bound, free)
+  case block(block) {
+    var scope = set[String]()
+    for name in bound do scope.&.put(name)
+    for expr in block do {
+      expr.free_names(scope, free)
+      if expr.kind is var_(var_) then scope.&.put(var_.name)
+    }
+  }
+  case switch_(switch_) {
+    switch_.value.free_names(bound, free)
+    for case in switch_.cases do {
+      var scope = set[String]()
+      for name in bound do scope.&.put(name)
+      if case.binding is some(name) then scope.&.put(name)
+      case.body.free_names(scope, free)
+    }
+    if switch_.default_ is some(body) then body.free_names(bound, free)
+  }
+}
 
 fun copy_map[K, V](map: Map[K, V]): Map[K, V] {
   var copy = map[K, V]()
@@ -3543,6 +3647,11 @@ fun check_type(state: NotebookState, type: Type, type_params: Set[String]) {
     if type.args.is_not_empty() then panic("Type parameter {type} cannot have arguments.")
     return {}
   }
+  if type.name == "fun" then {
+    if type.args.is_empty() then panic("A function type needs a return type.")
+    for arg in type.args do state.check_type(arg, type_params)
+    return {}
+  }
   var arity = 0
   if state.types.get_maybe(type.name) is some(def) then {
     switch def
@@ -3552,11 +3661,22 @@ fun check_type(state: NotebookState, type: Type, type_params: Set[String]) {
     case list { arity = 1 }
     case struct_(s) { arity = s.type_args.len }
     case enum_(e) { arity = e.type_args.len }
+    case function {}
   } else
     panic("Unknown type {type}.")
   if type.args.len != arity then panic("Wrong number of type arguments for {type}.")
   for arg in type.args do state.check_type(arg, type_params)
 }
+| Function aliases are structural: names on parameters do not affect their type.
+fun resolve_type(state: NotebookState, type: Type, type_params: Set[String]): Type {
+  state.check_type(type, type_params)
+  if state.types.get_maybe(type.name) is some(def) then
+    if def is function(signature) then return signature
+  var args = list[Type]()
+  for arg in type.args do args.&.push(state.resolve_type(arg, type_params))
+  Type { name = type.name, args }
+}
+
 fun type_check(state: &NotebookState, expr: AstExpr): TypedExpr {
   var locals = map[String, Type]()
   state.type_check(expr, set[String](), locals.&)
@@ -3584,19 +3704,67 @@ fun type_check(
     var value = state.vars.get_maybe(name) or panic("Unknown variable {name}.")
     TypedExpr { type = value.type, kind = TypedExprKind.global(name) }
   }
+  case lambda(lambda) {
+    var scope = locals.copy_map()
+    var names = list[String]()
+    var types = list[Type]()
+    for arg in lambda.args do {
+      if names.contains(arg.name) then panic("Duplicate lambda parameter {arg.name}.")
+      var type = state.resolve_type(arg.type, type_params)
+      names.&.push(arg.name)
+      types.&.push(type)
+      scope.&.put(arg.name, type)
+    }
+    var body = state.type_check(AstExpr.block(lambda.body), type_params, scope.&)
+    types.&.push(body.type)
+    var captures = set[String]()
+    body.free_names(names.to_set(), captures.&)
+    var captured = list[String]()
+    for name in captures do captured.&.push(name)
+    TypedExpr {
+      type = type("fun", types),
+      kind = TypedExprKind.lambda(TypedLambda { args = names, captures = captured, body = body.put_on_heap() }),
+    }
+  }
   case call(call) {
     var name = call.callee.name or ""
+    var callee = none[TypedExpr]()
     var args = list[TypedExpr]()
     if call.callee.* is member(member) then {
       name = member.name
-      args.&.push(state.type_check(member.of.*, type_params, locals))
+      var receiver = state.type_check(member.of.*, type_params, locals)
+      if state.types.get_maybe(receiver.type.name) is some(def) then
+        if def is struct_(struct_) then
+          for field in struct_.fields do if field.name == name then
+            callee = some(state.type_check_field(receiver, name, type_params))
+      if callee is none then args.&.push(receiver)
+    } else if name == "" or locals.contains(name) or state.vars.contains(name) then
+      callee = some(state.type_check(call.callee.*, type_params, locals))
+    if callee is some(callee) then {
+      if call.type_args is some then panic("Function values cannot take type arguments.")
+      if callee.type.name != "fun" then panic("Cannot call {callee.type}.")
+      if call.args.len != {callee.type.args.len - 1} then panic("Wrong number of function arguments.")
+      var args = list[TypedExpr]()
+      var returns = callee.type.args.to_slice().last()
+      for i in 0..call.args.len do {
+        var arg = state.type_check(call.args.get(i), type_params, locals)
+        var expected = callee.type.args.get(i)
+        if not(accepts(expected, arg.type)) then
+          panic("Function argument expects {expected}, got {arg.type}.")
+        if arg.type.is_never() then returns = type("Never")
+        args.&.push(arg)
+      }
+      return TypedExpr { type = returns, kind = TypedExprKind.invoke(TypedInvoke {
+        callee = callee.put_on_heap(), args,
+      }) }
     }
     if name == "" then panic("Expected a named function.")
     for arg in call.args do args.&.push(state.type_check(arg, type_params, locals))
     var explicit = none[List[Type]]()
     if call.type_args is some(types) then {
-      for type in types do state.check_type(type, type_params)
-      explicit = some(types)
+      var resolved = list[Type]()
+      for type in types do resolved.&.push(state.resolve_type(type, type_params))
+      explicit = some(resolved)
     }
     var selected = none[TypedCall]()
     for key in 0..state.funs.len do {
@@ -3632,15 +3800,15 @@ fun type_check(
     var arg = state.type_check(make.arg.*, type_params, locals)
     if concrete.args.is_empty() and enum_.type_args.is_not_empty() then {
       var inferred = map[String, Type]()
-      if not(bind_type(enum_.variants.get(index).type, arg.type, enum_.type_args, inferred.&))
+      if not(bind_type(state.resolve_type(enum_.variants.get(index).type, enum_.type_args.to_set()), arg.type, enum_.type_args, inferred.&))
       then panic("Cannot infer type arguments for {concrete.name}.{make.variant}.")
       for param in enum_.type_args do
         concrete.args.&.push(inferred.get_maybe(param)
           or panic("Cannot infer {param} for {concrete.name}.{make.variant}."))
     }
-    state.check_type(concrete, type_params)
+    concrete = state.resolve_type(concrete, type_params)
     var type_env = type_substitutions(enum_.type_args, concrete.args)
-    var expected = enum_.variants.get(index).type.specialize(type_env).unwrap()
+    var expected = state.resolve_type(enum_.variants.get(index).type.specialize(type_env).unwrap(), type_params)
     if not(accepts(expected, arg.type)) then
       panic("Variant {concrete}.{make.variant} expects {expected}, got {arg.type}.")
     TypedExpr {
@@ -3696,7 +3864,7 @@ fun type_check(
       used.&.push(index)
       var scope = locals.copy_map()
       if case.binding is some(name) then
-        scope.&.put(name, enum_.variants.get(index).type.specialize(type_env).unwrap())
+        scope.&.put(name, state.resolve_type(enum_.variants.get(index).type.specialize(type_env).unwrap(), type_params))
       var body = state.type_check(case.body, type_params, scope.&)
       result = join(result, body.type)
       cases.&.push(TypedCase { index, binding = case.binding, body })
@@ -3729,7 +3897,7 @@ fun type_check(
     var inferred = map[String, Type]()
     for field in struct_.fields do {
       var value = values.get_maybe(field.name) or panic("Missing struct field {field.name}.")
-      if infer and not(bind_type(field.type, value.type, struct_.type_args, inferred.&)) then
+      if infer and not(bind_type(state.resolve_type(field.type, struct_.type_args.to_set()), value.type, struct_.type_args, inferred.&)) then
         panic("Cannot infer type arguments for {concrete.name}.{field.name}.")
     }
     if infer then
@@ -3738,13 +3906,13 @@ fun type_check(
           inferred.get_maybe(param)
             or panic("Cannot infer {param} for {concrete.name}.")
         )
-    state.check_type(concrete, type_params)
+    concrete = state.resolve_type(concrete, type_params)
     var type_env = type_substitutions(struct_.type_args, concrete.args)
     var fields = list[TypedExpr]()
     var result = concrete
     for field in struct_.fields do {
       var value = values.get(field.name)
-      var expected = field.type.specialize(type_env).unwrap()
+      var expected = state.resolve_type(field.type.specialize(type_env).unwrap(), type_params)
       if not(accepts(expected, value.type)) then
         panic("Field {concrete}.{field.name} expects {expected}, got {value.type}.")
       if value.type.is_never() then result = type("Never")
@@ -3754,16 +3922,19 @@ fun type_check(
   }
   case member(member) {
     var value = state.type_check(member.of.*, type_params, locals)
-    var def = state.types.get_maybe(value.type.name) or panic("Cannot access a field of {value.type}.")
-    var struct_ = def.struct_ or panic("{value.type} is not a struct.")
-    var index = struct_.field_index(member.name)
-    var type_env = type_substitutions(struct_.type_args, value.type.args)
-    var result = struct_.fields.get(index).type.specialize(type_env).unwrap()
-    state.check_type(result, type_params)
-    TypedExpr { type = result, kind = TypedExprKind.field(TypedField { of = value.put_on_heap(), index }) }
+    state.type_check_field(value, member.name, type_params)
   }
   case try_scope panic("Try expressions are not implemented.")
 }
+fun type_check_field(state: NotebookState, value: TypedExpr, name: String, type_params: Set[String]): TypedExpr {
+  var def = state.types.get_maybe(value.type.name) or panic("Cannot access a field of {value.type}.")
+  var struct_ = def.struct_ or panic("{value.type} is not a struct.")
+  var index = struct_.field_index(name)
+  var type_env = type_substitutions(struct_.type_args, value.type.args)
+  var result = state.resolve_type(struct_.fields.get(index).type.specialize(type_env).unwrap(), type_params)
+  TypedExpr { type = result, kind = TypedExprKind.field(TypedField { of = value.put_on_heap(), index }) }
+}
+
 | Convert a declaration to its checked representation before appending it.
 | Its signature and body use the declared parameter names; only earlier entries
 | participate in function lookup, including when overloads share a name.
@@ -3773,12 +3944,11 @@ fun type_check_fun(state: &NotebookState, f: AstFun): FunDef {
   var locals = map[String, Type]()
   for arg in f.args do {
     if locals.contains(arg.name) then panic("Duplicate parameter {arg.name} in {f.name}.")
-    state.check_type(arg.type, type_params)
-    args.&.push(FunArg { name = arg.name, type = arg.type })
-    locals.&.put(arg.name, arg.type)
+    var type = state.resolve_type(arg.type, type_params)
+    args.&.push(FunArg { name = arg.name, type })
+    locals.&.put(arg.name, type)
   }
-  var returns = f.returns
-  state.check_type(returns, type_params)
+  var returns = state.resolve_type(f.returns, type_params)
   var kind = switch f.kind
     case builtin FunKind.builtin(builtin(f))
     case body(body) {
@@ -4137,6 +4307,27 @@ fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId
   case string(value) object_expr(leaf(value))
   case name(name) name_expr(name)
   case global(name) object_expr(state.vars.get(name).object)
+  case lambda(lambda) {
+    var names = list[String]()
+    for name in lambda.args do names.&.push(name)
+    names.&.push("$captures")
+    var body = state.lower(lambda.body.*, params)
+    var captures = list[ObjectId]()
+    for i in 0..lambda.captures.len do {
+      var name = lambda.captures.get(i)
+      captures.&.push(name_expr(name))
+      body = let_expr(name, binary_expr("load", name_expr("$captures"), int_expr(i)), body)
+    }
+    new_inner_expr(list(object_expr(heap_fun(names, body)), new_inner_expr(captures)))
+  }
+  case invoke(call) {
+    var args = list[ObjectId]()
+    for arg in call.args do args.&.push(state.lower(arg, params))
+    args.&.push(binary_expr("load", name_expr("$callee"), int_expr(1)))
+    var invoke = inner(list(leaf("call"),
+      binary_expr("load", name_expr("$callee"), int_expr(0)), inner(args)))
+    let_expr("$callee", state.lower(call.callee.*, params), invoke)
+  }
   case call(call) {
     var fun = state.compile_fun(call.key)
     var args = list[ObjectId]()
