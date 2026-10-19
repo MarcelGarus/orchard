@@ -3383,6 +3383,8 @@ fun write[W](writer: W, formatted: FormattedObject) {
     writer.write(words.to_string())
   } else if value.type == type("Int") or value.type == type("Byte") then {
     writer.write(value.object.int_value())
+  } else if value.type == type("Float") then {
+    writer.write(value.object.float_value())
   } else if formatted.types.get_maybe(value.type.name) is some(def) then {
     switch def
     case enum_(enum_) {
@@ -3415,6 +3417,7 @@ fun write[W](writer: W, formatted: FormattedObject) {
       }
       writer."]"
     }
+    case float writer.write(value.object)
     case int writer.write(value.object)
     case byte writer.write(value.object)
     case string writer.write(value.object)
@@ -3422,7 +3425,7 @@ fun write[W](writer: W, formatted: FormattedObject) {
     case function writer.write(value.object)
   } else writer.write(value.object)
 }
-enum TypeDef { int, byte, string, list, struct_: StructDef, enum_: EnumDef, function: Type }
+enum TypeDef { int, float, byte, string, list, struct_: StructDef, enum_: EnumDef, function: Type }
 struct StructDef { type_args: List[String], fields: List[StructDefField] }
 struct StructDefField { name: String, type: Type }
 struct EnumDef { type_args: List[String], variants: List[EnumDefVariant] }
@@ -3456,6 +3459,7 @@ fun eval(state: &NotebookState, path: String, ast: AstStructure) {
         var arity = if name == "List" then 1 else 0
         if builtin.type_args.len != arity then panic("Builtin {name} expects {arity} type parameters.")
         var def = if name == "Int" then TypeDef.int
+          else if name == "Float" then TypeDef.float
           else if name == "Byte" then TypeDef.byte
           else if name == "String" then TypeDef.string
           else if name == "List" then TypeDef.list
@@ -3528,6 +3532,7 @@ fun type_parameters(state: NotebookState, params: List[String]): Set[String] {
 struct TypedExpr { type: Type, kind: TypedExprKind }
 enum TypedExprKind {
   int: Int,
+  float: Float,
   string: String,
   name: String,
   global: String,
@@ -3557,6 +3562,7 @@ struct TypedCase { index: Int, binding: Maybe[String], body: TypedExpr }
 | Only local references cross a lambda boundary; globals are embedded during lowering.
 fun free_names(expr: TypedExpr, bound: Set[String], free: &Set[String]) {
   switch expr.kind
+  case float {}
   case int {}
   case string {}
   case global {}
@@ -3655,6 +3661,7 @@ fun check_type(state: NotebookState, type: Type, type_params: Set[String]) {
   var arity = 0
   if state.types.get_maybe(type.name) is some(def) then {
     switch def
+    case float {}
     case int {}
     case byte {}
     case string {}
@@ -3697,7 +3704,12 @@ fun type_check(
     if not(def is string) then panic("String literals require builtin String.")
     TypedExpr { type = type("String"), kind = TypedExprKind.string(value) }
   }
-  case float panic("Float expressions are not implemented.")
+  case float(value) {
+    var def = state.types.get_maybe("Float")
+      or panic("Float literals require builtin Float.")
+    if not(def is float) then panic("Float literals require builtin Float.")
+    TypedExpr { type = type("Float"), kind = TypedExprKind.float(value) }
+  }
   case name(name) {
     if locals.get_maybe(name) is some(type) then
       return TypedExpr { type, kind = TypedExprKind.name(name) }
@@ -4022,6 +4034,97 @@ fun builtin(f: AstFun): ObjectId {
     return unary_expr("crash", name_expr(f.args.get(0).name))
   }
 
+  if signature == "to_float(Int)" then {
+    assert(f.returns == type("Float"), "to_float must return Float.")
+    return unary_expr("int-to-float", name_expr(f.args.get(0).name))
+  }
+  if signature == "to_int(Float)" then {
+    assert(f.returns == type("Int"), "to_int must return Int.")
+    return unary_expr("float-to-int", name_expr(f.args.get(0).name))
+  }
+  if signature == "+(Float, Float)" then {
+    assert(f.returns == type("Float"), "Float arithmetic must return Float.")
+    return binary_expr("f-add",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+  if signature == "-(Float, Float)" then {
+    assert(f.returns == type("Float"), "Float arithmetic must return Float.")
+    return binary_expr("f-subtract",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+  if signature == "*(Float, Float)" then {
+    assert(f.returns == type("Float"), "Float arithmetic must return Float.")
+    return binary_expr("f-multiply",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+  if signature == "/(Float, Float)" then {
+    assert(f.returns == type("Float"), "Float arithmetic must return Float.")
+    return binary_expr("f-divide",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+  }
+  if signature == "==(Float, Float)" then {
+    assert(f.returns == type("Bool"), "Float comparison must return Bool.")
+    var flags = binary_expr("f-compare",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    var matches = binary_expr("and", flags, int_expr(1))
+    var tag = conditional(matches, int_expr(1), int_expr(0))
+    return new_inner_expr(list(tag, object_expr(leaf(list[Int]()))))
+  }
+  if signature == "<(Float, Float)" then {
+    assert(f.returns == type("Bool"), "Float comparison must return Bool.")
+    var flags = binary_expr("f-compare",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    var matches = binary_expr("and", flags, int_expr(4))
+    var tag = conditional(matches, int_expr(1), int_expr(0))
+    return new_inner_expr(list(tag, object_expr(leaf(list[Int]()))))
+  }
+  if signature == ">(Float, Float)" then {
+    assert(f.returns == type("Bool"), "Float comparison must return Bool.")
+    var flags = binary_expr("f-compare",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    var matches = binary_expr("and", flags, int_expr(2))
+    var tag = conditional(matches, int_expr(1), int_expr(0))
+    return new_inner_expr(list(tag, object_expr(leaf(list[Int]()))))
+  }
+  if signature == "<=(Float, Float)" then {
+    assert(f.returns == type("Bool"), "Float comparison must return Bool.")
+    var flags = binary_expr("f-compare",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    var matches = binary_expr("and", flags, int_expr(5))
+    var tag = conditional(matches, int_expr(1), int_expr(0))
+    return new_inner_expr(list(tag, object_expr(leaf(list[Int]()))))
+  }
+  if signature == ">=(Float, Float)" then {
+    assert(f.returns == type("Bool"), "Float comparison must return Bool.")
+    var flags = binary_expr("f-compare",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    var matches = binary_expr("and", flags, int_expr(3))
+    var tag = conditional(matches, int_expr(1), int_expr(0))
+    return new_inner_expr(list(tag, object_expr(leaf(list[Int]()))))
+  }
+  if signature == "<=>(Float, Float)" then {
+    assert(f.returns == type("Ordering"), "Float <=> must return Ordering.")
+    var comparison = binary_expr("f-compare",
+      name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
+    )
+    var flags = name_expr("$compare")
+    var equal = binary_expr("and", flags, int_expr(1))
+    var greater = binary_expr("and", flags, int_expr(2))
+    var tag = conditional(equal, int_expr(1), conditional(greater, int_expr(2), int_expr(0)))
+    return let_expr("$compare", comparison, require_expr(flags,
+      "Cannot order NaN.", new_inner_expr(list(tag, object_expr(leaf(list[Int]())))),
+    ))
+  }
+
   if signature == "lower_byte(Int)" then {
     assert(f.returns == type("Byte"), "lower_byte must return Byte.")
     return binary_expr("and",
@@ -4303,6 +4406,7 @@ fun builtin(f: AstFun): ObjectId {
 fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId {
   state.check_type(expr.type, params)
   switch expr.kind
+  case float(value) object_expr(leaf(list(value.cast[Float, Int]())))
   case int(value) object_expr(leaf(list(value)))
   case string(value) object_expr(leaf(value))
   case name(name) name_expr(name)
@@ -4397,6 +4501,20 @@ fun int_value(object: ObjectId): Int {
   if words.len != 1 then panic("Expected a single-word integer.")
   words.get(0)
 }
+fun float_value(object: ObjectId): Float { object.int_value().cast[Int, Float]() }
+fun float_is_nan(value: Float): Bool {
+  var bits = value.cast[Float, Int]() & max_int
+  bits > 9218868437227405312
+}
+fun float_comparison(left: Float, right: Float): Int {
+  if float_is_nan(left) or float_is_nan(right) then return 0
+  | Handle equal infinities and both signs of zero before subtracting.
+  var left_bits = left.cast[Float, Int]()
+  var right_bits = right.cast[Float, Int]()
+  if left_bits == right_bits or {left_bits & max_int == 0 and right_bits & max_int == 0}
+  then return 1
+  if left < right then 4 else 2
+}
 fun comparison(left: Int, right: Int): Int {
   | Compare signs first to avoid overflow in the host cmp instruction.
   if left < 0 and right >= 0 then 4
@@ -4464,6 +4582,25 @@ fun eval_code(code: ObjectId, locals: Map[String, ObjectId], current_fun: Maybe[
   } else if name == "if" then {
     var condition = eval_code(instruction.get(1), locals, current_fun).int_value()
     eval_code(instruction.get(if condition != 0 then 2 else 3), locals, current_fun)
+  } else if name == "int-to-float" then {
+    var value = eval_code(instruction.get(1), locals, current_fun).int_value().to_float()
+    leaf(list(value.cast[Float, Int]()))
+  } else if name == "float-to-int" then {
+    var value = eval_code(instruction.get(1), locals, current_fun).float_value()
+    if float_is_nan(value) or value.is_inf() then panic("Cannot convert non-finite Float to Int.")
+    if value < min_int.to_float() or value >= max_int.to_float()
+    then panic("Float to Int conversion out of range.")
+    leaf(list(value.to_int()))
+  } else if name == "f-add" or name == "f-subtract" or name == "f-multiply"
+    or name == "f-divide" or name == "f-compare" then {
+    var left = eval_code(instruction.get(1), locals, current_fun).float_value()
+    var right = eval_code(instruction.get(2), locals, current_fun).float_value()
+    if name == "f-compare" then return leaf(list(float_comparison(left, right)))
+    var value = if name == "f-add" then left + right
+      else if name == "f-subtract" then left - right
+      else if name == "f-multiply" then left * right
+      else left / right
+    leaf(list(value.cast[Float, Int]()))
   } else if name == "crash" then {
     var message = eval_code(instruction.get(1), locals, current_fun).get().leaf.unwrap().to_string()
     panic(message)
