@@ -3366,7 +3366,9 @@ fun write[W](writer: W, object: ObjectId) {
 struct NotebookState {
   types: Map[String, TypeDef],
   funs: List[FunDef],
-  compiled_funs: Map[Int, ObjectId],
+  groups: List[FunGroup],
+  compiled_groups: Map[Int, ObjectId],
+  lowering_group: Maybe[Int],
   vars: Map[String, TypedObject],
 }
 struct TypedObject { type: Type, object: ObjectId }
@@ -3435,7 +3437,9 @@ fun eval(ast: Ast): NotebookState {
   var state = NotebookState {
     types = map[String, TypeDef](),
     funs = list[FunDef](),
-    compiled_funs = map[Int, ObjectId](),
+    groups = list[FunGroup](),
+    compiled_groups = map[Int, ObjectId](),
+    lowering_group = none[Int](),
     vars = map[String, TypedObject](),
   }
   state.&.eval("", ast.structure)
@@ -3449,12 +3453,15 @@ fun eval(state: &NotebookState, path: String, ast: AstStructure) {
   }
   case text {}
   case code(code) {
+    | A code block is one declaration group. Register all type names before
+    | validating definitions, then all function signatures before checking bodies.
+    var group = state.groups.len
+    var start = state.funs.len
     for def in code.defs do {
-      print(path)
       switch def
       case builtin(builtin) {
         var name = builtin.name
-        println(name)
+        println("{path}{name}")
         state.type_parameters(builtin.type_args)
         var arity = if name == "List" then 1 else 0
         if builtin.type_args.len != arity then panic("Builtin {name} expects {arity} type parameters.")
@@ -3464,41 +3471,59 @@ fun eval(state: &NotebookState, path: String, ast: AstStructure) {
           else if name == "String" then TypeDef.string
           else if name == "List" then TypeDef.list
           else panic("Unknown builtin type {name}.")
-        state.types.&.put(name, def)
+        state.declare_type(name, def)
       }
       case function(f) {
-        println(f.name)
-        var signature = state.resolve_type(f.signature, set[String]())
-        state.types.&.put(f.name, TypeDef.function(signature))
+        println("{path}{f.name}")
+        state.declare_type(f.name, TypeDef.function(f.signature))
       }
       case struct_(s) {
-        println(s.name)
+        println("{path}{s.name}")
         state.type_parameters(s.type_args)
         var fields = list[StructDefField]()
         for field in s.fields do
           fields.&.push(StructDefField { name = field.name, type = field.type })
-        state.types.&.put(
+        state.declare_type(
           s.name, TypeDef.struct_(StructDef { type_args = s.type_args, fields })
         )
       }
       case enum_(e) {
-        println(e.name)
+        println("{path}{e.name}")
         state.type_parameters(e.type_args)
         var variants = list[EnumDefVariant]()
         for variant in e.variants do
           variants.&.push(EnumDefVariant {
             name = variant.name, type = variant.type
           })
-        state.types.&.put(
+        state.declare_type(
           e.name, TypeDef.enum_(EnumDef { type_args = e.type_args, variants })
         )
       }
-      case fun_(f) {
-        println(f.name)
-        state.funs.&.push(state.type_check_fun(f))
-      }
+      case fun_ {}
+      case var_ {}
+    }
+    for def in code.defs do state.validate_type_def(def)
+    for def in code.defs do if def is fun_(f) then {
+      println("{path}{f.name}")
+      var signature = state.declare_fun(f, group)
+      for previous in state.funs do
+        if previous.signature_key() == signature.signature_key() then
+          panic("Duplicate function signature {f.signature()}.")
+      state.funs.&.push(signature)
+    }
+    state.groups.&.push(FunGroup { start, length = state.funs.len - start })
+    for key in start..state.funs.len do state.check_fun_body(key)
+    | Compile before evaluating variables: function globals come from earlier blocks.
+    state.compile_group(group)
+    for def in code.defs do {
+      switch def
+      case builtin {}
+      case function {}
+      case struct_ {}
+      case enum_ {}
+      case fun_ {}
       case var_(v) {
-        println(v.name)
+        println("{path}{v.name}")
         var typed = state.type_check(v.value.*)
         var code = state.compile(typed, set[String]())
         var value = run(code)
@@ -3509,7 +3534,9 @@ fun eval(state: &NotebookState, path: String, ast: AstStructure) {
   }
 }
 
+struct FunGroup { start: Int, length: Int }
 struct FunDef {
+  group: Int,
   name: String,
   type_args: List[String],
   args: List[FunArg],
@@ -3517,7 +3544,7 @@ struct FunDef {
   kind: FunKind,
 }
 struct FunArg { name: String, type: Type }
-enum FunKind { builtin: ObjectId, body: TypedExpr }
+enum FunKind { pending: List[AstExpr], builtin: ObjectId, body: TypedExpr }
 
 fun type_parameters(state: NotebookState, params: List[String]): Set[String] {
   var types = set[String]()
@@ -3676,12 +3703,54 @@ fun check_type(state: NotebookState, type: Type, type_params: Set[String]) {
 }
 | Function aliases are structural: names on parameters do not affect their type.
 fun resolve_type(state: NotebookState, type: Type, type_params: Set[String]): Type {
+  state.resolve_type(type, type_params, list[String]())
+}
+fun resolve_type(
+  state: NotebookState, type: Type, type_params: Set[String], aliases: List[String],
+): Type {
   state.check_type(type, type_params)
+  if type_params.contains(type.name) then return type
   if state.types.get_maybe(type.name) is some(def) then
-    if def is function(signature) then return signature
+    if def is function(signature) then {
+      if aliases.contains(type.name) then panic("Cyclic function type alias {type.name}.")
+      var path = list[String]()
+      for alias in aliases do path.&.push(alias)
+      path.&.push(type.name)
+      return state.resolve_type(signature, type_params, path)
+    }
   var args = list[Type]()
-  for arg in type.args do args.&.push(state.resolve_type(arg, type_params))
+  for arg in type.args do args.&.push(state.resolve_type(arg, type_params, aliases))
   Type { name = type.name, args }
+}
+
+fun declare_type(state: &NotebookState, name: String, def: TypeDef) {
+  if state.types.contains(name) then panic("Duplicate type {name}.")
+  state.types.&.put(name, def)
+}
+fun validate_type_def(state: NotebookState, def: AstDef) {
+  switch def
+  case builtin {}
+  case function(f) { state.resolve_type(type(f.name), set[String]()).ignore() }
+  case struct_(s) {
+    var params = state.type_parameters(s.type_args)
+    var names = set[String]()
+    for field in s.fields do {
+      if names.contains(field.name) then panic("Duplicate field {field.name} in {s.name}.")
+      names.&.put(field.name)
+      state.resolve_type(field.type, params)
+    }
+  }
+  case enum_(e) {
+    var params = state.type_parameters(e.type_args)
+    var names = set[String]()
+    for variant in e.variants do {
+      if names.contains(variant.name) then panic("Duplicate variant {variant.name} in {e.name}.")
+      names.&.put(variant.name)
+      state.resolve_type(variant.type, params)
+    }
+  }
+  case fun_ {}
+  case var_ {}
 }
 
 fun type_check(state: &NotebookState, expr: AstExpr): TypedExpr {
@@ -3798,7 +3867,11 @@ fun type_check(
       if selected is some then panic("Ambiguous function call {name}.")
       selected = some(TypedCall { key, substitutions = inferred, args })
     }
-    var resolved = selected or panic("No matching function {name}.")
+    var resolved = selected or {
+      var arg_types = list[Type]()
+      for arg in args do arg_types.&.push(arg.type)
+      panic("No matching function {name}({comma_separated(arg_types)}).")
+    }
     var returns = state.funs.get(resolved.key).returns.specialize(resolved.substitutions).unwrap()
     state.check_type(returns, type_params)
     for arg in args do if arg.type.is_never() then returns = type("Never")
@@ -3947,31 +4020,42 @@ fun type_check_field(state: NotebookState, value: TypedExpr, name: String, type_
   TypedExpr { type = result, kind = TypedExprKind.field(TypedField { of = value.put_on_heap(), index }) }
 }
 
-| Convert a declaration to its checked representation before appending it.
-| Its signature and body use the declared parameter names; only earlier entries
-| participate in function lookup, including when overloads share a name.
-fun type_check_fun(state: &NotebookState, f: AstFun): FunDef {
+| Signatures have stable list indices, including while their bodies are pending.
+fun declare_fun(state: &NotebookState, f: AstFun, group: Int): FunDef {
   var type_params = state.type_parameters(f.type_args)
   var args = list[FunArg]()
-  var locals = map[String, Type]()
+  var names = set[String]()
   for arg in f.args do {
-    if locals.contains(arg.name) then panic("Duplicate parameter {arg.name} in {f.name}.")
+    if names.contains(arg.name) then panic("Duplicate parameter {arg.name} in {f.name}.")
+    names.&.put(arg.name)
     var type = state.resolve_type(arg.type, type_params)
     args.&.push(FunArg { name = arg.name, type })
-    locals.&.put(arg.name, type)
   }
   var returns = state.resolve_type(f.returns, type_params)
   var kind = switch f.kind
     case builtin FunKind.builtin(builtin(f))
-    case body(body) {
-      var checked = state.type_check(AstExpr.block(body), type_params, locals.&)
-      if not(accepts(returns, checked.type)) then
-        panic("Function {f.name} returns {checked.type}, expected {returns}.")
-      FunKind.body(checked)
-    }
-  FunDef {
-    name = f.name, type_args = f.type_args,
-    args, returns, kind,
+    case body(body) FunKind.pending(body)
+  FunDef { group, name = f.name, type_args = f.type_args, args, returns, kind }
+}
+| Ignore parameter names, return types and generic parameter spelling when
+| identifying duplicate signatures. Aliases were resolved during declaration.
+fun signature_key(f: FunDef): String {
+  var substitutions = map[String, Type]()
+  for i in 0..f.type_args.len do
+    substitutions.&.put(f.type_args.get(i), type("${i}"))
+  var args = list[Type]()
+  for arg in f.args do args.&.push(arg.type.specialize(substitutions).unwrap())
+  "{f.name}[{f.type_args.len}]({comma_separated(args)})"
+}
+fun check_fun_body(state: &NotebookState, key: Int) {
+  var f = state.funs.get(key)
+  if f.kind is pending(body) then {
+    var locals = map[String, Type]()
+    for arg in f.args do locals.&.put(arg.name, arg.type)
+    var checked = state.type_check(AstExpr.block(body), f.type_args.to_set(), locals.&)
+    if not(accepts(f.returns, checked.type)) then
+      panic("Function {f.name} returns {checked.type}, expected {f.returns}.")
+    state.funs.get_ref(key).kind = FunKind.body(checked)
   }
 }
 
@@ -4422,6 +4506,10 @@ fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId
       captures.&.push(name_expr(name))
       body = let_expr(name, binary_expr("load", name_expr("$captures"), int_expr(i)), body)
     }
+    if state.lowering_group is some then {
+      body = let_expr("$group", binary_expr("load", name_expr("$captures"), int_expr(captures.len)), body)
+      captures.&.push(name_expr("$group"))
+    }
     new_inner_expr(list(object_expr(heap_fun(names, body)), new_inner_expr(captures)))
   }
   case invoke(call) {
@@ -4433,10 +4521,15 @@ fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId
     let_expr("$callee", state.lower(call.callee.*, params), invoke)
   }
   case call(call) {
-    var fun = state.compile_fun(call.key)
+    var f = state.funs.get(call.key)
+    var group = name_expr("$group")
+    if state.lowering_group != some(f.group) then
+      group = object_expr(state.compile_group(f.group))
     var args = list[ObjectId]()
     for arg in call.args do args.&.push(state.lower(arg, params))
-    call_expr(fun, args)
+    args.&.push(group)
+    var slot = call.key - state.groups.get(f.group).start
+    inner(list(leaf("call"), binary_expr("load", group, int_expr(slot)), inner(args)))
   }
   case make_enum(make) new_inner_expr(list(
     object_expr(leaf(list(make.index))), state.lower(make.arg.*, params),
@@ -4483,16 +4576,28 @@ fun lower_block(state: &NotebookState, exprs: Slice[TypedExpr], params: Set[Stri
 fun compile(state: &NotebookState, expr: TypedExpr, params: Set[String]): CompiledCode {
   CompiledCode { type = expr.type, object = state.lower(expr, params) }
 }
-fun compile_fun(state: &NotebookState, key: Int): ObjectId {
-  if state.compiled_funs.get_maybe(key) is some(code) then return code
-  var fun = state.funs.get(key)
-  var names = list[String]()
-  for arg in fun.args do names.&.push(arg.name)
-  var body = switch fun.kind
-    case builtin(body) body
-    case body(body) state.compile(body, fun.type_args.to_set()).object
-  var code = heap_fun(names, body)
-  state.compiled_funs.&.put(key, code)
+| Bodies refer to their own group by a hidden parameter and numeric slots.
+| Only completed earlier groups are embedded, so every heap edge is acyclic.
+fun compile_group(state: &NotebookState, key: Int): ObjectId {
+  if state.compiled_groups.get_maybe(key) is some(code) then return code
+  var group = state.groups.get(key)
+  var previous = state.lowering_group
+  state.lowering_group = some(key)
+  var bodies = list[ObjectId]()
+  for index in group.start..{group.start + group.length} do {
+    var f = state.funs.get(index)
+    var names = list[String]()
+    for arg in f.args do names.&.push(arg.name)
+    names.&.push("$group")
+    var body = switch f.kind
+      case pending panic("Cannot compile an unchecked function.")
+      case builtin(body) body
+      case body(body) state.compile(body, f.type_args.to_set()).object
+    bodies.&.push(heap_fun(names, body))
+  }
+  state.lowering_group = previous
+  var code = inner(bodies)
+  state.compiled_groups.&.put(key, code)
   code
 }
 
