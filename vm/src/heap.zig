@@ -99,7 +99,7 @@ pub const Obj = packed struct {
                 if (char == 0) break;
                 if (!(char >= 32 and char <= 126)) only_ascii = false;
             }
-            if (words_[0] == 0) only_ascii = false;
+            if (words_[0] & 0xff == 0) only_ascii = false;
             if (only_ascii) {
                 try format_string(@as([]const u8, @ptrCast(words_)), colored, writer);
             } else {
