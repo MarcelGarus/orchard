@@ -15,7 +15,7 @@ pub fn load(ally: Ally, heap: *Heap, input: Str) !Obj {
         std.debug.print("Error at {}: {any}.\n", .{ cursor, e });
         return e;
     };
-    return defs.get("export").?;
+    return defs.get("export") orelse error.MissingExport;
 }
 fn parse_defs(input: Str, cursor: *usize, heap: *Heap, ally: Ally, defs: *StringMap(Obj)) !void {
     while (true) {

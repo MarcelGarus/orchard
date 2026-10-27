@@ -195,6 +195,9 @@ pub const Instruction = union(enum) {
     // Pops an error. Restores the surrounding sandbox's VM state. Pushes the
     // error. Jumps to the sandbox's on_crash handler.
 
+    unreachable_,
+    // Reaching this instruction is undefined behavior.
+
     const Sandbox = struct { on_crash: usize, on_out_of_fuel: usize };
 
     pub fn format(instr: Instruction, writer: *std.io.Writer) !void {
@@ -488,7 +491,12 @@ fn compile_expr(ally: std.mem.Allocator, root: Vm.Fun, expr: Vm.Expr, stack: *st
             for (args) |_| _ = stack.pop();
             try stack.append(ally, "");
         },
-        .unreachable_ => {},
+        .unreachable_ => {
+            try instrs.append(ally, .unreachable_);
+            // Unreachable branches still occupy one expression-result slot
+            // during compilation, just like the other non-returning nodes.
+            try stack.append(ally, "");
+        },
     }
     const stack_size_after = stack.items.len;
     std.debug.assert(stack_size_after == stack_size_before + 1);
@@ -745,6 +753,7 @@ fn run(self: *Self, instructions: []const Instruction) !void {
                 const mapped_e = try self.garbage_collect(sandbox.heap_checkpoint, e);
                 try self.data_stack.push_obj(mapped_e);
             },
+            .unreachable_ => return error.UndefinedBehavior,
         }
     }
 }
