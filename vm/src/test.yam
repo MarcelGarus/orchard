@@ -23,6 +23,10 @@ chapter Root
         languages as unit or void. From an information theoretical perspective,
         being given an instance of a Nothing type gives you no information
         whatsoever.
+        Nothing is used whenever we don't actually want to provide a useful
+        value. Functions that only have side-effects (aka they may crash or hang
+        but that's all they do) return Nothing. See the assert function for an
+        example.
         Functions without an explicit return type return Nothing by default.
         Empty bodies return Nothing. If you really need a Nothing, you can just
         write curly braces.
@@ -59,6 +63,8 @@ chapter Root
       code
         fun ==(a: Bool, b: Bool) Bool { if a then b else not(b) }
         fun !=(a: Bool, b: Bool) Bool { not(a == b) }
+      code
+        fun implies(a: Bool, b: Bool) Bool { if a then b else true }
     chapter AndOr
       text
         The "and" and "or" keywords allow short-circuiting.
@@ -110,6 +116,19 @@ chapter Root
         fun ==(a: Ordering, b: Ordering) Bool {
           a switch { less b is less equal b is equal greater b is greater }
         }
+        fun flip(ordering: Ordering) Ordering {
+          ordering switch {
+            less Ordering.greater
+            equal Ordering.equal
+            greater Ordering.less
+          }
+        }
+        fun is_less(o: Ordering) Bool { o is less }
+        fun is_equal(o: Ordering) Bool { o is equal }
+        fun is_greater(o: Ordering) Bool { o is greater }
+        fun is_greater_equal(o: Ordering) Bool { not(o is less) }
+        fun is_not_equal(o: Ordering) Bool { not(o is equal) }
+        fun is_less_equal(o: Ordering) Bool { not(o is greater) }
     chapter Byte
       text
         A byte represents a number between 0 and 255, inclusive.
@@ -131,8 +150,14 @@ chapter Root
         fun %(left: Byte, right: Byte) Byte { ... }
         fun &(left: Byte, right: Byte) Byte { ... }
         fun |(left: Byte, right: Byte) Byte { ... }
-        fun ^(left: Byte, right: Byte) Byte { ... }
+        fun xor(left: Byte, right: Byte) Byte { ... }
         fun <=>(left: Byte, right: Byte) Ordering { ... }
+        fun ==(a: Byte, b: Byte) Bool { a <=> b is equal }
+        fun <(a: Byte, b: Byte) Bool { a <=> b is less }
+        fun >(a: Byte, b: Byte) Bool { a <=> b is greater }
+        fun !=(a: Byte, b: Byte) Bool { not(a <=> b is equal) }
+        fun >=(a: Byte, b: Byte) Bool { not(a <=> b is less) }
+        fun <=(a: Byte, b: Byte) Bool { not(a <=> b is greater) }
     chapter String
       text
         A String is what you get from string literals such as "blub". There is
@@ -140,20 +165,20 @@ chapter Root
         – you can use them for arbitrary byte sequences.
       code
         type String = ...
-    chapter Panicking
+    chapter Crashing
       text
-        Panicking stops evaluation with a message.
+        Crashing stops evaluation with a message.
       code
-        fun panic(message: String) Never { ... }
-        fun panic() Never { panic("panicked") }
+        fun crash(message: String) Never { ... }
+        fun crash() Never { crash("crashed") }
       code
-        fun unreachable() Never { panic("unreachable") }
+        fun unreachable() Never { crash("unreachable") }
       code
-        fun todo() Never { panic("todo") }
+        fun todo() Never { crash("todo") }
     chapter Assert
       code
         fun assert(condition: Bool, message: String) {
-          if not(condition) then panic(message)
+          if not(condition) then crash(message)
         }
         fun assert(condition: Bool) { assert(condition, "assert failed") }
     chapter Maybe
@@ -177,8 +202,11 @@ chapter Root
           maybe switch { some(a) some(mapper(a)) none none[B]() }
         }
         fun flatten[A](maybe: Maybe[Maybe[A]]) Maybe[A] { maybe or none[A]() }
+        fun flat_map[A, B](maybe: Maybe[A], mapper: fun(A) Maybe[B]) Maybe[B] {
+          maybe.map(mapper).flatten()
+        }
         fun unwrap[A](maybe: Maybe[A], message: String) A {
-          maybe or panic(message)
+          maybe or crash(message)
         }
         fun unwrap[A](maybe: Maybe[A]) A { maybe.unwrap("called none.unwrap") }
     chapter Result
@@ -198,10 +226,19 @@ chapter Root
         }
       code
         fun unwrap[O, E](result: Result[O, E], message: String) O {
-          result switch { ok(o) o error panic(message) }
+          result switch { ok(o) o error crash(message) }
         }
         fun unwrap[O, E](result: Result[O, E]) O {
-          result switch { ok(o) o error(e) panic("called error.unwrap") }
+          result switch { ok(o) o error(e) crash("called error.unwrap") }
+        }
+      code
+        fun map[O, E, A](result: Result[O, E], mapper: fun(O) A) Result[A, E] {
+          result switch { ok(o) ok[A, E](mapper(o)) error(e) error[A, E](e) }
+        }
+        fun map_error[O, E, A](
+          result: Result[O, E], mapper: fun(E) A
+        ) Result[O, A] {
+          result switch { ok(o) ok[O, A](o) error(e) error[O, A](mapper(e)) }
         }
     chapter Int
       text
@@ -217,7 +254,8 @@ chapter Root
         fun %(left: Int, right: Int) Int { ... }
         fun &(left: Int, right: Int) Int { ... }
         fun |(left: Int, right: Int) Int { ... }
-        fun ^(left: Int, right: Int) Int { ... }
+        fun xor(left: Int, right: Int) Int { ... }
+        fun negate(int: Int) Int { 0 - int }
         fun <=>(left: Int, right: Int) Ordering { ... }
         fun ==(a: Int, b: Int) Bool { a <=> b is equal }
         fun <(a: Int, b: Int) Bool { a <=> b is less }
@@ -225,14 +263,83 @@ chapter Root
         fun !=(a: Int, b: Int) Bool { not(a <=> b is equal) }
         fun >=(a: Int, b: Int) Bool { not(a <=> b is less) }
         fun <=(a: Int, b: Int) Bool { not(a <=> b is greater) }
-        fun abs(value: Int) Int { if value >= 0 then value else 0 - value }
-        fun round_up_to_multiple_of(number: Int, factor: Int) Int {
-          {number + factor - 1} / factor * factor
+        fun <<(int: Int, by: Int) Int {
+          if by == 0 then int else int * 2 << {by - 1}
         }
+        fun >>(int: Int, by: Int) Int {
+          if by == 0 then int else int / 2 << {by - 1}
+        }
+        fun abs(value: Int) Int { if value >= 0 then value else 0 - value }
         fun max(a: Int, b: Int) Int { if a > b then a else b }
         fun min(a: Int, b: Int) Int { if a < b then a else b }
+        fun is_even(a: Int) Bool { a % 2 == 0 }
+        fun is_odd(a: Int) Bool { a % 2 == 1 }
+        fun pow(base: Int, exponent: Int) Int {
+          if exponent == 0 then 1 else base * base.pow(exponent - 1)
+        }
+        fun round_up_to_multiple_of(number: Int, factor: Int) Int {
+          number + factor - 1 / factor * factor
+        }
+        fun round_up_to_power_of(number: Int, base: Int) Int {
+          number.round_up_to_power_of_rec(base, 1)
+        }
+        fun round_up_to_power_of_rec(
+          number: Int, base: Int, candidate: Int
+        ) Int {
+          if candidate >= number then
+            candidate
+          else
+            number.round_up_to_power_of_rec(base, candidate * base)
+        }
+      code
+        fun sqrt(number: Int) Int {
+          assert(
+            number >= 0,
+            "You can't take the square root of a negative number."
+          )
+          sqrt_rec(number, 0)
+        }
+        fun sqrt_rec(number: Int, candidate: Int) Int {
+          var next = candidate + 1
+          next * next <=> number switch {
+            less sqrt_rec(number, next)
+            equal next
+            greater candidate
+          }
+        }
+        fun log_2(value: Int) Int {
+          if value == 1 then 0 else log_2(value / 2) + 1
+        }
+      text
+        fun format(int: Int) String { int.format(10) }
+        fun format(int: Int, radix: Int) String {
+          if int < 0 then
+            "-{int.negate().format(radix)}"
+          else {
+            concat(
+              if int >= radix then format(int / radix, radix) else "",
+              "0123456789abcdef".bytes().get(int % radix),
+            )
+          }
+        }
+      code
+        # stuff for bytes
         fun lower_byte(value: Int) Byte { ... }
         fun to_int(value: Byte) Int { ... }
+        fun to_byte(value: Int) Byte {
+          assert(value >= 0 and value < 256)
+          value.lower_byte()
+        }
+        fun <<(byte: Byte, by: Byte) Byte {
+          {byte.to_int() << by.to_int()}.lower_byte()
+        }
+        fun >>(byte: Byte, by: Byte) Byte {
+          {byte.to_int() >> by.to_int()}.lower_byte()
+        }
+        fun min(a: Byte, b: Byte) Byte { if a < b then a else b }
+        fun max(a: Byte, b: Byte) Byte { if a > b then a else b }
+      text
+        fun format(byte: Byte) String { byte.to_int().format() }
       code
         var min_int = -9223372036854775808
         var max_int = 9223372036854775807
@@ -283,8 +390,42 @@ chapter Root
         fun contains(range: Range[Int], value: Int) Bool {
           value >= range.start and value < range.end
         }
+        fun contains(range: Range[Float], value: Float) Bool {
+          value >= range.start and value < range.end
+        }
         fun is_empty(range: Range[Int]) Bool { range.start >= range.end }
         fun is_not_empty(range: Range[Int]) Bool { not(range.is_empty()) }
+      code
+        type Infinity = struct {}
+        var infinity = Infinity {}
+      code
+        type OpenRange[A] = struct { start: A }
+        fun ..[A](start: A, infinity: Infinity) OpenRange[A] {
+          OpenRange { start }
+        }
+    chapter LinkedList
+      code
+        type LinkedList[A] = enum { empty, more: More[A] }
+        type More[A] = struct { head: A, tail: LinkedList[A] }
+      code
+        fun empty_linked_list[A]() LinkedList[A] { LinkedList[A].empty }
+        fun cons[A](head: A, tail: LinkedList[A]) LinkedList[A] {
+          LinkedList.more(More { head, tail })
+        }
+        fun push[A](list: LinkedList[A], item: A) LinkedList[A] {
+          list switch {
+            empty cons(item, empty_linked_list[A]())
+            more(more) cons(more.head, more.tail.push(item))
+          }
+        }
+        fun get[A](list: LinkedList[A], index: Int) A {
+          list switch {
+            empty crash("The index is out of bounds.")
+            more(more) {
+              if index == 0 then more.head else more.tail.get(index - 1)
+            }
+          }
+        }
     chapter List
       text
         List[A] is an immutable array.
@@ -385,6 +526,15 @@ chapter Root
           )
           list.first(range.start).push_all(list.without_first(range.end))
         }
+    chapter Tuples
+      code
+        type Tuple2[A, B] = struct { a: A, b: B }
+        type Tuple3[A, B, C] = struct { a: A, b: B, c: C }
+      code
+        fun tuple[A, B](a: A, b: B) Tuple2[A, B] { Tuple2 { a, b } }
+        fun tuple[A, B, C](a: A, b: B, c: C) Tuple3[A, B, C] {
+          Tuple3 { a, b, c }
+        }
     chapter Iterators
       text
         Iterators are defined by their behavior (you can get the next item)
@@ -413,6 +563,19 @@ chapter Root
       code
         fun is_empty[A](iter: Iter[A]) Bool { iter.next() is none }
       code
+        fun filter_map[A, B](iter: Iter[A], mapper: fun(A) Maybe[B]) Iter[B] {
+          iter_from_fun(fun() {
+            iter.next().flat_map(fun(next: Next[A]) {
+              mapper(next.item) switch {
+                none next.rest.filter_map(mapper).next()
+                some(b) {
+                  some(Next { item = b, rest = next.rest.filter_map(mapper) })
+                }
+              }
+            })
+          })
+        }
+      code
         fun map[A, B](iter: Iter[A], mapper: fun(A) B) Iter[B] {
           iter_from_fun(fun() {
             iter.next().map(fun(next: Next[A]) {
@@ -434,6 +597,28 @@ chapter Root
           })
         }
       code
+        fun map_indexed[A, B](iter: Iter[A], mapper: fun(Int, A) B) Iter[B] {
+          iter.indexed().map(fun(indexed: Indexed[A]) {
+            mapper(indexed.index, indexed.item)
+          })
+        }
+      code
+        fun filter[A](iter: Iter[A], checker: fun(A) Bool) Iter[A] {
+          iter_from_fun(fun() {
+            iter.next() switch {
+              none none[Next[A]]()
+              some(next) {
+                if checker(next.item) then
+                  some(Next {
+                    item = next.item, rest = next.rest.filter(checker)
+                  })
+                else
+                  next.rest.filter(checker).next()
+              }
+            }
+          })
+        }
+      code
         fun fold[A, S](iter: Iter[A], state: S, folder: fun(S, A) S) S {
           iter.next() switch {
             none state
@@ -448,12 +633,179 @@ chapter Root
           }
         }
       code
+        fun all[A](iter: Iter[A], check: fun(A) Bool) Bool {
+          iter.next() switch {
+            none true
+            some(next) check(next.item) and next.rest.all(check)
+          }
+        }
+      code
+        fun any[A](iter: Iter[A], check: fun(A) Bool) Bool {
+          iter.next() switch {
+            none false
+            some(next) check(next.item) or next.rest.any(check)
+          }
+        }
+      code
+        fun skip[A](iter: Iter[A], amount: Int) Iter[A] {
+          iter_from_fun(fun() {
+            iter.next().flat_map(fun(next: Next[A]) {
+              next.rest.skip(amount - 1).next()
+            })
+          })
+        }
+      code
+        fun skip_while[A](iter: Iter[A], checker: fun(A) Bool) Iter[A] {
+          iter_from_fun(fun() {
+            iter.next() switch {
+              none none[Next[A]]()
+              some(next) {
+                if checker(next.item) then
+                  next.rest.skip_while(checker).next()
+                else
+                  some(next)
+              }
+            }
+          })
+        }
+      code
+        fun take[A](iter: Iter[A], amount: Int) Iter[A] {
+          iter_from_fun(fun() {
+            if amount == 0 then
+              none[Next[A]]()
+            else
+              iter.next().map(fun(next: Next[A]) {
+                Next { item = next.item, rest = next.rest.take(amount - 1) }
+              })
+          })
+        }
+      code
+        fun take_while[A](iter: Iter[A], checker: fun(A) Bool) Iter[A] {
+          iter_from_fun(fun() {
+            iter.next() switch {
+              none none[Next[A]]()
+              some(next) {
+                if checker(next.item) then
+                  some(Next {
+                    item = next.item, rest = next.rest.take_while(checker)
+                  })
+                else
+                  none[Next[A]]()
+              }
+            }
+          })
+        }
+      code
+        # Zips two iters of equal length.
+        fun zip[A, B](a: Iter[A], b: Iter[B]) Iter[Tuple2[A, B]] {
+          iter_from_fun(fun() {
+            a.next() switch {
+              none {
+                assert(b.next() is none, "zip iters have different lengths")
+                none[Next[Tuple2[A, B]]]()
+              }
+              some(aa) {
+                b.next() switch {
+                  none crash("zip iters have different lengths")
+                  some(bb) {
+                    some(Next {
+                      item = tuple(aa.item, bb.item),
+                      rest = zip(aa.rest, bb.rest),
+                    })
+                  }
+                }
+              }
+            }
+          })
+        }
+      code
+        fun zip_short[A, B](a: Iter[A], b: Iter[B]) Iter[Tuple2[A, B]] {
+          iter_from_fun(fun() {
+            a.next().flat_map(fun(aa: Next[A]) {
+              b.next().map(fun(bb: Next[B]) {
+                Next {
+                  item = tuple(aa.item, bb.item),
+                  rest = zip_short(aa.rest, bb.rest),
+                }
+              })
+            })
+          })
+        }
+      code
+        fun get_maybe[A](iter: Iter[A], index: Int) Maybe[A] {
+          iter.skip(index).next().map(fun(next: Next[A]) { next.item })
+        }
+      text
+        fun get[A](iter: Iter[A], index: Int) A {
+          iter.get_maybe(index)
+            or crash("Index {index.format()} is out of bounds.")
+        }
+      code
+        fun last[A](iter: Iter[A]) Maybe[A] {
+          iter.next().map(fun(next: Next[A]) {
+            next.rest.last_rec(next.item)
+          })
+        }
+        fun last_rec[A](iter: Iter[A], previous: A) A {
+          iter.next() switch {
+            none previous
+            some(next) next.rest.last_rec(next.item)
+          }
+        }
+      code
+        fun chain[A](a: Iter[A], b: Iter[A]) Iter[A] {
+          iter_from_fun(fun() {
+            a.next() switch {
+              none b.next()
+              some(next) {
+                some(Next { item = next.item, rest = next.rest.chain(b) })
+              }
+            }
+          })
+        }
+      code
+        fun flat_map[A, B](iter: Iter[A], mapper: fun(A) Iter[B]) Iter[B] {
+          iter_from_fun(fun() {
+            iter.next().flat_map(fun(next: Next[A]) {
+              mapper(next.item).chain(next.rest.flat_map(mapper)).next()
+            })
+          })
+        }
+      code
+        fun flatten[A](iter: Iter[Iter[A]]) Iter[A] {
+          iter.flat_map(fun(it: Iter[A]) { it })
+        }
+      code
+        fun cycle[A](iter: Iter[A]) Iter[A] { iter.chain(iter.cycle()) }
+      code
+        fun length[A](iter: Iter[A]) Int {
+          iter.fold(0, fun(count: Int, item: A) { count + 1 })
+        }
+      code
+        fun sum(iter: Iter[Int]) Int {
+          iter.fold(0, fun(a: Int, b: Int) { a + b })
+        }
+      code
+        fun min(iter: Iter[Int]) Maybe[Int] {
+          iter.reduce(fun(a: Int, b: Int) { min(a, b) })
+        }
+      code
+        fun max(iter: Iter[Int]) Maybe[Int] {
+          iter.reduce(fun(a: Int, b: Int) { max(a, b) })
+        }
+      code
         fun iter(range: Range[Int]) Iter[Int] {
           iter_from_state(range.start, fun(next: Int) {
             if next == range.end then
               none[NextState[Int, Int]]()
             else
               some(NextState { item = next, state = next + 1 })
+          })
+        }
+      code
+        fun iter(range: OpenRange[Int]) Iter[Int] {
+          iter_from_state(range.start, fun(next: Int) {
+            some(NextState { item = next, state = next + 1 })
           })
         }
       code
@@ -467,6 +819,44 @@ chapter Root
         }
         fun to_list[T](iter: Iter[T]) List[T] {
           iter.fold(list[T](), fun(list: List[T], item: T) { list.push(item) })
+        }
+    chapter Hashing
+      code
+        type Hash = struct { value: Int }
+      code
+        fun combine(a: Hash, b: Hash) Hash {
+          Hash { value = a.value * 33 + b.value }
+        }
+        fun combine_commutative(a: Hash, b: Hash) Hash {
+          Hash { value = xor(a.value, b.value) }
+        }
+      code
+        fun hash(int: Int) Hash { Hash { value = int } }
+      code
+        fun hash(bool: Bool) Hash { {if bool then 1 else 0}.hash() }
+      code
+        fun hash(byte: Byte) Hash { byte.to_int().hash() }
+      code
+        fun hash[A](iter: Iter[A], hash_item: fun(A) Hash) Hash {
+          iter.fold(5381.hash(), fun(hash: Hash, item: A) {
+            combine(hash, hash_item(item))
+          })
+        }
+      code
+        fun hash_commutative[A](iter: Iter[A], hash_item: fun(A) Hash) Hash {
+          iter.fold(5381.hash(), fun(hash: Hash, item: A) {
+            combine_commutative(hash, hash_item(item))
+          })
+        }
+      code
+        fun hash[A](list: List[A], hash_item: fun(A) Hash) Hash {
+          combine(list.length().hash(), list.iter().hash(hash_item))
+        }
+    chapter Formatting
+      code
+        fun format(bool: Bool) String { if bool then "true" else "false" }
+        fun format(o: Ordering) String {
+          o switch { less "less" equal "equal" greater "greater" }
         }
   chapter UserInterface
     text
@@ -500,6 +890,13 @@ chapter Root
             hex.slice(3..5).parse_hex().lower_byte(),
             hex.slice(5..7).parse_hex().lower_byte(),
           )
+        }
+      text
+        fun format(color: Color) String {
+          "#
+            '{color.r.format(16).pad_left(2, "0")}
+            '{color.g.format(16).pad_left(2, "0")}
+            '{color.b.format(16).pad_left(2, "0")}"
         }
     chapter Vec2
       text
@@ -602,6 +999,20 @@ chapter Root
             {rect.left + rect.right} / 2.0, {rect.top + rect.bottom} / 2.0
           )
         }
+        fun contains(rect: Rectangle, pos: Position) Bool {
+          {rect.left .. rect.right}.contains(pos.x)
+            and {rect.top .. rect.bottom}.contains(pos.y)
+        }
+        fun intersection(a: Rectangle, b: Rectangle) Maybe[Rectangle] {
+          var left = max(a.left, b.left)
+          var top = max(a.top, b.top)
+          var right = min(a.right, b.right)
+          var bottom = min(a.bottom, b.bottom)
+          if left < right and top < bottom then
+            some(rectangle(left, top, right, bottom))
+          else
+            none[Rectangle]()
+        }
     chapter Drawings
       text
         When Orchard code is asked to render something for the outside world,
@@ -620,9 +1031,9 @@ chapter Root
             feeling I don't like), or
           - inefficient storage of individual pixels in trees.
           By communicating the intent on a quite high-level, we can instead use
-          GPUs when turning the high-level drawing instructions into pixels.
+          GPUs when turning the high-level draw commands into pixels.
           This is also similar to how Flutter works: The Dart VM is decently
-          fast, but not super fast, so it just emits drawing instructions that
+          fast, but not super fast, so it just emits draw commands that
           the lower-level C++ engine takes and turns into pixels.
       chapter Transformations
         text
@@ -697,6 +1108,67 @@ chapter Root
         }
       code
         type Drawing = struct { draw: DrawCommand, size: Size }
+    chapter Apps
+      text
+        A notebook exposes its UI as a variable named app. Rendering receives
+        the current window size; handling an event returns the next app.
+      code
+        type KeyPressed = struct {
+          keycode: Int, control: Bool, shift: Bool, alt: Bool
+        }
+        type CharEntered = struct { codepoint: Int }
+        type Event = enum {
+          window_resized: Size,
+          key_pressed: KeyPressed,
+          char_entered: CharEntered,
+          mouse_clicked: Position,
+          mouse_moved: Position,
+        }
+        type App = struct {
+          render: fun(Size) DrawCommand,
+          handle: fun(Event) App,
+        }
+    chapter CrosshairApp
+      text
+        Four colored triangles share the mouse position as their third vertex.
+        Each triangle spans one edge of the window. Moving the mouse moves
+        their meeting point; resizing keeps their bases on the window edges.
+      code
+        fun draw_triangle(
+          a: Position, b: Position, c: Position, color: Color
+        ) DrawCommand {
+          draw_filled_path(
+            path().move_to(a).line_to(b).line_to(c),
+            color,
+          )
+        }
+        fun crosshair_app(mouse: Position) App {
+          App {
+            render = fun(window: Size) {
+              var top_left = position(0.0, 0.0)
+              var top_right = position(window.width, 0.0)
+              var bottom_right = position(window.width, window.height)
+              var bottom_left = position(0.0, window.height)
+              draw_all(list(
+                draw_triangle(top_left, top_right, mouse,
+                  color(48.to_byte(), 96.to_byte(), 160.to_byte())),
+                draw_triangle(top_right, bottom_right, mouse,
+                  color(224.to_byte(), 112.to_byte(), 80.to_byte())),
+                draw_triangle(bottom_right, bottom_left, mouse,
+                  color(48.to_byte(), 160.to_byte(), 128.to_byte())),
+                draw_triangle(bottom_left, top_left, mouse,
+                  color(224.to_byte(), 176.to_byte(), 64.to_byte())),
+              ))
+            },
+            handle = fun(event: Event) {
+              event switch {
+                mouse_moved(pos) crosshair_app(pos)
+                default crosshair_app(mouse)
+              }
+            },
+          }
+        }
+        var app = crosshair_app(position(250.0, 150.0))
     text
       WidgetFramework
       text
@@ -942,8 +1414,7 @@ chapter Root
           fun center[M](child: Widget[M]) Widget[M] { align(0.0, 0.0, child) }
   chapter Todo
     text
-      - compile to Orchard .objects file instead of interpreting code directly
-      - integrate with Orchard rendering (change the VM to expect a DrawCommand)
       - support to_dynamic() and to[T]() for downcasting (needed to implement
         the widget function)
       - proof of concept for the Widget framework (does a generic M make sense?)
+      - more plum-like syntax once a proof-of-concept notebook works?

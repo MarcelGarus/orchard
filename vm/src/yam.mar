@@ -3364,89 +3364,44 @@ struct NotebookState {
   types: Map[String, TypeDef],
   funs: List[FunDef],
   groups: List[FunGroup],
-  compiled_groups: Map[Int, ObjectId],
   lowering_group: Maybe[Int],
+  capture_slots: Map[String, Int],
+  capture_values: List[ObjectId],
+  bindings: List[ProgramBinding],
+  next_global: Int,
   vars: Map[String, TypedObject],
 }
+struct ProgramBinding { name: String, value: ObjectId }
+| The object is an expression referring to the runtime global, not its value.
 struct TypedObject { type: Type, object: ObjectId }
 struct CompiledCode { type: Type, object: ObjectId }
 
-struct FormattedObject { value: TypedObject, types: Map[String, TypeDef] }
-fun formatted(value: TypedObject, state: NotebookState): FormattedObject {
-  FormattedObject { value, types = state.types }
-}
-fun write[W](writer: W, formatted: FormattedObject) {
-  var value = formatted.value
-  if value.type == type("String") then {
-    var words = value.object.get().leaf or panic("Expected a string leaf.")
-    writer.write(words.to_string())
-  } else if value.type == type("Int") or value.type == type("Byte") then {
-    writer.write(value.object.int_value())
-  } else if value.type == type("Float") then {
-    writer.write(value.object.float_value())
-  } else if formatted.types.get_maybe(value.type.name) is some(def) then {
-    switch def
-    case enum_(enum_) {
-      var children = value.object.get().inner
-        or panic("Expected an enum object.")
-      var variant = enum_.variants.get(children.get(0).int_value())
-      writer."{value.type}.{variant.name}"
-      var type_env = map[String, Type]()
-      for i in 0..enum_.type_args.len do
-        type_env.&.put(enum_.type_args.get(i), value.type.args.get(i))
-      var payload_type = variant.type.specialize(type_env).unwrap()
-      if not(payload_type.is_nothing()) then {
-        writer."("
-        writer.write(FormattedObject {
-          value = TypedObject { type = payload_type, object = children.get(1) },
-          types = formatted.types,
-        })
-        writer.")"
-      }
-    }
-    case list {
-      var children = value.object.get().inner or panic("Expected a list inner object.")
-      writer."["
-      for i in 0..children.len do {
-        if i > 0 then writer.", "
-        writer.write(FormattedObject {
-          value = TypedObject { type = value.type.args.get(0), object = children.get(i) },
-          types = formatted.types,
-        })
-      }
-      writer."]"
-    }
-    case float writer.write(value.object)
-    case int writer.write(value.object)
-    case byte writer.write(value.object)
-    case string writer.write(value.object)
-    case struct_ writer.write(value.object)
-    case function writer.write(value.object)
-  } else writer.write(value.object)
-}
 enum TypeDef { int, float, byte, string, list, struct_: StructDef, enum_: EnumDef, function: Type }
 struct StructDef { type_args: List[String], fields: List[StructDefField] }
 struct StructDefField { name: String, type: Type }
 struct EnumDef { type_args: List[String], variants: List[EnumDefVariant] }
 struct EnumDefVariant { name: String, type: Type }
 
-fun eval(ast: Ast): NotebookState {
+fun compile_notebook(ast: Ast): NotebookState {
   var state = NotebookState {
     types = map[String, TypeDef](),
     funs = list[FunDef](),
     groups = list[FunGroup](),
-    compiled_groups = map[Int, ObjectId](),
     lowering_group = none[Int](),
+    capture_slots = map[String, Int](),
+    capture_values = list[ObjectId](),
+    bindings = list[ProgramBinding](),
+    next_global = 0,
     vars = map[String, TypedObject](),
   }
-  state.&.eval("", ast.structure)
+  state.&.compile_structure("", ast.structure)
   state
 }
-fun eval(state: &NotebookState, path: String, ast: AstStructure) {
+fun compile_structure(state: &NotebookState, path: String, ast: AstStructure) {
   switch ast
   case chapter(chapter) {
     println("{path}{chapter.name}")
-    for child in chapter.children do state.eval("{path}  ", child)
+    for child in chapter.children do state.compile_structure("{path}  ", child)
   }
   case text {}
   case code(code) {
@@ -3510,8 +3465,9 @@ fun eval(state: &NotebookState, path: String, ast: AstStructure) {
     }
     state.groups.&.push(FunGroup { start, length = state.funs.len - start })
     for key in start..state.funs.len do state.check_fun_body(key)
-    | Compile before evaluating variables: function globals come from earlier blocks.
-    state.compile_group(group)
+    | Create the runtime group before the block's variable initializers.
+    var group_code = state.compile_group(group)
+    state.bindings.&.push(ProgramBinding { name = "$group{group}", value = group_code })
     for def in code.defs do {
       switch def
       case builtin {}
@@ -3523,9 +3479,10 @@ fun eval(state: &NotebookState, path: String, ast: AstStructure) {
         println("{path}{v.name}")
         var typed = state.type_check(v.value.*)
         var code = state.compile(typed, set[String]())
-        var value = run(code)
-        eprintln("{value.formatted(state.*)}")
-        state.vars.&.put(v.name, value)
+        var name = "$global{state.next_global}"
+        state.next_global = state.next_global + 1
+        state.bindings.&.push(ProgramBinding { name, value = code.object })
+        state.vars.&.put(v.name, TypedObject { type = code.type, object = name_expr(name) })
       }
     }
   }
@@ -4058,15 +4015,75 @@ fun check_fun_body(state: &NotebookState, key: Int) {
 
 fun object_expr(object: ObjectId): ObjectId { inner(list(leaf("object"), object)) }
 fun name_expr(name: String): ObjectId { inner(list(leaf("name"), leaf(name))) }
-fun unary_expr(name: String, value: ObjectId): ObjectId { inner(list(leaf(name), value)) }
-fun binary_expr(name: String, left: ObjectId, right: ObjectId): ObjectId {
+| Yam values are objects, including scalars. Arithmetic inside Orchard uses
+| unboxed words; keep that distinction explicit in the generated instructions.
+fun word_expr(value: Int): ObjectId { inner(list(leaf("word"), leaf(list(value)))) }
+fun raw_unary(name: String, value: ObjectId): ObjectId { inner(list(leaf(name), value)) }
+fun raw_binary(name: String, left: ObjectId, right: ObjectId): ObjectId {
   inner(list(leaf(name), left, right))
+}
+fun unbox(value: ObjectId): ObjectId { raw_binary("load", value, word_expr(0)) }
+fun box(value: ObjectId): ObjectId { inner(list(leaf("new-leaf"), inner(list(value)))) }
+fun raw_if(condition: ObjectId, then_: ObjectId, else_: ObjectId): ObjectId {
+  inner(list(leaf("if"), condition, then_, else_))
+}
+fun raw_flag(mask: Int, left: ObjectId, right: ObjectId): ObjectId {
+  raw_binary("and", raw_binary("compare", left, right), word_expr(mask))
+}
+fun raw_require(condition: ObjectId, message: String, body: ObjectId): ObjectId {
+  raw_if(condition, body, raw_unary("crash", object_expr(leaf(message))))
+}
+fun unary_expr(name: String, value: ObjectId): ObjectId {
+  if name == "size" then return box(raw_unary(name, value))
+  if name == "int-to-float" then return box(raw_unary(name, unbox(value)))
+  if name == "float-to-int" then {
+    var ref = name_expr("$float")
+    var low = word_expr(min_int.to_float().cast[Float, Int]())
+    var high = word_expr(max_int.to_float().cast[Float, Int]())
+    var above_low = raw_binary("and", raw_binary("f-compare", ref, low), word_expr(3))
+    var below_high = raw_binary("and", raw_binary("f-compare", ref, high), word_expr(4))
+    var in_range = raw_if(above_low, below_high, word_expr(0))
+    var body = raw_require(raw_unary("f-is-finite", ref),
+      "Cannot convert non-finite Float to Int.",
+      raw_require(in_range, "Float to Int conversion out of range.", box(raw_unary(name, ref))),
+    )
+    return let_expr("$float", unbox(value), body)
+  }
+  raw_unary(name, value)
+}
+fun binary_expr(name: String, left: ObjectId, right: ObjectId): ObjectId {
+  if name == "load" then return raw_binary(name, left, unbox(right))
+  if name == "also" then return raw_binary(name, left, right)
+  if name == "f-compare" then {
+    var l = name_expr("$left")
+    var r = name_expr("$right")
+    var abs_l = raw_binary("and", l, word_expr(max_int))
+    var abs_r = raw_binary("and", r, word_expr(max_int))
+    var nan_l = raw_flag(2, abs_l, word_expr(9218868437227405312))
+    var nan_r = raw_flag(2, abs_r, word_expr(9218868437227405312))
+    var flags = raw_if(raw_binary("or", nan_l, nan_r), word_expr(0), raw_binary(name, l, r))
+    return let_expr("$left", unbox(left), let_expr("$right", unbox(right), box(flags)))
+  }
+  if name == "divide" or name == "modulo" then {
+    var l = name_expr("$left")
+    var r = name_expr("$right")
+    var minimum = 0 - max_int - 1
+    var overflow = raw_binary("and", raw_flag(1, l, word_expr(minimum)), raw_flag(1, r, word_expr(-1)))
+    var body = raw_if(overflow, box(word_expr(if name == "divide" then minimum else 0)),
+      box(raw_binary(name, l, r)),
+    )
+    body = raw_require(raw_flag(6, r, word_expr(0)),
+      if name == "divide" then "Integer division by zero." else "Integer modulo by zero.", body,
+    )
+    return let_expr("$left", unbox(left), let_expr("$right", unbox(right), body))
+  }
+  box(raw_binary(name, unbox(left), unbox(right)))
 }
 fun new_inner_expr(children: List[ObjectId]): ObjectId {
   inner(list(leaf("new-inner"), inner(children)))
 }
 fun conditional(condition: ObjectId, then_: ObjectId, else_: ObjectId): ObjectId {
-  inner(list(leaf("if"), condition, then_, else_))
+  raw_if(unbox(condition), then_, else_)
 }
 fun let_expr(name: String, value: ObjectId, body: ObjectId): ObjectId {
   inner(list(leaf("let"), leaf(name), value, body))
@@ -4110,8 +4127,8 @@ fun array_expr(
 fun builtin(f: AstFun): ObjectId {
   var signature = f.signature()
 
-  if signature == "panic(String)" then {
-    assert(f.returns == type("Never"), "panic must return Never.")
+  if signature == "crash(String)" then {
+    assert(f.returns == type("Never"), "crash must return Never.")
     return unary_expr("crash", name_expr(f.args.get(0).name))
   }
 
@@ -4267,8 +4284,8 @@ fun builtin(f: AstFun): ObjectId {
     )
   }
 
-  if signature == "^(Int, Int)" then {
-    assert(f.returns == type("Int"), "Integer builtin ^ must return Int.")
+  if signature == "xor(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin xor must return Int.")
     return binary_expr("xor",
       name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
     )
@@ -4345,8 +4362,8 @@ fun builtin(f: AstFun): ObjectId {
     return binary_expr("and",value, object_expr(leaf(list(255))))
   }
 
-  if signature == "^(Byte, Byte)" then {
-    assert(f.returns == type("Byte"), "Integer builtin ^ must return Byte.")
+  if signature == "xor(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin xor must return Byte.")
     var value = binary_expr("xor",
       name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
     )
@@ -4491,7 +4508,11 @@ fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId
   case int(value) object_expr(leaf(list(value)))
   case string(value) object_expr(leaf(value))
   case name(name) name_expr(name)
-  case global(name) object_expr(state.vars.get(name).object)
+  case global(name) {
+    var ref = state.vars.get(name).object
+    var key = ref.get().inner.unwrap().get(1).get().leaf.unwrap().to_string()
+    state.capture(key, ref)
+  }
   case lambda(lambda) {
     var names = list[String]()
     for name in lambda.args do names.&.push(name)
@@ -4506,6 +4527,20 @@ fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId
     if state.lowering_group is some then {
       body = let_expr("$group", binary_expr("load", name_expr("$captures"), int_expr(captures.len)), body)
       captures.&.push(name_expr("$group"))
+    } else {
+      | A top-level lambda has no declaring function group. Preserve runtime
+      | globals and group handles in its own closure environment instead.
+      for entry in state.vars do {
+        var ref = entry.value.object
+        var name = ref.get().inner.unwrap().get(1).get().leaf.unwrap().to_string()
+        body = let_expr(name, binary_expr("load", name_expr("$captures"), int_expr(captures.len)), body)
+        captures.&.push(ref)
+      }
+      for i in 0..state.groups.len do {
+        var name = "$group{i}"
+        body = let_expr(name, binary_expr("load", name_expr("$captures"), int_expr(captures.len)), body)
+        captures.&.push(name_expr(name))
+      }
     }
     new_inner_expr(list(object_expr(heap_fun(names, body)), new_inner_expr(captures)))
   }
@@ -4521,7 +4556,7 @@ fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId
     var f = state.funs.get(call.key)
     var group = name_expr("$group")
     if state.lowering_group != some(f.group) then
-      group = object_expr(state.compile_group(f.group))
+      group = state.capture("$group{f.group}", name_expr("$group{f.group}"))
     var args = list[ObjectId]()
     for arg in call.args do args.&.push(state.lower(arg, params))
     args.&.push(group)
@@ -4573,13 +4608,23 @@ fun lower_block(state: &NotebookState, exprs: Slice[TypedExpr], params: Set[Stri
 fun compile(state: &NotebookState, expr: TypedExpr, params: Set[String]): CompiledCode {
   CompiledCode { type = expr.type, object = state.lower(expr, params) }
 }
-| Bodies refer to their own group by a hidden parameter and numeric slots.
-| Only completed earlier groups are embedded, so every heap edge is acyclic.
+| A group holds constant function bodies followed by runtime captures. Bodies
+| access their group through a hidden parameter, so there are no cyclic objects.
+fun capture(state: &NotebookState, name: String, value: ObjectId): ObjectId {
+  var group = state.lowering_group or return value
+  var slot = state.capture_slots.get_maybe(name) or {
+    var slot = state.capture_values.len
+    state.capture_slots.&.put(name, slot)
+    state.capture_values.&.push(value)
+    slot
+  }
+  binary_expr("load", name_expr("$group"), int_expr(state.groups.get(group).length + slot))
+}
 fun compile_group(state: &NotebookState, key: Int): ObjectId {
-  if state.compiled_groups.get_maybe(key) is some(code) then return code
   var group = state.groups.get(key)
-  var previous = state.lowering_group
   state.lowering_group = some(key)
+  state.capture_slots = map[String, Int]()
+  state.capture_values = list[ObjectId]()
   var bodies = list[ObjectId]()
   for index in group.start..{group.start + group.length} do {
     var f = state.funs.get(index)
@@ -4590,158 +4635,78 @@ fun compile_group(state: &NotebookState, key: Int): ObjectId {
       case pending panic("Cannot compile an unchecked function.")
       case builtin(body) body
       case body(body) state.compile(body, f.type_args.to_set()).object
-    bodies.&.push(heap_fun(names, body))
+    bodies.&.push(object_expr(heap_fun(names, body)))
   }
-  state.lowering_group = previous
-  var code = inner(bodies)
-  state.compiled_groups.&.put(key, code)
+  state.lowering_group = none[Int]()
+  for value in state.capture_values do bodies.&.push(value)
+  var code = new_inner_expr(bodies)
   code
 }
 
-fun int_value(object: ObjectId): Int {
-  var words = object.get().leaf or panic("Expected an integer leaf.")
-  if words.len != 1 then panic("Expected a single-word integer.")
-  words.get(0)
+
+| Serialize the reachable DAG in dependency order using Orchard's .objects text
+| format. Escape every byte, including padding, to preserve all leaf words.
+fun write_objects[W](writer: W, root: ObjectId) {
+  var written = set[Int]()
+  writer.write_object(root, written.&)
+  writer."export n{root.index}{newline}"
 }
-fun float_value(object: ObjectId): Float { object.int_value().cast[Int, Float]() }
-fun float_is_nan(value: Float): Bool {
-  var bits = value.cast[Float, Int]() & max_int
-  bits > 9218868437227405312
-}
-fun float_comparison(left: Float, right: Float): Int {
-  if float_is_nan(left) or float_is_nan(right) then return 0
-  | Handle equal infinities and both signs of zero before subtracting.
-  var left_bits = left.cast[Float, Int]()
-  var right_bits = right.cast[Float, Int]()
-  if left_bits == right_bits or {left_bits & max_int == 0 and right_bits & max_int == 0}
-  then return 1
-  if left < right then 4 else 2
-}
-fun comparison(left: Int, right: Int): Int {
-  | Compare signs first to avoid overflow in the host cmp instruction.
-  if left < 0 and right >= 0 then 4
-  else if left >= 0 and right < 0 then 2
-  else if left < right then 4
-  else if left == right then 1 else 2
-}
-fun run(code: CompiledCode): TypedObject {
-  TypedObject { type = code.type, object = eval_code(code.object, map[String, ObjectId]()) }
-}
-fun eval_code(code: ObjectId, locals: Map[String, ObjectId]): ObjectId {
-  eval_code(code, locals, none[ObjectId]())
-}
-fun eval_fun(fun: ObjectId, args: List[ObjectId]): ObjectId {
-  var fields = fun.get().inner.unwrap()
-  var params = fields.get(0).get().inner.unwrap()
-  if args.len != params.len then panic("Wrong number of heap function arguments.")
-  var scope = map[String, ObjectId]()
-  for i in 0..params.len do scope.&.put(params.get(i).get().leaf.unwrap().to_string(), args.get(i))
-  eval_code(fields.get(1), scope, some(fun))
-}
-fun eval_code(code: ObjectId, locals: Map[String, ObjectId], current_fun: Maybe[ObjectId]): ObjectId {
-  var instruction = code.get().inner.unwrap()
-  var name = instruction.get(0).get().leaf.unwrap().to_string()
-  if name == "object" then instruction.get(1)
-  else if name == "name" then locals.get(instruction.get(1).get().leaf.unwrap().to_string())
-  else if name == "let" then {
-    var value = eval_code(instruction.get(2), locals, current_fun)
-    var scope = locals.copy_map()
-    scope.&.put(instruction.get(1).get().leaf.unwrap().to_string(), value)
-    eval_code(instruction.get(3), scope, current_fun)
-  } else if name == "call" then {
-    var fun = eval_code(instruction.get(1), locals, current_fun)
-    var args = list[ObjectId]()
-    for arg in instruction.get(2).get().inner.unwrap() do args.&.push(eval_code(arg, locals, current_fun))
-    eval_fun(fun, args)
-  } else if name == "rec" then {
-    var fun = current_fun or panic("rec outside a heap function.")
-    var args = list[ObjectId]()
-    for arg in instruction.get(1).get().inner.unwrap() do args.&.push(eval_code(arg, locals, current_fun))
-    eval_fun(fun, args)
-  } else if name == "size" then {
-    var object = eval_code(instruction.get(1), locals, current_fun).get()
-    leaf(list(switch object case inner(children) children.len case leaf(words) words.len))
-  } else if name == "flatten-to-inner" then {
-    var cell = eval_code(instruction.get(1), locals, current_fun)
-    var children = list[ObjectId]()
-    loop {
-      var pair = cell.get().inner or panic("Expected an inner list cell.")
-      if pair.is_empty() then break
-      if pair.len != 2 then panic("Expected a pair or empty list cell.")
-      children.&.push(pair.get(0))
-      cell = pair.get(1)
+fun write_object[W](writer: W, id: ObjectId, written: &Set[Int]) {
+  if written.contains(id.index) then return {}
+  written.put(id.index)
+  switch id.get()
+  case leaf(words) {
+    writer."n{id.index} \""
+    for word in words do {
+      var remaining = word
+      for i in 0..8 do {
+        var byte = remaining.lower_byte()
+        | Remove the low byte before dividing, so negative words do not round.
+        remaining = {remaining - byte.to_int()} / 256
+        writer.write(92.lower_byte().to_char())
+        writer.write({byte.to_int() / 16}.lower_byte().digit_to_char())
+        writer.write({byte.to_int() % 16}.lower_byte().digit_to_char())
+      }
     }
-    inner(children)
-  } else if name == "new-inner" then {
-    var children = list[ObjectId]()
-    for arg in instruction.get(1).get().inner.unwrap() do
-      children.&.push(eval_code(arg, locals, current_fun))
-    inner(children)
-  } else if name == "load" then {
-    var object = eval_code(instruction.get(1), locals, current_fun).get().inner.unwrap()
-    var index = eval_code(instruction.get(2), locals, current_fun).int_value()
-    object.get(index)
-  } else if name == "if" then {
-    var condition = eval_code(instruction.get(1), locals, current_fun).int_value()
-    eval_code(instruction.get(if condition != 0 then 2 else 3), locals, current_fun)
-  } else if name == "int-to-float" then {
-    var value = eval_code(instruction.get(1), locals, current_fun).int_value().to_float()
-    leaf(list(value.cast[Float, Int]()))
-  } else if name == "float-to-int" then {
-    var value = eval_code(instruction.get(1), locals, current_fun).float_value()
-    if float_is_nan(value) or value.is_inf() then panic("Cannot convert non-finite Float to Int.")
-    if value < min_int.to_float() or value >= max_int.to_float()
-    then panic("Float to Int conversion out of range.")
-    leaf(list(value.to_int()))
-  } else if name == "f-add" or name == "f-subtract" or name == "f-multiply"
-    or name == "f-divide" or name == "f-compare" then {
-    var left = eval_code(instruction.get(1), locals, current_fun).float_value()
-    var right = eval_code(instruction.get(2), locals, current_fun).float_value()
-    if name == "f-compare" then return leaf(list(float_comparison(left, right)))
-    var value = if name == "f-add" then left + right
-      else if name == "f-subtract" then left - right
-      else if name == "f-multiply" then left * right
-      else left / right
-    leaf(list(value.cast[Float, Int]()))
-  } else if name == "crash" then {
-    var message = eval_code(instruction.get(1), locals, current_fun).get().leaf.unwrap().to_string()
-    panic(message)
-  } else if name == "unreachable" then panic("Unreachable expression.")
-  else if name == "also" then {
-    eval_code(instruction.get(1), locals, current_fun)
-    eval_code(instruction.get(2), locals, current_fun)
-  } else {
-    var left = eval_code(instruction.get(1), locals, current_fun).int_value()
-    var right = eval_code(instruction.get(2), locals, current_fun).int_value()
-    var value = if name == "add" then left + right
-      else if name == "subtract" then left - right
-      else if name == "multiply" then left * right
-      else if name == "divide" then {
-        if right == 0 then panic("Integer division by zero.")
-        left / right
-      } else if name == "modulo" then left % right
-      else if name == "and" then left & right
-      else if name == "or" then or(left, right)
-      else if name == "xor" then left ^ right
-      else if name == "compare" then comparison(left, right)
-      else panic("Unknown compiled instruction {name}.")
-    leaf(list(value))
+    writer."\"{newline}"
+  }
+  case inner(children) {
+    for child in children do writer.write_object(child, written)
+    writer."n{id.index} ("
+    for i in 0..children.len do {
+      if i > 0 then writer." "
+      writer."n{children.get(i).index}"
+    }
+    writer."){newline}"
   }
 }
-
+| UI notebooks export the App itself. Other notebooks return their named
+| global values as raw Yam objects; no runtime type descriptions are emitted.
+fun program(state: NotebookState): ObjectId {
+  var entries = list[ObjectId]()
+  for entry in state.vars do entries.&.push(new_inner_expr(list(
+    object_expr(leaf(entry.key)), entry.value.object,
+  )))
+  var body = if state.vars.get_maybe("app") is some(app) then app.object
+    else new_inner_expr(entries)
+  for binding in state.bindings.to_slice().rev_iter() do
+    body = let_expr(binding.name, binding.value, body)
+  heap_fun(list[String](), body)
+}
 fun main(): Never {
-  eprintln("A notebook.")
-  var string = read_file("src/test.yam").unwrap().to_string()
-
-  var ast = parse(string)
-  eprintln("Parsed.")
-  | ast.dump()
-
-  eprintln("Evaling.")
-  var state = eval(ast)
-  for v in state.vars do {
-    eprintln("{v.key}: {v.value.formatted(state)}")
-  }
-
+  var args = get_process_args()
+  | Martinaise's `run` executes in the compiler process and retains its argv.
+  var from_compiler = args.len == 3 and args.get(1) == "run"
+  if not(from_compiler) and args.len > 3 then panic("Usage: yam.soil [input.yam [output.objects]]")
+  var input = if not(from_compiler) and args.len > 1 then args.get(1) else "src/test.yam"
+  var output = if not(from_compiler) and args.len > 2 then args.get(2) else "{input}.objects"
+  if input == output then panic("Input and output paths must differ.")
+  var source = read_file(input).unwrap().to_string()
+  var state = compile_notebook(parse(source))
+  var root = state.program()
+  var buffer = string_builder()
+  buffer.&.write_objects(root)
+  write_file(output, buffer.to_string().bytes()).unwrap()
+  eprintln("Compiled {input} to {output}.")
   exit(0)
 }

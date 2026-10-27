@@ -1,114 +1,92 @@
+//! Orchard runs .objects files headlessly by default; --ui opens the returned app.
 const std = @import("std");
-const object_loader = @import("object_loader.zig");
 const Heap = @import("heap.zig");
 const Vm = @import("vm.zig");
-const Graphics = @import("graphics.zig");
-const Value = @import("value.zig");
+const object_loader = @import("object_loader.zig");
 const Obj = Heap.Obj;
-const Ally = std.mem.Allocator;
-const Io = std.Io;
-const App = @import("app.zig");
 
-const BootstrapStep = struct {
-    starttime: Io.Timestamp,
-    heap: *Heap,
+const Backend = enum { default, jit, @"byte-code", @"tree-walk" };
 
-    fn start(io: Io, comptime name: []const u8, heap: *Heap) !BootstrapStep {
-        std.debug.print(name, .{});
-        for (name.len..30) |_| std.debug.print(" ", .{});
-        const now = Io.Timestamp.now(io, .real);
-        return .{ .starttime = now, .heap = heap };
-    }
-    fn end(self: *BootstrapStep, io: Io) void {
-        const now = Io.Timestamp.now(io, .real);
-        std.debug.print("{} ms, ", .{now.toMilliseconds() - self.starttime.toMilliseconds()});
-        self.heap.dump_stats();
-    }
-};
-
-fn is_same(a: Obj, b: Obj) bool {
-    if (a.address == b.address) return true;
-    if (a.is_inner() != b.is_inner()) return false;
-    if (a.size() != b.size()) return false;
-    if (a.is_inner()) {
-        for (a.children(), b.children()) |ac, bc| if (!is_same(ac, bc)) return false;
-    } else {
-        for (a.words(), b.words()) |aw, bw| if (aw != bw) return false;
-    }
-    return true;
-}
 pub fn main(init: std.process.Init) !void {
-    // std.debug.print("Orchard!\n", .{});
-
-    const ally = init.gpa;
-    const io = init.io;
-
-    // const stdout_buf = try ally.alloc(u8, 1000);
-    // const stdin_buf = try ally.alloc(u8, 1000);
-    // var stdout_w = Io.File.stdout().writer(io, stdout_buf);
-    // var stdin_r = Io.File.stdin().reader(io, stdin_buf);
-    // const stdout = &stdout_w.interface;
-    // const stdin = &stdin_r.interface;
-
-    var heap = try Heap.init(ally, 600_000_000);
-    const start_of_heap = heap.checkpoint();
-    var vm = try Vm.Default.init(&heap, ally);
-
-    const objects_code = try Io.Dir.cwd().readFileAlloc(io, "src/bootstrap.objects", ally, .unlimited);
-    const olive_code = try Io.Dir.cwd().readFileAlloc(io, "src/bootstrap.olive", ally, .unlimited);
-    const pear_code = try Io.Dir.cwd().readFileAlloc(io, "src/bootstrap.pear", ally, .unlimited);
-
-    const compile_olive = step: {
-        var step = try BootstrapStep.start(io, "Loading the Olive compiler.", &heap);
-        defer step.end(io);
-        break :step Value.from(try object_loader.load(ally, &heap, objects_code));
+    const all_args = try init.minimal.args.toSlice(init.arena.allocator());
+    const args = all_args[1..];
+    var ui = false;
+    var backend: Backend = .default;
+    var path: ?[]const u8 = null;
+    var at: usize = 0;
+    while (at < args.len) : (at += 1) {
+        if (std.mem.eql(u8, args[at], "--ui")) {
+            if (ui) return error.InvalidArguments;
+            ui = true;
+        } else if (std.mem.eql(u8, args[at], "--help")) {
+            print_usage();
+            return;
+        } else if (std.mem.eql(u8, args[at], "--backend")) {
+            at += 1;
+            if (at == args.len) return error.MissingBackend;
+            backend = std.meta.stringToEnum(Backend, args[at]) orelse return error.UnknownBackend;
+        } else if (std.mem.startsWith(u8, args[at], "--")) {
+            print_usage();
+            return error.InvalidArguments;
+        } else if (path == null) {
+            path = args[at];
+        } else return error.InvalidArguments;
+    }
+    const input = path orelse {
+        print_usage();
+        return error.MissingInput;
     };
-    std.debug.print("objects:\n{f}\n", .{compile_olive.obj});
-    const olive = step: {
-        var step = try BootstrapStep.start(io, "Compiling Olive.", &heap);
-        defer step.end(io);
-        const result = try compile_olive.call(&vm, &.{
-            try Value.new_string(&heap, olive_code),
-        });
-        break :step Value.from(try vm.garbage_collect(start_of_heap, result.obj));
-    };
-    const olive_self_hosted = step: {
-        var step = try BootstrapStep.start(io, "Self-compiling Olive.", &heap);
-        defer step.end(io);
-        break :step try olive.field("compile_olive").call(&vm, &.{
-            try Value.new_string(&heap, olive_code),
-        });
-    };
-    const olive_self_hosted_2 = step: {
-        var step = try BootstrapStep.start(io, "Self-compiling Olive.", &heap);
-        defer step.end(io);
-        break :step try olive_self_hosted.field("compile_olive").call(&vm, &.{
-            try Value.new_string(&heap, olive_code),
-        });
-    };
-    _ = {
-        var step = try BootstrapStep.start(io, "Confirming self-hosting.", &heap);
-        defer step.end(io);
-        if (!is_same(olive_self_hosted.obj, olive_self_hosted_2.obj)) {
-            @panic("Not the same.");
-        }
-    };
-    const compile_pear = step: {
-        var step = try BootstrapStep.start(io, "Keeping only Pear compiler.", &heap);
-        defer step.end(io);
-        break :step Value.from(try vm.garbage_collect(start_of_heap, olive_self_hosted_2.field("compile_pear").obj));
-    };
+    const ally = if (ui) init.gpa else init.arena.allocator();
+    const code = try std.Io.Dir.cwd().readFileAlloc(init.io, input, ally, .unlimited);
+    var heap = try Heap.init(ally, if (ui) 600_000_000 else 32_000_000);
+    const root = try object_loader.load(ally, &heap, code);
+    if (!root.is_inner() or root.size() != 2 or !root.child(0).is_inner() or root.child(0).size() != 0)
+        return error.ExpectedParameterlessFunction;
+    switch (backend) {
+        .default => {
+            var vm = try Vm.Default.init(&heap, ally);
+            return run(init, &vm, root, ui);
+        },
+        .jit => {
+            if (comptime Vm.Jit != void) {
+                var vm = try Vm.Jit.init(&heap, ally);
+                return run(init, &vm, root, ui);
+            } else return error.JitUnavailable;
+        },
+        .@"byte-code" => {
+            var vm = try Vm.ByteCode.init(&heap, ally);
+            return run(init, &vm, root, ui);
+        },
+        .@"tree-walk" => {
+            var vm = try Vm.TreeWalk.init(&heap, ally, .{});
+            return run(init, &vm, root, ui);
+        },
+    }
+}
 
-    std.debug.print("Running notebook.\n", .{});
-    const compiled = try compile_pear.call(&vm, &.{try Value.new_string(&heap, pear_code)});
-    const make_app = try compiled.call(&vm, &.{});
-    const book = Value.from(try object_loader.load(
-        ally,
-        &heap,
-        try Io.Dir.cwd().readFileAlloc(io, "src/data.objects", ally, Io.Limit.unlimited),
-    ));
-    const app_val = try make_app.call(&vm, &.{book});
-    const app = Value.from(try vm.garbage_collect(start_of_heap, app_val.obj));
+fn print_usage() void {
+    std.debug.print("Usage: orchard [--ui] [--backend default|jit|byte-code|tree-walk] file.objects\n", .{});
+}
 
-    try App.run(ally, io, &heap, &vm, app, "src/data.objects");
+fn run(init: std.process.Init, vm: anytype, root: Obj, ui: bool) !void {
+    const ally = vm.ally;
+    var fuel: usize = Vm.max_fuel;
+    const result = try vm.call(.{ .obj = root }, &.{}, &fuel);
+    switch (result) {
+        .returned => |value| {
+            if (ui) return @import("app.zig").run(ally, vm, value);
+            var buffer: [4096]u8 = undefined;
+            var file_writer = std.Io.File.stdout().writer(init.io, &buffer);
+            const writer = &file_writer.interface;
+            try value.format_singleline(false, writer);
+            try writer.writeByte('\n');
+            try writer.flush();
+        },
+        .crashed => |message| {
+            if (message.is_leaf()) std.debug.print("{s}\n", .{Heap.get_symbol(message)}) else std.debug.print("Program crashed: {f}\n", .{message});
+            return error.ProgramCrashed;
+        },
+        .out_of_memory => return error.VmOutOfMemory,
+        .out_of_fuel => return error.VmOutOfFuel,
+    }
 }

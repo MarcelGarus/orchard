@@ -1,6 +1,5 @@
+//! Window input, draw command decoding, and OpenGL rendering.
 const std = @import("std");
-const Heap = @import("heap.zig");
-const Obj = Heap.Obj;
 const Ally = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const builtin = @import("builtin");
@@ -9,7 +8,7 @@ const gl = @cImport({
     @cInclude("GLFW/glfw3.h");
 });
 const nvg = @import("nanovg");
-const Value = @import("value.zig");
+const Obj = @import("heap.zig").Obj;
 
 const Graphics = @This();
 
@@ -19,178 +18,128 @@ pub const TransformationMatrix = struct { a: f64, b: f64, c: f64, d: f64, e: f64
 pub const Color = struct { r: u8, g: u8, b: u8 };
 pub const Path = []const PathSegment;
 pub const PathSegment = union(enum) { move_to: Position, line_to: Position };
-pub const DrawingInstruction = union(enum) {
+pub const DrawCommand = union(enum) {
     fill_path: struct { path: Path, color: Color },
-    transform: struct { by: TransformationMatrix, children: []const DrawingInstruction },
+    transform: struct { by: TransformationMatrix, children: []const DrawCommand },
 };
 
-pub fn parse_position(value: Value) !Position {
-    return .{
-        .x = value.field("x").float(),
-        .y = value.field("y").float(),
-    };
-}
-pub fn parse_transformation_matrix(value: Value) TransformationMatrix {
-    return .{
-        .a = value.field("a").float(),
-        .b = value.field("b").float(),
-        .c = value.field("c").float(),
-        .d = value.field("d").float(),
-        .e = value.field("e").float(),
-        .f = value.field("f").float(),
-    };
-}
-pub fn parse_color(value: Value) !Color {
-    return .{
-        .r = @intCast(value.field("r").int()),
-        .g = @intCast(value.field("g").int()),
-        .b = @intCast(value.field("b").int()),
-    };
-}
-pub fn parse_segment(value: Value) !PathSegment {
-    const variant = value.variant();
-    const payload = value.payload();
-    if (std.mem.eql(u8, variant, "move-to")) {
-        return .{ .move_to = try parse_position(payload) };
-    }
-    if (std.mem.eql(u8, variant, "line-to")) {
-        return .{ .line_to = try parse_position(payload) };
-    }
-    std.debug.print("segment: {s}\n", .{variant});
-    return error.UnknownPathSegment;
-}
-pub fn parse_path(ally: Ally, value: Value) !Path {
-    const items = value.items();
-    var path = try ally.alloc(PathSegment, items.len);
-    for (items, 0..) |item, i| {
-        path[i] = try parse_segment(item);
-    }
-    return path;
-}
-pub fn parse_drawing_instructions_rec(
-    ally: Ally,
-    instructions: *ArrayList(DrawingInstruction),
-    value: Value,
-) error{ OutOfMemory, UnknownPathSegment }!void {
-    const variant = value.variant();
-    const payload = value.payload();
-    if (std.mem.eql(u8, variant, "nothing")) {
-        return;
-    }
-    if (std.mem.eql(u8, variant, "fill-path")) {
-        try instructions.append(ally, .{ .fill_path = .{
-            .path = try parse_path(ally, payload.field("path")),
-            .color = try parse_color(payload.field("color")),
-        } });
-        return;
-    }
-    if (std.mem.eql(u8, variant, "all")) {
-        for (payload.items()) |item| {
-            try parse_drawing_instructions_rec(ally, instructions, item);
-        }
-        return;
-    }
-    if (std.mem.eql(u8, variant, "transform")) {
-        const by = parse_transformation_matrix(payload.field("by"));
-        var children = ArrayList(DrawingInstruction).empty;
-        try parse_drawing_instructions_rec(ally, &children, payload.field("what"));
-        try instructions.append(ally, .{ .transform = .{
-            .by = by,
-            .children = children.items,
-        } });
-        return;
-    }
-    std.debug.print("drawing instruction \"{s}\"\n", .{variant});
-    @panic("unknown drawing instruction");
-}
-pub fn parse_drawing_instructions(ally: Ally, value: Value) ![]const DrawingInstruction {
-    var instructions = ArrayList(DrawingInstruction).empty;
-    try parse_drawing_instructions_rec(ally, &instructions, value);
-    return instructions.items;
+pub fn float(value: Obj) f64 {
+    return @bitCast(value.word(0));
 }
 
-pub fn dump_drawing_instructions(instructions: []const DrawingInstruction) !void {
-    try dump_drawing_instructions_indented(instructions, 0);
+fn position(value: Obj) Position {
+    return .{ .x = float(value.child(0)), .y = float(value.child(1)) };
 }
-pub fn dump_drawing_instructions_indented(instructions: []const DrawingInstruction, indentation: usize) !void {
-    for (instructions) |instruction| {
-        for (0..indentation) |_| std.debug.print(" ", .{});
-        switch (instruction) {
-            .fill_path => |fill| {
-                std.debug.print("fill-path", .{});
-                std.debug.print(" #{x:02}{x:02}{x:02}", .{ fill.color.r, fill.color.g, fill.color.b });
-                for (fill.path) |segment| {
-                    switch (segment) {
-                        .move_to => |pos| std.debug.print(" ({d}|{d})", .{ pos.x, pos.y }),
-                        .line_to => |pos| std.debug.print("--({d}|{d})", .{ pos.x, pos.y }),
-                    }
-                }
-                std.debug.print("\n", .{});
-            },
-            .transform => |transform| {
-                const by = transform.by;
-                std.debug.print("transform ({d} {d} {d} {d} {d} {d})\n", .{
-                    by.a, by.b, by.c, by.d, by.e, by.f,
-                });
-                try dump_drawing_instructions_indented(transform.children, indentation + 1);
-            },
-        }
+
+fn color(value: Obj) Color {
+    return .{
+        .r = @intCast(value.child(0).word(0)),
+        .g = @intCast(value.child(1).word(0)),
+        .b = @intCast(value.child(2).word(0)),
+    };
+}
+
+fn matrix(value: Obj) TransformationMatrix {
+    return .{
+        .a = float(value.child(0)),
+        .b = float(value.child(1)),
+        .c = float(value.child(2)),
+        .d = float(value.child(3)),
+        .e = float(value.child(4)),
+        .f = float(value.child(5)),
+    };
+}
+
+fn path(ally: Ally, value: Obj) !Path {
+    // Path { segments: List[PathSegment] }; move_to = 0, line_to = 1.
+    const segments = value.child(0).children();
+    const result = try ally.alloc(PathSegment, segments.len);
+    for (segments, result) |segment, *out| {
+        const pos = position(segment.child(1));
+        out.* = switch (segment.child(0).word(0)) {
+            0 => .{ .move_to = pos },
+            1 => .{ .line_to = pos },
+            else => return error.UnknownPathSegment,
+        };
     }
+    return result;
+}
+
+fn append_commands(ally: Ally, commands: *std.ArrayList(DrawCommand), value: Obj) error{ OutOfMemory, UnknownPathSegment, UnknownDrawCommand }!void {
+    // DrawCommand: nothing = 0, fill_path = 1, transform = 2, all = 3.
+    const payload = value.child(1);
+    switch (value.child(0).word(0)) {
+        0 => {},
+        1 => try commands.append(ally, .{ .fill_path = .{
+            .path = try path(ally, payload.child(0)),
+            .color = color(payload.child(1)),
+        } }),
+        2 => {
+            var children: std.ArrayList(DrawCommand) = .empty;
+            try append_commands(ally, &children, payload.child(1));
+            try commands.append(ally, .{ .transform = .{
+                .by = matrix(payload.child(0)),
+                .children = children.items,
+            } });
+        },
+        3 => for (payload.children()) |item| try append_commands(ally, commands, item),
+        else => return error.UnknownDrawCommand,
+    }
+}
+
+/// Allocates command lists and paths in ally; use a frame arena to free them together.
+pub fn parse(ally: Ally, value: Obj) ![]const DrawCommand {
+    var commands: std.ArrayList(DrawCommand) = .empty;
+    try append_commands(ally, &commands, value);
+    return commands.items;
 }
 
 ally: Ally,
-window: ?*gl.GLFWwindow = null,
+window: *gl.GLFWwindow,
 scale: f32,
 vg: nvg,
 event_queue: ArrayList(Event),
 
-pub const Event = union(enum) {
-    char_entered: CharEntered,
-    key_pressed: KeyPressed,
-    mouse_clicked: MouseClicked,
-
-    pub const CharEntered = struct { codepoint: usize };
-    pub const KeyPressed = struct { keycode: usize, control: bool, alt: bool, shift: bool };
-    pub const MouseClicked = Position;
-};
+pub const Event = @import("app.zig").Event;
 
 fn glfwErrorCallback(error_code: c_int, description: [*c]const u8) callconv(.c) void {
     std.debug.print("GLFW Error [{d}]: {s}\n", .{ error_code, description });
 }
 pub fn init(ally: Ally) !*Graphics {
-    // Initialize libraries.
     _ = gl.glfwSetErrorCallback(glfwErrorCallback);
     if (gl.glfwInit() == gl.GLFW_FALSE) return error.GLFWInitFailed;
+    errdefer gl.glfwTerminate();
     gl.glfwWindowHint(gl.GLFW_CONTEXT_VERSION_MAJOR, 2);
     gl.glfwWindowHint(gl.GLFW_CONTEXT_VERSION_MINOR, 0);
     gl.glfwWindowHint(gl.GLFW_SAMPLES, 4);
 
-    // Get graphics scale.
-    const monitor = gl.glfwGetPrimaryMonitor();
     var scale: f32 = 1;
-    if (!builtin.target.os.tag.isDarwin())
+    if (!builtin.target.os.tag.isDarwin()) {
+        const monitor = gl.glfwGetPrimaryMonitor() orelse return error.NoPrimaryMonitor;
         gl.glfwGetMonitorContentScale(monitor, &scale, null);
+    }
     scale *= 0.7;
 
-    // Create a window.
     const window = gl.glfwCreateWindow(
         @as(i32, @intFromFloat(scale * 500)),
         @as(i32, @intFromFloat(scale * 300)),
         "Orchard",
         null,
         null,
-    );
-    if (window == null) return error.WindowCreationFailed;
+    ) orelse return error.WindowCreationFailed;
+    errdefer gl.glfwDestroyWindow(window);
     _ = gl.glfwSetCharCallback(window, charCallback);
     _ = gl.glfwSetKeyCallback(window, keyCallback);
     _ = gl.glfwSetMouseButtonCallback(window, mouseButtonCallback);
+    _ = gl.glfwSetCursorPosCallback(window, cursorPosCallback);
     gl.glfwMakeContextCurrent(window);
     if (gl.gladLoadGL() == 0) return error.GLADInitFailed;
     gl.glfwSwapInterval(1);
     gl.glfwSetTime(0);
     const vg = try nvg.gl.init(ally, .{ .stencil_strokes = true, .debug = true });
+    errdefer vg.deinit();
 
-    // Bundle everything up in a graphics object and store that in the window.
+    // GLFW callbacks retrieve the graphics state through the window user pointer.
     const graphics = try ally.create(Graphics);
     graphics.* = .{
         .ally = ally,
@@ -225,27 +174,43 @@ fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_i
     }
 }
 
+fn cursorPosCallback(window: ?*gl.GLFWwindow, x: f64, y: f64) callconv(.c) void {
+    const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
+    const scale: f64 = @floatCast(graphics.scale);
+    const event = Event{ .mouse_moved = .{ .x = x / scale, .y = y / scale } };
+    // Only the latest position matters until the next frame. Preserve the
+    // ordering of movement relative to clicks and keyboard events.
+    const items = graphics.event_queue.items;
+    if (items.len > 0 and items[items.len - 1] == .mouse_moved) {
+        items[items.len - 1] = event;
+    } else {
+        graphics.event_queue.append(graphics.ally, event) catch @panic("couldn't append event");
+    }
+}
+
 fn mouseButtonCallback(window: ?*gl.GLFWwindow, button: c_int, action: c_int, mods: c_int) callconv(.c) void {
     _ = mods;
     if (button != gl.GLFW_MOUSE_BUTTON_LEFT or action != gl.GLFW_PRESS) return;
 
     const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
     graphics.event_queue.append(graphics.ally, .{
-        .mouse_clicked = graphics.get_mouse_pos(),
+        .mouse_clicked = graphics.get_mouse_position(),
     }) catch @panic("couldn't append event");
 }
 
 pub fn deinit(self: *Graphics) void {
-    gl.glfwDestroyWindow(self.window);
+    self.event_queue.deinit(self.ally);
     self.vg.deinit();
+    gl.glfwDestroyWindow(self.window);
     gl.glfwTerminate();
+    self.ally.destroy(self);
 }
 
 pub fn should_close(self: Graphics) bool {
     return gl.glfwWindowShouldClose(self.window) == gl.GLFW_TRUE;
 }
 
-pub fn get_mouse_pos(self: Graphics) Position {
+pub fn get_mouse_position(self: Graphics) Position {
     var double_mx: f64 = undefined;
     var double_my: f64 = undefined;
     gl.glfwGetCursorPos(self.window, &double_mx, &double_my);
@@ -264,70 +229,37 @@ pub fn get_size(self: Graphics) Size {
     };
 }
 
-pub fn get_time(self: Graphics) f32 {
+pub fn wait_events(self: Graphics) void {
     _ = self;
-    const double_t = gl.glfwGetTime();
-    const t = @as(f32, @floatCast(double_t));
-    return t;
-}
-
-// Wakes up the event loop.
-pub fn wake() void {
-    gl.glfwPostEmptyEvent();
-}
-
-pub fn poll_events(self: Graphics) void {
-    _ = self;
-    // We need to give GLFW the chance to process events internally. There are
-    // several ways to do that:
-    // - PollEvents() processes all queued-up events, then returns. Good for
-    //   games, where stuff happens all the time and you always need new frames.
-    // - WaitEvents() blocks and puts the thread asleep until at least one event
-    //   happens. Great for editors, etc. because of energy-efficiency.
-    // - WaitEventsTimeout(0.7) blocks with a maximum duration in seconds. Good
-    //   for non-games with occasional updates such as a clock.
-    // See https://www.glfw.org/docs/latest/input_guide.html
+    // Sleep until input or a window event requires another frame.
     gl.glfwWaitEvents();
 }
 
-pub fn render(self: Graphics, size: Size, instructions: []const DrawingInstruction) !void {
-    // Calculate pixel ratio for hi-dpi devices.
+pub fn render(self: Graphics, size: Size, commands: []const DrawCommand) void {
+    if (size.width <= 0 or size.height <= 0) return;
     var fb_width: i32 = undefined;
     var fb_height: i32 = undefined;
     gl.glfwGetFramebufferSize(self.window, &fb_width, &fb_height);
-    const pxRatio = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatCast(size.width));
+    if (fb_width <= 0 or fb_height <= 0) return;
+    const pixel_ratio = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatCast(size.width));
 
-    // Update and render
     gl.glViewport(0, 0, fb_width, fb_height);
     gl.glClearColor(1, 1, 1, 1);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT);
 
-    self.vg.beginFrame(@floatCast(size.width), @floatCast(size.height), pxRatio);
+    self.vg.beginFrame(@floatCast(size.width), @floatCast(size.height), pixel_ratio);
 
-    try render_all(self.vg, instructions);
+    render_commands(self.vg, commands);
 
     self.vg.endFrame();
     gl.glfwSwapBuffers(self.window);
 }
 
-fn render_all(vg: nvg, instructions: []const DrawingInstruction) !void {
-    for (instructions) |instruction| try render_single(vg, instruction);
+fn render_commands(vg: nvg, commands: []const DrawCommand) void {
+    for (commands) |command| render_command(vg, command);
 }
-fn render_single(vg: nvg, instruction: DrawingInstruction) error{OutOfMemory}!void {
-    switch (instruction) {
-        // .draw_rectangle => |args| {
-        //     const x: f32 = @floatFromInt(args.pos.x);
-        //     const y: f32 = @floatFromInt(args.pos.y);
-        //     const width: f32 = @floatFromInt(args.size.width);
-        //     const height: f32 = @floatFromInt(args.size.height);
-        //     vg.beginPath();
-        //     vg.moveTo(x, y);
-        //     vg.lineTo(x + width, y);
-        //     vg.lineTo(x + width, y + height);
-        //     vg.lineTo(x, y + height);
-        //     vg.fillColor(nvg.rgb(args.color.r, args.color.g, args.color.b));
-        //     vg.fill();
-        // },
+fn render_command(vg: nvg, command: DrawCommand) void {
+    switch (command) {
         .fill_path => |args| {
             vg.beginPath();
             for (args.path) |segment| {
@@ -349,7 +281,7 @@ fn render_single(vg: nvg, instruction: DrawingInstruction) error{OutOfMemory}!vo
                 @floatCast(t.by.e),
                 @floatCast(t.by.f),
             );
-            try render_all(vg, t.children);
+            render_commands(vg, t.children);
             vg.restore();
         },
     }
