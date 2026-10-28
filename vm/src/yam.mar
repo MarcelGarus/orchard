@@ -3376,7 +3376,7 @@ struct ProgramBinding { name: String, value: ObjectId }
 struct TypedObject { type: Type, object: ObjectId }
 struct CompiledCode { type: Type, object: ObjectId }
 
-enum TypeDef { int, float, byte, string, list, struct_: StructDef, enum_: EnumDef, function: Type }
+enum TypeDef { int, float, byte, string, list, dynamic, struct_: StructDef, enum_: EnumDef, function: Type }
 struct StructDef { type_args: List[String], fields: List[StructDefField] }
 struct StructDefField { name: String, type: Type }
 struct EnumDef { type_args: List[String], variants: List[EnumDefVariant] }
@@ -3422,6 +3422,7 @@ fun compile_structure(state: &NotebookState, path: String, ast: AstStructure) {
           else if name == "Byte" then TypeDef.byte
           else if name == "String" then TypeDef.string
           else if name == "List" then TypeDef.list
+          else if name == "Dynamic" then TypeDef.dynamic
           else panic("Unknown builtin type {name}.")
         state.declare_type(name, def)
       }
@@ -3647,6 +3648,7 @@ fun check_type(state: NotebookState, type: Type, type_params: Set[String]) {
     case byte {}
     case string {}
     case list { arity = 1 }
+    case dynamic {}
     case struct_(s) { arity = s.type_args.len }
     case enum_(e) { arity = e.type_args.len }
     case function {}
@@ -4126,6 +4128,15 @@ fun array_expr(
 }
 fun builtin(f: AstFun): ObjectId {
   var signature = f.signature()
+
+  if signature == "to_dynamic[T](T)" then {
+    assert(f.returns == type("Dynamic"), "to_dynamic must return Dynamic.")
+    return name_expr(f.args.get(0).name)
+  }
+  if signature == "to_static[T](Dynamic)" then {
+    assert(f.returns == type("T"), "to_static must return T.")
+    return name_expr(f.args.get(0).name)
+  }
 
   if signature == "crash(String)" then {
     assert(f.returns == type("Never"), "crash must return Never.")
