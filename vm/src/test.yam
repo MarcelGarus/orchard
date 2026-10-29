@@ -1168,6 +1168,7 @@ chapter Root
         Four colored triangles share the mouse position as their third vertex.
         Each triangle spans one edge of the window. Moving the mouse moves
         their meeting point; resizing keeps their bases on the window edges.
+        crosshair_app(position(250.0, 150.0)) constructs this App.
       code
         fun draw_triangle(
           a: Position, b: Position, c: Position, color: Color
@@ -1203,27 +1204,35 @@ chapter Root
             },
           }
         }
-        var app = crosshair_app(position(250.0, 150.0))
-    text
-      WidgetFramework
     chapter WidgetFramework
       text
-        The widget framework works similar to Flutter: You define your UI by
+        The widget framework works similar to Flutter: You describe your UI by
         nesting tiny, simple widgets in a declarative way. The framework turns
         this widget tree into an element tree. Elements are persistent nodes
         with internal state. On the next frame, you rebuild a widget tree and
         the framework updates the element tree accordingly.
       text
+        Previously, I just had functions that return Drawings, for example a
+        text function that takes a String and returns a rendered version.
+        However, this is not performant (you have to re-layout and re-render
+        everything every frame) and having internal state is generally useful.
+        For example, if you have a text in a scrollable view, you don't want to
+        re-layout the text every frame, but cache its draw commands.
+      text
         Constraints (min/max width/height) flow down the tree and concrete
-        renderings with concrete sizes flow up the tree. Parent widgets
-        determine the position of child widgets.
+        sizes flow up the tree. Parent widgets determine the position of child
+        widgets.
+      text
+        Element.update requires a widget made by the same implementation,
+        including the implementations of corresponding children in the tree.
       chapter Constraints
         code
           type AxisConstraints = struct { min: Float, max: Maybe[Float] }
-          type Constraints { width: AxisConstraints, height: AxisConstraints }
-        code
-          fun tight_axis_constraints(size: Float) AxisConstraints {
-            AxisConstraints { min = size, max = some(size) }
+          type Constraints = struct {
+            width: AxisConstraints, height: AxisConstraints
+          }
+          fun tight_axis_constraints(value: Float) AxisConstraints {
+            AxisConstraints { min = value, max = some(value) }
           }
           fun tight_constraints(size: Size) Constraints {
             Constraints {
@@ -1232,7 +1241,7 @@ chapter Root
             }
           }
           fun loosen_min(axis: AxisConstraints) AxisConstraints {
-            AxisConstraints { min = 0, max = axis.max }
+            AxisConstraints { min = 0.0, max = axis.max }
           }
           fun loosen_min(constraints: Constraints) Constraints {
             Constraints {
@@ -1244,38 +1253,40 @@ chapter Root
             size(constraints.width.min, constraints.height.min)
           }
           fun max(constraints: Constraints) Maybe[Size] {
-            constraints.width.max.map(fun(width: Float) {
+            constraints.width.max.flat_map(fun(width: Float) {
               constraints.height.max.map(fun(height: Float) {
                 size(width, height)
               })
             })
           }
-        code
           fun clamp(number: Float, low: Float, high: Float) Float {
             min(high, max(low, number))
           }
           fun clamp(number: Float, constraints: AxisConstraints) Float {
             constraints.max switch {
               none max(number, constraints.min)
-              some(max) number.clamp(constraints.min, max)
+              some(maximum) number.clamp(constraints.min, maximum)
             }
           }
-          fun clamp(size: Size, constraints: Constraints) Size {
+          fun clamp(s: Size, constraints: Constraints) Size {
             size(
-              size.width.clamp(constraints.width),
-              size.height.clamp(constraints.height),
+              s.width.clamp(constraints.width),
+              s.height.clamp(constraints.height),
             )
           }
       chapter Widget
         text
-          Previously, I just had functions that return Drawings, for example a
-          text function that takes a String and returns a rendered version.
-          However, this is not performant (you have to re-layout and re-render
-          everything every frame) and having internal state is generally useful.
-          For example, if you have a text in a scrollable view, you don't want
-          to re-layout the text every frame, but cache its draw commands.
+          A Widget stores its concrete configuration as Dynamic. Its element
+          callbacks retain the concrete state and implementation, so the casts
+          stay inside widget and widget_element. Updating with another widget
+          implementation violates this contract.
+          create_element builds the initial element. Updates, constraint
+          changes, and handled clicks return new elements with cached drawings.
+          Clicks outside an element's bounds are not delivered to its
+          implementation.
         code
           type Widget[M] = struct {
+            value: Dynamic,
             new: fun(Constraints) Element[M],
           }
           type Element[M] = struct {
@@ -1284,35 +1295,95 @@ chapter Root
             drawing: Drawing,
             update: fun(Widget[M]) Element[M],
             new_constraints: fun(Constraints) Element[M],
-            mouse_clicked: fun(Position) MouseClickResult[M],
+            mouse_clicked: fun(Position) MouseClickResult[M, Element[M]],
           }
-          type MouseClickResult[M] = enum {
-            not_handled, handled: Element[M], message: M
+          type MouseClickResult[M, E] = enum {
+            not_handled, handled: E, message: M
           }
-        code
           type WidgetImpl[M, W, E] = struct {
-            new: fun(widget: W, constraints: Constraints) E,
-            update: fun(element: E, widget: W) E,
-            new_constraints: fun(element: E, constraints: Constraints) E,
-            mouse_clicked: fun(element: E, position: Position) MouseClickResult[M],
-            render: fun(e: E) Drawing,
+            new: fun(W, Constraints) E,
+            update: fun(E, W) E,
+            new_constraints: fun(E, Constraints) E,
+            mouse_clicked: fun(E, Position) MouseClickResult[M, E],
+            render: fun(E) Drawing,
+          }
+          fun widget_element[M, W, E](
+            impl: WidgetImpl[M, W, E], state: E, constraints: Constraints
+          ) Element[M] {
+            var drawing = impl.render(state)
+            Element {
+              constraints,
+              size = drawing.size,
+              drawing,
+              update = fun(next: Widget[M]) {
+                widget_element(
+                  impl,
+                  impl.update(state, next.value.to_static[W]()),
+                  constraints,
+                )
+              },
+              new_constraints = fun(next: Constraints) {
+                widget_element(impl, impl.new_constraints(state, next), next)
+              },
+              mouse_clicked = fun(position: Position) {
+                if
+                  rectangle(0.0, 0.0, drawing.size.width, drawing.size.height)
+                    .contains(position)
+                then {
+                  impl.mouse_clicked(state, position) switch {
+                    not_handled MouseClickResult[M, Element[M]].not_handled
+                    handled(next) {
+                      MouseClickResult[M, Element[M]].handled(
+                        widget_element(impl, next, constraints)
+                      )
+                    }
+                    message(value) {
+                      MouseClickResult[M, Element[M]].message(value)
+                    }
+                  }
+                } else
+                  MouseClickResult[M, Element[M]].not_handled
+              },
+            }
           }
           fun widget[M, W, E](
             impl: WidgetImpl[M, W, E], current: W
           ) Widget[M] {
             Widget {
+              value = current.to_dynamic(),
               new = fun(constraints: Constraints) {
-                ...
+                widget_element(
+                  impl, impl.new(current, constraints), constraints
+                )
               },
             }
           }
+          fun create_element[M](
+            widget: Widget[M], constraints: Constraints
+          ) Element[M] {
+            widget.new(constraints)
+          }
       chapter EmptyWidget
         code
-          var empty_widget = widget[Never, Size](
-            fun(constraints: Constraints) { constraints.min() },
-            fun(state: Size) { Drawing { draw = draw_nothing(), size } },
-            fun(size: Size, mouse: Position) { MouseClickResult.not_handled },
-          )
+          fun empty_impl[M]() WidgetImpl[M, Nothing, Size] {
+            WidgetImpl {
+              new = fun(w: Nothing, constraints: Constraints) {
+                constraints.min()
+              },
+              update = fun(state: Size, w: Nothing) { state },
+              new_constraints = fun(state: Size, constraints: Constraints) {
+                constraints.min()
+              },
+              mouse_clicked = fun(state: Size, position: Position) {
+                MouseClickResult[M, Size].not_handled
+              },
+              render = fun(size: Size) {
+                Drawing { draw = draw_nothing(), size }
+              },
+            }
+          }
+          fun empty[M]() Widget[M] { widget(empty_impl[M](), Nothing {}) }
+          var empty_widget = empty[Never]()
       chapter ColoredWidget
         code
           type ColoredWidget[M] = struct { color: Color, child: Widget[M] }
@@ -1325,132 +1396,149 @@ chapter Root
                   color = w.color, child = w.child.create_element(constraints)
                 }
               },
-              update = fun(e: ColoredElement[M], widget: ColoredWidget) {
+              update = fun(e: ColoredElement[M], w: ColoredWidget[M]) {
                 ColoredElement {
-                  color = widget.color, child = e.child.update(widget.child)
+                  color = w.color, child = e.child.update(w.child)
                 }
               },
-              new_constraints = fun(
-                e: ColoredElement[M], constraints: Constraints
-              ) {
+              new_constraints = fun(e: ColoredElement[M], next: Constraints) {
                 ColoredElement {
-                  color = e.color,
-                  child = e.child.new_constraints(constraints),
+                  color = e.color, child = e.child.new_constraints(next)
                 }
               },
               mouse_clicked = fun(e: ColoredElement[M], position: Position) {
                 e.child.mouse_clicked(position) switch {
-                  not_handled MouseClickResult.not_handled
-                  handled(new_child) {
-                    MouseClickResult.handled(ColoredElement {
-                      color = e.color, child = new_child
-                    })
+                  not_handled MouseClickResult[M, ColoredElement[M]].not_handled
+                  handled(child) {
+                    MouseClickResult[M, ColoredElement[M]].handled(
+                      ColoredElement { color = e.color, child }
+                    )
                   }
-                  message(m) MouseClickResult.message(m)
+                  message(value) {
+                    MouseClickResult[M, ColoredElement[M]].message(value)
+                  }
                 }
               },
               render = fun(e: ColoredElement[M]) {
                 Drawing {
                   draw = draw_all(list(
-                    draw_colored_rect(e.color, e.child.size),
+                    draw_colored_rect(e.child.size, e.color),
                     e.child.drawing.draw,
                   )),
                   size = e.child.size,
                 }
-              }
+              },
             }
           }
           fun colored[M](color: Color, child: Widget[M]) Widget[M] {
             widget(colored_impl[M](), ColoredWidget { color, child })
           }
       chapter Align
+        text
+          Alignment coordinates range from -1 (left or top) to 1 (right or
+          bottom). A zero coordinate centers the child on that axis. Bounded
+          axes expand to their maximum; unbounded axes follow the child size.
         code
           type AlignWidget[M] = struct { bias: Vec2[Float], child: Widget[M] }
           type AlignElement[M] = struct {
             bias: Vec2[Float], child: Element[M], constraints: Constraints
           }
-          fun align_impl[M](
-          ) WidgetImpl[M, AlignWidget[M], AlignElement[M]] {
-            var calculate_size = fun(
-              child_size: Size, constraints: Constraints
-            ) {
-              size(
-                constraints.width.max or child_size.width,
-                constraints.height.max or child_size.height,
-              )
-            }
+          fun aligned_size(child: Size, constraints: Constraints) Size {
+            size(
+              constraints.width.max or child.width,
+              constraints.height.max or child.height,
+            ).clamp(constraints)
+          }
+          fun alignment_offset(
+            bias: Vec2[Float], parent: Size, child: Size
+          ) Offset {
+            offset(
+              {parent.width - child.width} * {bias.x + 1.0} / 2.0,
+              {parent.height - child.height} * {bias.y + 1.0} / 2.0,
+            )
+          }
+          fun align_impl[M]() WidgetImpl[M, AlignWidget[M], AlignElement[M]] {
             WidgetImpl {
               new = fun(w: AlignWidget[M], constraints: Constraints) {
                 AlignElement {
                   bias = w.bias,
-                  child = w.child.create_element(constraints),
+                  child = w.child.create_element(constraints.loosen_min()),
                   constraints,
                 }
               },
-              update = fun(e: AlignElement[M], w: AlignWidget) {
+              update = fun(e: AlignElement[M], w: AlignWidget[M]) {
                 AlignElement {
                   bias = w.bias,
                   child = e.child.update(w.child),
                   constraints = e.constraints,
                 }
               },
-              new_constraints = fun(
-                e: AlignElement[M], constraints: Constraints
-              ) {
+              new_constraints = fun(e: AlignElement[M], next: Constraints) {
                 AlignElement {
                   bias = e.bias,
-                  child = e.child.new_constraints(constraints.loosen_min()),
-                  constraints,
+                  child = e.child.new_constraints(next.loosen_min()),
+                  constraints = next,
                 }
               },
               mouse_clicked = fun(e: AlignElement[M], position: Position) {
-                var size = calculate_size(e.child.size, e.constraints)
-                var padding = state.bias
-                  * (size.to_vec() - e.child.size.to_vec())
-                var position_in_child = position - padding
-                if rect(0.0 @ 0.0, child.size).contains(position_in_child) then
-                  e.child.mouse_clicked(position_in_child) switch {
-                    not_handled MouseClickResult.not_handled
-                    handled(new_child) {
-                      MouseClickResult.handled(AlignElement {
-                        horizontal = e.horizontal,
-                        vertical = e.vertical,
-                        child = new_child,
-                        constraints = e.constraints,
-                      })
+                var space = aligned_size(e.child.size, e.constraints)
+                var shift = alignment_offset(e.bias, space, e.child.size)
+                var local = position - shift
+                if rectangle(position(0.0, 0.0), e.child.size).contains(local)
+                then {
+                  e.child.mouse_clicked(local) switch {
+                    not_handled MouseClickResult[M, AlignElement[M]].not_handled
+                    handled(child) {
+                      MouseClickResult[M, AlignElement[M]].handled(
+                        AlignElement {
+                          bias = e.bias, child, constraints = e.constraints
+                        }
+                      )
                     }
-                    message(m) MouseClickResult.message(m)
+                    message(value) {
+                      MouseClickResult[M, AlignElement[M]].message(value)
+                    }
                   }
-                else
-                  MouseClickResult.not_handled
+                } else
+                  MouseClickResult[M, AlignElement[M]].not_handled
               },
               render = fun(e: AlignElement[M]) {
-                var size = calculate_size(e.child.size, e.constraints)
+                var space = aligned_size(e.child.size, e.constraints)
                 Drawing {
                   draw = draw_transformed(
                     transform_translate(
-                      {e.bias * {size.to_vec() - e.child.size.to_vec()}}
-                        .to_offset()
+                      alignment_offset(e.bias, space, e.child.size)
                     ),
-                    child.drawing.draw,
+                    e.child.drawing.draw,
                   ),
-                  size,
+                  size = space,
                 }
-              }
+              },
             }
           }
           fun align[M](
             horizontal: Float, vertical: Float, child: Widget[M]
           ) Widget[M] {
-            widget(
-              align_impl[M](),
-              AlignWidget { bias = vec(horizontal, vertical), child },
-            )
+            widget(align_impl[M](),
+              AlignWidget { bias = vec(horizontal, vertical), child })
           }
           fun center[M](child: Widget[M]) Widget[M] { align(0.0, 0.0, child) }
   chapter Todo
     text
-      - support to_dynamic() and to[T]() for downcasting (needed to implement
-        the widget function)
-      - proof of concept for the Widget framework (does a generic M make sense?)
+      - memory-safe dynamic casts
+      - type-safe widget update
+      - widgets
+        - text
+        - stateful
+        - on-click
+        - key
+        - column
+        - list view
+        - clipping draw command?
+        - button
+        - editable text
+        - stack
+        - card?
+        - icon
+        - dialog
       - more plum-like syntax once a proof-of-concept notebook works?
