@@ -1457,6 +1457,96 @@ chapter Root
           fun colored[M](color: Color, child: Widget[M]) Widget[M] {
             widget(colored_impl[M](), ColoredWidget { color, child })
           }
+      chapter SizedBox
+        text
+          A sized box can have a preferred width and height that it tries to
+          respect as much as possible given the parent constraints. For axis
+          where it has a preferred extent, it presents its child with a tight
+          constraint.
+        code
+          type SizedBoxWidget[M] = struct {
+            width: Maybe[Float], height: Maybe[Float], child: Widget[M]
+          }
+          type SizedBoxElement[M] = struct {
+            width: Maybe[Float],
+            height: Maybe[Float],
+            constraints: Constraints,
+            child: Element[M],
+          }
+          fun sized_box_child_constraints(
+            width: Maybe[Float], height: Maybe[Float], outer: Constraints
+          ) Constraints {
+            constraints(
+              width.map(fun(w: Float) { tight_axis_constraints(w) })
+                or outer.width,
+              height.map(fun(h: Float) { tight_axis_constraints(h) })
+                or outer.height,
+            )
+          }
+          fun sized_box_impl[M](
+          ) WidgetImpl[M, SizedBoxWidget[M], SizedBoxElement[M]] {
+            WidgetImpl {
+              new = fun(w: SizedBoxWidget[M], constraints: Constraints) {
+                SizedBoxElement {
+                  width = w.width,
+                  height = w.height,
+                  constraints,
+                  child = w.child.create_element(
+                    sized_box_child_constraints(w.width, w.height, constraints)
+                  ),
+                }
+              },
+              update = fun(e: SizedBoxElement[M], w: SizedBoxWidget[M]) {
+                SizedBoxElement {
+                  requested = w.requested,
+                  constraints = e.constraints,
+                  child = e.child.update(w.child).new_constraints(
+                    sized_box_child_constraints(w.width, w.height, constraints)
+                  ),
+                }
+              },
+              new_constraints = fun(e: SizedBoxElement[M], next: Constraints) {
+                SizedBoxElement {
+                  requested = e.requested,
+                  constraints = next,
+                  child = e.child.new_constraints(
+                    sized_box_child_constraints(w.width, w.height, constraints)
+                  ),
+                }
+              },
+              mouse_clicked = fun(e: SizedBoxElement[M], position: Position) {
+                e.child.mouse_clicked(position) switch {
+                  not_handled {
+                    MouseClickResult[M, SizedBoxElement[M]].not_handled
+                  }
+                  handled(child) {
+                    MouseClickResult[M, SizedBoxElement[M]].handled(
+                      SizedBoxElement {
+                        requested = e.requested,
+                        constraints = e.constraints,
+                        child,
+                      }
+                    )
+                  }
+                  message(value) {
+                    MouseClickResult[M, SizedBoxElement[M]].message(value)
+                  }
+                }
+              },
+              render = fun(e: SizedBoxElement[M]) { e.child.drawing },
+            }
+          }
+          fun sized_box[M](
+            width: Float, height: Float, child: Widget[M]
+          ) Widget[M] {
+            widget(
+              sized_box_impl[M](),
+              SizedBoxWidget { requested = size(width, height), child },
+            )
+          }
+          fun sized_box(width: Float, height: Float) Widget[Never] {
+            sized_box(width, height, empty_widget)
+          }
       chapter Align
         text
           Alignment coordinates range from -1 (left or top) to 1 (right or
