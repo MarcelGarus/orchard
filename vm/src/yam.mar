@@ -4126,8 +4126,33 @@ fun array_expr(
   )
   unary_expr("flatten-to-inner", call_expr(heap_fun(params, body), initial))
 }
+| Read one byte from a string's packed leaf words as a Yam Byte object.
+fun string_byte(source: ObjectId, index: ObjectId): ObjectId {
+  var word = raw_binary("load", source,
+    raw_binary("divide", unbox(index), word_expr(8)))
+  var shift = raw_binary("multiply",
+    raw_binary("modulo", unbox(index), word_expr(8)), word_expr(8))
+  box(raw_binary("and", raw_binary("shift-right", word, shift), word_expr(255)))
+}
 fun builtin(f: AstFun): ObjectId {
   var signature = f.signature()
+
+  if signature == "bytes(String)" then {
+    assert(f.returns == type("List", list(type("Byte"))), "bytes must return List[Byte].")
+    var source = name_expr("$source")
+    var length = name_expr("$length")
+    var previous = binary_expr("subtract", length, int_expr(1))
+    | String leaves are zero-padded to whole words. Trim only trailing zeros.
+    var trim = heap_fun(list("$source", "$length"),
+      conditional(flag_expr(2, length, int_expr(0)),
+        conditional(flag_expr(1, string_byte(source, previous), int_expr(0)),
+          rec_expr(list(source, previous)), length), length))
+    var input = name_expr(f.args.get(0).name)
+    var count = call_expr(trim, list(input,
+      binary_expr("multiply", size_expr(input), int_expr(8))))
+    return array_expr(list("$source", "$length"), list(input, count),
+      length, string_byte(source, name_expr("$index")))
+  }
 
   if signature == "to_dynamic[T](T)" then {
     assert(f.returns == type("Dynamic"), "to_dynamic must return Dynamic.")
