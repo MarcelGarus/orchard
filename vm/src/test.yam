@@ -1667,6 +1667,118 @@ chapter Root
               }
             } else child
           }
+      chapter Padding
+        text
+          Padding removes its insets from the child's constraints, then adds
+          them back to the child's size within the parent constraints. Drawing
+          and clicks are translated by the left and top insets.
+        code
+          type Insets = struct {
+            left: Float, top: Float, right: Float, bottom: Float
+          }
+          fun deflate(axis: AxisConstraints, amount: Float) AxisConstraints {
+            axis_constraints(
+              max(0.0, axis.min - amount),
+              axis.max.map(fun(value: Float) { max(0.0, value - amount) }),
+            )
+          }
+          fun deflate(constraints: Constraints, insets: Insets) Constraints {
+            Constraints {
+              width = constraints.width.deflate(insets.left + insets.right),
+              height = constraints.height.deflate(insets.top + insets.bottom),
+            }
+          }
+          type PaddingWidget[M] = struct { insets: Insets, child: Widget[M] }
+          type PaddingElement[M] = struct {
+            insets: Insets, constraints: Constraints, child: Element[M]
+          }
+          fun padding_impl[M](
+          ) WidgetImpl[M, PaddingWidget[M], PaddingElement[M]] {
+            WidgetImpl {
+              new = fun(w: PaddingWidget[M], constraints: Constraints) {
+                PaddingElement {
+                  insets = w.insets,
+                  constraints,
+                  child = w.child.create_element(constraints.deflate(w.insets)),
+                }
+              },
+              update = fun(e: PaddingElement[M], w: PaddingWidget[M]) {
+                PaddingElement {
+                  insets = w.insets,
+                  constraints = e.constraints,
+                  child = e.child.update(w.child).new_constraints(
+                    e.constraints.deflate(w.insets)
+                  ),
+                }
+              },
+              new_constraints = fun(e: PaddingElement[M], next: Constraints) {
+                PaddingElement {
+                  insets = e.insets,
+                  constraints = next,
+                  child = e.child.new_constraints(next.deflate(e.insets)),
+                }
+              },
+              mouse_clicked = fun(e: PaddingElement[M], position: Position) {
+                var local = position - offset(e.insets.left, e.insets.top)
+                e.child.mouse_clicked(local) switch {
+                  not_handled MouseClickResult[M, PaddingElement[M]].not_handled
+                  handled(child) {
+                    MouseClickResult[M, PaddingElement[M]].handled(
+                      PaddingElement {
+                        insets = e.insets, constraints = e.constraints, child
+                      }
+                    )
+                  }
+                  message(value) {
+                    MouseClickResult[M, PaddingElement[M]].message(value)
+                  }
+                }
+              },
+              render = fun(e: PaddingElement[M]) {
+                var overflows_right = e.constraints.width.max switch {
+                  none false
+                  some(limit) e.insets.left + e.insets.right > limit
+                }
+                var overflows_bottom = e.constraints.height.max switch {
+                  none false
+                  some(limit) e.insets.top + e.insets.bottom > limit
+                }
+                overflow_drawing(
+                  false, false, overflows_right, overflows_bottom,
+                  Drawing {
+                    draw = draw_transformed(
+                      transform_translate(offset(e.insets.left, e.insets.top)),
+                      e.child.drawing.draw,
+                    ),
+                    size = size(
+                      e.child.size.width + e.insets.left + e.insets.right,
+                      e.child.size.height + e.insets.top + e.insets.bottom,
+                    ).clamp(e.constraints),
+                  },
+                )
+              },
+            }
+          }
+          fun padding[M](
+            left: Float,
+            top: Float,
+            right: Float,
+            bottom: Float,
+            child: Widget[M],
+          ) Widget[M] {
+            assert(
+              left >= 0.0 and top >= 0.0 and right >= 0.0 and bottom >= 0.0
+            )
+            widget(
+              padding_impl[M](),
+              PaddingWidget {
+                insets = Insets { left, top, right, bottom }, child
+              },
+            )
+          }
+          fun padding[M](amount: Float, child: Widget[M]) Widget[M] {
+            padding(amount, amount, amount, amount, child)
+          }
       chapter Align
         text
           Alignment coordinates range from -1 (left or top) to 1 (right or
