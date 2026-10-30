@@ -45,6 +45,8 @@ chapter Root
         anything: `fibonacci(todo())`
       code
         type Never = enum {}
+    chapter Do
+      fun do[A, B](value: A, doer: fun(A) B) B { doer(value) }
     chapter Dynamic
       text
         Dynamic holds an object whose type is not tracked by the type system.
@@ -1187,13 +1189,13 @@ chapter Root
               var bottom_left = position(0.0, window.height)
               draw_all(list(
                 draw_triangle(top_left, top_right, mouse,
-                  color(48.to_byte(), 96.to_byte(), 160.to_byte())),
+                  color("#3060a0")),
                 draw_triangle(top_right, bottom_right, mouse,
-                  color(224.to_byte(), 112.to_byte(), 80.to_byte())),
+                  color("#e07050")),
                 draw_triangle(bottom_right, bottom_left, mouse,
-                  color(48.to_byte(), 160.to_byte(), 128.to_byte())),
+                  color("#30a080")),
                 draw_triangle(bottom_left, top_left, mouse,
-                  color(224.to_byte(), 176.to_byte(), 64.to_byte())),
+                  color("#e0b040")),
               ))
             },
             handle = fun(event: Event) {
@@ -1546,6 +1548,124 @@ chapter Root
           }
           fun sized_box(width: Float, height: Float) Widget[Never] {
             sized_box(width, height, empty_widget)
+          }
+      chapter OverflowStripes
+        text
+          When widgets don't fit in the constraints they are given, crashing has
+          some downsides – maybe the widget is only temporarily small. Also,
+          who's at fault? If I resize the window to be really small, that needs
+          to be handled *somehow*. That's why the contract is that widgets
+          should never crash because they are given insufficient space. They
+          need to handle this gracefully. To signal their unhappiness, they can
+          add yellow and black diagonal stripes, which are visually very
+          obvious.
+        code
+          # The yellow part is the background, black stripes are painted in
+          # front of it.
+          fun draw_overflow_stripe(extent: Size, start: Float) DrawCommand {
+            var end = min(start + 8.0, extent.width + extent.height)
+            if start >= end then
+              draw_nothing()
+            else {
+              # The stripe may be cut of by the extent bounding box, so the
+              # resulting path can have up to six corners:
+              #           0 . 1
+              #         .     .
+              #       .       .
+              #     .         2
+              #   .         .
+              # 5         .
+              # .       .
+              # .     .
+              # 4 . 3
+              draw_filled_path(
+                path()
+                  .move_to(
+                    start.clamp(0.0, extent.width),
+                    {start - extent.width}.clamp(0.0, extent.height),
+                  )
+                  .do(fun(path: Path) {
+                    if start < extent.width and end > extent.width then
+                      path.line_to(extent.width, 0.0)
+                    else
+                      path
+                  })
+                  .line_to(
+                    end.clamp(0.0, extent.width),
+                    {end - extent.width}.clamp(0.0, extent.height),
+                  )
+                  .line_to(
+                    {end - extent.height}.clamp(0.0, extent.width),
+                    end.clamp(0.0, extent.height),
+                  )
+                  .do(fun(path: Path) {
+                    if start < extent.height and end > extent.height then
+                      path.line_to(0.0, extent.height)
+                    else
+                      path
+                  })
+                  .line_to(
+                    {start - extent.height}.clamp(0.0, extent.width),
+                    start.clamp(0.0, extent.height),
+                  ),
+                color("#000000")
+              )
+            }
+          }
+          fun draw_overflow_stripes(extent: Size) DrawCommand {
+            if extent.width <= 0.0 or extent.height <= 0.0 then
+              draw_nothing()
+            else {
+              var count = {{extent.width + extent.height} / 16.0}.to_int() + 1
+              var stripes = {0..count}.iter()
+                .map(fun(index: Int) {
+                  draw_overflow_stripe(extent, index.to_float() * 16.0)
+                })
+                .to_list()
+              draw_all(list(
+                draw_colored_rect(extent, color("#ffeb00")),
+                draw_all(stripes),
+              ))
+            }
+          }
+          fun overflow_drawing(
+            left: Bool, top: Bool, right: Bool, bottom: Bool, child: Drawing
+          ) Drawing {
+            if left or top or right or bottom then {
+              var width = min(8.0, child.size.width)
+              var height = min(8.0, child.size.height)
+              Drawing {
+                size = child.size,
+                draw = draw_all(list(
+                  child.draw,
+                  if left then
+                    draw_overflow_stripes(size(width, child.size.height))
+                  else
+                    draw_nothing(),
+                  if top then
+                    draw_overflow_stripes(size(child.size.width, height))
+                  else
+                    draw_nothing(),
+                  if right then
+                    draw_transformed(
+                      transform_translate(
+                        offset(child.size.width - width, 0.0)
+                      ),
+                      draw_overflow_stripes(size(width, child.size.height)),
+                    )
+                  else
+                    draw_nothing(),
+                  if bottom then
+                    draw_transformed(
+                      transform_translate(
+                        offset(0.0, child.size.height - height)
+                      ),
+                      draw_overflow_stripes(size(child.size.width, height)),
+                    )
+                  else draw_nothing(),
+                )),
+              }
+            } else child
           }
       chapter Align
         text
