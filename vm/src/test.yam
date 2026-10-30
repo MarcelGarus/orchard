@@ -549,9 +549,10 @@ chapter Root
       code
         fun bytes(value: String) List[Byte] { ... }
       code
-        fun byte(string: String) Byte {
-          var b = string.bytes()
-          if b.length() == 1 then b.get(0) else crash("String is too long.")
+        fun char(string: String) Byte {
+          var bytes = string.bytes()
+          assert(bytes.length() == 1, "Expected a single-byte character")
+          bytes.get(0)
         }
       code
         fun parse_int(string: String, radix: Int) Int {
@@ -696,6 +697,23 @@ chapter Root
             none state
             some(next) next.rest.fold(folder(state, next.item), folder)
           }
+        }
+      code
+        fun fold[Item, A, B](
+          iter: Iter[Item], a: A, b: B,
+          folder: fun(A, B, Item) Tuple2[A, B],
+        ) Tuple2[A, B] {
+          iter.fold(tuple(a, b), fun(state: Tuple2[A, B], item: Item) {
+            folder(state.a, state.b, item)
+          })
+        }
+        fun fold[Item, A, B, C](
+          iter: Iter[Item], a: A, b: B, c: C,
+          folder: fun(A, B, C, Item) Tuple3[A, B, C],
+        ) Tuple3[A, B, C] {
+          iter.fold(tuple(a, b, c), fun(state: Tuple3[A, B, C], item: Item) {
+            folder(state.a, state.b, state.c, item)
+          })
         }
       code
         fun reduce[A](iter: Iter[A], reducer: fun(A, A) A) Maybe[A] {
@@ -953,7 +971,7 @@ chapter Root
         fun color(hex: String) Color {
           var digits = hex.bytes()
           assert(digits.length() == 7, "Expected #RRGGBB")
-          assert(digits.get(0).to_int() == 35, "Expected #RRGGBB")
+          assert(digits.get(0) == char("#"), "Expected #RRGGBB")
           color(
             digits.slice(1..3).parse_int(16).to_byte(),
             digits.slice(3..5).parse_int(16).to_byte(),
@@ -1177,6 +1195,260 @@ chapter Root
         }
       code
         type Drawing = struct { draw: DrawCommand, size: Size }
+    chapter TextRendering
+      text
+        Layout wraps whole words at spaces and respects explicit newlines.
+        Words wider than the available width overflow instead of being split.
+        Each line is 13 units high, including a trailing empty line after a
+        newline. Empty text has zero size. There is one unit between glyphs.
+      code
+        type Glyph = struct { width: Float, paths: List[Path] }
+        fun pixel_glyph(width: Int, pixels: String) Glyph {
+          var parsed = pixels.bytes().iter().fold(
+            0, 0, list[Path](),
+            fun(x: Int, y: Int, paths: List[Path], byte: Byte) {
+              if byte == char("|") then
+                tuple(0, y + 1, paths)
+              else {
+                assert(x < width, "Pixel glyph row exceeds its width")
+                assert(byte == char(" ") or byte == char("M"), "Invalid glyph pixel")
+                var px = x.to_float()
+                var py = y.to_float()
+                tuple(
+                  x + 1,
+                  y,
+                  if byte == char(" ") then
+                    paths
+                  else
+                    paths.push(
+                      path()
+                        .move_to(px, py)
+                        .line_to(px + 1.0, py)
+                        .line_to(px + 1.0, py + 1.0)
+                        .line_to(px, py + 1.0)
+                    ),
+                )
+              }
+            },
+          )
+          assert(parsed.a == 0, "Pixel glyph must end with a row separator")
+          Glyph { width = width.to_float(), paths = parsed.c }
+        }
+      code
+        var text_line_height = 13.0
+        var fallback_glyph = pixel_glyph(5,
+          "M M M| M M|M M M| M M|M M M| M M|M M M| M M|M M M| M M|")
+        # Entries correspond to codepoints 32 through 126, in ASCII order.
+        var text_glyphs = list[Glyph]()
+          .push(pixel_glyph(2, "|"))
+          .push(pixel_glyph(2, "|MM|MM|MM|MM|MM|MM||MM|MM|"))
+          .push(pixel_glyph(3, "|M M|M M|M M|"))
+          .push(pixel_glyph(6, "|| M  M|MMMMMM| M  M| M  M| M  M|MMMMMM| M  M|"))
+          .push(pixel_glyph(5, "  M| MMM|M M M|M M|MMM| MMM|  MMM|  M M|M M M| MMM|  M|"))
+          .push(pixel_glyph(9, "| MM   MM|M  M MM|M  M MM| MM MM|   MMM|   MM MM|  MM M  M| MM  M  M| MM   MM|"))
+          .push(pixel_glyph(9, "| MMMMM|MM  MM|MM  MM| MMMM| MMM  MM|MM MM MM|MM  MMM|MM  MMMM| MMMM MM|"))
+          .push(pixel_glyph(1, "|M|M|M|"))
+          .push(pixel_glyph(3, " MM|MM|MM|MM|MM|MM|MM|MM|MM| MM|"))
+          .push(pixel_glyph(3, "MM| MM| MM| MM| MM| MM| MM| MM| MM|MM|"))
+          .push(pixel_glyph(7, "|||MM   MM| MM MM|  MMM| MM MM|MM   MM|"))
+          .push(pixel_glyph(6, "|||  MM|  MM|MMMMMM|  MM|  MM|"))
+          .push(pixel_glyph(2, "|||||||MM|MM| M|M|"))
+          .push(pixel_glyph(5, "|||||MMMMM|"))
+          .push(pixel_glyph(2, "|||||||MM|MM|"))
+          .push(pixel_glyph(5, "   MM|   MM|  MM|  MM|  MM| MM| MM| MM|MM|MM|"))
+          .push(pixel_glyph(6, "| MMMM|MM  MM|MM MMM|MM MMM|MMMMMM|MMM MM|MM  MM|MM  MM| MMMM|"))
+          .push(pixel_glyph(2, "| M|MM|MM|MM|MM|MM|MM|MM|MM|"))
+          .push(pixel_glyph(6, "| MMMM|M   MM|    MM|    MM|   MM|  MM| MM|MM|MMMMMM|"))
+          .push(pixel_glyph(6, "|MMMMMM|   MM|  MM| MMMM|    MM|    MM|    MM|M   MM| MMMM|"))
+          .push(pixel_glyph(7, "|    MM|   MMM|  M MM| M  MM|MM  MM|MMMMMMM|    MM|    MM|    MM|"))
+          .push(pixel_glyph(6, "|MMMMMM|MM|MM|MMMMM|    MM|    MM|    MM|M   MM| MMMM|"))
+          .push(pixel_glyph(6, "|  MMM| MM|MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+          .push(pixel_glyph(7, "|MMMMMMM|     MM|     MM|    MM|    MM|   MM|   MM|   MM|   MM|"))
+          .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM| MMMM|MM  MM|MM  MM|MM  MM| MMMM|"))
+          .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM|   MM| MMM|"))
+          .push(pixel_glyph(2, "|||MM|MM||||MM|MM|"))
+          .push(pixel_glyph(2, "|||MM|MM||||MM|MM| M|M|"))
+          .push(pixel_glyph(5, "||   MM|  MM| MM|MM| MM|  MM|   MM|"))
+          .push(pixel_glyph(5, "||||MMMMM||MMMMM|"))
+          .push(pixel_glyph(5, "||MM| MM|  MM|   MM|  MM| MM|MM|"))
+          .push(pixel_glyph(6, "| MMMM|   MM|    MM|   MM|  MM|  MM||  MM|  MM|"))
+          .push(pixel_glyph(9, "|  MMMMM| M     M|M  MMM  M|M M  M  M|M M  M  M|M M  M  M|M  MMMMMM| M|  MMMMM|"))
+          .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM|MMMMMM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+          .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MMMM|MM  MM|MM  MM|MM  MM|MMMMM|"))
+          .push(pixel_glyph(6, "| MMMM|MM   M|MM|MM|MM|MM|MM|MM   M| MMMM|"))
+          .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MMMMM|"))
+          .push(pixel_glyph(5, "|MMMMM|MM|MM|MM|MMMMM|MM|MM|MM|MMMMM|"))
+          .push(pixel_glyph(5, "|MMMMM|MM|MM|MM|MMMMM|MM|MM|MM|MM|"))
+          .push(pixel_glyph(6, "| MMMM|MM   M|MM|MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+          .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM|MM  MM|MMMMMM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+          .push(pixel_glyph(4, "|MMMM| MM| MM| MM| MM| MM| MM| MM|MMMM|"))
+          .push(pixel_glyph(6, "|    MM|    MM|    MM|    MM|    MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+          .push(pixel_glyph(7, "|MM   MM|MM  MM|MM MM|MMMM|MMM|MMMM|MM MM|MM  MM|MM   MM|"))
+          .push(pixel_glyph(5, "|MM|MM|MM|MM|MM|MM|MM|MM|MMMMM|"))
+          .push(pixel_glyph(10, "|M       MM|MM     MMM|MMM   MMMM|MMMM MMMMM|M MMMMMMMM|M  MMMM MM|M   MM  MM|M       MM|M       MM|"))
+          .push(pixel_glyph(7, "|M     M|MM    M|MMM   M|MMMM  M|M MMM M|M  MMMM|M   MMM|M    MM|M     M|"))
+          .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+          .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MMMMM|MM|MM|MM|MM|"))
+          .push(pixel_glyph(8, "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|    MM|    MMM|"))
+          .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+          .push(pixel_glyph(5, "| MMM|MM  M|MM|MMM| MMM|  MMM|   MM|M  MM| MMM|"))
+          .push(pixel_glyph(6, "|MMMMMM|  MM|  MM|  MM|  MM|  MM|  MM|  MM|  MM|"))
+          .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+          .push(pixel_glyph(7, "|MM   MM|MM   MM|MM   MM|MM   MM| MM MM| MM MM|  MMM| MMM|   M|"))
+          .push(pixel_glyph(11, "|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MMMMMMMMMM|"))
+          .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM| MMMM|  MM| MMMM|MM  MM|MM  MM|MM  MM|"))
+          .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|  MM|  MM|  MM|  MM|"))
+          .push(pixel_glyph(6, "|MMMMMM|    MM|   MM|   MM|  MM| MM| MM|MM|MMMMMM|"))
+          .push(pixel_glyph(3, "|MMM|MM|MM|MM|MM|MM|MM|MM|MMM|"))
+          .push(pixel_glyph(5, "|MM|MM| MM| MM| MM|  MM|  MM|  MM|   MM|"))
+          .push(pixel_glyph(3, "|MMM| MM| MM| MM| MM| MM| MM| MM|MMM|"))
+          .push(pixel_glyph(6, "|  MM| MMMM|MM  MM|"))
+          .push(pixel_glyph(6, "|||||||||MMMMMM|"))
+          .push(pixel_glyph(2, "|M| M|"))
+          .push(pixel_glyph(6, "||| MMMM|M   MM|    MM| MMMMM|MM  MM|MM  MM| MMMMM|"))
+          .push(pixel_glyph(6, "|MM|MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MMMMM|"))
+          .push(pixel_glyph(5, "||| MMM|MM  M|MM|MM|MM|MM  M| MMM|"))
+          .push(pixel_glyph(6, "|    MM|    MM| MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|"))
+          .push(pixel_glyph(6, "||| MMMM|MM  MM|MM  MM|MMMMMM|MM|MM   M| MMMM|"))
+          .push(pixel_glyph(5, "|  MMM| MM|MMMM| MM| MM| MM| MM| MM| MM|"))
+          .push(pixel_glyph(6, "||| MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM| M  MM|  MMM|"))
+          .push(pixel_glyph(6, "|MM|MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+          .push(pixel_glyph(2, "|MM||MM|MM|MM|MM|MM|MM|MM|"))
+          .push(pixel_glyph(4, "|  MM||  MM|  MM|  MM|  MM|  MM|  MM|  MM|  MM|MMM|"))
+          .push(pixel_glyph(6, "|MM|MM|MM  MM|MM MM|MMMM|MM|MMMM|MM MM|MM  MM|"))
+          .push(pixel_glyph(3, "|MM|MM|MM|MM|MM|MM|MM|MM| MM|"))
+          .push(pixel_glyph(10, "|||MMMMM MMM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|"))
+          .push(pixel_glyph(6, "|||MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+          .push(pixel_glyph(6, "||| MMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+          .push(pixel_glyph(6, "|||MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MMMMM|MM|MM|"))
+          .push(pixel_glyph(6, "||| MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM|    MM|"))
+          .push(pixel_glyph(5, "|||MM MM|MMMMM|MM|MM|MM|MM|MM|"))
+          .push(pixel_glyph(5, "||| MMM|MM  M|MMM| MMM|  MMM|M  MM| MMM|"))
+          .push(pixel_glyph(5, "| MM| MM|MMMM| MM| MM| MM| MM| MM|  MM|"))
+          .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|"))
+          .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|  MM|"))
+          .push(pixel_glyph(10, "|||MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MMMMMMMM|"))
+          .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|  MM|MM  MM|MM  MM|MM  MM|"))
+          .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM| M  MM|  MMM|"))
+          .push(pixel_glyph(6, "|||MMMMMM|    MM|   MM|  MM| MM|MM|MMMMMM|"))
+          .push(pixel_glyph(4, "  MM| MM| MM| MM| MM|MM| MM| MM| MM| MM|  MM|"))
+          .push(pixel_glyph(2, "MM|MM|MM|MM|MM|MM|MM|MM|MM|MM|MM|"))
+          .push(pixel_glyph(4, "MM| MM| MM| MM| MM|  MM| MM| MM| MM| MM|MM|"))
+          .push(pixel_glyph(7, "||||  MM  M| M  MM|M  M|"))
+      code
+        fun find_glyph(codepoint: Int) Glyph {
+          if codepoint >= 32 and codepoint <= 126 then
+            text_glyphs.get(codepoint - 32)
+          else
+            fallback_glyph
+        }
+        fun decode_text_codepoint(bytes: List[Byte], index: Int) NextState[Int, Int] {
+          var first = bytes.get(index).to_int()
+          var length = if first < 128 then 1
+            else if first >= 194 and first <= 223 then 2
+            else if first >= 224 and first <= 239 then 3
+            else if first >= 240 and first <= 244 then 4 else 0
+          var invalid = NextState { item = 65533, state = index + 1 }
+          if length == 1 then NextState { item = first, state = index + 1 }
+          else if length == 0 or {index + length} > bytes.length() then invalid
+          else {
+            var continuation = bytes.slice({index + 1} .. {index + length})
+            if not(continuation.iter().all(fun(byte: Byte) {
+              byte.to_int() >= 128 and byte.to_int() <= 191
+            })) then invalid else {
+              var header = if length == 2 then first - 192
+                else if length == 3 then first - 224 else first - 240
+              var value = continuation.iter().fold(header, fun(value: Int, byte: Byte) {
+                {value * 64} + {byte.to_int() - 128}
+              })
+              var minimum = if length == 2 then 128 else if length == 3 then 2048 else 65536
+              if value < minimum or value > 1114111
+                or {value >= 55296 and value <= 57343} then invalid
+              else NextState { item = value, state = index + length }
+            }
+          }
+        }
+        fun text_codepoints(value: String) Iter[Int] {
+          var bytes = value.bytes()
+          iter_from_state(0, fun(index: Int) {
+            if index == bytes.length() then none[NextState[Int, Int]]()
+            else some(decode_text_codepoint(bytes, index))
+          })
+        }
+        type PositionedGlyph = struct { glyph: Glyph, position: Position }
+        type TextLayout = struct { size: Size, glyphs: List[PositionedGlyph] }
+        type TextLayoutState = struct {
+          x: Float, y: Float, width: Float, height: Float,
+          word_start: Bool, glyphs: List[PositionedGlyph]
+        }
+        fun text_word_width(chars: List[Int], index: Int) Float {
+          if index == chars.length() then 0.0 else {
+            var char = chars.get(index)
+            if char == 32 or char == 10 then 0.0 else {
+              var rest = text_word_width(chars, index + 1)
+              find_glyph(char).width + if rest > 0.0 then 1.0 + rest else 0.0
+            }
+          }
+        }
+        fun layout_text(value: String, max_width: Maybe[Float]) TextLayout {
+          var chars = text_codepoints(value).to_list()
+          var layout = chars.iter().indexed().fold(
+            TextLayoutState {
+              x = 0.0, y = 0.0, width = 0.0, height = 0.0,
+              word_start = true, glyphs = list[PositionedGlyph](),
+            },
+            fun(state: TextLayoutState, item: Indexed[Int]) {
+              if item.item == 10 then TextLayoutState {
+                x = 0.0, y = state.y + text_line_height,
+                width = state.width, height = state.y + {2.0 * text_line_height},
+                word_start = true, glyphs = state.glyphs,
+              } else {
+                var wrap = state.word_start and item.item != 32 and state.x > 0.0
+                  and {max_width switch {
+                    none false
+                    some(limit) {state.x + text_word_width(chars, item.index)} > limit
+                  }}
+                var x = if wrap then 0.0 else state.x
+                var y = if wrap then state.y + text_line_height else state.y
+                var glyph = find_glyph(item.item)
+                TextLayoutState {
+                  x = x + glyph.width + 1.0, y,
+                  width = max(state.width, x + glyph.width),
+                  height = max(state.height, y + text_line_height),
+                  word_start = item.item == 32,
+                  glyphs = state.glyphs.push(PositionedGlyph { glyph, position = position(x, y) }),
+                }
+              }
+            },
+          )
+          TextLayout { size = size(layout.width, layout.height), glyphs = layout.glyphs }
+        }
+        fun layout_text(value: String, max_width: Float) TextLayout {
+          layout_text(value, some(max_width))
+        }
+        fun layout_text(value: String) TextLayout { layout_text(value, none[Float]()) }
+        fun draw_glyph(glyph: Glyph, color: Color) DrawCommand {
+          draw_all(
+            glyph.paths.iter()
+              .map(fun(path: Path) { draw_filled_path(path, color) })
+              .to_list()
+          )
+        }
+        fun draw_text(layout: TextLayout, color: Color) Drawing {
+          Drawing {
+            size = layout.size,
+            draw = draw_all(
+              layout.glyphs.iter()
+                .map(fun(glyph: PositionedGlyph) {
+                  draw_transformed(
+                    transform_translate(glyph.position.to_vec().to_offset()),
+                    draw_glyph(glyph.glyph, color),
+                  )
+                })
+                .to_list()
+            ),
+          }
+        }
     chapter Apps
       text
         A notebook exposes its UI as a variable named app. Rendering receives
@@ -1297,6 +1569,23 @@ chapter Root
           }
           fun is_tight(c: Constraints) Bool {
             c.width.is_tight() and c.height.is_tight()
+          }
+        code
+          fun fits(value: Float, constraints: AxisConstraints) Bool {
+            value >= constraints.min and {constraints.max switch {
+              none true
+              some(maximum) value <= maximum
+            }}
+          }
+          fun fits(value: Size, constraints: Constraints) Bool {
+            value.width.fits(constraints.width) and value.height.fits(constraints.height)
+          }
+        code
+          fun overflows(value: Float, constraints: AxisConstraints) Bool {
+            not(value.fits(constraints))
+          }
+          fun overflows(value: Size, constraints: Constraints) Bool {
+            not(value.fits(constraints))
           }
         code
           fun loosen_min(axis: AxisConstraints) AxisConstraints {
@@ -1708,6 +1997,53 @@ chapter Root
               }
             } else child
           }
+      chapter Text
+        text
+          Text stores its value, color, and constraints in its element. The
+          framework calls render and caches the drawing when created, updated,
+          or given new constraints. It wraps to the maximum width and marks text
+          that exceeds the available width or height with overflow stripes.
+          Text does not handle clicks. Its default color is black.
+        code
+          type TextWidget = struct { value: String, color: Color }
+          type TextElement = struct {
+            value: String, color: Color, constraints: Constraints
+          }
+          fun text_impl() WidgetImpl[Never, TextWidget, TextElement] {
+            WidgetImpl {
+              new = fun(w: TextWidget, constraints: Constraints) {
+                TextElement { value = w.value, color = w.color, constraints }
+              },
+              update = fun(e: TextElement, w: TextWidget) {
+                TextElement {
+                  value = w.value, color = w.color, constraints = e.constraints
+                }
+              },
+              new_constraints = fun(e: TextElement, next: Constraints) {
+                TextElement { value = e.value, color = e.color, constraints = next }
+              },
+              mouse_clicked = fun(e: TextElement, pos: Position) {
+                MouseClickResult[Never, TextElement].not_handled
+              },
+              render = fun(e: TextElement) {
+                var drawing = layout_text(e.value, e.constraints.width.max).draw_text(e.color)
+                overflow_drawing(
+                  false,
+                  false,
+                  drawing.size.width.overflows(e.constraints.width.loosen_min()),
+                  drawing.size.height.overflows(e.constraints.height.loosen_min()),
+                  Drawing {
+                    size = drawing.size.clamp(e.constraints),
+                    draw = drawing.draw,
+                  },
+                )
+              },
+            }
+          }
+          fun text(value: String, color: Color) Widget[Never] {
+            widget(text_impl(), TextWidget { value, color })
+          }
+          fun text(value: String) Widget[Never] { text(value, color("#000000")) }
       chapter Padding
         text
           Padding removes its insets from the child's constraints, then adds
@@ -1776,16 +2112,13 @@ chapter Root
                 }
               },
               render = fun(e: PaddingElement[M]) {
-                var overflows_right = e.constraints.width.max switch {
-                  none false
-                  some(limit) e.insets.left + e.insets.right > limit
-                }
-                var overflows_bottom = e.constraints.height.max switch {
-                  none false
-                  some(limit) e.insets.top + e.insets.bottom > limit
-                }
                 overflow_drawing(
-                  false, false, overflows_right, overflows_bottom,
+                  false,
+                  false,
+                  {e.insets.left + e.insets.right}
+                    .overflows(e.constraints.width.loosen_min()),
+                  {e.insets.top + e.insets.bottom}
+                    .overflows(e.constraints.height.loosen_min()),
                   Drawing {
                     draw = draw_transformed(
                       transform_translate(offset(e.insets.left, e.insets.top)),
@@ -2032,10 +2365,8 @@ chapter Root
               render = fun(e: FlexElement[M]) {
                 var axis = e.axis
                 var layout = e.children.iter().fold(
-                  tuple(size(0.0, 0.0), list[DrawCommand]()),
-                  fun(data: Tuple2[Size, List[DrawCommand]], child: Element[M]) {
-                    var size = data.a
-                    var draw = data.b
+                  size(0.0, 0.0), list[DrawCommand](),
+                  fun(size: Size, draw: List[DrawCommand], child: Element[M]) {
                     tuple(
                       flex_size(
                         axis,
@@ -2061,10 +2392,7 @@ chapter Root
                       if a is none then b.size.main(axis) else 0.0
                     })
                     .sum()
-                  e.constraints.main(axis).max switch {
-                    none false
-                    some(limit) intrinsic_size > limit
-                  }
+                  intrinsic_size.overflows(e.constraints.main(axis).loosen_min())
                 }
                 var main = if e.factors.iter()
                   .map(fun(factor: Maybe[Float]) { factor is some }).any()
@@ -2218,6 +2546,8 @@ chapter Root
     text
       - memory-safe dynamic casts
       - type-safe widget update
+      - position -> @
+      - clean up CrosshairApp
       - widgets
         - text
         - stateful
