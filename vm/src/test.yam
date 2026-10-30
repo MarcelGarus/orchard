@@ -46,7 +46,8 @@ chapter Root
       code
         type Never = enum {}
     chapter Do
-      fun do[A, B](value: A, doer: fun(A) B) B { doer(value) }
+      code
+        fun do[A, B](value: A, doer: fun(A) B) B { doer(value) }
     chapter Dynamic
       text
         Dynamic holds an object whose type is not tracked by the type system.
@@ -557,20 +558,21 @@ chapter Root
           string.bytes().parse_int(radix)
         }
         fun parse_int(bytes: List[Byte], radix: Int) Int {
-          var digit = bytes.get(0).parse_digit(radix)
+          var digit = bytes.get(0).parse_digit()
           if bytes.length() == 1 then
             digit
           else
-            digit * radix + bytes.without_first(1).parse_int(radix)
+            digit * radix.pow(bytes.length() - 1) + bytes.without_first(1).parse_int(radix)
         }
         # TODO: throw an error if the string contains a digit above the radix
         fun parse_digit(char: Byte) Int {
-          if char >= byte("0") and value <= byte("9") then
-            value - byte("0")
-          else if value >= byte("a") and value <= byte("f") then
-            value - byte("a") + 10
-          else if value >= byte("A") and value <= byte("F") then
-            value - byte("f") + 10
+          var value = char.to_int()
+          if value >= 48 and value <= 57 then
+            value - 48
+          else if value >= 97 and value <= 102 then
+            value - 97 + 10
+          else if value >= 65 and value <= 70 then
+            value - 65 + 10
           else
             crash("Invalid digit")
         }
@@ -582,6 +584,20 @@ chapter Root
         fun tuple[A, B](a: A, b: B) Tuple2[A, B] { Tuple2 { a, b } }
         fun tuple[A, B, C](a: A, b: B, c: C) Tuple3[A, B, C] {
           Tuple3 { a, b, c }
+        }
+    chapter Loop
+      code
+        type Loop[S, R] = enum { continue: S, break: R }
+        fun loop[S, R](state: S, step: fun(S) Loop[S, R]) R {
+          step(state) switch {
+            continue(next) loop(next, step)
+            break(result) result
+          }
+        }
+        fun loop[A, B, R](a: A, b: B, step: fun(A, B) Loop[Tuple2[A, B], R]) R {
+          loop(tuple(a, b), fun(state: Tuple2[A, B]) {
+            step(state.a, state.b)
+          })
         }
     chapter Iterators
       text
@@ -630,6 +646,14 @@ chapter Root
               Next { item = mapper(next.item), rest = map(next.rest, mapper) }
             })
           })
+        }
+      code
+        fun map[A, B, C](iter: Iter[Tuple2[A, B]], mapper: fun(A, B) C) Iter[C] {
+          iter.map(fun(pair: Tuple2[A, B]) { mapper(pair.a, pair.b) })
+        }
+      code
+        fun somes[A](iter: Iter[Maybe[A]]) Iter[A] {
+          iter.filter_map(fun(value: Maybe[A]) { value })
         }
       code
         type Indexed[A] = struct { index: Int, item: A }
@@ -693,6 +717,10 @@ chapter Root
             none false
             some(next) check(next.item) or next.rest.any(check)
           }
+        }
+      code
+        fun any(iter: Iter[Bool]) Bool {
+          iter.any(fun(value: Bool) { value })
         }
       code
         fun skip[A](iter: Iter[A], amount: Int) Iter[A] {
@@ -828,6 +856,10 @@ chapter Root
       code
         fun length[A](iter: Iter[A]) Int {
           iter.fold(0, fun(count: Int, item: A) { count + 1 })
+        }
+      code
+        fun sum(iter: Iter[Float]) Float {
+          iter.fold(0.0, fun(a: Float, b: Float) { a + b })
         }
       code
         fun sum(iter: Iter[Int]) Int {
@@ -1239,6 +1271,9 @@ chapter Root
           fun axis_constraints(min: Float, max: Float) AxisConstraints {
             AxisConstraints { min, max = some(max) }
           }
+          fun axis_constraints(range: OpenRange[Float]) AxisConstraints {
+            axis_constraints(range.start, none[Float]())
+          }
           fun constraints(
             width: AxisConstraints, height: AxisConstraints
           ) Constraints {
@@ -1383,6 +1418,9 @@ chapter Root
                 )
               },
             }
+          }
+          fun bounds[M](element: Element[M]) Rectangle {
+            rectangle(0.0, 0.0, element.size.width, element.size.height)
           }
           fun create_element[M](
             widget: Widget[M], constraints: Constraints
