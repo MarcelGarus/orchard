@@ -1820,6 +1820,310 @@ chapter Root
           fun padding[M](amount: Float, child: Widget[M]) Widget[M] {
             padding(amount, amount, amount, amount, child)
           }
+      chapter Flex
+        text
+          A flex shows multiple children next to or above each other. The axis
+          on which they are lined up is called the main axis, the other one the
+          cross axis.
+          Intrinsic children receive unbounded main-axis space. Expanded
+          children divide the remaining space according to their positive flex
+          factors and receive tight main-axis constraints. Expanded children
+          require a bounded main axis; an unbounded main axis is an error.
+          Without expanded children, the flex wraps its children. With expanded
+          children, it fills the main axis. The cross axis wraps the largest
+          child, within the parent's constraints.
+          Children start at the leading edge of the cross axis. Updates preserve
+          child state by index, including when the axis or flex factors change.
+        code
+          type Axis = enum { horizontal, vertical }
+          type FlexWidget[M] = struct {
+            axis: Axis, children: List[FlexChild[M]]
+          }
+          type FlexChild[M] = enum {
+            intrinsic: Widget[M], expanded: Expanded[M]
+          }
+          type Expanded[M] = struct { factor: Float, child: Widget[M] }
+
+          type FlexElement[M] = struct {
+            axis: Axis,
+            constraints: Constraints,
+            factors: List[Maybe[Float]], # none = intrinsic, some = expanded
+            children: List[Element[M]], # same length as factors
+          }
+
+          fun main(size: Size, axis: Axis) Float {
+            axis switch { horizontal size.width vertical size.height }
+          }
+          fun cross(size: Size, axis: Axis) Float {
+            axis switch { horizontal size.height vertical size.width }
+          }
+          fun constraints(axis: Axis, main: AxisConstraints, cross: AxisConstraints) Constraints {
+            axis switch {
+              horizontal constraints(main, cross)
+              vertical constraints(cross, main)
+            }
+          }
+          fun flex_size(axis: Axis, main: Float, cross: Float) Size {
+            axis switch {
+              horizontal size(main, cross)
+              vertical size(cross, main)
+            }
+          }
+          fun flex_offset(axis: Axis, main: Float) Offset {
+            axis switch {
+              horizontal offset(main, 0.0)
+              vertical offset(0.0, main)
+            }
+          }
+          fun main(c: Constraints, axis: Axis) AxisConstraints {
+            axis switch { horizontal c.width vertical c.height }
+          }
+          fun cross(c: Constraints, axis: Axis) AxisConstraints {
+            axis switch { horizontal c.height vertical c.width }
+          }
+
+          fun widget[M](child: FlexChild[M]) Widget[M] {
+            child switch { intrinsic(value) value expanded(value) value.child }
+          }
+          fun factors[M](children: List[FlexChild[M]]) List[Maybe[Float]] {
+            children.iter()
+              .map(fun(child: FlexChild[M]) {
+                child switch {
+                  intrinsic none[Float]()
+                  expanded(e) {
+                    assert(e.factor > 0.0, "Flex factors must be positive")
+                    some(e.factor)
+                  }
+                }
+              })
+              .to_list()
+          }
+
+          # Accepts children and their corresponding factors.
+          # 1. Layouts the children with no factor (those where we want to use
+          #    the intrinsic size).
+          # 2. Are there only intrinsic children? If so, we are done.
+          # 3. Otherwise, partition the remaining space among the expanded
+          #    children, weighted by their factors.
+          # The function calls the layouter every time it wants to layout a
+          # child with the index of the child it wants layouted. The layouter is
+          # called exactly once per child.
+          fun layout_flex[M](
+            axis: Axis,
+            outer: Constraints,
+            factors: List[Maybe[Float]],
+            layouter: fun(Int, Constraints) Element[M],
+          ) List[Element[M]] {
+            assert(factors.iter().somes().all(fun(factor: Float) { factor > 0.0 }),
+              "Flex factors must be positive")
+            var cross = outer.cross(axis).loosen_min()
+            var intrinsic_layouted = factors.iter()
+              .map_indexed(fun(index: Int, factor: Maybe[Float]) {
+                if factor is some then
+                  none[Element[M]]()
+                else
+                  some(layouter(index,
+                    constraints(axis, axis_constraints(0.0 .. infinity), cross)))
+              })
+              .to_list()
+            if not(factors.iter().map(fun(factor: Maybe[Float]) { factor is some }).any()) then
+              intrinsic_layouted.iter().somes().to_list()
+            else {
+              var intrinsic_sum = intrinsic_layouted.iter().somes()
+                .map(fun(child: Element[M]) { child.size.main(axis) }).sum()
+              var factors_sum = factors.iter().somes().sum()
+              var limit = outer.main(axis).max
+                or crash("Expanded children require a bounded main axis")
+              var available = max(0.0, limit - intrinsic_sum)
+              intrinsic_layouted.iter()
+                .map_indexed(fun(index: Int, layouted: Maybe[Element[M]]) {
+                  factors.get(index) switch {
+                    some(f) layouter(index, constraints(axis,
+                      tight_axis_constraints(available * {f / factors_sum}), cross))
+                    none layouted.unwrap()
+                  }
+                })
+                .to_list()
+            }
+          }
+          fun flex_impl[M]() WidgetImpl[M, FlexWidget[M], FlexElement[M]] {
+            WidgetImpl {
+              new = fun(w: FlexWidget[M], constraints: Constraints) {
+                var factors = w.children.factors()
+                var children = layout_flex(
+                  w.axis,
+                  constraints,
+                  factors,
+                  fun(index: Int, c: Constraints) {
+                    w.children.get(index).widget().create_element(c)
+                  },
+                )
+                FlexElement { axis = w.axis, constraints, factors, children }
+              },
+              update = fun(e: FlexElement[M], w: FlexWidget[M]) {
+                var factors = w.children.factors()
+                var children = layout_flex(
+                  w.axis,
+                  e.constraints,
+                  factors,
+                  fun(index: Int, c: Constraints) {
+                    var widget = w.children.get(index).widget()
+                    if index < e.children.length() then
+                      e.children.get(index).new_constraints(c).update(widget)
+                    else
+                      widget.create_element(c)
+                  },
+                )
+                FlexElement {
+                  axis = w.axis, constraints = e.constraints, factors, children
+                }
+              },
+              new_constraints = fun(e: FlexElement[M], next: Constraints) {
+                var children = layout_flex(
+                  e.axis,
+                  next,
+                  e.factors,
+                  fun(index: Int, c: Constraints) {
+                    e.children.get(index).new_constraints(c)
+                  },
+                )
+                FlexElement {
+                  axis = e.axis, constraints = next, factors = e.factors, children
+                }
+              },
+              mouse_clicked = fun(e: FlexElement[M], mouse: Position) {
+                var found = loop(0, mouse, fun(index: Int, pos: Position) {
+                  if index == e.children.length() then
+                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].break(
+                      none[Tuple2[Int, Position]]())
+                  else if e.children.get(index).bounds().contains(pos) then
+                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].break(
+                      some(tuple(index, pos)))
+                  else
+                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].continue(
+                      tuple(index + 1,
+                        pos - flex_offset(e.axis, e.children.get(index).size.main(e.axis))))
+                })
+                found switch {
+                  none MouseClickResult[M, FlexElement[M]].not_handled
+                  some(index_and_pos) {
+                    var index = index_and_pos.a
+                    var pos = index_and_pos.b
+                    e.children.get(index).mouse_clicked(pos) switch {
+                      not_handled MouseClickResult[M, FlexElement[M]].not_handled
+                      handled(next) {
+                        MouseClickResult[M, FlexElement[M]].handled(FlexElement {
+                          axis = e.axis,
+                          constraints = e.constraints,
+                          factors = e.factors,
+                          children = layout_flex(e.axis, e.constraints, e.factors,
+                            fun(child_index: Int, c: Constraints) {
+                              var child = if child_index == index then next
+                                else e.children.get(child_index)
+                              child.new_constraints(c)
+                            }),
+                        })
+                      }
+                      message(m) MouseClickResult[M, FlexElement[M]].message(m)
+                    }
+                  }
+                }
+              },
+              render = fun(e: FlexElement[M]) {
+                var axis = e.axis
+                var layout = e.children.iter().fold(
+                  tuple(size(0.0, 0.0), list[DrawCommand]()),
+                  fun(data: Tuple2[Size, List[DrawCommand]], child: Element[M]) {
+                    var size = data.a
+                    var draw = data.b
+                    tuple(
+                      flex_size(
+                        axis,
+                        size.main(axis) + child.size.main(axis),
+                        max(size.cross(axis), child.size.cross(axis)),
+                      ),
+                      draw.push(draw_transformed(
+                        transform_translate(flex_offset(axis, size.main(axis))),
+                        child.drawing.draw,
+                      ))
+                    )
+                  },
+                )
+                var size = layout.a
+                var draw = layout.b
+                var overflows = {
+                  # Expanded layouts fill the limit exactly. Summing fractional
+                  # child extents can round slightly above or below that limit.
+                  # So, instead of just comparing the size to the limit, I
+                  # explicitly add up all intrinsically sized children.
+                  var intrinsic_size = zip(e.factors.iter(), e.children.iter())
+                    .map(fun(a: Maybe[Float], b: Element[M]) {
+                      if a is none then b.size.main(axis) else 0.0
+                    })
+                    .sum()
+                  e.constraints.main(axis).max switch {
+                    none false
+                    some(limit) intrinsic_size > limit
+                  }
+                }
+                var main = if e.factors.iter()
+                  .map(fun(factor: Maybe[Float]) { factor is some }).any()
+                then e.constraints.main(axis).max.unwrap()
+                else size.main(axis)
+                overflow_drawing(
+                  false, false, overflows and {e.axis is horizontal},
+                  overflows and {e.axis is vertical},
+                  Drawing {
+                    draw = draw_all(draw),
+                    size = flex_size(axis, main, size.cross(axis))
+                      .clamp(e.constraints),
+                  },
+                )
+              },
+            }
+          }
+          fun flex[M](axis: Axis, children: List[FlexChild[M]]) Widget[M] {
+            widget(flex_impl[M](), FlexWidget { axis, children })
+          }
+          fun intrinsic[M](child: Widget[M]) FlexChild[M] {
+            FlexChild[M].intrinsic(child)
+          }
+          fun expanded[M](factor: Float, child: Widget[M]) FlexChild[M] {
+            assert(factor > 0.0, "Flex factors must be positive")
+            FlexChild[M].expanded(Expanded { factor, child })
+          }
+          fun expanded[M](child: Widget[M]) FlexChild[M] {
+            expanded(1.0, child)
+          }
+          var spacer = expanded(empty_widget)
+          fun flex[M](axis: Axis, children: List[Widget[M]]) Widget[M] {
+            flex(axis, children.iter()
+              .map(fun(child: Widget[M]) { intrinsic(child) }).to_list())
+          }
+      chapter Row
+        text
+          A row is a horizontal flex. Intrinsic children receive unbounded
+          width and the parent's maximum height. Expanded children share the
+          remaining width and require a bounded width.
+        code
+          fun row[M](children: List[Widget[M]]) Widget[M] {
+            flex(Axis.horizontal, children)
+          }
+          fun row[M](children: List[FlexChild[M]]) Widget[M] {
+            flex(Axis.horizontal, children)
+          }
+      chapter Column
+        text
+          A column is a vertical flex. Intrinsic children receive unbounded
+          height and the parent's maximum width. Expanded children share the
+          remaining height and require a bounded height.
+        code
+          fun column[M](children: List[Widget[M]]) Widget[M] {
+            flex(Axis.vertical, children)
+          }
+          fun column[M](children: List[FlexChild[M]]) Widget[M] {
+            flex(Axis.vertical, children)
+          }
       chapter Align
         text
           Alignment coordinates range from -1 (left or top) to 1 (right or
@@ -1871,7 +2175,7 @@ chapter Root
                 var space = aligned_size(e.child.size, e.constraints)
                 var shift = alignment_offset(e.bias, space, e.child.size)
                 var local = position - shift
-                if rectangle(position(0.0, 0.0), e.child.size).contains(local)
+                if rectangle(0.0, 0.0, e.child.size.width, e.child.size.height).contains(local)
                 then {
                   e.child.mouse_clicked(local) switch {
                     not_handled MouseClickResult[M, AlignElement[M]].not_handled
