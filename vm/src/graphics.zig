@@ -8,12 +8,14 @@ const gl = @cImport({
     @cInclude("GLFW/glfw3.h");
 });
 const nvg = @import("nanovg");
+const clipping = @import("clipping.zig");
 const Obj = @import("heap.zig").Obj;
 
 const Graphics = @This();
 
 pub const Size = struct { width: f64, height: f64 };
-pub const Position = struct { x: f64, y: f64 };
+pub const Position = clipping.Point;
+pub const Offset = struct { x: f64, y: f64 };
 pub const TransformationMatrix = struct { a: f64, b: f64, c: f64, d: f64, e: f64, f: f64 };
 pub const Color = struct { r: u8, g: u8, b: u8 };
 pub const Path = []const PathSegment;
@@ -21,6 +23,7 @@ pub const PathSegment = union(enum) { move_to: Position, line_to: Position };
 pub const DrawCommand = union(enum) {
     fill_path: struct { path: Path, color: Color },
     transform: struct { by: TransformationMatrix, children: []const DrawCommand },
+    clip: struct { path: Path, children: []const DrawCommand },
 };
 
 pub fn float(value: Obj) f64 {
@@ -66,7 +69,7 @@ fn path(ally: Ally, value: Obj) !Path {
 }
 
 fn append_commands(ally: Ally, commands: *std.ArrayList(DrawCommand), value: Obj) error{ OutOfMemory, UnknownPathSegment, UnknownDrawCommand }!void {
-    // DrawCommand: nothing = 0, fill_path = 1, transform = 2, all = 3.
+    // DrawCommand: nothing = 0, fill_path = 1, transform = 2, all = 3, clip = 4.
     const payload = value.child(1);
     switch (value.child(0).word(0)) {
         0 => {},
@@ -83,6 +86,14 @@ fn append_commands(ally: Ally, commands: *std.ArrayList(DrawCommand), value: Obj
             } });
         },
         3 => for (payload.children()) |item| try append_commands(ally, commands, item),
+        4 => {
+            var children: std.ArrayList(DrawCommand) = .empty;
+            try append_commands(ally, &children, payload.child(1));
+            try commands.append(ally, .{ .clip = .{
+                .path = try path(ally, payload.child(0)),
+                .children = children.items,
+            } });
+        },
         else => return error.UnknownDrawCommand,
     }
 }
@@ -235,7 +246,7 @@ pub fn wait_events(self: Graphics) void {
     gl.glfwWaitEvents();
 }
 
-pub fn render(self: Graphics, size: Size, commands: []const DrawCommand) void {
+pub fn render(self: Graphics, size: Size, commands: []const DrawCommand) !void {
     if (size.width <= 0 or size.height <= 0) return;
     var fb_width: i32 = undefined;
     var fb_height: i32 = undefined;
@@ -249,19 +260,33 @@ pub fn render(self: Graphics, size: Size, commands: []const DrawCommand) void {
 
     self.vg.beginFrame(@floatCast(size.width), @floatCast(size.height), pixel_ratio);
 
-    render_commands(self.vg, commands);
+    var frame = std.heap.ArenaAllocator.init(self.ally);
+    defer frame.deinit();
+    try render_commands(self.vg, commands, frame.allocator(), null);
 
     self.vg.endFrame();
     gl.glfwSwapBuffers(self.window);
 }
 
-fn render_commands(vg: nvg, commands: []const DrawCommand) void {
-    for (commands) |command| render_command(vg, command);
+fn render_commands(vg: nvg, commands: []const DrawCommand, ally: Ally, clip: ?clipping.Region) clipping.Error!void {
+    if (clip) |region| if (region.len == 0) return;
+    for (commands) |command| try render_command(vg, command, ally, clip);
 }
-fn render_command(vg: nvg, command: DrawCommand) void {
+fn render_command(vg: nvg, command: DrawCommand, ally: Ally, active_clip: ?clipping.Region) clipping.Error!void {
     switch (command) {
         .fill_path => |args| {
             vg.beginPath();
+            if (active_clip) |region| {
+                vg.save();
+                vg.resetTransform();
+                for (region) |polygon| {
+                    vg.moveTo(@floatCast(polygon[0].x), @floatCast(polygon[0].y));
+                    for (polygon[1..]) |point| vg.lineTo(@floatCast(point.x), @floatCast(point.y));
+                    vg.closePath();
+                }
+                vg.clip();
+                vg.restore();
+            }
             for (args.path) |segment| {
                 switch (segment) {
                     .move_to => |pos| vg.moveTo(@floatCast(pos.x), @floatCast(pos.y)),
@@ -271,8 +296,16 @@ fn render_command(vg: nvg, command: DrawCommand) void {
             vg.fillColor(nvg.rgb(args.color.r, args.color.g, args.color.b));
             vg.fill();
         },
+        .clip => |clip| {
+            var transform: [6]f32 = undefined;
+            vg.currentTransform(&transform);
+            var region = try clipping.from_path(ally, clip.path, transform);
+            if (active_clip) |outer| region = try clipping.intersect(ally, outer, region);
+            try render_commands(vg, clip.children, ally, region);
+        },
         .transform => |t| {
             vg.save();
+            defer vg.restore();
             vg.transform(
                 @floatCast(t.by.a),
                 @floatCast(t.by.b),
@@ -281,8 +314,7 @@ fn render_command(vg: nvg, command: DrawCommand) void {
                 @floatCast(t.by.e),
                 @floatCast(t.by.f),
             );
-            render_commands(vg, t.children);
-            vg.restore();
+            try render_commands(vg, t.children, ally, active_clip);
         },
     }
 }
