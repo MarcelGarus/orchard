@@ -143,6 +143,7 @@ pub fn init(ally: Ally) !*Graphics {
     _ = gl.glfwSetKeyCallback(window, keyCallback);
     _ = gl.glfwSetMouseButtonCallback(window, mouseButtonCallback);
     _ = gl.glfwSetCursorPosCallback(window, cursorPosCallback);
+    _ = gl.glfwSetScrollCallback(window, scrollCallback);
     gl.glfwMakeContextCurrent(window);
     if (gl.gladLoadGL() == 0) return error.GLADInitFailed;
     gl.glfwSwapInterval(1);
@@ -197,6 +198,18 @@ fn cursorPosCallback(window: ?*gl.GLFWwindow, x: f64, y: f64) callconv(.c) void 
     } else {
         graphics.event_queue.append(graphics.ally, event) catch @panic("couldn't append event");
     }
+}
+
+// GLFW wheel offsets are steps. Expose logical content offsets to widgets:
+// a downward wheel step increases the vertical scroll position by 32 units.
+fn scrollCallback(window: ?*gl.GLFWwindow, x: f64, y: f64) callconv(.c) void {
+    const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
+    graphics.event_queue.append(graphics.ally, .{
+        .mouse_scrolled = .{
+            .position = graphics.get_mouse_position(),
+            .delta = .{ .x = -x * 32, .y = -y * 32 },
+        },
+    }) catch @panic("couldn't append event");
 }
 
 fn mouseButtonCallback(window: ?*gl.GLFWwindow, button: c_int, action: c_int, mods: c_int) callconv(.c) void {

@@ -1463,12 +1463,14 @@ chapter Root
           keycode: Int, control: Bool, shift: Bool, alt: Bool
         }
         type CharEntered = struct { codepoint: Int }
+        type MouseScrolled = struct { position: Position, delta: Offset }
         type Event = enum {
           window_resized: Size,
           key_pressed: KeyPressed,
           char_entered: CharEntered,
           mouse_clicked: Position,
           mouse_moved: Position,
+          mouse_scrolled: MouseScrolled,
         }
         type App = struct {
           render: fun(Size) DrawCommand,
@@ -1637,8 +1639,8 @@ chapter Root
           implementation violates this contract.
           create_element builds the initial element. Updates, constraint
           changes, and handled clicks return new elements with cached drawings.
-          Clicks outside an element's bounds are not delivered to its
-          implementation.
+          Clicks and scroll events outside an element's bounds are not delivered
+          to its implementation.
         code
           type Widget[M] = struct {
             value: Dynamic,
@@ -1650,16 +1652,18 @@ chapter Root
             drawing: Drawing,
             update: fun(Widget[M]) Element[M],
             new_constraints: fun(Constraints) Element[M],
-            mouse_clicked: fun(Position) MouseClickResult[M, Element[M]],
+            mouse_clicked: fun(Position) EventResult[M, Element[M]],
+            mouse_scrolled: fun(Position, Offset) EventResult[M, Element[M]],
           }
-          type MouseClickResult[M, E] = enum {
+          type EventResult[M, E] = enum {
             not_handled, handled: E, message: M
           }
           type WidgetImpl[M, W, E] = struct {
             new: fun(W, Constraints) E,
             update: fun(E, W) E,
             new_constraints: fun(E, Constraints) E,
-            mouse_clicked: fun(E, Position) MouseClickResult[M, E],
+            mouse_clicked: fun(E, Position) EventResult[M, E],
+            mouse_scrolled: fun(E, Position, Offset) EventResult[M, E],
             render: fun(E) Drawing,
           }
           fun widget_element[M, W, E](
@@ -1686,18 +1690,37 @@ chapter Root
                     .contains(position)
                 then {
                   impl.mouse_clicked(state, position) switch {
-                    not_handled MouseClickResult[M, Element[M]].not_handled
+                    not_handled EventResult[M, Element[M]].not_handled
                     handled(next) {
-                      MouseClickResult[M, Element[M]].handled(
+                      EventResult[M, Element[M]].handled(
                         widget_element(impl, next, constraints)
                       )
                     }
                     message(value) {
-                      MouseClickResult[M, Element[M]].message(value)
+                      EventResult[M, Element[M]].message(value)
                     }
                   }
                 } else
-                  MouseClickResult[M, Element[M]].not_handled
+                  EventResult[M, Element[M]].not_handled
+              },
+              mouse_scrolled = fun(position: Position, delta: Offset) {
+                if
+                  rectangle(0.0, 0.0, drawing.size.width, drawing.size.height)
+                    .contains(position)
+                then {
+                  impl.mouse_scrolled(state, position, delta) switch {
+                    not_handled EventResult[M, Element[M]].not_handled
+                    handled(next) {
+                      EventResult[M, Element[M]].handled(
+                        widget_element(impl, next, constraints)
+                      )
+                    }
+                    message(value) {
+                      EventResult[M, Element[M]].message(value)
+                    }
+                  }
+                } else
+                  EventResult[M, Element[M]].not_handled
               },
             }
           }
@@ -1733,7 +1756,10 @@ chapter Root
                 constraints.min()
               },
               mouse_clicked = fun(state: Size, position: Position) {
-                MouseClickResult[M, Size].not_handled
+                EventResult[M, Size].not_handled
+              },
+              mouse_scrolled = fun(state: Size, position: Position, delta: Offset) {
+                EventResult[M, Size].not_handled
               },
               render = fun(size: Size) {
                 Drawing { draw = draw_nothing(), size }
@@ -1766,14 +1792,27 @@ chapter Root
               },
               mouse_clicked = fun(e: ColoredElement[M], position: Position) {
                 e.child.mouse_clicked(position) switch {
-                  not_handled MouseClickResult[M, ColoredElement[M]].not_handled
+                  not_handled EventResult[M, ColoredElement[M]].not_handled
                   handled(child) {
-                    MouseClickResult[M, ColoredElement[M]].handled(
+                    EventResult[M, ColoredElement[M]].handled(
                       ColoredElement { color = e.color, child }
                     )
                   }
                   message(value) {
-                    MouseClickResult[M, ColoredElement[M]].message(value)
+                    EventResult[M, ColoredElement[M]].message(value)
+                  }
+                }
+              },
+              mouse_scrolled = fun(e: ColoredElement[M], position: Position, delta: Offset) {
+                e.child.mouse_scrolled(position, delta) switch {
+                  not_handled EventResult[M, ColoredElement[M]].not_handled
+                  handled(child) {
+                    EventResult[M, ColoredElement[M]].handled(
+                      ColoredElement { color = e.color, child }
+                    )
+                  }
+                  message(value) {
+                    EventResult[M, ColoredElement[M]].message(value)
                   }
                 }
               },
@@ -1853,10 +1892,10 @@ chapter Root
               mouse_clicked = fun(e: SizedBoxElement[M], position: Position) {
                 e.child.mouse_clicked(position) switch {
                   not_handled {
-                    MouseClickResult[M, SizedBoxElement[M]].not_handled
+                    EventResult[M, SizedBoxElement[M]].not_handled
                   }
                   handled(child) {
-                    MouseClickResult[M, SizedBoxElement[M]].handled(
+                    EventResult[M, SizedBoxElement[M]].handled(
                       SizedBoxElement {
                         width = e.width,
                         height = e.height,
@@ -1866,7 +1905,27 @@ chapter Root
                     )
                   }
                   message(value) {
-                    MouseClickResult[M, SizedBoxElement[M]].message(value)
+                    EventResult[M, SizedBoxElement[M]].message(value)
+                  }
+                }
+              },
+              mouse_scrolled = fun(e: SizedBoxElement[M], position: Position, delta: Offset) {
+                e.child.mouse_scrolled(position, delta) switch {
+                  not_handled {
+                    EventResult[M, SizedBoxElement[M]].not_handled
+                  }
+                  handled(child) {
+                    EventResult[M, SizedBoxElement[M]].handled(
+                      SizedBoxElement {
+                        width = e.width,
+                        height = e.height,
+                        constraints = e.constraints,
+                        child,
+                      }
+                    )
+                  }
+                  message(value) {
+                    EventResult[M, SizedBoxElement[M]].message(value)
                   }
                 }
               },
@@ -2028,7 +2087,10 @@ chapter Root
                 TextElement { value = e.value, color = e.color, constraints = next }
               },
               mouse_clicked = fun(e: TextElement, pos: Position) {
-                MouseClickResult[Never, TextElement].not_handled
+                EventResult[Never, TextElement].not_handled
+              },
+              mouse_scrolled = fun(e: TextElement, pos: Position, delta: Offset) {
+                EventResult[Never, TextElement].not_handled
               },
               render = fun(e: TextElement) {
                 var drawing = layout_text(e.value, e.constraints.width.max).draw_text(e.color)
@@ -2103,16 +2165,32 @@ chapter Root
               mouse_clicked = fun(e: PaddingElement[M], position: Position) {
                 var local = position - offset(e.insets.left, e.insets.top)
                 e.child.mouse_clicked(local) switch {
-                  not_handled MouseClickResult[M, PaddingElement[M]].not_handled
+                  not_handled EventResult[M, PaddingElement[M]].not_handled
                   handled(child) {
-                    MouseClickResult[M, PaddingElement[M]].handled(
+                    EventResult[M, PaddingElement[M]].handled(
                       PaddingElement {
                         insets = e.insets, constraints = e.constraints, child
                       }
                     )
                   }
                   message(value) {
-                    MouseClickResult[M, PaddingElement[M]].message(value)
+                    EventResult[M, PaddingElement[M]].message(value)
+                  }
+                }
+              },
+              mouse_scrolled = fun(e: PaddingElement[M], position: Position, delta: Offset) {
+                var local = position - offset(e.insets.left, e.insets.top)
+                e.child.mouse_scrolled(local, delta) switch {
+                  not_handled EventResult[M, PaddingElement[M]].not_handled
+                  handled(child) {
+                    EventResult[M, PaddingElement[M]].handled(
+                      PaddingElement {
+                        insets = e.insets, constraints = e.constraints, child
+                      }
+                    )
+                  }
+                  message(value) {
+                    EventResult[M, PaddingElement[M]].message(value)
                   }
                 }
               },
@@ -2343,14 +2421,14 @@ chapter Root
                         pos - flex_offset(e.axis, e.children.get(index).size.main(e.axis))))
                 })
                 found switch {
-                  none MouseClickResult[M, FlexElement[M]].not_handled
+                  none EventResult[M, FlexElement[M]].not_handled
                   some(index_and_pos) {
                     var index = index_and_pos.a
                     var pos = index_and_pos.b
                     e.children.get(index).mouse_clicked(pos) switch {
-                      not_handled MouseClickResult[M, FlexElement[M]].not_handled
+                      not_handled EventResult[M, FlexElement[M]].not_handled
                       handled(next) {
-                        MouseClickResult[M, FlexElement[M]].handled(FlexElement {
+                        EventResult[M, FlexElement[M]].handled(FlexElement {
                           axis = e.axis,
                           constraints = e.constraints,
                           factors = e.factors,
@@ -2362,7 +2440,45 @@ chapter Root
                             }),
                         })
                       }
-                      message(m) MouseClickResult[M, FlexElement[M]].message(m)
+                      message(m) EventResult[M, FlexElement[M]].message(m)
+                    }
+                  }
+                }
+              },
+              mouse_scrolled = fun(e: FlexElement[M], mouse: Position, delta: Offset) {
+                var found = loop(0, mouse, fun(index: Int, pos: Position) {
+                  if index == e.children.length() then
+                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].break(
+                      none[Tuple2[Int, Position]]())
+                  else if e.children.get(index).bounds().contains(pos) then
+                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].break(
+                      some(tuple(index, pos)))
+                  else
+                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].continue(
+                      tuple(index + 1,
+                        pos - flex_offset(e.axis, e.children.get(index).size.main(e.axis))))
+                })
+                found switch {
+                  none EventResult[M, FlexElement[M]].not_handled
+                  some(index_and_pos) {
+                    var index = index_and_pos.a
+                    var pos = index_and_pos.b
+                    e.children.get(index).mouse_scrolled(pos, delta) switch {
+                      not_handled EventResult[M, FlexElement[M]].not_handled
+                      handled(next) {
+                        EventResult[M, FlexElement[M]].handled(FlexElement {
+                          axis = e.axis,
+                          constraints = e.constraints,
+                          factors = e.factors,
+                          children = layout_flex(e.axis, e.constraints, e.factors,
+                            fun(child_index: Int, c: Constraints) {
+                              var child = if child_index == index then next
+                                else e.children.get(child_index)
+                              child.new_constraints(c)
+                            }),
+                        })
+                      }
+                      message(m) EventResult[M, FlexElement[M]].message(m)
                     }
                   }
                 }
@@ -2511,20 +2627,42 @@ chapter Root
                 if rectangle(0.0, 0.0, e.child.size.width, e.child.size.height).contains(local)
                 then {
                   e.child.mouse_clicked(local) switch {
-                    not_handled MouseClickResult[M, AlignElement[M]].not_handled
+                    not_handled EventResult[M, AlignElement[M]].not_handled
                     handled(child) {
-                      MouseClickResult[M, AlignElement[M]].handled(
+                      EventResult[M, AlignElement[M]].handled(
                         AlignElement {
                           bias = e.bias, child, constraints = e.constraints
                         }
                       )
                     }
                     message(value) {
-                      MouseClickResult[M, AlignElement[M]].message(value)
+                      EventResult[M, AlignElement[M]].message(value)
                     }
                   }
                 } else
-                  MouseClickResult[M, AlignElement[M]].not_handled
+                  EventResult[M, AlignElement[M]].not_handled
+              },
+              mouse_scrolled = fun(e: AlignElement[M], position: Position, delta: Offset) {
+                var space = aligned_size(e.child.size, e.constraints)
+                var shift = alignment_offset(e.bias, space, e.child.size)
+                var local = position - shift
+                if rectangle(0.0, 0.0, e.child.size.width, e.child.size.height).contains(local)
+                then {
+                  e.child.mouse_scrolled(local, delta) switch {
+                    not_handled EventResult[M, AlignElement[M]].not_handled
+                    handled(child) {
+                      EventResult[M, AlignElement[M]].handled(
+                        AlignElement {
+                          bias = e.bias, child, constraints = e.constraints
+                        }
+                      )
+                    }
+                    message(value) {
+                      EventResult[M, AlignElement[M]].message(value)
+                    }
+                  }
+                } else
+                  EventResult[M, AlignElement[M]].not_handled
               },
               render = fun(e: AlignElement[M]) {
                 var space = aligned_size(e.child.size, e.constraints)
@@ -2554,7 +2692,6 @@ chapter Root
       - position -> @
       - clean up CrosshairApp
       - widgets
-        - text
         - stateful
         - on-click
         - key
