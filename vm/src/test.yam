@@ -16,6 +16,22 @@ chapter Root
       envisioned computers as "personal dynamic media", where every user feels
       comfortable to create, use, and customize tools. Orchard is my attempt at
       creating a personal computing medium.
+  chapter Running
+    text
+      Compile the Yam compiler with:
+      soil ../../martinaise/martinaise.soil compile src/yam.mar
+      Then compile a notebook with:
+      soil src/yam.soil src/test.yam /tmp/notebook.objects
+      Build Orchard with zig build, then run the notebook headlessly:
+      zig-out/bin/orchard /tmp/notebook.objects
+      The file's export must be a function without arguments. Orchard calls it
+      once and prints its return value without opening a window.
+      A notebook with a variable named app exports that App directly. Run it
+      with orchard --ui file.objects. The host assumes the App, Event, and
+      DrawCommand layouts declared below; no type metadata is exported.
+      Other notebooks return a list of (name, value) pairs for their globals.
+      Headless output shows raw objects, with positional fields and numeric
+      enum tags rather than type-directed formatting.
   chapter Core
     chapter Nothing
       text
@@ -2285,7 +2301,7 @@ chapter Root
               vertical size(cross, main)
             }
           }
-          fun flex_offset(axis: Axis, main: Float) Offset {
+          fun offset(axis: Axis, main: Float, cross: Float) Offset {
             axis switch {
               horizontal offset(main, 0.0)
               vertical offset(0.0, main)
@@ -2417,8 +2433,15 @@ chapter Root
                       some(tuple(index, pos)))
                   else
                     Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].continue(
-                      tuple(index + 1,
-                        pos - flex_offset(e.axis, e.children.get(index).size.main(e.axis))))
+                      tuple(
+                        index + 1,
+                        pos
+                          - offset(
+                            e.axis,
+                            e.children.get(index).size.main(e.axis),
+                            0.0),
+                      )
+                    )
                 })
                 found switch {
                   none EventResult[M, FlexElement[M]].not_handled
@@ -2455,8 +2478,13 @@ chapter Root
                       some(tuple(index, pos)))
                   else
                     Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].continue(
-                      tuple(index + 1,
-                        pos - flex_offset(e.axis, e.children.get(index).size.main(e.axis))))
+                      tuple(
+                        index + 1,
+                        pos
+                          - offset(
+                            e.axis,
+                            e.children.get(index).size.main(e.axis),
+                            0.0)))
                 })
                 found switch {
                   none EventResult[M, FlexElement[M]].not_handled
@@ -2495,7 +2523,7 @@ chapter Root
                         max(size.cross(axis), child.size.cross(axis)),
                       ),
                       draw.push(draw_transformed(
-                        transform_translate(flex_offset(axis, size.main(axis))),
+                        transform_translate(offset(axis, size.main(axis), 0.0)),
                         child.drawing.draw,
                       ))
                     )
@@ -2572,6 +2600,137 @@ chapter Root
           }
           fun column[M](children: List[FlexChild[M]]) Widget[M] {
             flex(Axis.vertical, children)
+          }
+      chapter ScrollView
+        text
+          A scroll view makes its single child scrollable, removing the maximum
+          constraint on the main-axis. Scrolling propagates to the child first,
+          so that inner scroll views scroll first.
+        code
+          type ScrollViewWidget[M] = struct { axis: Axis, child: Widget[M] }
+          type ScrollViewElement[M] = struct {
+            axis: Axis,
+            constraints: Constraints,
+            child: Element[M],
+            scroll: Float,
+          }
+          fun scroll_child_constraints(
+            axis: Axis, outer: Constraints
+          ) Constraints {
+            constraints(
+              axis,
+              axis_constraints(outer.main(axis).min .. infinity),
+              outer.cross(axis),
+            )
+          }
+          fun scroll_element[M](
+            axis: Axis,
+            constraints: Constraints,
+            child: Element[M],
+            scroll: Float,
+          ) ScrollViewElement[M] {
+            var viewport = child.size.clamp(constraints)
+            ScrollViewElement {
+              axis,
+              constraints,
+              child,
+              scroll = scroll.clamp(
+                0.0,
+                max(0.0, child.size.main(axis) - viewport.main(axis)),
+              ),
+            }
+          }
+          fun scroll_view_impl[M](
+          ) WidgetImpl[M, ScrollViewWidget[M], ScrollViewElement[M]] {
+            WidgetImpl {
+              new = fun(w: ScrollViewWidget[M], constraints: Constraints) {
+                scroll_element(
+                  w.axis,
+                  constraints,
+                  w.child.create_element(
+                    scroll_child_constraints(w.axis, constraints)
+                  ),
+                  0.0,
+                )
+              },
+              update = fun(e: ScrollViewElement[M], w: ScrollViewWidget[M]) {
+                scroll_element(
+                  w.axis,
+                  e.constraints,
+                  e.child
+                    .new_constraints(
+                      scroll_child_constraints(w.axis, e.constraints))
+                    .update(w.child),
+                  if e.axis is horizontal then
+                    if w.axis is horizontal then e.scroll else 0.0
+                  else
+                    if w.axis is vertical then e.scroll else 0.0,
+                )
+              },
+              new_constraints = fun(e: ScrollViewElement[M], next: Constraints) {
+                scroll_element(
+                  e.axis,
+                  next,
+                  e.child
+                    .new_constraints(scroll_child_constraints(e.axis, next)),
+                  e.scroll,
+                )
+              },
+              mouse_clicked = fun(e: ScrollViewElement[M], pos: Position) {
+                e.child.mouse_clicked(pos + offset(e.axis, e.scroll, 0.0)) switch {
+                  not_handled EventResult[M, ScrollViewElement[M]].not_handled
+                  handled(child) {
+                    EventResult[M, ScrollViewElement[M]].handled(
+                      scroll_element(e.axis, e.constraints, child, e.scroll)
+                    )
+                  }
+                  message(value) {
+                    EventResult[M, ScrollViewElement[M]].message(value)
+                  }
+                }
+              },
+              mouse_scrolled = fun(
+                e: ScrollViewElement[M], pos: Position, delta: Offset
+              ) {
+                e.child.mouse_scrolled(pos + offset(e.axis, e.scroll, 0.0), delta) switch {
+                  handled(child) {
+                    EventResult[M, ScrollViewElement[M]].handled(
+                      scroll_element(e.axis, e.constraints, child, e.scroll)
+                    )
+                  }
+                  message(value) {
+                    EventResult[M, ScrollViewElement[M]].message(value)
+                  }
+                  not_handled {
+                    var amount = e.axis switch { horizontal delta.x vertical delta.y }
+                    var next = scroll_element(e.axis, e.constraints, e.child, e.scroll + amount)
+                    if next.scroll == e.scroll then
+                      EventResult[M, ScrollViewElement[M]].not_handled
+                    else
+                      EventResult[M, ScrollViewElement[M]].handled(next)
+                  }
+                }
+              },
+              render = fun(e: ScrollViewElement[M]) {
+                var viewport = e.child.size.clamp(e.constraints)
+                Drawing {
+                  size = viewport,
+                  draw = draw_clipped(
+                    path().move_to(0.0, 0.0)
+                      .line_to(viewport.width, 0.0)
+                      .line_to(viewport.width, viewport.height)
+                      .line_to(0.0, viewport.height),
+                    draw_transformed(
+                      transform_translate(offset(e.axis, 0.0 - e.scroll, 0.0)),
+                      e.child.drawing.draw,
+                    ),
+                  ),
+                }
+              },
+            }
+          }
+          fun scroll_view[M](axis: Axis, child: Widget[M]) Widget[M] {
+            widget(scroll_view_impl[M](), ScrollViewWidget { axis, child })
           }
       chapter Align
         text
