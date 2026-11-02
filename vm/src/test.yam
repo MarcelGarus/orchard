@@ -1765,9 +1765,84 @@ chapter Root
           ) Element[M] {
             widget.new(constraints)
           }
+      chapter CastMessage
+        text
+          cast_message[M] wraps a Widget[Never] as a Widget[M]. The child keeps
+          its original callbacks and update type; only its event results are
+          adapted. Whole subtrees that emit no messages can be cast together.
+        code
+          fun cast_message_event[M](
+            result: EventResult[Never, Element[Never]]
+          ) EventResult[M, Element[Never]] {
+            result switch {
+              not_handled EventResult[M, Element[Never]].not_handled
+              handled(child) EventResult[M, Element[Never]].handled(child)
+              message(value) value
+            }
+          }
+          fun cast_message_impl[M](
+          ) WidgetImpl[M, Widget[Never], Element[Never]] {
+            WidgetImpl {
+              new = fun(w: Widget[Never], constraints: Constraints) {
+                w.create_element(constraints)
+              },
+              update = fun(e: Element[Never], w: Widget[Never]) { e.update(w) },
+              new_constraints = fun(e: Element[Never], constraints: Constraints) {
+                e.new_constraints(constraints)
+              },
+              mouse_clicked = fun(e: Element[Never], position: Position) {
+                cast_message_event[M](e.mouse_clicked(position))
+              },
+              mouse_scrolled = fun(e: Element[Never], position: Position, delta: Offset) {
+                cast_message_event[M](e.mouse_scrolled(position, delta))
+              },
+              render = fun(e: Element[Never]) { e.drawing },
+            }
+          }
+          fun cast_message[M](child: Widget[Never]) Widget[M] {
+            widget(cast_message_impl[M](), child)
+          }
+      chapter RunApp
+        text
+          Running a widget app translates the stateful widget into the lower-
+          level behavior that the VM expects.
+          The root widget handles every message internally, so run_app accepts
+          only Widget[Never].
+        code
+          fun run_app(element: Element[Never]) App {
+            App {
+              render = fun(window: Size) { element.drawing.draw },
+              handle = fun(event: Event) {
+                event switch {
+                  window_resized(window) {
+                    run_app(element.new_constraints(tight_constraints(window)))
+                  }
+                  mouse_clicked(pos) {
+                    element.mouse_clicked(pos) switch {
+                      not_handled run_app(element)
+                      handled(next) run_app(next)
+                      message unreachable()
+                    }
+                  }
+                  mouse_scrolled(event) {
+                    element.mouse_scrolled(event.position, event.delta) switch {
+                      not_handled run_app(element)
+                      handled(next) run_app(next)
+                      message unreachable()
+                    }
+                  }
+                  default run_app(element)
+                }
+              },
+            }
+          }
+          fun run_app(root: Widget[Never]) App {
+            run_app(root.create_element(tight_constraints(size(0.0, 0.0))))
+          }
+    chapter BasicWidgets
       chapter EmptyWidget
         code
-          fun empty_impl[M]() WidgetImpl[M, Nothing, Size] {
+          fun empty_impl() WidgetImpl[Never, Nothing, Size] {
             WidgetImpl {
               new = fun(w: Nothing, constraints: Constraints) {
                 constraints.min()
@@ -1777,18 +1852,18 @@ chapter Root
                 constraints.min()
               },
               mouse_clicked = fun(state: Size, position: Position) {
-                EventResult[M, Size].not_handled
+                EventResult[Never, Size].not_handled
               },
               mouse_scrolled = fun(state: Size, position: Position, delta: Offset) {
-                EventResult[M, Size].not_handled
+                EventResult[Never, Size].not_handled
               },
               render = fun(size: Size) {
                 Drawing { draw = draw_nothing(), size }
               },
             }
           }
-          fun empty[M]() Widget[M] { widget(empty_impl[M](), Nothing {}) }
-          var empty_widget = empty[Never]()
+          fun empty() Widget[Never] { widget(empty_impl(), Nothing {}) }
+          var empty_widget = empty()
       chapter ColoredWidget
         code
           type ColoredWidget[M] = struct { color: Color, child: Widget[M] }
@@ -2816,45 +2891,185 @@ chapter Root
               AlignWidget { bias = vec(horizontal, vertical), child })
           }
           fun center[M](child: Widget[M]) Widget[M] { align(0.0, 0.0, child) }
-    chapter NotebookExample
+      chapter StatefulWidget
+        text
+          Stateful widgets turn internal child messages into either new state or
+          an external message for their parent.
+        code
+          type StatefulWidget[S, M, N] = struct {
+            initial_state: S,
+            handle: fun(S, N) StatefulResult[S, M],
+            builder: fun(S) Widget[N],
+          }
+          type StatefulElement[S, M, N] = struct {
+            state: S,
+            handle: fun(S, N) StatefulResult[S, M],
+            builder: fun(S) Widget[N],
+            child: Element[N],
+          }
+          type StatefulResult[S, M] = enum { new_state: S, bubble_up: M }
+        code
+          fun new_state[S, M](state: S) StatefulResult[S, M] {
+            StatefulResult[S, M].new_state(state)
+          }
+          fun bubble_up[S, M](message: M) StatefulResult[S, M] {
+            StatefulResult[S, M].bubble_up(message)
+          }
+        code
+          fun stateful_child[S, M, N](
+            e: StatefulElement[S, M, N], child: Element[N]
+          ) StatefulElement[S, M, N] {
+            StatefulElement {
+              state = e.state, handle = e.handle, builder = e.builder, child
+            }
+          }
+          fun stateful_event[S, M, N](
+            e: StatefulElement[S, M, N], result: EventResult[N, Element[N]]
+          ) EventResult[M, StatefulElement[S, M, N]] {
+            result switch {
+              not_handled EventResult[M, StatefulElement[S, M, N]].not_handled
+              handled(child)
+                EventResult[M, StatefulElement[S, M, N]].handled(
+                  stateful_child(e, child))
+              message(value)
+                e.handle(e.state, value) switch {
+                  new_state(state)
+                    EventResult[M, StatefulElement[S, M, N]].handled(
+                      StatefulElement {
+                        state,
+                        handle = e.handle,
+                        builder = e.builder,
+                        child =
+                          e.builder(state).create_element(e.child.constraints)})
+                  bubble_up(message)
+                    EventResult[M, StatefulElement[S, M, N]].message(message)
+                }
+            }
+          }
+          fun stateful_impl[S, M, N](
+          ) WidgetImpl[M, StatefulWidget[S, M, N], StatefulElement[S, M, N]] {
+            WidgetImpl {
+              new = fun(w: StatefulWidget[S, M, N], constraints: Constraints) {
+                StatefulElement {
+                  state = w.initial_state,
+                  handle = w.handle,
+                  builder = w.builder,
+                  child =
+                    w.builder(w.initial_state).create_element(constraints)}},
+              update =
+                fun(e: StatefulElement[S, M, N], w: StatefulWidget[S, M, N]) {
+                  StatefulElement {
+                    state = e.state, handle = w.handle, builder = w.builder,
+                    child =
+                      w.builder(e.state).create_element(e.child.constraints)}},
+              new_constraints =
+                fun(e: StatefulElement[S, M, N], constraints: Constraints) {
+                  stateful_child(e, e.child.new_constraints(constraints))},
+              mouse_clicked =
+                fun(e: StatefulElement[S, M, N], position: Position) {
+                  stateful_event(e, e.child.mouse_clicked(position))},
+              mouse_scrolled =
+                fun(
+                  e: StatefulElement[S, M, N], position: Position, delta: Offset
+                  ) {
+                    stateful_event(e, e.child.mouse_scrolled(position, delta))},
+              render = fun(e: StatefulElement[S, M, N]) { e.child.drawing },
+            }
+          }
+          fun stateful[S, M, N](
+            initial_state: S,
+            handle: fun(S, N) StatefulResult[S, M],
+            builder: fun(S) Widget[N],
+          ) Widget[M] {
+            widget(
+              stateful_impl[S, M, N](),
+              StatefulWidget { initial_state, handle, builder })}
+      chapter OnClick
+        text
+          Emits a message when clicked.
+        code
+          type OnClickWidget[M] = struct { message: M, child: Widget[M] }
+          type OnClickElement[M] = struct { message: M, child: Element[M] }
+          fun on_click_impl[M](
+          ) WidgetImpl[M, OnClickWidget[M], OnClickElement[M]] {
+            WidgetImpl {
+              new = fun(w: OnClickWidget[M], constraints: Constraints) {
+                OnClickElement {
+                  message = w.message,
+                  child = w.child.create_element(constraints) }},
+              update = fun(e: OnClickElement[M], w: OnClickWidget[M]) {
+                OnClickElement {
+                  message = w.message, child = e.child.update(w.child) }},
+              new_constraints =
+                fun(e: OnClickElement[M], constraints: Constraints) {
+                  OnClickElement {
+                    message = e.message,
+                    child = e.child.new_constraints(constraints) }},
+              mouse_clicked = fun(e: OnClickElement[M], position: Position) {
+                e.child.mouse_clicked(position) switch {
+                  not_handled
+                    EventResult[M, OnClickElement[M]].message(e.message)
+                  handled(child)
+                    EventResult[M, OnClickElement[M]].handled(
+                      OnClickElement { message = e.message, child })
+                  message(value)
+                    EventResult[M, OnClickElement[M]].message(value) }},
+              mouse_scrolled =
+                fun(e: OnClickElement[M], position: Position, delta: Offset) {
+                  e.child.mouse_scrolled(position, delta) switch {
+                    not_handled EventResult[M, OnClickElement[M]].not_handled
+                    handled(child)
+                      EventResult[M, OnClickElement[M]].handled(
+                        OnClickElement { message = e.message, child })
+                    message(value)
+                      EventResult[M, OnClickElement[M]].message(value)}},
+              render = fun(e: OnClickElement[M]) { e.child.drawing }}}
+          fun on_click[M](message: M, child: Widget[M]) Widget[M] {
+            widget(on_click_impl[M](), OnClickWidget { message, child })
+          }
+    chapter Notebook
       text
         soil ../../martinaise/martinaise.soil compile src/yam.mar
         soil src/yam.soil src/test.yam src/test.yam.objects
         zig build run -- --ui src/test.yam.objects
       code
-        fun widget_app(element: Element[Never]) App {
-          App {
-            render = fun(window: Size) { element.drawing.draw },
-            handle = fun(event: Event) {
-              event switch {
-                window_resized(window) widget_app(
-                  element.new_constraints(tight_constraints(window)))
-                mouse_clicked(pos) element.mouse_clicked(pos) switch {
-                  not_handled widget_app(element)
-                  handled(next) widget_app(next)
-                  message(value) value
-                }
-                mouse_scrolled(event) element.mouse_scrolled(event.position, event.delta) switch {
-                  not_handled widget_app(element)
-                  handled(next) widget_app(next)
-                  message(value) value
-                }
-                default widget_app(element)
-              }
+        type CounterMsg = enum { decrement, increment }
+        fun counter() Widget[Never] {
+          stateful[Int, Never, CounterMsg](0,
+            fun(state: Int, message: CounterMsg) {
+              new_state[Int, Never](message switch {
+                decrement state - 1
+                increment state + 1
+              })
             },
-          }
+            fun(state: Int) {
+              row(list(
+                on_click(CounterMsg.decrement,
+                  colored(color("#e0b040"), padding(6.0, text("decrement")))
+                    .cast_message[CounterMsg]()),
+                sized_box(40.0, text_line_height + 12.0, center(text(state.format())))
+                  .cast_message[CounterMsg](),
+                on_click(CounterMsg.increment,
+                  colored(color("#30a080"), padding(6.0, text("increment")))
+                    .cast_message[CounterMsg]()),
+              ))
+            },
+          )
         }
-        fun widget_app(root: Widget[Never]) App {
-          widget_app(root.create_element(tight_constraints(size(0.0, 0.0))))
-        }
-        var app = widget_app(
+      code
+        var app = run_app(
           scroll_view(Axis.vertical,
             center(
               width_box(240.0,
                 column(list(
-                  text("Hello, Orchard!"),
+                  column(list(
+                    text("Hello, Orchard!"),
+                    height_box(8.0),
+                    counter(),
+                    height_box(8.0),
+                  )),
                   colored(color("#3060a0"), sized_box(100.0, 100.0)),
-                  text("This is some example text."),
+                  text("This is some relatively long example text."),
                   height_box(8.0),
                   colored(color("#e07050"), sized_box(100.0, 100.0)),
                   height_box(8.0),
@@ -2873,8 +3088,6 @@ chapter Root
       - position -> @
       - clean up CrosshairApp
       - widgets
-        - stateful
-        - on-click
         - key
         - button
         - editable text
