@@ -1898,6 +1898,81 @@ chapter Root
                       draw_overflow_stripes(size(child.size.width, height)))
                   draw_nothing())))
             } child
+      chapter ScaleWidget
+        text
+          The scale widget scales its child.
+        code
+          ScaleWidget[M] = struct { factor: Float, child: Widget[M] }
+          ScaleElement[M] = struct {
+            factor: Float, child: Element[M], constraints: Constraints}
+          scale_child_constraints(
+            factor: Float, outer: Constraints) Constraints =
+            Constraints(
+              width =
+                axis_constraints(
+                  outer.width.min / factor,
+                  outer.width.max.map(\ maximum: Float -> maximum / factor)),
+              height =
+                axis_constraints(
+                  outer.height.min / factor,
+                  outer.height.max.map(\ maximum: Float -> maximum / factor)))
+          scale_widget_impl[M](
+            ) WidgetImpl[M, ScaleWidget[M], ScaleElement[M]] =
+            WidgetImpl(
+              new = \ w: ScaleWidget[M], constraints: Constraints ->
+                ScaleElement(
+                  factor = w.factor,
+                  child =
+                    w.child.create_element(
+                      scale_child_constraints(w.factor, constraints)),
+                  constraints),
+              update = \ e: ScaleElement[M], w: ScaleWidget[M] ->
+                ScaleElement(
+                  factor = w.factor,
+                  child =
+                    e.child.new_constraints(
+                      scale_child_constraints(w.factor, e.constraints))
+                      .update(w.child),
+                  constraints = e.constraints),
+              new_constraints =
+                \ e: ScaleElement[M], constraints: Constraints ->
+                  ScaleElement(
+                    factor = e.factor,
+                    child =
+                      e.child.new_constraints(
+                        scale_child_constraints(e.factor, constraints)),
+                    constraints),
+              mouse_clicked = \ e: ScaleElement[M], pos: Position ->
+                e.child.mouse_clicked(
+                  position(pos.x / e.factor, pos.y / e.factor))
+                %(not_handled EventResult[M, ScaleElement[M]].not_handled
+                  handled(child)
+                    EventResult[M, ScaleElement[M]].handled(ScaleElement(
+                      factor = e.factor, child, constraints = e.constraints))
+                  message(value)
+                    EventResult[M, ScaleElement[M]].message(value)),
+              mouse_scrolled =
+                \ e: ScaleElement[M], pos: Position, delta: Offset ->
+                  e.child.mouse_scrolled(
+                    position(pos.x / e.factor, pos.y / e.factor),
+                    delta / e.factor)
+                  %(not_handled EventResult[M, ScaleElement[M]].not_handled
+                    handled(child)
+                      EventResult[M, ScaleElement[M]].handled(ScaleElement(
+                        factor = e.factor, child, constraints = e.constraints))
+                    message(value)
+                      EventResult[M, ScaleElement[M]].message(value)),
+              render = \ e: ScaleElement[M] ->
+                Drawing(
+                  draw =
+                    draw_transformed(
+                      transform_scale(e.factor), e.child.drawing.draw),
+                  size = {e.child.size * e.factor}.clamp(e.constraints)))
+          scale_widget[M](factor: Float, child: Widget[M]) Widget[M] =
+            # Subtracting a finite number from itself is zero; infinities yield NaN.
+            _ = assert(factor > 0.0 and {{factor - factor} == 0.0},
+              "Scale factor must be finite and positive.")
+            widget(scale_widget_impl[M](), ScaleWidget(factor, child))
       chapter Text
         text
           Text stores its value, color, and constraints in its element. The
@@ -1905,6 +1980,9 @@ chapter Root
           or given new constraints. It wraps to the maximum width and marks text
           that exceeds the available width or height with overflow stripes.
           Text does not handle clicks. Its default color is black.
+          The optional font_scale is the requested line height. At the native
+          text_line_height it uses the text widget directly; other sizes use
+          scale_widget with font_scale / text_line_height.
         code
           TextWidget = struct { value: String, color: Color }
           TextElement = struct {
@@ -1943,6 +2021,13 @@ chapter Root
             widget(text_impl(), TextWidget(value, color))
           text(value: String) Widget[Never] =
             text(value, color("#000000"))
+          text(value: String, color: Color, font_scale: Float) Widget[Never] =
+            child = text(value, color)
+            if font_scale == text_line_height
+              child
+              scale_widget(font_scale / text_line_height, child)
+          text(value: String, font_scale: Float) Widget[Never] =
+            text(value, color("#000000"), font_scale)
       chapter Padding
         text
           Padding removes its insets from the child's constraints, then adds
@@ -2622,12 +2707,19 @@ chapter Root
             center(
               width_box(240.0,
                 column(list(
-                  text("Hello, Orchard!"),
                   height_box(8.0),
-                  counter(),
+                  padding(8.0, 0.0, 8.0, 0.0, text("bread crumbs", 10.0)),
                   height_box(8.0),
-                  rounded_rect(12.0,
-                    colored(color("#3060a0"), sized_box(100.0, 100.0))),
+                  padding(8.0, 0.0, 8.0, 0.0, text("Orchard", 24.0)),
+                  height_box(8.0),
+                  padding(8.0, 0.0, 8.0, 0.0, text("Hi, this is some code:")),
+                  height_box(8.0),
+                  rounded_rect(8.0,
+                    colored(color("#f9dec8"),
+                      width_box(10000.0,
+                        padding(8.0, text("This is a code box."))))),
+                  height_box(8.0),
+                  padding(8.0, 0.0, 8.0, 0.0, counter()),
                   text("This is some relatively long example text."),
                   height_box(8.0),
                   colored(color("#e07050"), sized_box(100.0, 100.0)),
