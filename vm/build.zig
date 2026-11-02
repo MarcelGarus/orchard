@@ -65,23 +65,38 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
-    // On https://github.com/fabioarnold/nanovg-zig, it says:
-    // > For an example on how to use nanovg-zig in your project's build.zig,
-    // > you can take a look at https://github.com/fabioarnold/MiniPixel/blob/main/build.zig.
-    // The code here is heavily inspired by that.
-
-    const nanovg = b.addModule("nanovg", .{
-        .root_source_file = b.path("nanovg/nanovg.zig"),
+    const orchardvg = b.addModule("orchardvg", .{
+        .root_source_file = b.path("orchardvg/orchardvg.zig"),
         .target = target,
         .optimize = .ReleaseFast,
         .link_libc = !target.result.cpu.arch.isWasm(),
     });
-    nanovg.addIncludePath(b.path("nanovg"));
-    nanovg.addIncludePath(b.path("lib/gl2/include"));
-    nanovg.addCSourceFile(.{ .file = b.path("nanovg/fontstash.c"), .flags = &.{ "-DFONS_NO_STDIO", "-fno-stack-protector" } });
-    nanovg.addCSourceFile(.{ .file = b.path("nanovg/stb_image.c"), .flags = &.{ "-DSTBI_NO_STDIO", "-fno-stack-protector" } });
-    if (target.result.cpu.arch.isWasm()) {
-        nanovg.addIncludePath(b.path("nanovg/web/libc"));
+    orchardvg.addIncludePath(b.path("lib/gl2/include"));
+
+    const test_step = b.step("test-orchardvg", "Test OrchardVG with a headless EGL framebuffer");
+    if (b.graph.host.result.os.tag == .linux) {
+        const tests_module = b.createModule(.{
+            .root_source_file = b.path("orchardvg/gl_test.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+            .link_libc = true,
+        });
+        const test_renderer = b.createModule(.{
+            .root_source_file = b.path("orchardvg/orchardvg.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+            .link_libc = true,
+        });
+        test_renderer.addIncludePath(b.path("lib/gl2/include"));
+        tests_module.addImport("orchardvg", test_renderer);
+        tests_module.addIncludePath(b.path("lib/gl2/include"));
+        tests_module.addCSourceFile(.{ .file = b.path("lib/gl2/src/glad.c"), .flags = &.{} });
+        tests_module.linkSystemLibrary("GL", .{});
+        tests_module.linkSystemLibrary("EGL", .{});
+        const tests = b.addTest(.{ .root_module = tests_module });
+        const run_tests = b.addRunArtifact(tests);
+        run_tests.setEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", "1");
+        test_step.dependOn(&run_tests.step);
     }
 
     const orchard = b.createModule(.{
@@ -89,7 +104,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .ReleaseSafe,
     });
-    orchard.addImport("nanovg", nanovg);
+    orchard.addImport("orchardvg", orchardvg);
 
     if (!target.result.cpu.arch.isWasm()) {
         orchard.addIncludePath(b.path("lib/gl2/include"));

@@ -16,7 +16,9 @@ pub const Event = union(enum(u64)) {
     char_entered: CharEntered,
     mouse_clicked: Graphics.Position,
     mouse_moved: Graphics.Position,
+    mouse_scrolled: MouseScrolled,
 
+    pub const MouseScrolled = struct { position: Graphics.Position, delta: Graphics.Offset };
     pub const KeyPressed = struct { keycode: i32, control: bool, shift: bool, alt: bool };
     pub const CharEntered = struct { codepoint: u32 };
 };
@@ -65,6 +67,10 @@ pub fn event_object(heap: *Heap, event: Event) !Obj {
         .char_entered => |char| try heap.new_inner(&.{try heap.new_leaf(&.{char.codepoint})}),
         .mouse_clicked => |pos| try pair_object(heap, pos.x, pos.y),
         .mouse_moved => |pos| try pair_object(heap, pos.x, pos.y),
+        .mouse_scrolled => |scroll| try heap.new_inner(&.{
+            try pair_object(heap, scroll.position.x, scroll.position.y),
+            try pair_object(heap, scroll.delta.x, scroll.delta.y),
+        }),
     };
     return heap.new_inner(&.{ try heap.new_leaf(&.{tag}), payload });
 }
@@ -105,7 +111,7 @@ pub fn run(ally: std.mem.Allocator, vm: anytype, value: Obj) !void {
             defer frame.deinit();
             const draw_command = try app.render(vm, size);
             const commands = try Graphics.parse(frame.allocator(), draw_command);
-            gfx.render(size, commands);
+            try gfx.render(size, commands);
         }
         gfx.wait_events();
     }
