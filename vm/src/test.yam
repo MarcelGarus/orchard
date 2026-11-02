@@ -16,22 +16,6 @@ chapter Root
       envisioned computers as "personal dynamic media", where every user feels
       comfortable to create, use, and customize tools. Orchard is my attempt at
       creating a personal computing medium.
-  chapter Running
-    text
-      Compile the Yam compiler with:
-      soil ../../martinaise/martinaise.soil compile src/yam.mar
-      Then compile a notebook with:
-      soil src/yam.soil src/test.yam /tmp/notebook.objects
-      Build Orchard with zig build, then run the notebook headlessly:
-      zig-out/bin/orchard /tmp/notebook.objects
-      The file's export must be a function without arguments. Orchard calls it
-      once and prints its return value without opening a window.
-      A notebook with a variable named app exports that App directly. Run it
-      with orchard --ui file.objects. The host assumes the App, Event, and
-      DrawCommand layouts declared below; no type metadata is exported.
-      Other notebooks return a list of (name, value) pairs for their globals.
-      Headless output shows raw objects, with positional fields and numeric
-      enum tags rather than type-directed formatting.
   chapter Core
     chapter Nothing
       text
@@ -1587,6 +1571,15 @@ chapter Root
               height = tight_axis_constraints(size.height),
             }
           }
+          fun ==(a: AxisConstraints, b: AxisConstraints) Bool {
+            a.min == b.min and {a.max switch {
+              none b.max is none
+              some(value) b.max switch { none false some(other) value == other }
+            }}
+          }
+          fun ==(a: Constraints, b: Constraints) Bool {
+            a.width == b.width and a.height == b.height
+          }
           fun is_tight(c: AxisConstraints) Bool {
             c.max switch { some(max) c.min == max none false }
           }
@@ -1653,10 +1646,12 @@ chapter Root
           callbacks retain the concrete state and implementation, so the casts
           stay inside widget and widget_element. Updating with another widget
           implementation violates this contract.
-          create_element builds the initial element. Updates, constraint
-          changes, and handled clicks return new elements with cached drawings.
-          Clicks and scroll events outside an element's bounds are not delivered
-          to its implementation.
+          create_element builds the initial element. Element functions ending
+          in _fun store implementation callbacks; widgets call the wrappers.
+          Equal constraints return the existing element without layout or
+          rendering. Updates, changed constraints, and handled events return new
+          elements with cached drawings. Event wrappers reject clicks and scroll
+          events outside the element's bounds before calling its implementation.
         code
           type Widget[M] = struct {
             value: Dynamic,
@@ -1666,10 +1661,10 @@ chapter Root
             constraints: Constraints,
             size: Size,
             drawing: Drawing,
-            update: fun(Widget[M]) Element[M],
-            new_constraints: fun(Constraints) Element[M],
-            mouse_clicked: fun(Position) EventResult[M, Element[M]],
-            mouse_scrolled: fun(Position, Offset) EventResult[M, Element[M]],
+            update_fun: fun(Widget[M]) Element[M],
+            new_constraints_fun: fun(Constraints) Element[M],
+            mouse_clicked_fun: fun(Position) EventResult[M, Element[M]],
+            mouse_scrolled_fun: fun(Position, Offset) EventResult[M, Element[M]],
           }
           type EventResult[M, E] = enum {
             not_handled, handled: E, message: M
@@ -1690,53 +1685,27 @@ chapter Root
               constraints,
               size = drawing.size,
               drawing,
-              update = fun(next: Widget[M]) {
-                widget_element(
-                  impl,
-                  impl.update(state, next.value.to_static[W]()),
-                  constraints,
-                )
+              update_fun = fun(next: Widget[M]) {
+                widget_element(impl, impl.update(state, next.value.to_static[W]()), constraints)
               },
-              new_constraints = fun(next: Constraints) {
+              new_constraints_fun = fun(next: Constraints) {
                 widget_element(impl, impl.new_constraints(state, next), next)
               },
-              mouse_clicked = fun(position: Position) {
-                if
-                  rectangle(0.0, 0.0, drawing.size.width, drawing.size.height)
-                    .contains(position)
-                then {
-                  impl.mouse_clicked(state, position) switch {
-                    not_handled EventResult[M, Element[M]].not_handled
-                    handled(next) {
-                      EventResult[M, Element[M]].handled(
-                        widget_element(impl, next, constraints)
-                      )
-                    }
-                    message(value) {
-                      EventResult[M, Element[M]].message(value)
-                    }
-                  }
-                } else
-                  EventResult[M, Element[M]].not_handled
+              mouse_clicked_fun = fun(position: Position) {
+                impl.mouse_clicked(state, position) switch {
+                  not_handled EventResult[M, Element[M]].not_handled
+                  handled(next) EventResult[M, Element[M]].handled(
+                    widget_element(impl, next, constraints))
+                  message(value) EventResult[M, Element[M]].message(value)
+                }
               },
-              mouse_scrolled = fun(position: Position, delta: Offset) {
-                if
-                  rectangle(0.0, 0.0, drawing.size.width, drawing.size.height)
-                    .contains(position)
-                then {
-                  impl.mouse_scrolled(state, position, delta) switch {
-                    not_handled EventResult[M, Element[M]].not_handled
-                    handled(next) {
-                      EventResult[M, Element[M]].handled(
-                        widget_element(impl, next, constraints)
-                      )
-                    }
-                    message(value) {
-                      EventResult[M, Element[M]].message(value)
-                    }
-                  }
-                } else
-                  EventResult[M, Element[M]].not_handled
+              mouse_scrolled_fun = fun(position: Position, delta: Offset) {
+                impl.mouse_scrolled(state, position, delta) switch {
+                  not_handled EventResult[M, Element[M]].not_handled
+                  handled(next) EventResult[M, Element[M]].handled(
+                    widget_element(impl, next, constraints))
+                  message(value) EventResult[M, Element[M]].message(value)
+                }
               },
             }
           }
@@ -1754,6 +1723,33 @@ chapter Root
           }
           fun bounds[M](element: Element[M]) Rectangle {
             rectangle(0.0, 0.0, element.size.width, element.size.height)
+          }
+          fun update[M](element: Element[M], next: Widget[M]) Element[M] {
+            element.update_fun(next)
+          }
+          fun new_constraints[M](
+            element: Element[M], next: Constraints
+          ) Element[M] {
+            if element.constraints == next then
+              element
+            else
+              element.new_constraints_fun(next)
+          }
+          fun mouse_clicked[M](
+            element: Element[M], position: Position
+          ) EventResult[M, Element[M]] {
+            if element.bounds().contains(position) then
+              element.mouse_clicked_fun(position)
+            else
+              EventResult[M, Element[M]].not_handled
+          }
+          fun mouse_scrolled[M](
+            element: Element[M], position: Position, delta: Offset
+          ) EventResult[M, Element[M]] {
+            if element.bounds().contains(position) then
+              element.mouse_scrolled_fun(position, delta)
+            else
+              EventResult[M, Element[M]].not_handled
           }
           fun create_element[M](
             widget: Widget[M], constraints: Constraints
@@ -1949,15 +1945,35 @@ chapter Root
             }
           }
           fun sized_box[M](
+            width: Maybe[Float], height: Maybe[Float], child: Widget[M]
+          ) Widget[M] {
+            widget(sized_box_impl[M](), SizedBoxWidget { width, height, child })
+          }
+          fun sized_box[M](
             width: Float, height: Float, child: Widget[M]
           ) Widget[M] {
-            widget(
-              sized_box_impl[M](),
-              SizedBoxWidget { width = some(width), height = some(height), child },
-            )
+            sized_box(some(width), some(height), child)
+          }
+          fun width_box[M](width: Float, child: Widget[M]) Widget[M] {
+            sized_box(some(width), none[Float](), child)
+          }
+          fun height_box[M](height: Float, child: Widget[M]) Widget[M] {
+            sized_box(none[Float](), some(height), child)
+          }
+          # Constructors with no child widget.
+          fun sized_box(
+            width: Maybe[Float], height: Maybe[Float]
+          ) Widget[Never] {
+            sized_box(width, height, empty_widget)
           }
           fun sized_box(width: Float, height: Float) Widget[Never] {
             sized_box(width, height, empty_widget)
+          }
+          fun width_box(width: Float) Widget[Never] {
+            width_box(width, empty_widget)
+          }
+          fun height_box(height: Float) Widget[Never] {
+            height_box(height, empty_widget)
           }
       chapter OverflowStripes
         text
@@ -2378,6 +2394,52 @@ chapter Root
                 .to_list()
             }
           }
+          fun flex_event[M](
+            e: FlexElement[M], mouse: Position,
+            handler: fun(Element[M], Position) EventResult[M, Element[M]],
+          ) EventResult[M, FlexElement[M]] {
+            loop(0, mouse, fun(index: Int, pos: Position) {
+              if index == e.children.length() then
+                Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]].break(
+                  EventResult[M, FlexElement[M]].not_handled)
+              else {
+                var child = e.children.get(index)
+                handler(child, pos) switch {
+                  not_handled {
+                    Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]].continue(
+                      tuple(
+                        index + 1,
+                        pos - offset(e.axis, child.size.main(e.axis), 0.0)
+                      )
+                    )
+                  }
+                  handled(next) {
+                    Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]].break(
+                      EventResult[M, FlexElement[M]].handled(FlexElement {
+                        axis = e.axis,
+                        constraints = e.constraints,
+                        factors = e.factors,
+                        children = layout_flex(
+                          e.axis,
+                          e.constraints,
+                          e.factors,
+                          fun(child_index: Int, c: Constraints) {
+                            var child = if child_index == index then next
+                              else e.children.get(child_index)
+                            child.new_constraints(c)
+                          }
+                        ),
+                      })
+                    )
+                  }
+                  message(value) {
+                    Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]].break(
+                    EventResult[M, FlexElement[M]].message(value))
+                  }
+                }
+              }
+            })
+          }
           fun flex_impl[M]() WidgetImpl[M, FlexWidget[M], FlexElement[M]] {
             WidgetImpl {
               new = fun(w: FlexWidget[M], constraints: Constraints) {
@@ -2424,92 +2486,14 @@ chapter Root
                 }
               },
               mouse_clicked = fun(e: FlexElement[M], mouse: Position) {
-                var found = loop(0, mouse, fun(index: Int, pos: Position) {
-                  if index == e.children.length() then
-                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].break(
-                      none[Tuple2[Int, Position]]())
-                  else if e.children.get(index).bounds().contains(pos) then
-                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].break(
-                      some(tuple(index, pos)))
-                  else
-                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].continue(
-                      tuple(
-                        index + 1,
-                        pos
-                          - offset(
-                            e.axis,
-                            e.children.get(index).size.main(e.axis),
-                            0.0),
-                      )
-                    )
+                flex_event(e, mouse, fun(child: Element[M], pos: Position) {
+                  child.mouse_clicked(pos)
                 })
-                found switch {
-                  none EventResult[M, FlexElement[M]].not_handled
-                  some(index_and_pos) {
-                    var index = index_and_pos.a
-                    var pos = index_and_pos.b
-                    e.children.get(index).mouse_clicked(pos) switch {
-                      not_handled EventResult[M, FlexElement[M]].not_handled
-                      handled(next) {
-                        EventResult[M, FlexElement[M]].handled(FlexElement {
-                          axis = e.axis,
-                          constraints = e.constraints,
-                          factors = e.factors,
-                          children = layout_flex(e.axis, e.constraints, e.factors,
-                            fun(child_index: Int, c: Constraints) {
-                              var child = if child_index == index then next
-                                else e.children.get(child_index)
-                              child.new_constraints(c)
-                            }),
-                        })
-                      }
-                      message(m) EventResult[M, FlexElement[M]].message(m)
-                    }
-                  }
-                }
               },
               mouse_scrolled = fun(e: FlexElement[M], mouse: Position, delta: Offset) {
-                var found = loop(0, mouse, fun(index: Int, pos: Position) {
-                  if index == e.children.length() then
-                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].break(
-                      none[Tuple2[Int, Position]]())
-                  else if e.children.get(index).bounds().contains(pos) then
-                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].break(
-                      some(tuple(index, pos)))
-                  else
-                    Loop[Tuple2[Int, Position], Maybe[Tuple2[Int, Position]]].continue(
-                      tuple(
-                        index + 1,
-                        pos
-                          - offset(
-                            e.axis,
-                            e.children.get(index).size.main(e.axis),
-                            0.0)))
+                flex_event(e, mouse, fun(child: Element[M], pos: Position) {
+                  child.mouse_scrolled(pos, delta)
                 })
-                found switch {
-                  none EventResult[M, FlexElement[M]].not_handled
-                  some(index_and_pos) {
-                    var index = index_and_pos.a
-                    var pos = index_and_pos.b
-                    e.children.get(index).mouse_scrolled(pos, delta) switch {
-                      not_handled EventResult[M, FlexElement[M]].not_handled
-                      handled(next) {
-                        EventResult[M, FlexElement[M]].handled(FlexElement {
-                          axis = e.axis,
-                          constraints = e.constraints,
-                          factors = e.factors,
-                          children = layout_flex(e.axis, e.constraints, e.factors,
-                            fun(child_index: Int, c: Constraints) {
-                              var child = if child_index == index then next
-                                else e.children.get(child_index)
-                              child.new_constraints(c)
-                            }),
-                        })
-                      }
-                      message(m) EventResult[M, FlexElement[M]].message(m)
-                    }
-                  }
-                }
               },
               render = fun(e: FlexElement[M]) {
                 var axis = e.axis
@@ -2782,46 +2766,25 @@ chapter Root
               mouse_clicked = fun(e: AlignElement[M], position: Position) {
                 var space = aligned_size(e.child.size, e.constraints)
                 var shift = alignment_offset(e.bias, space, e.child.size)
-                var local = position - shift
-                if rectangle(0.0, 0.0, e.child.size.width, e.child.size.height).contains(local)
-                then {
-                  e.child.mouse_clicked(local) switch {
-                    not_handled EventResult[M, AlignElement[M]].not_handled
-                    handled(child) {
-                      EventResult[M, AlignElement[M]].handled(
-                        AlignElement {
-                          bias = e.bias, child, constraints = e.constraints
-                        }
-                      )
-                    }
-                    message(value) {
-                      EventResult[M, AlignElement[M]].message(value)
-                    }
+                e.child.mouse_clicked(position - shift) switch {
+                  not_handled EventResult[M, AlignElement[M]].not_handled
+                  handled(child) {
+                    EventResult[M, AlignElement[M]].handled(AlignElement {
+                      bias = e.bias, child, constraints = e.constraints
+                    })
                   }
-                } else
-                  EventResult[M, AlignElement[M]].not_handled
+                  message(value) EventResult[M, AlignElement[M]].message(value)
+                }
               },
               mouse_scrolled = fun(e: AlignElement[M], position: Position, delta: Offset) {
                 var space = aligned_size(e.child.size, e.constraints)
                 var shift = alignment_offset(e.bias, space, e.child.size)
-                var local = position - shift
-                if rectangle(0.0, 0.0, e.child.size.width, e.child.size.height).contains(local)
-                then {
-                  e.child.mouse_scrolled(local, delta) switch {
-                    not_handled EventResult[M, AlignElement[M]].not_handled
-                    handled(child) {
-                      EventResult[M, AlignElement[M]].handled(
-                        AlignElement {
-                          bias = e.bias, child, constraints = e.constraints
-                        }
-                      )
-                    }
-                    message(value) {
-                      EventResult[M, AlignElement[M]].message(value)
-                    }
-                  }
-                } else
-                  EventResult[M, AlignElement[M]].not_handled
+                e.child.mouse_scrolled(position - shift, delta) switch {
+                  not_handled EventResult[M, AlignElement[M]].not_handled
+                  handled(child) EventResult[M, AlignElement[M]].handled(
+                    AlignElement { bias = e.bias, child, constraints = e.constraints })
+                  message(value) EventResult[M, AlignElement[M]].message(value)
+                }
               },
               render = fun(e: AlignElement[M]) {
                 var space = aligned_size(e.child.size, e.constraints)
@@ -2844,6 +2807,56 @@ chapter Root
               AlignWidget { bias = vec(horizontal, vertical), child })
           }
           fun center[M](child: Widget[M]) Widget[M] { align(0.0, 0.0, child) }
+    chapter NotebookExample
+      text
+        soil ../../martinaise/martinaise.soil compile src/yam.mar
+        soil src/yam.soil src/test.yam src/test.yam.objects
+        zig build run -- --ui src/test.yam.objects
+      code
+        fun widget_app(element: Element[Never]) App {
+          App {
+            render = fun(window: Size) { element.drawing.draw },
+            handle = fun(event: Event) {
+              event switch {
+                window_resized(window) widget_app(
+                  element.new_constraints(tight_constraints(window)))
+                mouse_clicked(pos) element.mouse_clicked(pos) switch {
+                  not_handled widget_app(element)
+                  handled(next) widget_app(next)
+                  message(value) value
+                }
+                mouse_scrolled(event) element.mouse_scrolled(event.position, event.delta) switch {
+                  not_handled widget_app(element)
+                  handled(next) widget_app(next)
+                  message(value) value
+                }
+                default widget_app(element)
+              }
+            },
+          }
+        }
+        fun widget_app(root: Widget[Never]) App {
+          widget_app(root.create_element(tight_constraints(size(0.0, 0.0))))
+        }
+        var app = widget_app(
+          scroll_view(Axis.vertical,
+            center(
+              width_box(240.0,
+                column(list(
+                  text("Hello, Orchard!"),
+                  colored(color("#3060a0"), sized_box(50.0, 50.0)),
+                  text("This is some example text."),
+                  height_box(8.0),
+                  colored(color("#e07050"), sized_box(50.0, 50.0)),
+                  height_box(8.0),
+                  colored(color("#30a080"), sized_box(50.0, 50.0)),
+                  height_box(8.0),
+                  colored(color("#e0b040"), sized_box(50.0, 50.0)),
+                ))
+              ),
+            )
+          )
+        )
   chapter Todo
     text
       - memory-safe dynamic casts
@@ -2854,9 +2867,6 @@ chapter Root
         - stateful
         - on-click
         - key
-        - column
-        - list view
-        - clipping draw command?
         - button
         - editable text
         - stack
