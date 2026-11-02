@@ -18,7 +18,8 @@ pub const Offset = struct { x: f64, y: f64 };
 pub const TransformationMatrix = struct { a: f64, b: f64, c: f64, d: f64, e: f64, f: f64 };
 pub const Color = struct { r: u8, g: u8, b: u8 };
 pub const Path = []const PathSegment;
-pub const PathSegment = union(enum) { move_to: Position, line_to: Position };
+pub const BezierTo = struct { control1: Position, control2: Position, to: Position };
+pub const PathSegment = union(enum) { move_to: Position, line_to: Position, bezier_to: BezierTo };
 pub const DrawCommand = union(enum) {
     fill_path: struct { path: Path, color: Color },
     transform: struct { by: TransformationMatrix, children: []const DrawCommand },
@@ -53,14 +54,19 @@ fn matrix(value: Obj) TransformationMatrix {
 }
 
 fn path(ally: Ally, value: Obj) !Path {
-    // Path { segments: List[PathSegment] }; move_to = 0, line_to = 1.
+    // Path { segments: List[PathSegment] }; move_to = 0, line_to = 1, bezier_to = 2.
     const segments = value.child(0).children();
     const result = try ally.alloc(PathSegment, segments.len);
     for (segments, result) |segment, *out| {
-        const pos = position(segment.child(1));
+        const payload = segment.child(1);
         out.* = switch (segment.child(0).word(0)) {
-            0 => .{ .move_to = pos },
-            1 => .{ .line_to = pos },
+            0 => .{ .move_to = position(payload) },
+            1 => .{ .line_to = position(payload) },
+            2 => .{ .bezier_to = .{
+                .control1 = position(payload.child(0)),
+                .control2 = position(payload.child(1)),
+                .to = position(payload.child(2)),
+            } },
             else => return error.UnknownPathSegment,
         };
     }
@@ -284,11 +290,19 @@ fn append_path(vg: ovg, segments: Path) void {
         switch (segment) {
             .move_to => |pos| vg.moveTo(@floatCast(pos.x), @floatCast(pos.y)),
             .line_to => |pos| vg.lineTo(@floatCast(pos.x), @floatCast(pos.y)),
+            .bezier_to => |curve| vg.bezierTo(
+                @floatCast(curve.control1.x),
+                @floatCast(curve.control1.y),
+                @floatCast(curve.control2.x),
+                @floatCast(curve.control2.y),
+                @floatCast(curve.to.x),
+                @floatCast(curve.to.y),
+            ),
         }
     }
 }
 
-fn render_commands(vg: ovg, commands: []const DrawCommand) anyerror!void {
+pub fn render_commands(vg: ovg, commands: []const DrawCommand) anyerror!void {
     for (commands) |command| try render_command(vg, command);
 }
 fn render_command(vg: ovg, command: DrawCommand) anyerror!void {
