@@ -4107,9 +4107,9 @@ fun flag_expr(flag: Int, left: ObjectId, right: ObjectId): ObjectId {
 fun require_expr(condition: ObjectId, message: String, body: ObjectId): ObjectId {
   conditional(condition, body, unary_expr("crash", object_expr(leaf(message))))
 }
-| Build a fully initialized array using a private recursive heap function.
-| The linked cells are temporary; flatten-to-inner produces the public flat array.
-fun array_expr(
+| Build fully initialized linked cells using a private recursive heap function.
+| Callers flatten these temporary cells into inner arrays or packed string leaves.
+fun linked_array_expr(
   names: List[String], args: List[ObjectId], length: ObjectId, element: ObjectId,
 ): ObjectId {
   var index = name_expr("$index")
@@ -4124,7 +4124,12 @@ fun array_expr(
   var body = conditional(flag_expr(4, index, length),
     new_inner_expr(list(element, rec_expr(next))), object_expr(inner(list[ObjectId]())),
   )
-  unary_expr("flatten-to-inner", call_expr(heap_fun(params, body), initial))
+  call_expr(heap_fun(params, body), initial)
+}
+fun array_expr(
+  names: List[String], args: List[ObjectId], length: ObjectId, element: ObjectId,
+): ObjectId {
+  unary_expr("flatten-to-inner", linked_array_expr(names, args, length, element))
 }
 | Read one byte from a string's packed leaf words as a Yam Byte object.
 fun string_byte(source: ObjectId, index: ObjectId): ObjectId {
@@ -4134,24 +4139,66 @@ fun string_byte(source: ObjectId, index: ObjectId): ObjectId {
     raw_binary("modulo", unbox(index), word_expr(8)), word_expr(8))
   box(raw_binary("and", raw_binary("shift-right", word, shift), word_expr(255)))
 }
+| Strings have the same zero-padding convention as symbol leaves. Match bytes()
+| by ignoring padding at the end while retaining zero bytes inside the string.
+fun string_length(source: ObjectId): ObjectId {
+  var input = name_expr("$source")
+  var length = name_expr("$length")
+  var previous = binary_expr("subtract", length, int_expr(1))
+  var trim = heap_fun(list("$source", "$length"),
+    conditional(flag_expr(2, length, int_expr(0)),
+      conditional(flag_expr(1, string_byte(input, previous), int_expr(0)),
+        rec_expr(list(input, previous)), length), length))
+  call_expr(trim, list(source, binary_expr("multiply", size_expr(source), int_expr(8))))
+}
+| Build packed words, guarding every byte read in the partially filled last word.
+| $index counts words; the caller supplies a byte expression using $byte_index.
+fun packed_string_expr(
+  names: List[String], args: List[ObjectId], length: ObjectId, byte: ObjectId,
+): ObjectId {
+  var packed = word_expr(0)
+  var index = name_expr("$byte_index")
+  for offset in 0..8 do {
+    var at = binary_expr("add",
+      binary_expr("multiply", name_expr("$index"), int_expr(8)), int_expr(offset))
+    var part = let_expr("$byte_index", at,
+      raw_if(raw_flag(4, unbox(index), unbox(length)),
+        raw_binary("shift-left", unbox(byte), word_expr(offset * 8)), word_expr(0)))
+    packed = raw_binary("or", packed, part)
+  }
+  var words = binary_expr("divide", binary_expr("add", length, int_expr(7)), int_expr(8))
+  unary_expr("flatten-to-leaf", linked_array_expr(names, args, words, box(packed)))
+}
 fun builtin(f: AstFun): ObjectId {
   var signature = f.signature()
 
   if signature == "bytes(String)" then {
     assert(f.returns == type("List", list(type("Byte"))), "bytes must return List[Byte].")
-    var source = name_expr("$source")
-    var length = name_expr("$length")
-    var previous = binary_expr("subtract", length, int_expr(1))
-    | String leaves are zero-padded to whole words. Trim only trailing zeros.
-    var trim = heap_fun(list("$source", "$length"),
-      conditional(flag_expr(2, length, int_expr(0)),
-        conditional(flag_expr(1, string_byte(source, previous), int_expr(0)),
-          rec_expr(list(source, previous)), length), length))
     var input = name_expr(f.args.get(0).name)
-    var count = call_expr(trim, list(input,
-      binary_expr("multiply", size_expr(input), int_expr(8))))
-    return array_expr(list("$source", "$length"), list(input, count),
-      length, string_byte(source, name_expr("$index")))
+    return array_expr(list("$source", "$length"), list(input, string_length(input)),
+      name_expr("$length"), string_byte(name_expr("$source"), name_expr("$index")))
+  }
+  if signature == "string(List[Byte])" then {
+    assert(f.returns == type("String"), "string must return String.")
+    var input = name_expr(f.args.get(0).name)
+    return packed_string_expr(list("$source", "$length"), list(input, size_expr(input)),
+      name_expr("$length"), binary_expr("load", name_expr("$source"), name_expr("$byte_index")))
+  }
+  if signature == "concat(String, String)" then {
+    assert(f.returns == type("String"), "concat must return String.")
+    var left = name_expr("$left")
+    var right = name_expr("$right")
+    var left_length = name_expr("$left_length")
+    var length = name_expr("$length")
+    var index = name_expr("$byte_index")
+    var body = packed_string_expr(list("$left", "$right", "$left_length", "$length"),
+      list(left, right, left_length, length), length,
+      conditional(flag_expr(4, index, left_length), string_byte(left, index),
+        string_byte(right, binary_expr("subtract", index, left_length))))
+    return let_expr("$left", name_expr(f.args.get(0).name),
+      let_expr("$right", name_expr(f.args.get(1).name),
+        let_expr("$left_length", string_length(left),
+          let_expr("$length", binary_expr("add", left_length, string_length(right)), body))))
   }
 
   if signature == "to_dynamic[T](T)" then {

@@ -180,6 +180,8 @@ chapter Root
         – you can use them for arbitrary byte sequences.
       code
         type String = ...
+        fun concat(left: String, right: String) String { ... }
+        fun +(left: String, right: String) String { concat(left, right) }
     chapter Crashing
       text
         Crashing stops evaluation with a message.
@@ -324,18 +326,6 @@ chapter Root
         }
         fun log_2(value: Int) Int {
           if value == 1 then 0 else log_2(value / 2) + 1
-        }
-      text
-        fun format(int: Int) String { int.format(10) }
-        fun format(int: Int, radix: Int) String {
-          if int < 0 then
-            "-{int.negate().format(radix)}"
-          else {
-            concat(
-              if int >= radix then format(int / radix, radix) else "",
-              "0123456789abcdef".bytes().get(int % radix),
-            )
-          }
         }
       code
         # stuff for bytes
@@ -543,11 +533,14 @@ chapter Root
         }
     chapter StringBytes
       text
-        bytes returns the string's UTF-8 bytes.
+        bytes returns the string's UTF-8 bytes; string packs a byte list into
+        a String. Packed strings use zero padding, so trailing zero bytes are
+        indistinguishable from padding. Embedded zero bytes are retained.
         TODO: Instead of eagerly constructing a giant array, make this return an
         iterator?
       code
         fun bytes(value: String) List[Byte] { ... }
+        fun string(bytes: List[Byte]) String { ... }
       code
         fun char(string: String) Byte {
           var bytes = string.bytes()
@@ -951,6 +944,22 @@ chapter Root
           combine(list.length().hash(), list.iter().hash(hash_item))
         }
     chapter Formatting
+      code
+        fun format(int: Int) String { int.format(10) }
+        fun format(int: Int, radix: Int) String {
+          assert(radix >= 2 and radix <= 16, "Radix must be between 2 and 16.")
+          if int < 0 then
+            "-" + format_negative(int, radix)
+          else
+            format_negative(0 - int, radix)
+        }
+        # Keep the magnitude negative so min_int never needs to be negated.
+        fun format_negative(int: Int, radix: Int) String {
+          var rest = int / radix
+          var digit_value = {rest * radix} - int
+          var digit = string(list("0123456789abcdef".bytes().get(digit_value)))
+          if rest == 0 then digit else format_negative(rest, radix) + digit
+        }
       code
         fun format(bool: Bool) String { if bool then "true" else "false" }
         fun format(o: Ordering) String {
