@@ -2353,15 +2353,15 @@ enum AstExpr {
   name: String,            | foo
   call: AstCall,              | ...(arg)
   lambda: AstLambda,
-  make_struct: AstMakeStruct, | Foo { a = ... }
+  make_struct: AstMakeStruct, | Foo(a, b = ...)
   make_enum: AstMakeEnum,     | Maybe.some(5)
   member: AstMember,          | foo.bar
-  var_: AstVar,               | var foo = ...
-  switch_: AstSwitch,         | foo switch { a ... b(bar) ... }
+  var_: AstVar,               | foo = ...
+  switch_: AstSwitch,         | foo %(a ... b(bar) ...)
   block: List[AstExpr],       | { ... }
   try_scope: &AstExpr,        | try ...
 }
-struct AstLambda { args: List[AstFunArg], body: List[AstExpr] }
+struct AstLambda { args: List[AstFunArg], body: &AstExpr }
 struct AstCall {
   callee: &AstExpr, type_args: Maybe[List[Type]], args: List[AstExpr]
 }
@@ -2562,7 +2562,7 @@ fun parse_upper_name(parser: &Parser): Maybe[String] {
 
 fun parse_operator_name(parser: &Parser): Maybe[String] {
   parser.consume_whitespace()
-  var allowed = "%!~@^\\`/&|*+$-<>=."
+  var allowed = "!~@^`/&|*+$-<>=."
   var start = parser.cursor
   loop {
     var char = parser.current()
@@ -2657,18 +2657,27 @@ fun to_int(precedence: Precedence): Int {
 fun <=>(a: Precedence, b: Precedence): Ordering { a.to_int() <=> b.to_int() }
 
 fun parse_expr(parser: &Parser, precedence: Precedence): Maybe[AstExpr] {
-  var expr = parser.parse_expr_without_suffix()
-    or return none[AstExpr]()
+  var bindings = list[AstExpr]()
+  loop {
+    if parser.parse_var() is some(binding) then bindings.&.push(AstExpr.var_(binding))
+    else break
+  }
+  var expr = parser.parse_expr_without_suffix() or {
+    if bindings.is_not_empty() then return some(AstExpr.block(bindings))
+    return none[AstExpr]()
+  }
   loop expr = parser.parse_expr_suffix(expr, precedence) or break
-  some(expr)
+  if bindings.is_empty() then return some(expr)
+  bindings.&.push(expr)
+  some(AstExpr.block(bindings))
 }
 fun parse_expr_without_suffix(parser: &Parser): Maybe[AstExpr] {
+  if parser.consume_keyword("_") then panic("The discard binding _ cannot be read.")
   if parser.parse_number() is some(int) then return some(int)
   if parser.parse_str() is some(string) then return some(string)
   if parser.parse_lambda() is some(lambda) then return some(AstExpr.lambda(lambda))
   if parser.parse_make() is some(make) then return some(make)
   if parser.parse_block() is some(blck) then return some(AstExpr.block(blck))
-  if parser.parse_var() is some(var_) then return some(AstExpr.var_(var_))
   if parser.parse_if() is some(if_) then return some(if_)
   if parser.parse_try_scope() is some(try_) then return some(try_)
   if parser.parse_lower_name() is some(n) then return some(AstExpr.name(n))
@@ -2693,6 +2702,7 @@ fun parse_expr_suffix(parser: &Parser, expr: AstExpr, precedence: Precedence): M
 }
 
 fun parse_digits(parser: &Parser): Maybe[Int] {
+  if not(parser.current().is_digit()) then return none[Int]()
   var start = parser.cursor
   var num = 0
   loop {
@@ -2806,14 +2816,28 @@ fun parse_str_parts(parser: &Parser): Maybe[List[AstExpr]] {
   some(parts)
 }
 
-| Parses either a struct creation such as Foo { foo, bar = 4 } or an enum
+| Parses a named struct call such as Foo(foo, bar = 4), or an enum
 | creation such as Maybe[Int].some(4).
 fun parse_make(parser: &Parser): Maybe[AstExpr] {
   parser.consume_whitespace()
   var start = parser.cursor
   var type = parser.parse_type() or return none[AstExpr]()
   var end = parser.cursor
-  if parser.consume_prefix("\{") then {
+  if parser.consume_prefix("(") then {
+    var fields = list[AstMakeStructField]()
+    loop {
+      if parser.consume_prefix(")") then break
+      var name = parser.parse_lower_name() or panic("Expected a named struct field.")
+      var value = if parser.consume_binding_equals() then
+        parser.parse_expr() or panic("Expected the value of the field.")
+      else AstExpr.name(name)
+      fields.&.push(AstMakeStructField { name, value })
+      if parser.consume_prefix(",") then continue
+      parser.consume_prefix(")") or panic("Expected a comma or closing parenthesis after the struct field.")
+      break
+    }
+    some(AstExpr.make_struct(AstMakeStruct { type, fields }))
+  } else if parser.consume_prefix("\{") then {
     var fields = list[AstMakeStructField]()
     loop {
       var name = parser.parse_lower_name() or break
@@ -2851,75 +2875,72 @@ fun parse_make(parser: &Parser): Maybe[AstExpr] {
 fun parse_block(parser: &Parser): Maybe[List[AstExpr]] {
   parser.consume_prefix("\{") or return none[List[AstExpr]]()
   var statements = list[AstExpr]()
-  loop statements.&.push(parser.parse_expr() or break)
+  loop {
+    if parser.parse_var() is some(binding) then statements.&.push(AstExpr.var_(binding))
+    else statements.&.push(parser.parse_expr() or break)
+  }
   parser.consume_prefix("}") or panic(
     "Expected the closing brace of the block.")
   some(statements)
 }
 
+| Equality and arrow operators must not be mistaken for a binding.
+fun consume_binding_equals(parser: &Parser): Bool {
+  parser.consume_whitespace()
+  if parser.rest().starts_with("==") or parser.rest().starts_with("=>") then return false
+  parser.consume_prefix("=")
+}
 fun parse_var(parser: &Parser): Maybe[AstVar] {
-  parser.consume_keyword("var") or return none[AstVar]()
-  var name = parser.parse_lower_name() or panic("Expected the name of the variable.")
-  parser.consume_prefix("=") or panic("Expected an equals sign.")
+  var start = parser.cursor
+  var legacy = parser.consume_keyword("var")
+  var name = if parser.consume_keyword("_") then "_" else parser.parse_lower_name() or {
+    if legacy then panic("Expected the name of the variable.")
+    parser.cursor = start
+    return none[AstVar]()
+  }
+  if not(parser.consume_binding_equals()) then {
+    if legacy then panic("Expected an equals sign.")
+    parser.cursor = start
+    return none[AstVar]()
+  }
   var value = parser.parse_expr() or panic("Expected the value of the variable.")
   some(AstVar { name, value = value.put_on_heap() })
 }
 
-| An if can take multiple forms:
-| - if condition then foo
-| - if condition then foo else bar
-| - if condition is variant then foo
-| - if condition is variant then foo else bar
-| - if condition is variant(binding) then foo
-| - if condition is variant(binding) then foo else bar
-| They all get desugared into a switch.
+| An if consists of three expressions: condition, true branch, false branch.
+| The branch expressions are lazy; the conditional desugars into a switch.
 fun parse_if(parser: &Parser): Maybe[AstExpr] {
-  var keyword = parser.consume_keyword("if") or return none[AstExpr]()
-  var condition = parser.parse_expr(Precedence.or)
-    or panic("Expected the condition.")
-  var variant = "true"
-  var binding = none[String]()
-  if parser.consume_keyword("is") then {
-    variant = parser.parse_lower_name()
-      or panic("Expected a variant.")
-    if parser.consume_prefix("(") then {
-      binding = some(parser.parse_lower_name()
-        or panic("Expected the name of the binding."))
-      parser.consume_prefix(")")
-        or panic("Expected a closing parenthesis.")
-      {}
-    }
-  }
-  parser.consume_keyword("then") or panic("Expected then keyword.")
-  var then_ = parser.parse_expr() or panic("Expected a then expression.")
-  var else_ = AstExpr.block(list[AstExpr]())
-  if parser.consume_keyword("else") then {
-    else_ = parser.parse_expr() or panic("Expected an else expression.")
-  }
+  parser.consume_keyword("if") or return none[AstExpr]()
+  var condition = parser.parse_expr() or panic("Expected the condition after if.")
+  var then_ = parser.parse_expr() or panic("Expected the true branch after the if condition.")
+  var else_ = parser.parse_expr() or panic("Expected the false branch after the true branch.")
   some(AstExpr.switch_(AstSwitch {
     value = condition.put_on_heap(),
-    cases = list(AstCase { variant, binding, body = then_ }),
+    cases = list(AstCase { variant = "true", binding = none[String](), body = then_ }),
     default_ = some(else_.put_on_heap()),
   }))
 }
 
-| Switch binds after operators so `a <=> b switch { ... }` switches on
+| Switch binds after operators so `a <=> b %(...)` switches on
 | the comparison result. Arm bodies are expressions, including nested switches.
 fun parse_expr_suffix_switch(parser: &Parser, value: AstExpr): Maybe[AstExpr] {
-  parser.consume_keyword("switch") or return none[AstExpr]()
-  parser.consume_prefix("\{") or panic("Expected an opening brace after switch.")
+  var legacy = parser.consume_keyword("switch")
+  if not(legacy) and not(parser.consume_prefix("%")) then return none[AstExpr]()
+  var closing = if legacy then "}" else ")"
+  parser.consume_prefix(if legacy then "\{" else "(")
+    or panic("Expected an opening delimiter after switch.")
   var cases = list[AstCase]()
   var default_ = none[&AstExpr]()
   loop {
-    if parser.consume_prefix("}") then break
+    if parser.consume_prefix(closing) then break
     if parser.consume_keyword("default") then {
-      var body = parser.parse_expr() or panic("Expected a default expression.")
+      var body = parser.parse_expr() or panic("Expected a case expression.")
       default_ = some(body.put_on_heap())
-      parser.consume_prefix("}") or panic("Expected a closing brace after the default expression.")
+      parser.consume_prefix(closing) or panic("Expected the end of the switch after its default expression.")
       break
     }
     var variant = parser.parse_lower_name()
-      or panic("Expected a variant or the closing brace of the switch.")
+      or panic("Expected a variant or the end of the switch.")
     var binding = none[String]()
     if parser.consume_prefix("(") then {
       binding = some(parser.parse_lower_name()
@@ -2969,7 +2990,18 @@ fun parse_expr_suffix_call(parser: &Parser, current: AstExpr): Maybe[AstExpr] {
 }
 
 fun parse_expr_suffix_operator(parser: &Parser, current: AstExpr): Maybe[AstExpr] {
+  var start = parser.cursor
   var operator = parser.parse_operator_name() or return none[AstExpr]()
+  | A following parameter list belongs to the next operator definition. Yam
+  | groups expressions with braces, so an operand cannot start with a parenthesis.
+  var after_operator = parser.cursor
+  parser.parse_type_params().ignore()
+  parser.consume_whitespace()
+  if parser.rest().starts_with("(") then {
+    parser.cursor = start
+    return none[AstExpr]()
+  }
+  parser.cursor = after_operator
   var value = parser.parse_expr(Precedence.immediate)
     or panic("Expected an expression on the right side of the operator.")
   some(AstExpr.name(operator).call(none[List[Type]](), list(current, value)))
@@ -3045,9 +3077,12 @@ fun parse_expr_suffix_try(parser: &Parser, current: AstExpr): Maybe[AstExpr] {
   panic("The try suffix is not supported yet.")
 }
 
+| A closure body has optional leading bindings and one result expression.
 fun parse_lambda(parser: &Parser): Maybe[AstLambda] {
-  parser.consume_keyword("fun") or return none[AstLambda]()
-  parser.consume_prefix("(") or panic("Expected an opening parenthesis after fun.")
+  var legacy = parser.consume_keyword("fun")
+  if legacy then {
+    assert(parser.consume_prefix("("), "Expected an opening parenthesis after fun.")
+  } else if not(parser.consume_prefix("\\")) then return none[AstLambda]()
   var args = list[AstFunArg]()
   loop {
     var name = parser.parse_lower_name() or break
@@ -3056,19 +3091,30 @@ fun parse_lambda(parser: &Parser): Maybe[AstLambda] {
     args.&.push(AstFunArg { name, type })
     parser.consume_prefix(",") or break
   }
-  parser.consume_prefix(")") or panic("Expected a closing parenthesis after lambda parameters.")
-  var body = parser.parse_block() or panic("Expected a lambda body.")
-  some(AstLambda { args, body })
+  if legacy then {
+    assert(parser.consume_prefix(")"), "Expected a closing parenthesis after lambda parameters.")
+  } else assert(parser.consume_prefix("->"), "Expected -> after lambda parameters.")
+  var body = parser.parse_expr() or panic("Expected a lambda body expression.")
+  some(AstLambda { args, body = body.put_on_heap() })
 }
 
 fun parse_fun(parser: &Parser): Maybe[AstFun] {
-  parser.consume_keyword("fun") or return none[AstFun]()
+  var start = parser.cursor
+  var legacy = parser.consume_keyword("fun")
   var fun_name = parser.parse_lower_name()
     or parser.parse_operator_name()
-    or panic("Expected a lowercase name or operator name of the function.")
+    or {
+      if legacy then panic("Expected a lowercase name or operator name of the function.")
+      parser.cursor = start
+      return none[AstFun]()
+    }
   var type_args = parser.parse_type_params() or list[String]()
   var args = list[AstFunArg]()
-  parser.consume_prefix("(") or panic("Expected an opening parenthesis.")
+  if not(parser.consume_prefix("(")) then {
+    if legacy then panic("Expected an opening parenthesis.")
+    parser.cursor = start
+    return none[AstFun]()
+  }
   loop {
     var name = parser.parse_lower_name() or break
     parser.consume_prefix(":") or panic("Expected a colon.")
@@ -3080,10 +3126,13 @@ fun parse_fun(parser: &Parser): Maybe[AstFun] {
     or panic(
       "Expected a parameter or closing parenthesis.")
   var returns = parser.parse_type() or type("Nothing")
+  if not(legacy) then assert(parser.consume_prefix("="), "Expected an equals sign after the function signature.")
   var kind =
-    if parser.consume_prefix("\{ ... }") then AstFunKind.builtin
-    else if parser.parse_block() is some(block) then AstFunKind.body(block)
-    else panic("Expected a function body.")
+    if parser.consume_prefix("...") or parser.consume_prefix("\{ ... }") then AstFunKind.builtin
+    else {
+      var body = parser.parse_expr() or panic("Expected a function body expression.")
+      AstFunKind.body(if body is block(expressions) then expressions else list(body))
+    }
   some(AstFun {
     name = fun_name, type_args, args, returns, kind
   })
@@ -3223,8 +3272,11 @@ fun parse_code(parser: &Parser): AstCode {
 }
 
 fun parse_type_def(parser: &Parser): Maybe[AstDef] {
-  parser.consume_keyword("type") or return none[AstDef]()
-  var name = parser.parse_upper_name() or panic("Expected an uppercase type name.")
+  var legacy = parser.consume_keyword("type")
+  var name = parser.parse_upper_name() or {
+    if legacy then panic("Expected an uppercase type name.")
+    return none[AstDef]()
+  }
   var type_args = parser.parse_type_params() or list[String]()
   parser.consume_prefix("=") or panic("Expected an equals sign after the type name.")
   if parser.consume_prefix("...") then
@@ -3483,7 +3535,8 @@ fun compile_structure(state: &NotebookState, path: String, ast: AstStructure) {
         var name = "$global{state.next_global}"
         state.next_global = state.next_global + 1
         state.bindings.&.push(ProgramBinding { name, value = code.object })
-        state.vars.&.put(v.name, TypedObject { type = code.type, object = name_expr(name) })
+        if v.name != "_" then
+          state.vars.&.put(v.name, TypedObject { type = code.type, object = name_expr(name) })
       }
     }
   }
@@ -3752,7 +3805,7 @@ fun type_check(
       types.&.push(type)
       scope.&.put(arg.name, type)
     }
-    var body = state.type_check(AstExpr.block(lambda.body), type_params, scope.&)
+    var body = state.type_check(lambda.body.*, type_params, scope.&)
     types.&.push(body.type)
     var captures = set[String]()
     body.free_names(names.to_set(), captures.&)
@@ -3859,7 +3912,7 @@ fun type_check(
   }
   case var_(var_) {
     var value = state.type_check(var_.value.*, type_params, locals)
-    locals.put(var_.name, value.type)
+    if var_.name != "_" then locals.put(var_.name, value.type)
     TypedExpr {
       type = if value.type.is_never() then type("Never") else type("Nothing"),
       kind = TypedExprKind.var_(TypedVar { name = var_.name, value = value.put_on_heap() }),
@@ -4346,11 +4399,20 @@ fun builtin(f: AstFun): ObjectId {
     )
   }
 
-  if signature == "%(Int, Int)" then {
-    assert(f.returns == type("Int"), "Integer builtin % must return Int.")
+  if signature == "mod(Int, Int)" then {
+    assert(f.returns == type("Int"), "Integer builtin mod must return Int.")
     return binary_expr("modulo",
       name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
     )
+  }
+
+  if signature == "rem(Int, Int)" or signature == "rem(Byte, Byte)" then {
+    assert(f.returns == type(if signature == "rem(Int, Int)" then "Int" else "Byte"))
+    var left = name_expr(f.args.get(0).name)
+    var right = name_expr(f.args.get(1).name)
+    return require_expr(flag_expr(6, right, int_expr(0)), "Integer remainder by zero.",
+      binary_expr("subtract", left,
+        binary_expr("multiply", binary_expr("divide", left, right), right)))
   }
 
   if signature == "&(Int, Int)" then {
@@ -4421,8 +4483,8 @@ fun builtin(f: AstFun): ObjectId {
     return binary_expr("and",value, object_expr(leaf(list(255))))
   }
 
-  if signature == "%(Byte, Byte)" then {
-    assert(f.returns == type("Byte"), "Integer builtin % must return Byte.")
+  if signature == "mod(Byte, Byte)" then {
+    assert(f.returns == type("Byte"), "Integer builtin mod must return Byte.")
     var value = binary_expr("modulo",
       name_expr(f.args.get(0).name), name_expr(f.args.get(1).name),
     )
@@ -4682,7 +4744,9 @@ fun lower_block(state: &NotebookState, exprs: Slice[TypedExpr], params: Set[Stri
   var first = exprs.get(0)
   if first.kind is var_(var_) then {
     var value = state.lower(var_.value.*, params)
-    return let_expr(var_.name, value, state.lower_block(exprs.without_first(), params))
+    var rest = state.lower_block(exprs.without_first(), params)
+    if var_.name == "_" then return binary_expr("also", value, rest)
+    return let_expr(var_.name, value, rest)
   }
   var code = state.lower(first, params)
   if exprs.len == 1 then return code
