@@ -17,6 +17,13 @@ chapter Root
       comfortable to create, use, and customize tools. Orchard is my attempt at
       creating a personal computing medium.
   chapter Core
+    chapter Identity
+      text
+        identity returns its argument unchanged. Wrapping a branch in identity
+        gives local bindings and their result explicit parentheses, so the next
+        branch is easy to distinguish.
+      code
+        identity[T](value: T) T = value
     chapter Nothing
       text
         Nothing is a type with only one instance. You might know it from other
@@ -543,7 +550,7 @@ chapter Root
         bytes(value: String) List[Byte] = ...
         string(bytes: List[Byte]) String = ...
       code
-        char(string: String) Byte =
+        byte(string: String) Byte =
           bytes = string.bytes()
           _ = assert(bytes.length() == 1, "Expected a single-byte character")
           bytes.get(0)
@@ -796,6 +803,85 @@ chapter Root
               some(NextState(item = list.get(index), state = index + 1)))
         to_list[T](iter: Iter[T]) List[T] =
           iter.fold(list[T](), \ list: List[T], item: T -> list.push(item))
+    chapter Characters
+      text
+        A Char is one character of text. For now it contains a Unicode scalar
+        value; later it can represent a whole grapheme cluster. Character lists
+        let layout and editing share the same unit instead of indexing UTF-8
+        bytes. char(codepoint) constructs a Char and checks its range.
+      code
+        Char = struct { codepoint: Int }
+        char(codepoint: Int) Char =
+          _ = assert(codepoint >= 0 and codepoint <= 1114111
+            and not(codepoint >= 55296 and codepoint <= 57343),
+            "Expected a Unicode scalar value.")
+          Char(codepoint)
+        ==(a: Char, b: Char) Bool = a.codepoint == b.codepoint
+      text
+        chars decodes a string into characters. Invalid UTF-8 bytes become
+        replacement characters, advancing one byte at a time so decoding can
+        continue. char(text) expects exactly one decoded character.
+      code
+        decode_char(bytes: List[Byte], index: Int) NextState[Char, Int] =
+          first = bytes.get(index).to_int()
+          length = if first < 128 1
+            if first >= 194 and first <= 223 2
+            if first >= 224 and first <= 239 3
+            if first >= 240 and first <= 244 4 0
+          invalid = NextState(item = char(65533), state = index + 1)
+          if length == 1 NextState(item = char(first), state = index + 1)
+          if length == 0 or {index + length} > bytes.length() invalid
+            identity(
+              continuation = bytes.slice({index + 1} .. {index + length})
+              if
+                not(continuation.iter().all(\ byte: Byte ->
+                  byte.to_int() >= 128 and byte.to_int() <= 191))
+                invalid
+                identity(
+                  header =
+                    if length == 2 first - 192
+                    if length == 3 first - 224
+                    first - 240
+                  value =
+                    continuation.iter().fold(header, \ value: Int, byte: Byte ->
+                      {value * 64} + {byte.to_int() - 128})
+                  minimum =
+                    if length == 2 128 if length == 3 2048 65536
+                  if
+                    value < minimum or value > 1114111
+                      or {value >= 55296 and value <= 57343}
+                    invalid
+                    NextState(item = char(value), state = index + length)))
+        chars(value: String) List[Char] =
+          bytes = value.bytes()
+          iter_from_state(0, \ index: Int ->
+            if index == bytes.length() none[NextState[Char, Int]]()
+              some(decode_char(bytes, index))).to_list()
+        char(value: String) Char =
+          chars = value.chars()
+          _ = assert(chars.length() == 1, "Expected one character.")
+          chars.get(0)
+      text
+        bytes encodes one character as UTF-8. string packs the encoded bytes
+        of a character or a whole character list back into text.
+      code
+        bytes(character: Char) List[Byte] =
+          code = character.codepoint
+          if code < 128 list(code.to_byte())
+          if code < 2048 list(
+            {192 + {code / 64}}.to_byte(), {128 + mod(code, 64)}.to_byte())
+          if code < 65536 list(
+            {224 + {code / 4096}}.to_byte(),
+            {128 + mod(code / 64, 64)}.to_byte(),
+            {128 + mod(code, 64)}.to_byte())
+          list(
+            {240 + {code / 262144}}.to_byte(),
+            {128 + mod(code / 4096, 64)}.to_byte(),
+            {128 + mod(code / 64, 64)}.to_byte(),
+            {128 + mod(code, 64)}.to_byte())
+        string(character: Char) String = string(character.bytes())
+        string(chars: List[Char]) String =
+          string(chars.iter().flat_map(\ character: Char -> character.bytes().iter()).to_list())
     chapter Hashing
       code
         Hash = struct { value: Int }
@@ -855,7 +941,7 @@ chapter Root
         color(hex: String) Color =
           digits = hex.bytes()
           _ = assert(digits.length() == 7, "Expected #RRGGBB")
-          _ = assert(digits.get(0) == char("#"), "Expected #RRGGBB")
+          _ = assert(digits.get(0) == byte("#"), "Expected #RRGGBB")
           color(
             digits.slice(1..3).parse_int(16).to_byte(),
             digits.slice(3..5).parse_int(16).to_byte(),
@@ -1066,26 +1152,27 @@ chapter Root
         pixel_glyph(width: Int, pixels: String) Glyph =
           parsed = pixels.bytes().iter().fold(
             0, 0, list[Path](),
-            \ x: Int, y: Int, paths: List[Path], byte: Byte ->
-              if byte == char("|")
+            \ x: Int, y: Int, paths: List[Path], pixel: Byte ->
+              if pixel == byte("|")
                 tuple(0, y + 1, paths)
-                _ = assert(x < width, "Pixel glyph row exceeds its width")
-                _ = assert(
-                  byte == char(" ") or byte == char("M"),
-                  "Invalid glyph pixel")
-                px = x.to_float()
-                py = y.to_float()
-                tuple(
-                  x + 1,
-                  y,
-                  if byte == char(" ")
-                    paths
-                    paths.push(
-                      path()
-                        .move_to(px, py)
-                        .line_to(px + 1.0, py)
-                        .line_to(px + 1.0, py + 1.0)
-                        .line_to(px, py + 1.0))))
+                identity(
+                  _ = assert(x < width, "Pixel glyph row exceeds its width")
+                  _ = assert(
+                    pixel == byte(" ") or pixel == byte("M"),
+                    "Invalid glyph pixel")
+                  px = x.to_float()
+                  py = y.to_float()
+                  tuple(
+                    x + 1,
+                    y,
+                    if pixel == byte(" ")
+                      paths
+                      paths.push(
+                        path()
+                          .move_to(px, py)
+                          .line_to(px + 1.0, py)
+                          .line_to(px + 1.0, py + 1.0)
+                          .line_to(px, py + 1.0)))))
           _ = assert(parsed.a == 0, "Pixel glyph must end with a row separator")
           Glyph(width = width.to_float(), paths = parsed.c)
       code
@@ -1190,44 +1277,11 @@ chapter Root
           .push(pixel_glyph(4, "MM| MM| MM| MM| MM|  MM| MM| MM| MM| MM|MM|"))
           .push(pixel_glyph(7, "||||  MM  M| M  MM|M  M|"))
       code
-        find_glyph(codepoint: Int) Glyph =
+        find_glyph(character: Char) Glyph =
+          codepoint = character.codepoint
           if codepoint >= 32 and codepoint <= 126
             text_glyphs.get(codepoint - 32)
             fallback_glyph
-        decode_text_codepoint(bytes: List[Byte], index: Int) NextState[Int, Int] =
-          first = bytes.get(index).to_int()
-          length = if first < 128 1
-            if first >= 194 and first <= 223 2
-            if first >= 224 and first <= 239 3
-            if first >= 240 and first <= 244 4 0
-          invalid = NextState(item = 65533, state = index + 1)
-          if length == 1 NextState(item = first, state = index + 1)
-          if length == 0 or {index + length} > bytes.length() invalid
-            continuation = bytes.slice({index + 1} .. {index + length})
-            if
-              not(continuation.iter().all(\ byte: Byte ->
-                byte.to_int() >= 128 and byte.to_int() <= 191))
-              invalid
-              header =
-                if length == 2 first - 192
-                if length == 3 first - 224
-                first - 240
-              value =
-                continuation.iter().fold(header, \ value: Int, byte: Byte ->
-                  {value * 64} + {byte.to_int() - 128})
-              minimum =
-                if length == 2 128 if length == 3 2048 65536
-              if
-                value < minimum or value > 1114111
-                  or {value >= 55296 and value <= 57343}
-                invalid
-                NextState(item = value, state = index + length)
-        text_codepoints(value: String) Iter[Int] =
-          bytes = value.bytes()
-          iter_from_state(0, \ index: Int ->
-            if index == bytes.length()
-            none[NextState[Int, Int]]()
-            some(decode_text_codepoint(bytes, index)))
         PositionedGlyph = struct { glyph: Glyph, position: Position }
         TextLayout = struct { size: Size, glyphs: List[PositionedGlyph] }
         TextLayoutState = struct {
@@ -1237,14 +1291,14 @@ chapter Root
           height: Float,
           word_start: Bool,
           glyphs: List[PositionedGlyph]}
-        text_word_width(chars: List[Int], index: Int) Float =
-          if index == chars.length() 0.0 {
+        text_word_width(chars: List[Char], index: Int) Float =
+          if index == chars.length() 0.0 identity(
             char = chars.get(index)
-            if char == 32 or char == 10 0.0
-              rest = text_word_width(chars, index + 1)
-              find_glyph(char).width + if rest > 0.0 1.0 + rest 0.0}
-        layout_text(value: String, max_width: Maybe[Float]) TextLayout =
-          chars = text_codepoints(value).to_list()
+            if char.codepoint == 32 or char.codepoint == 10 0.0
+              identity(
+                rest = text_word_width(chars, index + 1)
+                find_glyph(char).width + if rest > 0.0 1.0 + rest 0.0))
+        layout_text(chars: List[Char], max_width: Maybe[Float]) TextLayout =
           layout = chars.iter().indexed().fold(
             TextLayoutState(
               x = 0.0,
@@ -1253,14 +1307,14 @@ chapter Root
               height = 0.0,
               word_start = true,
               glyphs = list[PositionedGlyph]()),
-            \ state: TextLayoutState, item: Indexed[Int] ->
-              if item.item == 10
+            \ state: TextLayoutState, item: Indexed[Char] ->
+              if item.item.codepoint == 10
                 TextLayoutState(
                   x = 0.0, y = state.y + text_line_height,
                   width = state.width, height = state.y + {2.0 * text_line_height},
                   word_start = true, glyphs = state.glyphs)
-                {
-                  wrap = state.word_start and item.item != 32 and state.x > 0.0
+                identity(
+                  wrap = state.word_start and item.item.codepoint != 32 and state.x > 0.0
                     and
                       {max_width %(
                         none false
@@ -1273,14 +1327,14 @@ chapter Root
                     x = x + glyph.width + 1.0, y,
                     width = max(state.width, x + glyph.width),
                     height = max(state.height, y + text_line_height),
-                    word_start = item.item == 32,
+                    word_start = item.item.codepoint == 32,
                     glyphs = state.glyphs.push(PositionedGlyph(
-                        glyph, position = position(x, y))))})
+                        glyph, position = position(x, y))))))
           TextLayout(
             size = size(layout.width, layout.height), glyphs = layout.glyphs)
-        layout_text(value: String, max_width: Float) TextLayout =
-          layout_text(value, some(max_width))
-        layout_text(value: String) TextLayout = layout_text(value, none[Float]())
+        layout_text(chars: List[Char], max_width: Float) TextLayout =
+          layout_text(chars, some(max_width))
+        layout_text(chars: List[Char]) TextLayout = layout_text(chars, none[Float]())
         draw_glyph(glyph: Glyph, color: Color) DrawCommand =
           draw_all(
             glyph.paths.iter()
@@ -1451,8 +1505,10 @@ chapter Root
         text
           A Widget stores its concrete configuration as Dynamic. Its element
           callbacks retain the concrete state and implementation, so the casts
-          stay inside widget and widget_element. Updating with another widget
-          implementation violates this contract.
+          stay inside widget and widget_element. Updating an element requires
+          the same widget implementation and configuration type. Wrap branches
+          with key_widget and give them different keys when their widget types
+          or semantic identities differ, or when their state should reset.
           create_element builds the initial element. Element functions ending
           in _fun store implementation callbacks; widgets call the wrappers. The
           framework does some early return optimizations: If an element receives
@@ -1462,6 +1518,8 @@ chapter Root
           # request_focus carries an updated, focused subtree. Containers must
           # unfocus its siblings before forwarding the request to their parent.
           # Keyboard and text-input wrappers only invoke focused subtrees.
+          # message carries a message together with the updated element.
+          # Containers map the element; stateful updates it with the new value.
           Widget[M] = struct {
             value: Dynamic, new: fun(Constraints) Element[M]}
           Element[M] = struct {
@@ -1479,7 +1537,11 @@ chapter Root
             key_pressed_fun: fun(KeyPressed) EventResult[M, Element[M]],
             char_entered_fun: fun(CharEntered) EventResult[M, Element[M]]}
           EventResult[M, E] = enum {
-            not_handled, handled: E, request_focus: E, message: M}
+            not_handled,
+            handled: E,
+            request_focus: E,
+            message: ElementMessage[M, E]}
+          ElementMessage[M, E] = struct { element: E, message: M }
         code
           WidgetImpl[M, W, E] = struct {
             new: fun(W, Constraints) E,
@@ -1500,7 +1562,9 @@ chapter Root
               handled(value) EventResult[M, B].handled(mapper(value))
               request_focus(value)
                 EventResult[M, B].request_focus(mapper(value))
-              message(value) EventResult[M, B].message(value))
+              message(event)
+                EventResult[M, B].message(ElementMessage(
+                  message = event.message, element = mapper(event.element))))
         code
           refreshed_widget_element[M, W, E](
             impl: WidgetImpl[M, W, E],
@@ -1527,7 +1591,11 @@ chapter Root
                     widget_element(impl, accepted, constraints, true))
                   none EventResult[M, Element[M]].handled(
                     widget_element(impl, next, constraints, false)))
-              message(value) EventResult[M, Element[M]].message(value))
+              message(event)
+                EventResult[M, Element[M]].message(ElementMessage(
+                  message = event.message,
+                  element = refreshed_widget_element(
+                    impl, event.element, constraints, focused))))
           widget_element[M, W, E](
             impl: WidgetImpl[M, W, E], state: E, constraints: Constraints,
             focused: Bool,
@@ -1614,6 +1682,59 @@ chapter Root
             if element.focused
               element.char_entered_fun(char)
               EventResult[M, Element[M]].not_handled
+      chapter KeyWidget
+        text
+          key_widget(key, equals, child) preserves the child's element while
+          equals(old_key, new_key) is true. A different key creates a fresh
+          element using the existing constraints, resetting the child's state.
+          Use different keys for children with different implementations or
+          semantic identities. The wrapper must remain in the same tree position;
+          it does not move elements between positions. The key type and comparison
+          function must stay the same across updates. The original comparison
+          function is retained by the element. Int keys use == by default.
+        code
+          KeyWidget[K, M] = struct { key: K, child: Widget[M] }
+          KeyElement[K, M] = struct { key: K, child: Element[M] }
+          key_widget_child[K, M](
+            e: KeyElement[K, M], child: Element[M]) KeyElement[K, M] =
+            KeyElement(key = e.key, child)
+          key_widget_impl[K, M](equals: fun(K, K) Bool
+            ) WidgetImpl[M, KeyWidget[K, M], KeyElement[K, M]] =
+            WidgetImpl(
+              new = \ w: KeyWidget[K, M], constraints: Constraints ->
+                KeyElement(
+                  key = w.key, child = w.child.create_element(constraints)),
+              update = \ e: KeyElement[K, M], w: KeyWidget[K, M] ->
+                KeyElement(key = w.key,
+                  child = if equals(e.key, w.key) e.child.update(w.child)
+                    w.child.create_element(e.child.constraints)),
+              new_constraints =
+                \ e: KeyElement[K, M], constraints: Constraints ->
+                  key_widget_child(e, e.child.new_constraints(constraints)),
+              mouse_clicked = \ e: KeyElement[K, M], pos: Position ->
+                e.child.mouse_clicked(pos)
+                  . map(\ child: Element[M] -> key_widget_child(e, child)),
+              mouse_scrolled =
+                \ e: KeyElement[K, M], pos: Position, delta: Offset ->
+                  e.child.mouse_scrolled(pos, delta)
+                    . map(\ child: Element[M] -> key_widget_child(e, child)),
+              focus = \ e: KeyElement[K, M] ->
+                e.child.focus()
+                . map(\ child: Element[M] -> key_widget_child(e, child)),
+              unfocus = \ e: KeyElement[K, M] ->
+                key_widget_child(e, e.child.unfocus()),
+              key_pressed = \ e: KeyElement[K, M], key: KeyPressed ->
+                e.child.key_pressed(key)
+                  . map(\ child: Element[M] -> key_widget_child(e, child)),
+              char_entered = \ e: KeyElement[K, M], char: CharEntered ->
+                e.child.char_entered(char)
+                  . map(\ child: Element[M] -> key_widget_child(e, child)),
+              render = \ e: KeyElement[K, M] -> e.child.drawing)
+          key_widget[K, M](
+            key: K, equals: fun(K, K) Bool, child: Widget[M]) Widget[M] =
+            widget(key_widget_impl[K, M](equals), KeyWidget(key, child))
+          key_widget[M](key: Int, child: Widget[M]) Widget[M] =
+            key_widget(key, \ a: Int, b: Int -> a == b, child)
       chapter CastMessage
         text
           cast_message[M] wraps a Widget[Never] as a Widget[M]. The child keeps
@@ -2004,7 +2125,7 @@ chapter Root
           draw_overflow_stripes(extent: Size) DrawCommand =
             if extent.width <= 0.0 or extent.height <= 0.0
               draw_nothing()
-            {
+            identity(
               count = {{extent.width + extent.height} / 16.0}.to_int() + 1
               stripes = {0..count}.iter()
                 .map(\ index: Int ->
@@ -2012,11 +2133,11 @@ chapter Root
                 .to_list()
               draw_all(list(
                 draw_colored_rect(extent, color("#ffeb00")),
-                draw_all(stripes)))}
+                draw_all(stripes))))
           overflow_drawing(
             left: Bool, top: Bool, right: Bool, bottom: Bool, child: Drawing
           ) Drawing =
-            if left or top or right or bottom {
+            if left or top or right or bottom identity(
               width = min(8.0, child.size.width)
               height = min(8.0, child.size.height)
               Drawing(
@@ -2041,7 +2162,7 @@ chapter Root
                         offset(0.0, child.size.height - height)),
                       draw_overflow_stripes(size(child.size.width, height)))
                   draw_nothing())))
-            } child
+            ) child
       chapter ScaleWidget
         text
           The scale widget scales its child.
@@ -2162,7 +2283,7 @@ chapter Root
                   EventResult[Never, TextElement].not_handled,
               render = \ e: TextElement ->
                 drawing =
-                  layout_text(e.value, e.constraints.width.max)
+                  layout_text(e.value.chars(), e.constraints.width.max)
                     .draw_text(e.color)
                 overflow_drawing(
                   false,
@@ -2378,7 +2499,7 @@ chapter Root
                   .map(\ factor: Maybe[Float] -> factor is some)
                   .any())
               intrinsic_layouted.iter().somes().to_list()
-            {
+            identity(
               intrinsic_sum = intrinsic_layouted.iter().somes()
                 .map(\ child: Element[M] -> child.size.main(axis)).sum()
               factors_sum = factors.iter().somes().sum()
@@ -2396,7 +2517,7 @@ chapter Root
                           tight_axis_constraints(available * {f / factors_sum}),
                           cross))
                     none layouted.unwrap()))
-                .to_list()}
+                .to_list())
           flex_event[M](
             e: FlexElement[M], mouse: Position,
             handler: fun(Element[M], Position) EventResult[M, Element[M]],
@@ -2405,7 +2526,7 @@ chapter Root
               if index == e.children.length()
                 Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]].break(
                   EventResult[M, FlexElement[M]].not_handled)
-              {
+              identity(
                 child = e.children.get(index)
                 handler(child, pos) %(
                   not_handled
@@ -2446,9 +2567,11 @@ chapter Root
                                     next
                                     e.children.get(child_index).unfocus()
                                 child.new_constraints(c)))))
-                  message(value)
+                  message(event)
                     Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]]
-                      .break(EventResult[M, FlexElement[M]].message(value)))})
+                      .break(EventResult[M, FlexElement[M]].message(ElementMessage(
+                        message = event.message,
+                        element = flex_children(e, e.children.set(index, event.element))))))))
           flex_children[M](
             e: FlexElement[M], children: List[Element[M]]) FlexElement[M] =
             FlexElement(
@@ -2705,8 +2828,11 @@ chapter Root
                     request_focus(child)
                       EventResult[M, ScrollViewElement[M]].request_focus(
                         scroll_element(e.axis, e.constraints, child, e.scroll))
-                    message(value)
-                      EventResult[M, ScrollViewElement[M]].message(value)
+                    message(event)
+                      EventResult[M, ScrollViewElement[M]].message(
+                        ElementMessage(
+                          message = event.message,
+                          element = scroll_view_child(e, event.element)))
                     not_handled
                       amount = e.axis %(horizontal delta.x vertical delta.y)
                       next =
@@ -2858,21 +2984,19 @@ chapter Root
               request_focus(child)
                 EventResult[M, StatefulElement[S, M, N]].request_focus(
                   stateful_child(e, child))
-              message(value)
-                e.handle(e.state, value) %(
-                  new_state(state)
-                    EventResult[M, StatefulElement[S, M, N]].handled(
-                      StatefulElement(
-                        state,
-                        handle = e.handle,
-                        builder = e.builder,
-                        child =
-                          # TODO: keep element alive; only update
-                          next =
-                            e.builder(state).create_element(e.child.constraints)
-                          if e.child.focused next.focus() or next next))
-                  bubble_up(message)
-                    EventResult[M, StatefulElement[S, M, N]].message(message)))
+              message(event) stateful_message(e, event.element, event.message))
+          stateful_message[S, M, N](
+            e: StatefulElement[S, M, N], child: Element[N], value: N
+            ) EventResult[M, StatefulElement[S, M, N]] =
+            e.handle(e.state, value) %(
+              new_state(state)
+                EventResult[M, StatefulElement[S, M, N]].handled(
+                  StatefulElement(
+                    state, handle = e.handle, builder = e.builder,
+                    child = child.update(e.builder(state))))
+              bubble_up(message)
+                EventResult[M, StatefulElement[S, M, N]].message(ElementMessage(
+                  element = stateful_child(e, child), message)))
           stateful_impl[S, M, N](
           ) WidgetImpl[M, StatefulWidget[S, M, N], StatefulElement[S, M, N]] =
             WidgetImpl(
@@ -2886,11 +3010,10 @@ chapter Root
               update =
                 \ e: StatefulElement[S, M, N], w: StatefulWidget[S, M, N] ->
                   StatefulElement(
-                    state = e.state, handle = w.handle, builder = w.builder,
-                    child =
-                      next =
-                        w.builder(e.state).create_element(e.child.constraints)
-                      if e.child.focused next.focus() or next next),
+                    state = e.state,
+                    handle = w.handle,
+                    builder = w.builder,
+                    child = e.child.update(w.builder(e.state))),
               new_constraints =
                 \ e: StatefulElement[S, M, N], constraints: Constraints ->
                   stateful_child(e, e.child.new_constraints(constraints)),
@@ -2951,7 +3074,8 @@ chapter Root
                 result = e.child.mouse_clicked(pos)
                 result %(
                   not_handled
-                    EventResult[M, OnClickElement[M]].message(e.message)
+                    EventResult[M, OnClickElement[M]].message(ElementMessage(
+                      element = e, message = e.message))
                   default
                     result.map(\ child: Element[M] -> on_click_child(e, child))),
               mouse_scrolled =
@@ -2974,6 +3098,418 @@ chapter Root
               render = \ e: OnClickElement[M] -> e.child.drawing)
           on_click[M](message: M, child: Widget[M]) Widget[M] =
             widget(on_click_impl[M](), OnClickWidget(message, child))
+      chapter EditableText
+        text
+          Editable text is... an editable text. The widget emits the complete
+          new string after each edit.
+        text
+          The cursor contains these pieces of state:
+
+          - anchor: an offset in the char list
+          - active: an offset in the char list
+          - desired_x: the cursor's desired x position in pixels
+
+          If the cursor is not selecting something, the anchor and active offset
+          are the same. If the cursor is selecting something, the anchor and
+          active offset differ – anchor is the part where you started the
+          selection and active is the part that moves on shift+left/right.
+
+          The desired x position is updated when the cursor moves left or right,
+          but not when it's moved up or down. This allows to cursor to remember
+          where it wants to be: If you move up several lines, the cursor will
+          not slowly drift afar, but stay roughly where it was. Even when a much
+          shorter (or empty) line is in between, it will just jump back to its
+          original x position on the next line.
+        code
+          TextCursor = struct { anchor: Int, active: Int, desired_x: Float }
+        text
+          A selection can run in either direction. start and end put its offsets
+          in order so replacement and drawing can use the same range.
+        code
+          start(cursor: TextCursor) Int = min(cursor.anchor, cursor.active)
+          end(cursor: TextCursor) Int = max(cursor.anchor, cursor.active)
+        text
+          The element caches the string, its chars, glyph layout, and cursor
+          positions. Text edits and width changes rebuild these together.
+          Cursor, selection, and focus changes reuse the caches; they do not
+          decode or lay out the text again.
+        code
+          EditableTextElement = struct {
+            value: String,
+            chars: List[Char],
+            layout: TextLayout,
+            positions: List[Position],
+            cursor: TextCursor,
+            active: Bool,
+            constraints: Constraints }
+        text
+          Cursor offsets count chars, but clicks and drawings use pixels.
+          text_cursor_positions maps every insertion offset to a position,
+          including offsets after newlines. text_cursor_pick finds the nearest
+          line first, then the nearest horizontal position on that line.
+        code
+          TextCursorLayout = struct {
+            glyph_index: Int, position: Position, positions: List[Position] }
+          text_cursor_positions(chars: List[Char], layout: TextLayout
+            ) List[Position] =
+            glyphs = layout.glyphs
+            chars.iter().fold(
+              TextCursorLayout(
+                glyph_index = 0, position = position(0.0, 0.0),
+                positions = list(position(0.0, 0.0))),
+              \ state: TextCursorLayout, character: Char ->
+                code = character.codepoint
+                next = if code == 10
+                  position(0.0, state.position.y + text_line_height)
+                  identity(
+                    glyph = glyphs.get(state.glyph_index)
+                    position(glyph.position.x + glyph.glyph.width + 1.0,
+                      glyph.position.y))
+                TextCursorLayout(
+                  glyph_index = state.glyph_index + if code == 10 0 1,
+                  position = next, positions = state.positions.push(next)))
+              . positions
+          text_cursor_pick(positions: List[Position], target: Position) Int =
+            positions.iter().indexed()
+            . fold(
+                0,
+                \ best: Int, item: Indexed[Position] ->
+                  previous = positions.get(best)
+                  dy = abs(item.item.y - target.y)
+                  best_dy = abs(previous.y - target.y)
+                  if dy < best_dy or
+                    {dy == best_dy
+                      and abs(item.item.x - target.x)
+                        < abs(previous.x - target.x)}
+                    item.index best)
+        text
+          update_chars rebuilds the text-dependent data together so every cached
+          position agrees with the chars and glyphs. update_cursor and
+          update_focus copy these caches without doing any text work.
+        code
+          editable_build(
+            chars: List[Char], cursor: TextCursor, active: Bool,
+            constraints: Constraints) EditableTextElement =
+            layout = layout_text(chars, constraints.width.max)
+            positions = text_cursor_positions(chars, layout)
+            offset = max(0, min(cursor.active, chars.length()))
+            EditableTextElement(
+              value = string(chars),
+              chars,
+              layout,
+              positions,
+              active,
+              constraints,
+              cursor = TextCursor(
+                anchor = max(0, min(cursor.anchor, chars.length())),
+                active = offset,
+                desired_x =
+                  if offset == cursor.active
+                    cursor.desired_x
+                    positions.get(offset).x))
+          editable_local_state(
+            e: EditableTextElement, cursor: TextCursor, active: Bool
+            ) EditableTextElement =
+            EditableTextElement(
+              value = e.value,
+              chars = e.chars,
+              layout = e.layout,
+              positions = e.positions,
+              constraints = e.constraints,
+              cursor,
+              active)
+          update_chars(
+            e: EditableTextElement, chars: List[Char], cursor: TextCursor
+            ) EditableTextElement =
+            editable_build(chars, cursor, e.active, e.constraints)
+          update_cursor(
+            e: EditableTextElement, cursor: TextCursor) EditableTextElement =
+            editable_local_state(e, cursor, e.active)
+          update_focus(
+            e: EditableTextElement, active: Bool) EditableTextElement =
+            editable_local_state(e, e.cursor, active)
+        text
+          Moving the cursor clamps its offset to the char list and remembers its
+          horizontal position. Extending a selection preserves the anchor;
+          an ordinary move places both ends at the new offset.
+        code
+          text_cursor_at(
+            e: EditableTextElement, offset: Int, extend: Bool
+            ) EditableTextElement =
+            positions = e.positions
+            active = max(0, min(offset, positions.length() - 1))
+            e.update_cursor(
+              TextCursor(
+                anchor = if extend e.cursor.anchor active,
+                active,
+                desired_x = positions.get(active).x))
+        text
+          Typing, deletion, and replacing a selection all replace a range of
+          chars. editable_replace splices the list, rebuilds the caches, and
+          places the cursor after the inserted chars. The parent receives the
+          resulting string along with the updated element.
+        code
+          editable_replace(
+            e: EditableTextElement, start: Int, end: Int, inserted: List[Char]
+            ) EventResult[String, EditableTextElement] =
+            chars =
+              e.chars.first(start).push_all(inserted)
+              . push_all(e.chars.without_first(end))
+            next =
+              text_cursor_at(
+                e.update_chars(chars, e.cursor),
+                start + inserted.length(),
+                false)
+            EventResult.message(
+              ElementMessage(message = next.value, element = next))
+        text
+          Control with an arrow or deletion key moves across groups of word
+          characters and punctuation, skipping leading spaces. Home and End
+          instead find a newline boundary in the string, independently of how
+          the text wraps on screen.
+        code
+          is_text_word_char(character: Char) Bool =
+            code = character.codepoint
+            {code >= 65 and code <= 90} or {code >= 97 and code <= 122}
+              or {code >= 48 and code <= 57} or code == 95 or code >= 128
+          text_word_skip(chars: List[Char], index: Int, direction: Int, kind: Int) Int =
+            if index < 0 or index >= chars.length() 0
+              identity(
+                code = chars.get(index).codepoint
+                current =
+                  if code == 32 0 if chars.get(index).is_text_word_char() 1 2
+                if current != kind 0
+                  1 + text_word_skip(chars, index + direction, direction, kind))
+          text_word_distance(chars: List[Char], index: Int, direction: Int) Int =
+            if index < 0 or index >= chars.length() 0
+              identity(
+                code = chars.get(index).codepoint
+                if code == 32
+                  1 + text_word_distance(chars, index + direction, direction)
+                  if chars.get(index).is_text_word_char()
+                    text_word_skip(chars, index, direction, 1)
+                    identity(
+                      punctuation = text_word_skip(chars, index, direction, 2)
+                      if punctuation > 1
+                        punctuation
+                        1 + text_word_skip(chars, index + direction, direction, 1)))
+          text_line_boundary(chars: List[Char], offset: Int, direction: Int) Int =
+            index = if direction < 0 offset - 1 offset
+            if index < 0 or index >= chars.length() offset
+              if chars.get(index).codepoint == 10 offset
+                text_line_boundary(chars, offset + direction, direction)
+        text
+          Key presses use these keycodes to identify keys. Character
+          input arrives separately, so typing text does not depend on keycodes.
+        code
+          key_a = 65
+          key_enter = 257
+          key_backspace = 259
+          key_delete = 261
+          key_arrow_right = 262
+          key_arrow_left = 263
+          key_arrow_down = 264
+          key_arrow_up = 265
+          key_home = 268
+          key_end = 269
+        text
+          Keyboard handling combines these operations. Shift extends a
+          selection, ordinary left/right movement collapses it, and up/down
+          movement keeps the desired horizontal position across short lines.
+          Cursor-only changes update the element; edits also notify the parent.
+        code
+          editable_key(e: EditableTextElement, key: KeyPressed
+            ) EventResult[String, EditableTextElement] =
+            chars = e.chars
+            start = e.cursor.start()
+            end = e.cursor.end()
+            selected = start != end
+            code = key.keycode
+            if key.alt EventResult[String, EditableTextElement].not_handled
+            if key.control and code == key_a
+              EventResult[String, EditableTextElement].handled(
+                text_cursor_at(text_cursor_at(e, 0, false), chars.length(), true))
+            if code == key_enter and not(key.shift)
+              identity(
+                offset = text_line_boundary(chars, e.cursor.active, 1)
+                if key.control editable_replace(e, offset, offset, list(char(10)))
+                  editable_replace(e, start, end, list(char(10))))
+            if {code == key_backspace or code == key_delete} and not(key.shift)
+              identity(
+                from = if selected start
+                  if code == key_backspace
+                    if key.control
+                      e.cursor.active
+                        - text_word_distance(chars, e.cursor.active - 1, -1)
+                      max(0, e.cursor.active - 1)
+                    e.cursor.active
+                to = if selected end
+                  if code == key_delete
+                    if key.control
+                      e.cursor.active
+                        + text_word_distance(chars, e.cursor.active, 1)
+                      min(chars.length(), e.cursor.active + 1)
+                    e.cursor.active
+                if from == to EventResult[String, EditableTextElement].handled(e)
+                  editable_replace(e, from, to, list[Char]()))
+            if code == key_arrow_right or code == key_arrow_left
+              identity(
+                right = code == key_arrow_right
+                offset =
+                  if key.control
+                    if right
+                      e.cursor.active
+                        + text_word_distance(chars, e.cursor.active, 1)
+                      e.cursor.active
+                        - text_word_distance(chars, e.cursor.active - 1, -1)
+                    if selected and not(key.shift) {if right end start}
+                      e.cursor.active + if right 1 {0 - 1}
+                EventResult[String, EditableTextElement].handled(
+                  text_cursor_at(e, offset, key.shift)))
+            if code == key_home or code == key_end
+              identity(
+                offset = if key.control {if code == key_home 0 chars.length()}
+                  text_line_boundary(
+                    chars, e.cursor.active, if code == key_home {0 - 1} 1)
+                EventResult[String, EditableTextElement].handled(
+                  text_cursor_at(e, offset, key.shift)))
+            if {code == key_arrow_down or code == key_arrow_up}
+                and not(key.control)
+              identity(
+                positions = e.positions
+                current = positions.get(e.cursor.active)
+                y =
+                  current.y
+                    + if code == key_arrow_down
+                        text_line_height
+                        0.0 - text_line_height
+                offset = if y < 0.0 0
+                  if y > positions.get(positions.length() - 1).y chars.length()
+                    text_cursor_pick(positions, position(e.cursor.desired_x, y))
+                next = text_cursor_at(e, offset, key.shift)
+                EventResult[String, EditableTextElement].handled(
+                  e.update_cursor(TextCursor(
+                    anchor = next.cursor.anchor,
+                    active = next.cursor.active,
+                    desired_x = e.cursor.desired_x))))
+            EventResult[String, EditableTextElement].not_handled
+        text
+          A collapsed selection is drawn as a narrow caret. A selection
+          highlights its glyphs and fills the rest of a line when it crosses a
+          newline or wrap. The widget draws this highlight behind the text.
+        code
+          TextSelectionLayout = struct {
+            glyph_index: Int, draws: List[DrawCommand] }
+          editable_highlight(pos: Position, width: Float) DrawCommand =
+            draw_transformed(
+              transform_translate(pos.to_vec().to_offset()),
+              draw_colored_rect(
+                size(max(1.0, width), text_line_height),
+                color("#ffcb10")))
+          editable_cursor_draw(e: EditableTextElement) DrawCommand =
+            positions = e.positions
+            start = start(e.cursor)
+            end = end(e.cursor)
+            if start == end editable_highlight(positions.get(start), 2.0)
+              identity(
+                layout = e.layout
+                width = e.constraints.width.max or {layout.size.width + 2.0}
+                selection = e.chars.iter().indexed().fold(
+                  TextSelectionLayout(
+                    glyph_index = 0,
+                    draws = list[DrawCommand]()),
+                    \ state: TextSelectionLayout, item: Indexed[Char] ->
+                      newline = item.item.codepoint == 10
+                      draw =
+                        if item.index < start or item.index >= end
+                          draw_nothing()
+                          identity(
+                            before = positions.get(item.index)
+                            if newline
+                              editable_highlight(before, width - before.x)
+                              identity(
+                                glyph = layout.glyphs.get(state.glyph_index)
+                                draw_all(list(
+                                  if glyph.position.y > before.y
+                                    editable_highlight(before, width - before.x)
+                                    draw_nothing(),
+                                  editable_highlight(
+                                    glyph.position, glyph.glyph.width + 1.0)))))
+                      TextSelectionLayout(
+                        glyph_index = state.glyph_index + if newline 0 1,
+                        draws = state.draws.push(draw)))
+                draw_all(selection.draws))
+        text
+          The widget connects editing to the element lifecycle. Clicking
+          positions the cursor and requests focus; focus controls whether the
+          cursor is visible. Parent updates replace the chars and clamp both
+          selection endpoints, while preserving the remaining local state.
+        code
+          editable_text_impl(
+            ) WidgetImpl[String, List[Char], EditableTextElement] =
+            WidgetImpl(
+              new = \ chars: List[Char], constraints: Constraints ->
+                editable_build(
+                  chars,
+                  TextCursor(anchor = 0, active = 0, desired_x = 0.0),
+                  false,
+                  constraints),
+              update = \ e: EditableTextElement, chars: List[Char] ->
+                same = e.chars.length() == chars.length() and
+                  zip(e.chars.iter(), chars.iter()).all(
+                    \ pair: Tuple2[Char, Char] -> pair.a == pair.b)
+                if same e e.update_chars(chars, e.cursor),
+              new_constraints =
+                \ e: EditableTextElement, constraints: Constraints ->
+                  if constraints.width == e.constraints.width
+                    EditableTextElement(
+                      value = e.value,
+                      chars = e.chars,
+                      layout = e.layout,
+                      positions = e.positions,
+                      cursor = e.cursor,
+                      active = e.active,
+                      constraints)
+                    editable_build(e.chars, e.cursor, e.active, constraints),
+              mouse_clicked =
+                \ e: EditableTextElement, pos: Position ->
+                  EventResult[String, EditableTextElement].request_focus(
+                    text_cursor_at(
+                      e, text_cursor_pick(e.positions, pos), false)),
+              mouse_scrolled =
+                \ e: EditableTextElement, pos: Position, delta: Offset ->
+                  EventResult[String, EditableTextElement].not_handled,
+              focus = \ e: EditableTextElement -> some(e.update_focus(true)),
+              unfocus = \ e: EditableTextElement -> e.update_focus(false),
+              key_pressed =
+                \ e: EditableTextElement, key: KeyPressed ->
+                  editable_key(e, key),
+              char_entered =
+                \ e: EditableTextElement, event: CharEntered ->
+                  code = event.codepoint
+                  if
+                    code < 32
+                      or code == 127
+                      or code > 1114111
+                      or {code >= 55296 and code <= 57343}
+                    EventResult[String, EditableTextElement].not_handled
+                    editable_replace(
+                      e, start(e.cursor), end(e.cursor), list(char(code))),
+              render = \ e: EditableTextElement ->
+                drawing = e.layout.draw_text(color("#000000"))
+                Drawing(
+                  size =
+                    size(
+                      max(2.0, drawing.size.width + 2.0),
+                      max(text_line_height, drawing.size.height))
+                    . clamp(e.constraints),
+                  draw = draw_all(list(
+                    if e.active editable_cursor_draw(e) draw_nothing(),
+                    drawing.draw))))
+          editable_text(chars: List[Char]) Widget[String] =
+            widget(editable_text_impl(), chars)
+          editable_text(value: String) Widget[String] =
+            editable_text(value.chars())
       chapter Keysink
         text
           Click a keysink to focus it. It displays key presses as bracketed
@@ -2986,19 +3522,20 @@ chapter Root
                 string(list({if key.shift code code + 32}.to_byte()))
                 if code >= 32 and code <= 126
                   if key.shift
-                    plain = "1234567890-=[]\\;',./`".bytes()
-                    shifted = "!@#$%^&*()_+\{\}|:\"<>?~".bytes()
-                    index = plain.iter()
-                      . fold(
-                          0,
-                          none[Int](),
-                          \ index: Int, found: Maybe[Int], byte: Byte ->
-                            tuple(
-                              index + 1,
-                              if byte.to_int() == code some(index) found))
-                      . b
-                    string(list(
-                      index %(some(i) shifted.get(i) none code.to_byte())))
+                    identity(
+                      plain = "1234567890-=[]\\;',./`".bytes()
+                      shifted = "!@#$%^&*()_+\{\}|:\"<>?~".bytes()
+                      index = plain.iter()
+                        . fold(
+                            0,
+                            none[Int](),
+                            \ index: Int, found: Maybe[Int], byte: Byte ->
+                              tuple(
+                                index + 1,
+                                if byte.to_int() == code some(index) found))
+                        . b
+                      string(list(
+                        index %(some(i) shifted.get(i) none code.to_byte()))))
                     string(list(code.to_byte()))
                   if code >= 290 and code <= 314 "f" + {code - 289}.format()
                     if code >= 256 and code <= 269
@@ -3096,6 +3633,13 @@ chapter Root
                   colored(color("#30a080"), padding(6.0, text("increment")))
                   . cast_message[CounterMsg]()))))
       code
+        editable_text_example() Widget[Never] =
+          stateful[String, Never, String](
+            "Edit this text",
+            \ value: String, message: String ->
+              new_state[String, Never](message),
+            \ value: String -> padding(8.0, editable_text(value)))
+      code
         app = run_app(
           scroll_view(Axis.vertical,
             center(
@@ -3118,6 +3662,8 @@ chapter Root
                   keysink(),
                   height_box(8.0),
                   keysink(),
+                  height_box(8.0),
+                  editable_text_example(),
                   text("This is some relatively long example text."),
                   height_box(8.0),
                   colored(color("#e07050"), sized_box(100.0, 100.0)),
@@ -3133,7 +3679,6 @@ chapter Root
       - widgets
         - key
         - button
-        - editable text
         - stack
         - card?
         - icon
