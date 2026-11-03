@@ -1323,18 +1323,57 @@ chapter Root
         the framework updates the element tree accordingly.
       text
         Previously, I just had functions that return Drawings, for example a
-        text function that takes a String and returns a rendered version.
-        However, this is not performant (you have to re-layout and re-render
-        everything every frame) and having internal state is generally useful.
-        For example, if you have a text in a scrollable view, you don't want to
-        re-layout the text every frame, but cache its draw commands.
+        row takes some drawings and returns a drawing that show them next to
+        each other.
+        However, having internal state is generally useful and can improve
+        performance significantly. For example, if you have a text in a scroll
+        view, you don't want to re-layout the text every frame, but cache its
+        draw commands. So, I implemented a widget framework.
       text
-        Constraints (min/max width/height) flow down the tree and concrete
-        sizes flow up the tree. Parent widgets determine the position of child
-        widgets.
+        Each element in the widget tree represents a visual "thing". It has a
+        concrete size and concrete draw commands so you can render it. You only
+        communicate with the element using a fixed set of functions – for
+        example, to tell it "here are new size constraints" or "the mouse
+        clicked here". This will cause the element to update itself.
       text
-        Element.update requires a widget made by the same implementation,
-        including the implementations of corresponding children in the tree.
+        Layouting works like this: Constraints (min/max width/height) flow down
+        the tree and concrete sizes flow up the tree. Parent widgets determine
+        how/if/where to render the child widgets, so child widgets never know
+        their absolute position, they only provide draw commands.
+        Constraints always have a min size (it may be 0), but they might omit
+        the max sizes to give children an unlimited amount of space. This
+        communicates to the children "just be your natural size".
+        Example: In a vertical scroll view, you might have a text and a colored
+        sized box that wants to be 300 x 300 in size. Let's say we want to
+        display these widgets in a window of size 200 x 200. After creating the
+        element tree, we can give the scroll view element tight constraints
+        (width 200 to 200, height 200 to 200), which forces the scroll view to
+        be exactly 200 x 200. The scroll view propagates constraints to its
+        children, but loosens the constraints – for example, because it layouts
+        children toward the left and can scroll, it can provide the constraints
+        (width 0 to 200, height 0 to infinity). The text will layout itself to a
+        width of 200 and return a concrete size (like 200 x 140). The sized box
+        will be forced down to 200 in width, so it may decide to be 200 x 300.
+        Because the scroll view only renders part of that 200 x 440 drawing, it
+        can report 200 x 200 as its size.
+      text
+        Mouse clicks work like this: We tell an element that a mouse clicked
+        happened with the position in its widget. The element can propagate that
+        event to its children with a translated position etc.
+      text
+        Focus works like this: Every element knows whether the focus is inside
+        itself. Every element has a focus function, which can accept or reject
+        the focus (reject if there's nothing focusable inside), and an unfocus
+        function, which moves the focus outside. Mouse and keyboard interactions
+        can cause the focus to change: Widget can request the focus. The parent
+        widget can then unfocus other sibling widgets and move the focus into
+        the element.
+      text
+        Keyboard events are routed toward the focus.
+      text
+        For now, Element.update requires a widget made by the same
+        implementation, including the implementations of corresponding children
+        in the tree.
       chapter Constraints
         code
           AxisConstraints = struct { min: Float, max: Maybe[Float] }
@@ -1415,94 +1454,166 @@ chapter Root
           stay inside widget and widget_element. Updating with another widget
           implementation violates this contract.
           create_element builds the initial element. Element functions ending
-          in _fun store implementation callbacks; widgets call the wrappers.
-          Equal constraints return the existing element without layout or
-          rendering. Updates, changed constraints, and handled events return new
-          elements with cached drawings. Event wrappers reject clicks and scroll
-          events outside the element's bounds before calling its implementation.
+          in _fun store implementation callbacks; widgets call the wrappers. The
+          framework does some early return optimizations: If an element receives
+          the same constraints as before, it's not updated. If an element
+          receives a click event outside its bounds, it's not notified.
         code
+          # request_focus carries an updated, focused subtree. Containers must
+          # unfocus its siblings before forwarding the request to their parent.
+          # Keyboard and text-input wrappers only invoke focused subtrees.
           Widget[M] = struct {
             value: Dynamic, new: fun(Constraints) Element[M]}
           Element[M] = struct {
             constraints: Constraints,
             size: Size,
             drawing: Drawing,
+            focused: Bool,
             update_fun: fun(Widget[M]) Element[M],
             new_constraints_fun: fun(Constraints) Element[M],
             mouse_clicked_fun: fun(Position) EventResult[M, Element[M]],
             mouse_scrolled_fun:
-              fun(Position, Offset) EventResult[M, Element[M]]}
-          EventResult[M, E] = enum {not_handled, handled: E, message: M}
+              fun(Position, Offset) EventResult[M, Element[M]],
+            focus_fun: fun() Maybe[Element[M]],
+            unfocus_fun: fun() Element[M],
+            key_pressed_fun: fun(KeyPressed) EventResult[M, Element[M]],
+            char_entered_fun: fun(CharEntered) EventResult[M, Element[M]]}
+          EventResult[M, E] = enum {
+            not_handled, handled: E, request_focus: E, message: M}
+        code
           WidgetImpl[M, W, E] = struct {
             new: fun(W, Constraints) E,
             update: fun(E, W) E,
             new_constraints: fun(E, Constraints) E,
             mouse_clicked: fun(E, Position) EventResult[M, E],
             mouse_scrolled: fun(E, Position, Offset) EventResult[M, E],
+            focus: fun(E) Maybe[E],
+            unfocus: fun(E) E,
+            key_pressed: fun(E, KeyPressed) EventResult[M, E],
+            char_entered: fun(E, CharEntered) EventResult[M, E],
             render: fun(E) Drawing}
+        code
+          map[M, A, B](
+            result: EventResult[M, A], mapper: fun(A) B) EventResult[M, B] =
+            result %(
+              not_handled EventResult[M, B].not_handled
+              handled(value) EventResult[M, B].handled(mapper(value))
+              request_focus(value)
+                EventResult[M, B].request_focus(mapper(value))
+              message(value) EventResult[M, B].message(value))
+        code
+          refreshed_widget_element[M, W, E](
+            impl: WidgetImpl[M, W, E],
+            state: E,
+            constraints: Constraints,
+            focused: Bool,
+          ) Element[M] =
+            if focused
+              impl.focus(state) %(
+                some(next) widget_element(impl, next, constraints, true)
+                none widget_element(impl, state, constraints, false))
+              widget_element(impl, state, constraints, false)
+          widget_event[M, W, E](
+            impl: WidgetImpl[M, W, E], result: EventResult[M, E],
+            constraints: Constraints, focused: Bool
+          ) EventResult[M, Element[M]] =
+            result %(
+              not_handled EventResult[M, Element[M]].not_handled
+              handled(next) EventResult[M, Element[M]].handled(
+                refreshed_widget_element(impl, next, constraints, focused))
+              request_focus(next)
+                impl.focus(next) %(
+                  some(accepted) EventResult[M, Element[M]].request_focus(
+                    widget_element(impl, accepted, constraints, true))
+                  none EventResult[M, Element[M]].handled(
+                    widget_element(impl, next, constraints, false)))
+              message(value) EventResult[M, Element[M]].message(value))
           widget_element[M, W, E](
-            impl: WidgetImpl[M, W, E], state: E, constraints: Constraints
+            impl: WidgetImpl[M, W, E], state: E, constraints: Constraints,
+            focused: Bool,
           ) Element[M] =
             drawing = impl.render(state)
             Element(
-              constraints,
-              size = drawing.size,
-              drawing,
+              constraints, size = drawing.size, drawing, focused,
+              focus_fun = \ -> impl.focus(state).map(\ next: E ->
+                widget_element(impl, next, constraints, true)),
+              unfocus_fun = \ ->
+                widget_element(impl, impl.unfocus(state), constraints, false),
+              key_pressed_fun = \ key: KeyPressed ->
+                widget_event(
+                  impl, impl.key_pressed(state, key), constraints, focused),
+              char_entered_fun = \ char: CharEntered ->
+                widget_event(
+                  impl, impl.char_entered(state, char), constraints, focused),
               update_fun = \ next: Widget[M] ->
-                widget_element(
+                refreshed_widget_element(
                   impl,
                   impl.update(state, next.value.to_static[W]()),
-                  constraints),
+                  constraints,
+                  focused),
               new_constraints_fun = \ next: Constraints ->
-                widget_element(impl, impl.new_constraints(state, next), next),
+                refreshed_widget_element(
+                  impl, impl.new_constraints(state, next), next, focused),
               mouse_clicked_fun = \ position: Position ->
-                impl.mouse_clicked(state, position) %(
-                  not_handled EventResult[M, Element[M]].not_handled
-                  handled(next)
-                    EventResult[M, Element[M]].handled(
-                      widget_element(impl, next, constraints))
-                  message(value) EventResult[M, Element[M]].message(value)),
+                widget_event(
+                  impl,
+                  impl.mouse_clicked(state, position),
+                  constraints,
+                  focused),
               mouse_scrolled_fun = \ position: Position, delta: Offset ->
-                impl.mouse_scrolled(state, position, delta) %(
-                  not_handled EventResult[M, Element[M]].not_handled
-                  handled(next)
-                    EventResult[M, Element[M]].handled(
-                      widget_element(impl, next, constraints))
-                  message(value) EventResult[M, Element[M]].message(value)))
-          widget[M, W, E](
-            impl: WidgetImpl[M, W, E], current: W
-          ) Widget[M] =
+                widget_event(
+                  impl,
+                  impl.mouse_scrolled(state, position, delta),
+                  constraints,
+                  focused))
+          widget_element[M, W, E](
+            impl: WidgetImpl[M, W, E], state: E, constraints: Constraints
+            ) Element[M] =
+            widget_element(impl, state, constraints, false)
+          widget[M, W, E](impl: WidgetImpl[M, W, E], current: W) Widget[M] =
             Widget(
               value = current.to_dynamic(),
               new = \ constraints: Constraints ->
-                  widget_element(
-                    impl, impl.new(current, constraints), constraints))
+                widget_element(
+                  impl, impl.new(current, constraints), constraints))
           bounds[M](element: Element[M]) Rectangle =
             rectangle(0.0, 0.0, element.size.width, element.size.height)
+          create_element[M](
+            widget: Widget[M], constraints: Constraints) Element[M] =
+            widget.new(constraints)
           update[M](element: Element[M], next: Widget[M]) Element[M] =
             element.update_fun(next)
           new_constraints[M](
-            element: Element[M], next: Constraints
-          ) Element[M] =
+            element: Element[M], next: Constraints) Element[M] =
             if element.constraints == next
               element
               element.new_constraints_fun(next)
           mouse_clicked[M](
             element: Element[M], position: Position
-          ) EventResult[M, Element[M]] =
+            ) EventResult[M, Element[M]] =
             if element.bounds().contains(position)
               element.mouse_clicked_fun(position)
               EventResult[M, Element[M]].not_handled
           mouse_scrolled[M](
             element: Element[M], position: Position, delta: Offset
-          ) EventResult[M, Element[M]] =
+            ) EventResult[M, Element[M]] =
             if element.bounds().contains(position)
               element.mouse_scrolled_fun(position, delta)
               EventResult[M, Element[M]].not_handled
-          create_element[M](
-            widget: Widget[M], constraints: Constraints
-          ) Element[M] =
-            widget.new(constraints)
+          focus[M](element: Element[M]) Maybe[Element[M]] =
+            if element.focused some(element) element.focus_fun()
+          unfocus[M](element: Element[M]) Element[M] =
+            if element.focused element.unfocus_fun() element
+          key_pressed[M](
+            element: Element[M], key: KeyPressed) EventResult[M, Element[M]] =
+            if element.focused
+              element.key_pressed_fun(key)
+              EventResult[M, Element[M]].not_handled
+          char_entered[M](
+            element: Element[M], char: CharEntered) EventResult[M, Element[M]] =
+            if element.focused
+              element.char_entered_fun(char)
+              EventResult[M, Element[M]].not_handled
       chapter CastMessage
         text
           cast_message[M] wraps a Widget[Never] as a Widget[M]. The child keeps
@@ -1515,6 +1626,8 @@ chapter Root
             result %(
               not_handled EventResult[M, Element[Never]].not_handled
               handled(child) EventResult[M, Element[Never]].handled(child)
+              request_focus(child)
+                EventResult[M, Element[Never]].request_focus(child)
               message unreachable())
           cast_message_impl[M](
           ) WidgetImpl[M, Widget[Never], Element[Never]] =
@@ -1526,8 +1639,15 @@ chapter Root
                 e.new_constraints(constraints),
               mouse_clicked = \ e: Element[Never], position: Position ->
                 cast_message_event[M](e.mouse_clicked(position)),
-              mouse_scrolled = \ e: Element[Never], position: Position, delta: Offset ->
-                cast_message_event[M](e.mouse_scrolled(position, delta)),
+              mouse_scrolled =
+                \ e: Element[Never], position: Position, delta: Offset ->
+                  cast_message_event[M](e.mouse_scrolled(position, delta)),
+              focus = \ e: Element[Never] -> e.focus(),
+              unfocus = \ e: Element[Never] -> e.unfocus(),
+              key_pressed = \ e: Element[Never], key: KeyPressed ->
+                cast_message_event[M](e.key_pressed(key)),
+              char_entered = \ e: Element[Never], char: CharEntered ->
+                cast_message_event[M](e.char_entered(char)),
               render = \ e: Element[Never] -> e.drawing)
           cast_message[M](child: Widget[Never]) Widget[M] =
             widget(cast_message_impl[M](), child)
@@ -1543,18 +1663,32 @@ chapter Root
               render = \ window: Size -> element.drawing.draw,
               handle = \ event: Event ->
                 event %(
-                  window_resized(window) {
-                    run_app(element.new_constraints(tight_constraints(window)))}
-                  mouse_clicked(pos) {
+                  window_resized(window)
+                    run_app(element.new_constraints(tight_constraints(window)))
+                  mouse_clicked(pos)
                     element.mouse_clicked(pos) %(
                       not_handled run_app(element)
                       handled(next) run_app(next)
-                      message unreachable())}
-                  mouse_scrolled(event) {
+                      request_focus(next) run_app(next)
+                      message unreachable())
+                  mouse_scrolled(event)
                     element.mouse_scrolled(event.position, event.delta) %(
                       not_handled run_app(element)
                       handled(next) run_app(next)
-                      message unreachable())}
+                      request_focus(next) run_app(next)
+                      message unreachable())
+                  key_pressed(key)
+                    element.key_pressed(key) %(
+                      not_handled run_app(element)
+                      handled(next) run_app(next)
+                      request_focus(next) run_app(next)
+                      message unreachable())
+                  char_entered(char)
+                    element.char_entered(char) %(
+                      not_handled run_app(element)
+                      handled(next) run_app(next)
+                      request_focus(next) run_app(next)
+                      message unreachable())
                   default run_app(element)))
           run_app(root: Widget[Never]) App =
             run_app(root.create_element(tight_constraints(size(0.0, 0.0))))
@@ -1572,6 +1706,12 @@ chapter Root
               mouse_scrolled =
                 \ state: Size, position: Position, delta: Offset ->
                   EventResult[Never, Size].not_handled,
+              focus = \ state: Size -> none[Size](),
+              unfocus = \ state: Size -> state,
+              key_pressed = \ state: Size, key: KeyPressed ->
+                EventResult[Never, Size].not_handled,
+              char_entered = \ state: Size, char: CharEntered ->
+                EventResult[Never, Size].not_handled,
               render = \ size: Size -> Drawing(draw = draw_nothing(), size))
           empty() Widget[Never] = widget(empty_impl(), Nothing())
           empty_widget = empty()
@@ -1579,6 +1719,9 @@ chapter Root
         code
           ColoredWidget[M] = struct { color: Color, child: Widget[M] }
           ColoredElement[M] = struct { color: Color, child: Element[M] }
+          colored_child[M](
+            e: ColoredElement[M], child: Element[M]) ColoredElement[M] =
+            ColoredElement(color = e.color, child)
           colored_impl[M]() WidgetImpl[M, ColoredWidget[M], ColoredElement[M]] =
             WidgetImpl(
               new = \ w: ColoredWidget[M], constraints: Constraints ->
@@ -1591,23 +1734,24 @@ chapter Root
               new_constraints = \ e: ColoredElement[M], next: Constraints ->
                 ColoredElement(
                   color = e.color, child = e.child.new_constraints(next)),
-              mouse_clicked = \ e: ColoredElement[M], position: Position ->
-                e.child.mouse_clicked(position) %(
-                  not_handled EventResult[M, ColoredElement[M]].not_handled
-                  handled(child) {
-                    EventResult[M, ColoredElement[M]].handled(
-                      ColoredElement(color = e.color, child))}
-                  message(value)
-                    EventResult[M, ColoredElement[M]].message(value)),
+              mouse_clicked = \ e: ColoredElement[M], pos: Position ->
+                e.child.mouse_clicked(pos)
+                  .map(\ child: Element[M] -> colored_child(e, child)),
               mouse_scrolled =
-                \ e: ColoredElement[M], position: Position, delta: Offset ->
-                  e.child.mouse_scrolled(position, delta) %(
-                    not_handled EventResult[M, ColoredElement[M]].not_handled
-                    handled(child)
-                      EventResult[M, ColoredElement[M]].handled(
-                        ColoredElement(color = e.color, child))
-                    message(value)
-                      EventResult[M, ColoredElement[M]].message(value)),
+                \ e: ColoredElement[M], pos: Position, delta: Offset ->
+                  e.child.mouse_scrolled(pos, delta)
+                    .map(\ child: Element[M] -> colored_child(e, child)),
+              focus = \ e: ColoredElement[M] ->
+                e.child.focus()
+                  .map(\ child: Element[M] -> colored_child(e, child)),
+              unfocus = \ e: ColoredElement[M] ->
+                colored_child(e, e.child.unfocus()),
+              key_pressed = \ e: ColoredElement[M], key: KeyPressed ->
+                e.child.key_pressed(key)
+                  .map(\ child: Element[M] -> colored_child(e, child)),
+              char_entered = \ e: ColoredElement[M], char: CharEntered ->
+                e.child.char_entered(char)
+                  .map(\ child: Element[M] -> colored_child(e, child)),
               render = \ e: ColoredElement[M] ->
                 Drawing(
                   draw = draw_all(list(
@@ -1652,6 +1796,9 @@ chapter Root
             dx = pos.x - pos.x.clamp(r, size.width - r)
             dy = pos.y - pos.y.clamp(r, size.height - r)
             {dx * dx} + {dy * dy} <= {r * r}
+          rounded_rect_child[M](
+            e: RoundedRectElement[M], child: Element[M]) RoundedRectElement[M] =
+            RoundedRectElement(radius = e.radius, child)
           rounded_rect_impl[M](
             ) WidgetImpl[M, RoundedRectWidget[M], RoundedRectElement[M]] =
             WidgetImpl(
@@ -1669,27 +1816,26 @@ chapter Root
                     child = e.child.new_constraints(constraints)),
               mouse_clicked = \ e: RoundedRectElement[M], pos: Position ->
                 if rounded_rect_contains(e.radius, e.child.size, pos)
-                  e.child.mouse_clicked(pos) %(
-                    not_handled
-                      EventResult[M, RoundedRectElement[M]].not_handled
-                    handled(child)
-                      EventResult[M, RoundedRectElement[M]].handled(
-                        RoundedRectElement(radius = e.radius, child))
-                    message(value)
-                      EventResult[M, RoundedRectElement[M]].message(value))
+                  e.child.mouse_clicked(pos)
+                    .map(\ child: Element[M] -> rounded_rect_child(e, child))
                   EventResult[M, RoundedRectElement[M]].not_handled,
               mouse_scrolled =
                 \ e: RoundedRectElement[M], pos: Position, delta: Offset ->
                   if rounded_rect_contains(e.radius, e.child.size, pos)
-                    e.child.mouse_scrolled(pos, delta) %(
-                      not_handled
-                        EventResult[M, RoundedRectElement[M]].not_handled
-                      handled(child)
-                        EventResult[M, RoundedRectElement[M]].handled(
-                          RoundedRectElement(radius = e.radius, child))
-                      message(value)
-                        EventResult[M, RoundedRectElement[M]].message(value))
+                    e.child.mouse_scrolled(pos, delta)
+                      .map(\ child: Element[M] -> rounded_rect_child(e, child))
                     EventResult[M, RoundedRectElement[M]].not_handled,
+              focus = \ e: RoundedRectElement[M] ->
+                e.child.focus()
+                  .map(\ child: Element[M] -> rounded_rect_child(e, child)),
+              unfocus = \ e: RoundedRectElement[M] ->
+                rounded_rect_child(e, e.child.unfocus()),
+              key_pressed = \ e: RoundedRectElement[M], key: KeyPressed ->
+                e.child.key_pressed(key)
+                  .map(\ child: Element[M] -> rounded_rect_child(e, child)),
+              char_entered = \ e: RoundedRectElement[M], char: CharEntered ->
+                e.child.char_entered(char)
+                  .map(\ child: Element[M] -> rounded_rect_child(e, child)),
               render = \ e: RoundedRectElement[M] ->
                 Drawing(
                   draw =
@@ -1726,8 +1872,15 @@ chapter Root
                 .map(\ h: Float ->
                   tight_axis_constraints(h.clamp(outer.height)))
                 or outer.height)
+          sized_box_child[M](
+            e: SizedBoxElement[M], child: Element[M]) SizedBoxElement[M] =
+            SizedBoxElement(
+              width = e.width,
+              height = e.height,
+              constraints = e.constraints,
+              child)
           sized_box_impl[M](
-          ) WidgetImpl[M, SizedBoxWidget[M], SizedBoxElement[M]] =
+            ) WidgetImpl[M, SizedBoxWidget[M], SizedBoxElement[M]] =
             WidgetImpl(
               new = \ w: SizedBoxWidget[M], constraints: Constraints ->
                 SizedBoxElement(
@@ -1754,42 +1907,33 @@ chapter Root
                   constraints = next,
                   child = e.child.new_constraints(
                     sized_box_child_constraints(e.width, e.height, next))),
-              mouse_clicked = \ e: SizedBoxElement[M], position: Position ->
-                e.child.mouse_clicked(position) %(
-                  not_handled
-                    EventResult[M, SizedBoxElement[M]].not_handled
-                  handled(child)
-                    EventResult[M, SizedBoxElement[M]].handled(
-                      SizedBoxElement(
-                        width = e.width,
-                        height = e.height,
-                        constraints = e.constraints,
-                        child))
-                  message(value)
-                    EventResult[M, SizedBoxElement[M]].message(value)),
+              mouse_clicked = \ e: SizedBoxElement[M], pos: Position ->
+                e.child.mouse_clicked(pos)
+                  .map(\ child: Element[M] -> sized_box_child(e, child)),
               mouse_scrolled =
-                \ e: SizedBoxElement[M], position: Position, delta: Offset ->
-                  e.child.mouse_scrolled(position, delta) %(
-                    not_handled EventResult[M, SizedBoxElement[M]].not_handled
-                    handled(child)
-                      EventResult[M, SizedBoxElement[M]].handled(
-                        SizedBoxElement(
-                          width = e.width,
-                          height = e.height,
-                          constraints = e.constraints,
-                          child))
-                    message(value)
-                      EventResult[M, SizedBoxElement[M]].message(value)),
+                \ e: SizedBoxElement[M], pos: Position, delta: Offset ->
+                  e.child.mouse_scrolled(pos, delta)
+                    .map(\ child: Element[M] -> sized_box_child(e, child)),
+              focus = \ e: SizedBoxElement[M] ->
+                e.child.focus()
+                  .map(\ child: Element[M] -> sized_box_child(e, child)),
+              unfocus = \ e: SizedBoxElement[M] ->
+                sized_box_child(e, e.child.unfocus()),
+              key_pressed = \ e: SizedBoxElement[M], key: KeyPressed ->
+                e.child.key_pressed(key)
+                  .map(\ child: Element[M] -> sized_box_child(e, child)),
+              char_entered = \ e: SizedBoxElement[M], char: CharEntered ->
+                e.child.char_entered(char)
+                  .map(\ child: Element[M] -> sized_box_child(e, child)),
               render = \ e: SizedBoxElement[M] -> e.child.drawing)
           sized_box[M](
             width: Maybe[Float], height: Maybe[Float], child: Widget[M]
-          ) Widget[M] =
+            ) Widget[M] =
             widget(
               sized_box_impl[M](),
               SizedBoxWidget(width, height, child))
           sized_box[M](
-            width: Float, height: Float, child: Widget[M]
-          ) Widget[M] =
+            width: Float, height: Float, child: Widget[M]) Widget[M] =
             sized_box(some(width), some(height), child)
           width_box[M](width: Float, child: Widget[M]) Widget[M] =
             sized_box(some(width), none[Float](), child)
@@ -1916,6 +2060,8 @@ chapter Root
                 axis_constraints(
                   outer.height.min / factor,
                   outer.height.max.map(\ maximum: Float -> maximum / factor)))
+          scale_child[M](e: ScaleElement[M], child: Element[M]) ScaleElement[M] =
+            ScaleElement(factor = e.factor, constraints = e.constraints, child)
           scale_widget_impl[M](
             ) WidgetImpl[M, ScaleWidget[M], ScaleElement[M]] =
             WidgetImpl(
@@ -1943,25 +2089,27 @@ chapter Root
                         scale_child_constraints(e.factor, constraints)),
                     constraints),
               mouse_clicked = \ e: ScaleElement[M], pos: Position ->
-                e.child.mouse_clicked(
-                  position(pos.x / e.factor, pos.y / e.factor))
-                %(not_handled EventResult[M, ScaleElement[M]].not_handled
-                  handled(child)
-                    EventResult[M, ScaleElement[M]].handled(ScaleElement(
-                      factor = e.factor, child, constraints = e.constraints))
-                  message(value)
-                    EventResult[M, ScaleElement[M]].message(value)),
+                e.child
+                . mouse_clicked(position(pos.x / e.factor, pos.y / e.factor))
+                . map(\ child: Element[M] -> scale_child(e, child)),
               mouse_scrolled =
                 \ e: ScaleElement[M], pos: Position, delta: Offset ->
-                  e.child.mouse_scrolled(
-                    position(pos.x / e.factor, pos.y / e.factor),
-                    delta / e.factor)
-                  %(not_handled EventResult[M, ScaleElement[M]].not_handled
-                    handled(child)
-                      EventResult[M, ScaleElement[M]].handled(ScaleElement(
-                        factor = e.factor, child, constraints = e.constraints))
-                    message(value)
-                      EventResult[M, ScaleElement[M]].message(value)),
+                  e.child
+                  . mouse_scrolled(
+                      position(pos.x / e.factor, pos.y / e.factor),
+                      delta / e.factor)
+                  . map(\ child: Element[M] -> scale_child(e, child)),
+              focus = \ e: ScaleElement[M] ->
+                e.child.focus()
+                . map(\ child: Element[M] -> scale_child(e, child)),
+              unfocus =
+                \ e: ScaleElement[M] -> scale_child(e, e.child.unfocus()),
+              key_pressed = \ e: ScaleElement[M], key: KeyPressed ->
+                e.child.key_pressed(key)
+                . map(\ child: Element[M] -> scale_child(e, child)),
+              char_entered = \ e: ScaleElement[M], char: CharEntered ->
+                e.child.char_entered(char)
+                . map(\ child: Element[M] -> scale_child(e, child)),
               render = \ e: ScaleElement[M] ->
                 Drawing(
                   draw =
@@ -1969,7 +2117,8 @@ chapter Root
                       transform_scale(e.factor), e.child.drawing.draw),
                   size = {e.child.size * e.factor}.clamp(e.constraints)))
           scale_widget[M](factor: Float, child: Widget[M]) Widget[M] =
-            # Subtracting a finite number from itself is zero; infinities yield NaN.
+            # Subtracting a finite number from itself is zero; infinities yield
+            # NaN.
             _ = assert(factor > 0.0 and {{factor - factor} == 0.0},
               "Scale factor must be finite and positive.")
             widget(scale_widget_impl[M](), ScaleWidget(factor, child))
@@ -2003,6 +2152,14 @@ chapter Root
                 EventResult[Never, TextElement].not_handled,
               mouse_scrolled = \ e: TextElement, pos: Position, delta: Offset ->
                 EventResult[Never, TextElement].not_handled,
+              focus = \ e: TextElement -> none[TextElement](),
+              unfocus = \ e: TextElement -> e,
+              key_pressed =
+                \ e: TextElement, key: KeyPressed ->
+                  EventResult[Never, TextElement].not_handled,
+              char_entered =
+                \ e: TextElement, char: CharEntered ->
+                  EventResult[Never, TextElement].not_handled,
               render = \ e: TextElement ->
                 drawing =
                   layout_text(e.value, e.constraints.width.max)
@@ -2047,8 +2204,12 @@ chapter Root
           PaddingWidget[M] = struct { insets: Insets, child: Widget[M] }
           PaddingElement[M] = struct {
             insets: Insets, constraints: Constraints, child: Element[M]}
+          padding_child[M](
+            e: PaddingElement[M], child: Element[M]) PaddingElement[M] =
+            PaddingElement(
+              insets = e.insets, constraints = e.constraints, child)
           padding_impl[M](
-          ) WidgetImpl[M, PaddingWidget[M], PaddingElement[M]] =
+            ) WidgetImpl[M, PaddingWidget[M], PaddingElement[M]] =
             WidgetImpl(
               new = \ w: PaddingWidget[M], constraints: Constraints ->
                 PaddingElement(
@@ -2066,34 +2227,37 @@ chapter Root
                   insets = e.insets,
                   constraints = next,
                   child = e.child.new_constraints(next.deflate(e.insets))),
-              mouse_clicked = \ e: PaddingElement[M], position: Position ->
-                local = position - offset(e.insets.left, e.insets.top)
-                e.child.mouse_clicked(local) %(
-                  not_handled EventResult[M, PaddingElement[M]].not_handled
-                  handled(child)
-                    EventResult[M, PaddingElement[M]].handled(
-                      PaddingElement(
-                        insets = e.insets, constraints = e.constraints, child))
-                  message(value)
-                    EventResult[M, PaddingElement[M]].message(value)),
-              mouse_scrolled = \ e: PaddingElement[M], position: Position, delta: Offset ->
-                local = position - offset(e.insets.left, e.insets.top)
-                e.child.mouse_scrolled(local, delta) %(
-                  not_handled EventResult[M, PaddingElement[M]].not_handled
-                  handled(child)
-                    EventResult[M, PaddingElement[M]].handled(
-                      PaddingElement(
-                        insets = e.insets, constraints = e.constraints, child))
-                  message(value)
-                    EventResult[M, PaddingElement[M]].message(value)),
+              mouse_clicked = \ e: PaddingElement[M], pos: Position ->
+                local = pos - offset(e.insets.left, e.insets.top)
+                e.child.mouse_clicked(local)
+                . map(\ child: Element[M] -> padding_child(e, child)),
+              mouse_scrolled =
+                \ e: PaddingElement[M], pos: Position, delta: Offset ->
+                  local = pos - offset(e.insets.left, e.insets.top)
+                  e.child.mouse_scrolled(local, delta)
+                  . map(\ child: Element[M] -> padding_child(e, child)),
+              focus =
+                \ e: PaddingElement[M] ->
+                  e.child.focus()
+                  . map(\ child: Element[M] -> padding_child(e, child)),
+              unfocus =
+                \ e: PaddingElement[M] -> padding_child(e, e.child.unfocus()),
+              key_pressed =
+                \ e: PaddingElement[M], key: KeyPressed ->
+                  e.child.key_pressed(key)
+                  . map(\ child: Element[M] -> padding_child(e, child)),
+              char_entered =
+                \ e: PaddingElement[M], char: CharEntered ->
+                  e.child.char_entered(char)
+                  . map(\ child: Element[M] -> padding_child(e, child)),
               render = \ e: PaddingElement[M] ->
                 overflow_drawing(
                   false,
                   false,
                   {e.insets.left + e.insets.right}
-                    .overflows(e.constraints.width.loosen_min()),
+                  . overflows(e.constraints.width.loosen_min()),
                   {e.insets.top + e.insets.bottom}
-                    .overflows(e.constraints.height.loosen_min()),
+                  . overflows(e.constraints.height.loosen_min()),
                   Drawing(
                     draw = draw_transformed(
                       transform_translate(offset(e.insets.left, e.insets.top)),
@@ -2109,7 +2273,7 @@ chapter Root
             right: Float,
             bottom: Float,
             child: Widget[M],
-          ) Widget[M] =
+            ) Widget[M] =
             _ = assert(
               left >= 0.0 and top >= 0.0 and right >= 0.0 and bottom >= 0.0)
             widget(
@@ -2250,22 +2414,72 @@ chapter Root
                         index + 1,
                         pos - offset(e.axis, child.size.main(e.axis), 0.0)))
                   handled(next)
-                    Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]].break(
-                      EventResult[M, FlexElement[M]].handled(FlexElement(
-                        axis = e.axis,
-                        constraints = e.constraints,
-                        factors = e.factors,
-                        children = layout_flex(
-                          e.axis,
-                          e.constraints,
-                          e.factors,
-                          \ child_index: Int, c: Constraints ->
-                            child = if child_index == index next
-                              e.children.get(child_index)
-                            child.new_constraints(c)))))
+                    Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]]
+                      .break(
+                        EventResult[M, FlexElement[M]].handled(FlexElement(
+                          axis = e.axis,
+                          constraints = e.constraints,
+                          factors = e.factors,
+                          children = layout_flex(
+                            e.axis,
+                            e.constraints,
+                            e.factors,
+                            \ child_index: Int, c: Constraints ->
+                              child = if child_index == index next
+                                e.children.get(child_index)
+                              child.new_constraints(c)))))
+                  request_focus(next)
+                    Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]]
+                      .break(
+                        EventResult[M, FlexElement[M]].request_focus(FlexElement(
+                          axis = e.axis,
+                          constraints = e.constraints,
+                          factors = e.factors,
+                          children =
+                            layout_flex(
+                              e.axis,
+                              e.constraints,
+                              e.factors,
+                              \ child_index: Int, c: Constraints ->
+                                child =
+                                  if child_index == index
+                                    next
+                                    e.children.get(child_index).unfocus()
+                                child.new_constraints(c)))))
                   message(value)
-                    Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]].break(
-                      EventResult[M, FlexElement[M]].message(value)))})
+                    Loop[Tuple2[Int, Position], EventResult[M, FlexElement[M]]]
+                      .break(EventResult[M, FlexElement[M]].message(value)))})
+          flex_children[M](
+            e: FlexElement[M], children: List[Element[M]]) FlexElement[M] =
+            FlexElement(
+              axis = e.axis,
+              constraints = e.constraints,
+              factors = e.factors,
+              children =
+                layout_flex(
+                  e.axis,
+                  e.constraints,
+                  e.factors,
+                  \ index: Int, c: Constraints ->
+                    children.get(index).new_constraints(c)))
+          flex_focus[M](e: FlexElement[M]) Maybe[FlexElement[M]] =
+            focused =
+              e.children.iter().map(\ child: Element[M] -> child.focused).any()
+            if focused some(e)
+              loop(0, \ index: Int ->
+                if index == e.children.length()
+                  Loop[Int, Maybe[FlexElement[M]]].break(none[FlexElement[M]]())
+                  e.children.get(index).focus() %(
+                    none Loop[Int, Maybe[FlexElement[M]]].continue(index + 1)
+                    some(focused) Loop[Int, Maybe[FlexElement[M]]].break(some(
+                      flex_children(
+                        e,
+                        e.children.iter()
+                          .map_indexed(
+                            \ i: Int, child: Element[M] ->
+                              if i == index
+                                focused
+                                child.unfocus()).to_list())))))
           flex_impl[M]() WidgetImpl[M, FlexWidget[M], FlexElement[M]] =
             WidgetImpl(
               new = \ w: FlexWidget[M], constraints: Constraints ->
@@ -2308,9 +2522,33 @@ chapter Root
               mouse_clicked = \ e: FlexElement[M], mouse: Position ->
                 flex_event(e, mouse, \ child: Element[M], pos: Position ->
                   child.mouse_clicked(pos)),
-              mouse_scrolled = \ e: FlexElement[M], mouse: Position, delta: Offset ->
-                flex_event(e, mouse, \ child: Element[M], pos: Position ->
-                  child.mouse_scrolled(pos, delta)),
+              mouse_scrolled =
+                \ e: FlexElement[M], mouse: Position, delta: Offset ->
+                  flex_event(
+                    e,
+                    mouse,
+                    \ child: Element[M], pos: Position ->
+                      child.mouse_scrolled(pos, delta)),
+              focus = \ e: FlexElement[M] -> flex_focus(e),
+              unfocus =
+                \ e: FlexElement[M] ->
+                  flex_children(
+                    e,
+                    e.children.iter()
+                    . map(\ child: Element[M] -> child.unfocus()).to_list()),
+              key_pressed =
+                \ e: FlexElement[M], key: KeyPressed ->
+                  flex_event(
+                    e,
+                    position(0.0, 0.0),
+                    \ child: Element[M], pos: Position ->
+                      child.key_pressed(key)),
+              char_entered = \ e: FlexElement[M], char: CharEntered ->
+                flex_event(
+                  e,
+                  position(0.0, 0.0),
+                  \ child: Element[M], pos: Position ->
+                    child.char_entered(char)),
               render = \ e: FlexElement[M] ->
                 axis = e.axis
                 layout = e.children.iter().fold(
@@ -2331,18 +2569,19 @@ chapter Root
                   # child extents can round slightly above or below that limit.
                   # So, instead of just comparing the size to the limit, I
                   # explicitly add up all intrinsically sized children.
-                  intrinsic_size = zip(e.factors.iter(), e.children.iter())
-                    .map(\ a: Maybe[Float], b: Element[M] ->
-                      if a is none b.size.main(axis) 0.0
-                   )
-                    .sum()
-                  intrinsic_size.overflows(e.constraints.main(axis).loosen_min())
+                  intrinsic_size =
+                    zip(e.factors.iter(), e.children.iter())
+                    . map(\ a: Maybe[Float], b: Element[M] ->
+                        if a is none b.size.main(axis) 0.0)
+                    . sum()
+                  intrinsic_size
+                    .overflows(e.constraints.main(axis).loosen_min())
                 }
                 main =
                   if
                     e.factors.iter()
-                      .map(\ factor: Maybe[Float] -> factor is some)
-                      .any()
+                    . map(\ factor: Maybe[Float] -> factor is some)
+                    . any()
                     e.constraints.main(axis).max.unwrap()
                     size.main(axis)
                 overflow_drawing(
@@ -2420,6 +2659,9 @@ chapter Root
                 scroll.clamp(
                   0.0,
                   max(0.0, child.size.main(axis) - viewport.main(axis))))
+          scroll_view_child[M](
+            e: ScrollViewElement[M], child: Element[M]) ScrollViewElement[M] =
+            scroll_element(e.axis, e.constraints, child, e.scroll)
           scroll_view_impl[M](
           ) WidgetImpl[M, ScrollViewWidget[M], ScrollViewElement[M]] =
             WidgetImpl(
@@ -2449,13 +2691,8 @@ chapter Root
                     .new_constraints(scroll_child_constraints(e.axis, next)),
                   e.scroll),
               mouse_clicked = \ e: ScrollViewElement[M], pos: Position ->
-                e.child.mouse_clicked(pos + offset(e.axis, e.scroll, 0.0)) %(
-                  not_handled EventResult[M, ScrollViewElement[M]].not_handled
-                  handled(child)
-                    EventResult[M, ScrollViewElement[M]].handled(
-                      scroll_element(e.axis, e.constraints, child, e.scroll))
-                  message(value)
-                    EventResult[M, ScrollViewElement[M]].message(value)),
+                e.child.mouse_clicked(pos + offset(e.axis, e.scroll, 0.0))
+                . map(\ child: Element[M] -> scroll_view_child(e, child)),
               mouse_scrolled = \
                 e: ScrollViewElement[M], pos: Position, delta: Offset
                ->
@@ -2464,6 +2701,9 @@ chapter Root
                   %(
                     handled(child)
                       EventResult[M, ScrollViewElement[M]].handled(
+                        scroll_element(e.axis, e.constraints, child, e.scroll))
+                    request_focus(child)
+                      EventResult[M, ScrollViewElement[M]].request_focus(
                         scroll_element(e.axis, e.constraints, child, e.scroll))
                     message(value)
                       EventResult[M, ScrollViewElement[M]].message(value)
@@ -2475,6 +2715,15 @@ chapter Root
                       if next.scroll == e.scroll
                         EventResult[M, ScrollViewElement[M]].not_handled
                         EventResult[M, ScrollViewElement[M]].handled(next)),
+              focus = \ e: ScrollViewElement[M] ->
+                e.child.focus().map(\ child: Element[M] -> scroll_view_child(e, child)),
+              unfocus = \ e: ScrollViewElement[M] -> scroll_view_child(e, e.child.unfocus()),
+              key_pressed = \ e: ScrollViewElement[M], key: KeyPressed ->
+                e.child.key_pressed(key)
+                . map(\ child: Element[M] -> scroll_view_child(e, child)),
+              char_entered = \ e: ScrollViewElement[M], char: CharEntered ->
+                e.child.char_entered(char)
+                . map(\ child: Element[M] -> scroll_view_child(e, child)),
               render = \ e: ScrollViewElement[M] ->
                 viewport = e.child.size.clamp(e.constraints)
                 Drawing(
@@ -2510,6 +2759,9 @@ chapter Root
             offset(
               {parent.width - child.width} * {bias.x + 1.0} / 2.0,
               {parent.height - child.height} * {bias.y + 1.0} / 2.0)
+          align_child[M](
+            e: AlignElement[M], child: Element[M]) AlignElement[M] =
+            AlignElement(bias = e.bias, constraints = e.constraints, child)
           align_impl[M]() WidgetImpl[M, AlignWidget[M], AlignElement[M]] =
             WidgetImpl(
               new = \ w: AlignWidget[M], constraints: Constraints ->
@@ -2527,27 +2779,34 @@ chapter Root
                   bias = e.bias,
                   child = e.child.new_constraints(next.loosen_min()),
                   constraints = next),
-              mouse_clicked = \ e: AlignElement[M], position: Position ->
-                space = aligned_size(e.child.size, e.constraints)
-                shift = alignment_offset(e.bias, space, e.child.size)
-                e.child.mouse_clicked(position - shift) %(
-                  not_handled EventResult[M, AlignElement[M]].not_handled
-                  handled(child)
-                    EventResult[M, AlignElement[M]].handled(AlignElement(
-                      bias = e.bias, child, constraints = e.constraints))
-                  message(value)
-                    EventResult[M, AlignElement[M]].message(value)),
-              mouse_scrolled = \ e: AlignElement[M], position: Position, delta: Offset ->
-                space = aligned_size(e.child.size, e.constraints)
-                shift = alignment_offset(e.bias, space, e.child.size)
-                e.child.mouse_scrolled(position - shift, delta) %(
-                  not_handled EventResult[M, AlignElement[M]].not_handled
-                  handled(child)
-                    EventResult[M, AlignElement[M]].handled(
-                      AlignElement(
-                        bias = e.bias, child, constraints = e.constraints))
-                  message(value)
-                    EventResult[M, AlignElement[M]].message(value)),
+              mouse_clicked = \ e: AlignElement[M], pos: Position ->
+                shift =
+                  alignment_offset(
+                    e.bias,
+                    aligned_size(e.child.size, e.constraints), e.child.size)
+                e.child.mouse_clicked(pos - shift)
+                . map(\ child: Element[M] -> align_child(e, child)),
+              mouse_scrolled =
+                \ e: AlignElement[M], pos: Position, delta: Offset ->
+                  shift =
+                    alignment_offset(
+                      e.bias,
+                      aligned_size(e.child.size, e.constraints),
+                      e.child.size)
+                  e.child.mouse_scrolled(pos - shift, delta)
+                  . map(\ child: Element[M] -> align_child(e, child)),
+              focus =
+                \ e: AlignElement[M] ->
+                  e.child.focus()
+                  . map(\ child: Element[M] -> align_child(e, child)),
+              unfocus =
+                \ e: AlignElement[M] -> align_child(e, e.child.unfocus()),
+              key_pressed = \ e: AlignElement[M], key: KeyPressed ->
+                e.child.key_pressed(key)
+                . map(\ child: Element[M] -> align_child(e, child)),
+              char_entered = \ e: AlignElement[M], char: CharEntered ->
+                e.child.char_entered(char)
+                . map(\ child: Element[M] -> align_child(e, child)),
               render = \ e: AlignElement[M] ->
                 space = aligned_size(e.child.size, e.constraints)
                 Drawing(
@@ -2557,8 +2816,7 @@ chapter Root
                     e.child.drawing.draw),
                   size = space))
           align[M](
-            horizontal: Float, vertical: Float, child: Widget[M]
-          ) Widget[M] =
+            horizontal: Float, vertical: Float, child: Widget[M]) Widget[M] =
             widget(
               align_impl[M](),
               AlignWidget(bias = vec(horizontal, vertical), child))
@@ -2597,6 +2855,9 @@ chapter Root
               handled(child)
                 EventResult[M, StatefulElement[S, M, N]].handled(
                   stateful_child(e, child))
+              request_focus(child)
+                EventResult[M, StatefulElement[S, M, N]].request_focus(
+                  stateful_child(e, child))
               message(value)
                 e.handle(e.state, value) %(
                   new_state(state)
@@ -2605,7 +2866,11 @@ chapter Root
                         state,
                         handle = e.handle,
                         builder = e.builder,
-                        child = e.builder(state).create_element(e.child.constraints)))
+                        child =
+                          # TODO: keep element alive; only update
+                          next =
+                            e.builder(state).create_element(e.child.constraints)
+                          if e.child.focused next.focus() or next next))
                   bubble_up(message)
                     EventResult[M, StatefulElement[S, M, N]].message(message)))
           stateful_impl[S, M, N](
@@ -2616,25 +2881,45 @@ chapter Root
                   state = w.initial_state,
                   handle = w.handle,
                   builder = w.builder,
-                  child = w.builder(w.initial_state).create_element(constraints)),
-              update = \ e: StatefulElement[S, M, N], w: StatefulWidget[S, M, N] ->
+                  child =
+                    w.builder(w.initial_state).create_element(constraints)),
+              update =
+                \ e: StatefulElement[S, M, N], w: StatefulWidget[S, M, N] ->
                   StatefulElement(
                     state = e.state, handle = w.handle, builder = w.builder,
-                    child = w.builder(e.state).create_element(e.child.constraints)),
-              new_constraints = \ e: StatefulElement[S, M, N], constraints: Constraints ->
+                    child =
+                      next =
+                        w.builder(e.state).create_element(e.child.constraints)
+                      if e.child.focused next.focus() or next next),
+              new_constraints =
+                \ e: StatefulElement[S, M, N], constraints: Constraints ->
                   stateful_child(e, e.child.new_constraints(constraints)),
-              mouse_clicked = \ e: StatefulElement[S, M, N], position: Position ->
+              mouse_clicked =
+                \ e: StatefulElement[S, M, N], position: Position ->
                   stateful_event(e, e.child.mouse_clicked(position)),
-              mouse_scrolled = \
-                  e: StatefulElement[S, M, N], position: Position, delta: Offset
-                   ->
-                    stateful_event(e, e.child.mouse_scrolled(position, delta)),
+              mouse_scrolled =
+                \ e: StatefulElement[S, M, N], position: Position, delta: Offset
+                  ->
+                  stateful_event(e, e.child.mouse_scrolled(position, delta)),
+              focus =
+                \ e: StatefulElement[S, M, N] ->
+                  e.child.focus()
+                  . map(\ child: Element[N] -> stateful_child(e, child)),
+              unfocus =
+                \ e: StatefulElement[S, M, N] ->
+                  stateful_child(e, e.child.unfocus()),
+              key_pressed =
+                \ e: StatefulElement[S, M, N], key: KeyPressed ->
+                  stateful_event(e, e.child.key_pressed(key)),
+              char_entered =
+                \ e: StatefulElement[S, M, N], char: CharEntered ->
+                  stateful_event(e, e.child.char_entered(char)),
               render = \ e: StatefulElement[S, M, N] -> e.child.drawing)
           stateful[S, M, N](
             initial_state: S,
             handle: fun(S, N) StatefulResult[S, M],
             builder: fun(S) Widget[N],
-          ) Widget[M] =
+            ) Widget[M] =
             widget(
               stateful_impl[S, M, N](),
               StatefulWidget(initial_state, handle, builder))
@@ -2644,6 +2929,9 @@ chapter Root
         code
           OnClickWidget[M] = struct { message: M, child: Widget[M] }
           OnClickElement[M] = struct { message: M, child: Element[M] }
+          on_click_child[M](
+            e: OnClickElement[M], child: Element[M]) OnClickElement[M] =
+            OnClickElement(message = e.message, child)
           on_click_impl[M](
           ) WidgetImpl[M, OnClickWidget[M], OnClickElement[M]] =
             WidgetImpl(
@@ -2654,30 +2942,134 @@ chapter Root
               update = \ e: OnClickElement[M], w: OnClickWidget[M] ->
                 OnClickElement(
                   message = w.message, child = e.child.update(w.child)),
-              new_constraints = \ e: OnClickElement[M], constraints: Constraints ->
+              new_constraints =
+                \ e: OnClickElement[M], constraints: Constraints ->
                   OnClickElement(
                     message = e.message,
                     child = e.child.new_constraints(constraints)),
-              mouse_clicked = \ e: OnClickElement[M], position: Position ->
-                e.child.mouse_clicked(position) %(
+              mouse_clicked = \ e: OnClickElement[M], pos: Position ->
+                result = e.child.mouse_clicked(pos)
+                result %(
                   not_handled
                     EventResult[M, OnClickElement[M]].message(e.message)
-                  handled(child)
-                    EventResult[M, OnClickElement[M]].handled(
-                      OnClickElement(message = e.message, child))
-                  message(value)
-                    EventResult[M, OnClickElement[M]].message(value) ),
-              mouse_scrolled = \ e: OnClickElement[M], position: Position, delta: Offset ->
-                  e.child.mouse_scrolled(position, delta) %(
-                    not_handled EventResult[M, OnClickElement[M]].not_handled
-                    handled(child)
-                      EventResult[M, OnClickElement[M]].handled(
-                        OnClickElement(message = e.message, child))
-                    message(value)
-                      EventResult[M, OnClickElement[M]].message(value)),
+                  default
+                    result.map(\ child: Element[M] -> on_click_child(e, child))),
+              mouse_scrolled =
+                \ e: OnClickElement[M], pos: Position, delta: Offset ->
+                  e.child.mouse_scrolled(pos, delta)
+                  . map(\ child: Element[M] -> on_click_child(e, child)),
+              focus = \ e: OnClickElement[M] ->
+                e.child.focus()
+                . map(\ child: Element[M] -> on_click_child(e, child)),
+              unfocus =
+                \ e: OnClickElement[M] -> on_click_child(e, e.child.unfocus()),
+              key_pressed =
+                \ e: OnClickElement[M], key: KeyPressed ->
+                  e.child.key_pressed(key)
+                  . map(\ child: Element[M] -> on_click_child(e, child)),
+              char_entered =
+                \ e: OnClickElement[M], char: CharEntered ->
+                  e.child.char_entered(char)
+                  . map(\ child: Element[M] -> on_click_child(e, child)),
               render = \ e: OnClickElement[M] -> e.child.drawing)
           on_click[M](message: M, child: Widget[M]) Widget[M] =
             widget(on_click_impl[M](), OnClickWidget(message, child))
+      chapter Keysink
+        text
+          Click a keysink to focus it. It displays key presses as bracketed
+          names, including modifiers.
+        code
+          key_name(key: KeyPressed) String =
+            code = key.keycode
+            if code == 32 "space"
+              if code >= 65 and code <= 90
+                string(list({if key.shift code code + 32}.to_byte()))
+                if code >= 32 and code <= 126
+                  if key.shift
+                    plain = "1234567890-=[]\\;',./`".bytes()
+                    shifted = "!@#$%^&*()_+\{\}|:\"<>?~".bytes()
+                    index = plain.iter()
+                      . fold(
+                          0,
+                          none[Int](),
+                          \ index: Int, found: Maybe[Int], byte: Byte ->
+                            tuple(
+                              index + 1,
+                              if byte.to_int() == code some(index) found))
+                      . b
+                    string(list(
+                      index %(some(i) shifted.get(i) none code.to_byte())))
+                    string(list(code.to_byte()))
+                  if code >= 290 and code <= 314 "f" + {code - 289}.format()
+                    if code >= 256 and code <= 269
+                      list(
+                        "escape", "enter", "tab", "backspace", "insert",
+                        "delete", "right", "left", "down", "up", "page up",
+                        "page down", "home", "end")
+                      . get(code - 256)
+                      "key " + code.format()
+          format(key: KeyPressed) String =
+            "[" + {if key.control "ctrl " ""}
+              + {if key.alt "alt " ""}
+              + {if key.shift
+                  and {key.keycode < 32 or key.keycode > 126} "shift " ""}
+              + key.key_name() + "]"
+          KeysinkElement = struct {
+            value: String, active: Bool, constraints: Constraints }
+          keysink_impl() WidgetImpl[Never, Nothing, KeysinkElement] =
+            WidgetImpl(
+              new =
+                \ w: Nothing, constraints: Constraints ->
+                  KeysinkElement(value = "", active = false, constraints),
+              update =
+                \ e: KeysinkElement, w: Nothing -> e,
+              new_constraints =
+                \ e: KeysinkElement, constraints: Constraints ->
+                  KeysinkElement(
+                    value = e.value, active = e.active, constraints),
+              focus =
+                \ e: KeysinkElement ->
+                  some(KeysinkElement(
+                    value = e.value,
+                    active = true,
+                    constraints = e.constraints)),
+              unfocus =
+                \ e: KeysinkElement ->
+                  KeysinkElement(
+                    value = e.value,
+                    active = false,
+                    constraints = e.constraints),
+              mouse_clicked =
+                \ e: KeysinkElement, pos: Position ->
+                  EventResult[Never, KeysinkElement].request_focus(
+                    KeysinkElement(
+                      value = e.value,
+                      active = true,
+                      constraints = e.constraints)),
+              mouse_scrolled =
+                \ e: KeysinkElement, pos: Position, delta: Offset ->
+                  EventResult[Never, KeysinkElement].not_handled,
+              key_pressed =
+                \ e: KeysinkElement, key: KeyPressed ->
+                  if key.keycode >= 340 and key.keycode <= 348
+                    EventResult[Never, KeysinkElement].not_handled
+                    EventResult[Never, KeysinkElement].handled(
+                      KeysinkElement(
+                        value = e.value + key.format(),
+                        active = e.active,
+                        constraints = e.constraints)),
+              char_entered =
+                \ e: KeysinkElement, char: CharEntered ->
+                  EventResult[Never, KeysinkElement].not_handled,
+              render = \ e: KeysinkElement ->
+                colored(color(if e.active "#d0e8ff" "#eeeeee"),
+                  padding(6.0,
+                    text(
+                      if e.value.bytes().length() == 0
+                        "Click here, then type"
+                        e.value)))
+                  .create_element(e.constraints).drawing)
+          keysink() Widget[Never] = widget(keysink_impl(), Nothing())
     chapter Notebook
       text
         soil ../../martinaise/martinaise.soil compile src/yam.mar
@@ -2686,7 +3078,8 @@ chapter Root
       code
         CounterMsg = enum { decrement, increment }
         counter() Widget[Never] =
-          stateful[Int, Never, CounterMsg](0,
+          stateful[Int, Never, CounterMsg](
+            0,
             \ state: Int, message: CounterMsg ->
               new_state[Int, Never](message %(
                 decrement state - 1
@@ -2695,12 +3088,13 @@ chapter Root
               row(list(
                 on_click(CounterMsg.decrement,
                   colored(color("#e0b040"), padding(6.0, text("decrement")))
-                    .cast_message[CounterMsg]()),
-                sized_box(40.0, text_line_height + 12.0, center(text(state.format())))
-                  .cast_message[CounterMsg](),
+                  . cast_message[CounterMsg]()),
+                sized_box(40.0,
+                  text_line_height + 12.0, center(text(state.format())))
+                . cast_message[CounterMsg](),
                 on_click(CounterMsg.increment,
                   colored(color("#30a080"), padding(6.0, text("increment")))
-                    .cast_message[CounterMsg]()))))
+                  . cast_message[CounterMsg]()))))
       code
         app = run_app(
           scroll_view(Axis.vertical,
@@ -2720,6 +3114,10 @@ chapter Root
                         padding(8.0, text("This is a code box."))))),
                   height_box(8.0),
                   padding(8.0, 0.0, 8.0, 0.0, counter()),
+                  height_box(8.0),
+                  keysink(),
+                  height_box(8.0),
+                  keysink(),
                   text("This is some relatively long example text."),
                   height_box(8.0),
                   colored(color("#e07050"), sized_box(100.0, 100.0)),
@@ -2732,7 +3130,6 @@ chapter Root
       - memory-safe dynamic casts
       - type-safe widget update
       - position -> @
-      - clean up CrosshairApp
       - widgets
         - key
         - button
@@ -2741,5 +3138,4 @@ chapter Root
         - card?
         - icon
         - dialog
-      - replace nanovg with a custom graphics library
       - more plum-like syntax once a proof-of-concept notebook works?
