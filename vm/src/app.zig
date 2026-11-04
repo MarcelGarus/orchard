@@ -14,9 +14,11 @@ pub const Event = union(enum(u64)) {
     window_resized: Graphics.Size,
     key_pressed: KeyPressed,
     char_entered: CharEntered,
-    mouse_clicked: Graphics.Position,
+    mouse_pressed: Graphics.Position,
     mouse_moved: Graphics.Position,
     mouse_scrolled: MouseScrolled,
+    mouse_released: Graphics.Position,
+    mouse_left: void,
 
     pub const MouseScrolled = struct { position: Graphics.Position, delta: Graphics.Offset };
     pub const KeyPressed = struct { keycode: i32, control: bool, shift: bool, alt: bool };
@@ -65,7 +67,9 @@ pub fn event_object(heap: *Heap, event: Event) !Obj {
             try bool_object(heap, key.alt),
         }),
         .char_entered => |char| try heap.new_inner(&.{try heap.new_leaf(&.{char.codepoint})}),
-        .mouse_clicked => |pos| try pair_object(heap, pos.x, pos.y),
+        .mouse_pressed => |pos| try pair_object(heap, pos.x, pos.y),
+        .mouse_released => |pos| try pair_object(heap, pos.x, pos.y),
+        .mouse_left => try heap.new_inner(&.{}),
         .mouse_moved => |pos| try pair_object(heap, pos.x, pos.y),
         .mouse_scrolled => |scroll| try heap.new_inner(&.{
             try pair_object(heap, scroll.position.x, scroll.position.y),

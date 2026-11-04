@@ -148,6 +148,8 @@ pub fn init(ally: Ally) !*Graphics {
     _ = gl.glfwSetKeyCallback(window, keyCallback);
     _ = gl.glfwSetMouseButtonCallback(window, mouseButtonCallback);
     _ = gl.glfwSetCursorPosCallback(window, cursorPosCallback);
+    _ = gl.glfwSetCursorEnterCallback(window, cursorEnterCallback);
+    _ = gl.glfwSetWindowFocusCallback(window, windowFocusCallback);
     _ = gl.glfwSetScrollCallback(window, scrollCallback);
     gl.glfwMakeContextCurrent(window);
     if (gl.gladLoadGL() == 0) return error.GLADInitFailed;
@@ -194,15 +196,11 @@ fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_i
 fn cursorPosCallback(window: ?*gl.GLFWwindow, x: f64, y: f64) callconv(.c) void {
     const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
     const scale: f64 = @floatCast(graphics.scale);
-    const event = Event{ .mouse_moved = .{ .x = x / scale, .y = y / scale } };
-    // Only the latest position matters until the next frame. Preserve the
-    // ordering of movement relative to clicks and keyboard events.
-    const items = graphics.event_queue.items;
-    if (items.len > 0 and items[items.len - 1] == .mouse_moved) {
-        items[items.len - 1] = event;
-    } else {
-        graphics.event_queue.append(graphics.ally, event) catch @panic("couldn't append event");
-    }
+    graphics.event_queue.append(
+        graphics.ally,
+        .{ .mouse_moved = .{ .x = x / scale, .y = y / scale } },
+    ) catch
+        @panic("couldn't append event");
 }
 
 // GLFW wheel offsets are steps. Expose logical content offsets to widgets:
@@ -219,12 +217,27 @@ fn scrollCallback(window: ?*gl.GLFWwindow, x: f64, y: f64) callconv(.c) void {
 
 fn mouseButtonCallback(window: ?*gl.GLFWwindow, button: c_int, action: c_int, mods: c_int) callconv(.c) void {
     _ = mods;
-    if (button != gl.GLFW_MOUSE_BUTTON_LEFT or action != gl.GLFW_PRESS) return;
-
+    if (button != gl.GLFW_MOUSE_BUTTON_LEFT) return;
     const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
-    graphics.event_queue.append(graphics.ally, .{
-        .mouse_clicked = graphics.get_mouse_position(),
-    }) catch @panic("couldn't append event");
+    const event: Event = switch (action) {
+        gl.GLFW_PRESS => .{ .mouse_pressed = graphics.get_mouse_position() },
+        gl.GLFW_RELEASE => .{ .mouse_released = graphics.get_mouse_position() },
+        else => return,
+    };
+    graphics.event_queue.append(graphics.ally, event) catch @panic("couldn't append event");
+}
+
+fn cursorEnterCallback(window: ?*gl.GLFWwindow, entered: c_int) callconv(.c) void {
+    const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
+    const event: Event = if (entered == gl.GLFW_TRUE)
+        .{ .mouse_moved = graphics.get_mouse_position() }
+    else
+        .mouse_left;
+    graphics.event_queue.append(graphics.ally, event) catch @panic("couldn't append event");
+}
+
+fn windowFocusCallback(window: ?*gl.GLFWwindow, focused: c_int) callconv(.c) void {
+    cursorEnterCallback(window, focused);
 }
 
 pub fn deinit(self: *Graphics) void {
