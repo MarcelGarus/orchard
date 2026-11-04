@@ -217,6 +217,12 @@ chapter Root
           maybe.map(mapper).flatten()
         unwrap[A](maybe: Maybe[A], message: String) A = maybe or crash(message)
         unwrap[A](maybe: Maybe[A]) A = maybe.unwrap("called none.unwrap")
+      code
+        equals[A](
+          a: Maybe[A], b: Maybe[A], payload_equals: fun(A, A) Bool) Bool =
+          a %(
+            none b is none
+            some(aa) b %(none false some(bb) payload_equals(aa, bb)))
     chapter Result
       text
         The result of something that can either work or fail.
@@ -241,6 +247,13 @@ chapter Root
         map_error[O, E, A](
           result: Result[O, E], mapper: fun(E) A) Result[O, A] =
           result %(ok(o) ok[O, A](o) error(e) error[O, A](mapper(e)))
+      code
+        equals[O, E](
+          a: Result[O, E], b: Result[O, E],
+          ok_equals: fun(O, O) Bool, error_equals: fun(E, E) Bool) Bool =
+          a %(
+            ok(aa) b %(ok(bb) ok_equals(aa, bb) error false)
+            error(aa) b %(ok false error(bb) error_equals(aa, bb)))
     chapter Int
       text
         Ints are 64-bit signed integers. If you write a number such as 42 in the
@@ -336,6 +349,30 @@ chapter Root
         abs(value: Float) Float = if value >= 0.0 value 0.0 - value
         max(a: Float, b: Float) Float = if a > b a b
         min(a: Float, b: Float) Float = if a < b a b
+      text
+        These conversions reinterpret the IEEE 754 bits without changing them.
+        They let us construct special values and hash their representation.
+      code
+        float_from_bits(bits: Int) Float = ...
+        to_bits(value: Float) Int = ...
+      code
+        float_infinity_bits = 9218868437227405312
+        nan = float_from_bits(9221120237041090560)
+        infinity = float_from_bits(float_infinity_bits)
+        negative_infinity = 0.0 - infinity
+      code
+        is_nan(value: Float) Bool = {value.to_bits() & max_int} > float_infinity_bits
+        is_infinity(value: Float) Bool = {value.to_bits() & max_int} == float_infinity_bits
+        is_negative_infinity(value: Float) Bool = value == negative_infinity
+        is_finite(value: Float) Bool = {value.to_bits() & max_int} < float_infinity_bits
+      text
+        to_maybe_int truncates toward zero, returning none for non-finite or
+        out-of-range values. max_int rounds up to 2^63 when converted to Float,
+        so the upper comparison must be exclusive; the lower one is inclusive.
+      code
+        to_maybe_int(value: Float) Maybe[Int] =
+          if value.is_finite() and value >= min_int.to_float() and value < max_int.to_float()
+            some(value.to_int()) none[Int]()
     chapter Range
       text
         Ranges have an inclusive start and an exclusive end.
@@ -355,12 +392,14 @@ chapter Root
           value >= range.start and value < range.end
         is_empty(range: Range[Int]) Bool = range.start >= range.end
         is_not_empty(range: Range[Int]) Bool = not(range.is_empty())
+      text
+        Unbounded marks an open range.
       code
-        Infinity = struct {}
-        infinity = Infinity()
+        Unbounded = struct {}
+        unbounded = Unbounded()
       code
         OpenRange[A] = struct { start: A }
-        ..[A](start: A, infinity: Infinity) OpenRange[A] = OpenRange(start)
+        ..[A](start: A, unbounded: Unbounded) OpenRange[A] = OpenRange(start)
     chapter LinkedList
       code
         LinkedList[A] = enum { empty, more: More[A] }
@@ -896,6 +935,8 @@ chapter Root
       code
         hash(byte: Byte) Hash = byte.to_int().hash()
       code
+        hash(value: Float) Hash = value.to_bits().hash()
+      code
         hash[A](iter: Iter[A], hash_item: fun(A) Hash) Hash =
           iter.fold(5381.hash(), \ hash: Hash, item: A ->
             combine(hash, hash_item(item)))
@@ -903,6 +944,20 @@ chapter Root
         hash_commutative[A](iter: Iter[A], hash_item: fun(A) Hash) Hash =
           iter.fold(5381.hash(), \ hash: Hash, item: A ->
             combine_commutative(hash, hash_item(item)))
+      code
+        hash[A](maybe: Maybe[A], payload_hash: fun(A) Hash) Hash =
+          maybe %(
+            none 0.hash()
+            some(value) combine(1.hash(), payload_hash(value)))
+      code
+        hash[O, E](
+          result: Result[O, E],
+          ok_hash: fun(O) Hash,
+          error_hash: fun(E) Hash
+          ) Hash =
+          result %(
+            ok(value) combine(0.hash(), ok_hash(value))
+            error(value) combine(1.hash(), error_hash(value)))
       code
         hash[A](list: List[A], hash_item: fun(A) Hash) Hash =
           combine(list.length().hash(), list.iter().hash(hash_item))
@@ -922,10 +977,94 @@ chapter Root
           digit_value = {rest * radix} - int
           digit = string(list("0123456789abcdef".bytes().get(digit_value)))
           if rest == 0 digit format_negative(rest, radix) + digit
+      chapter FloatFormatting
+        text
+          Well, turns out, writing floats is pretty complicated. This is a
+          relatively easy algorithm from
+          https://blog.benoitblanchon.fr/lightweight-float-to-string
+          Ordinary values use decimal notation, magnitudes at least 10^7 or at
+          most 10^-5 use an exponent. It rounds to nine fractional digits after
+          normalization and removes trailing zeros. It is a display format, not
+          a shortest round-trip representation. Special values print as nan,
+          inf, and -inf. both signs of zero print as 0.
+        code
+          float_format_1e8 = 100000000.0
+          float_format_1e16 = float_format_1e8 * float_format_1e8
+          float_format_1e32 = float_format_1e16 * float_format_1e16
+          float_format_1e64 = float_format_1e32 * float_format_1e32
+          float_format_1e128 = float_format_1e64 * float_format_1e64
+          float_format_1e256 = float_format_1e128 * float_format_1e128
+          float_format_scales = list(
+            tuple(256, float_format_1e256), tuple(128, float_format_1e128),
+            tuple(64, float_format_1e64), tuple(32, float_format_1e32),
+            tuple(16, float_format_1e16), tuple(8, float_format_1e8),
+            tuple(4, 10000.0), tuple(2, 100.0), tuple(1, 10.0))
+        code
+          normalize(value: Float) Tuple2[Int, Float] =
+            if value >= 10000000.0
+              float_format_scales.iter().fold(tuple(0, value),
+                \ state: Tuple2[Int, Float], scale: Tuple2[Int, Float] ->
+                  if state.b >= scale.b
+                    tuple(state.a + scale.a, state.b / scale.b)
+                    state)
+              if value > 0.0 and value <= 0.00001
+                float_format_scales.iter().fold(tuple(0, value),
+                  \ state: Tuple2[Int, Float], scale: Tuple2[Int, Float] ->
+                    if state.b < {10.0 / scale.b}
+                      tuple(state.a - scale.a, state.b * scale.b) state)
+                tuple(0, value)
+        text
+          Rounding can carry from the fractional part into the integer part, or
+          into the exponent when the normalized mantissa reaches ten.
+        code
+          split_into_integer_decimal_and_exponent(
+            value: Float) Tuple3[Int, Int, Int] =
+            normalized = value.normalize()
+            integral = normalized.b.to_int()
+            scaled = {normalized.b - integral.to_float()} * 1000000000.0
+            decimal = scaled.to_int()
+            rounded = decimal + if {scaled - decimal.to_float()} >= 0.5 1 0
+            carry = rounded >= 1000000000
+            whole = integral + if carry 1 0
+            fraction = if carry 0 rounded
+            if normalized.a != 0 and whole >= 10
+              tuple(1, 0, normalized.a + 1)
+              tuple(whole, fraction, normalized.a)
+          format_float_decimals(value: Int, place: Int) String =
+            if value == 0 "" identity(
+              digit = value / place
+              rest = mod(value, place)
+              digit.format() + format_float_decimals(rest, place / 10))
+          format_float_finite(value: Float) String =
+            parts = value.split_into_integer_decimal_and_exponent()
+            decimals =
+              if parts.b == 0 "" "." + format_float_decimals(parts.b, 100000000)
+            exponent = if parts.c == 0 "" "e" + parts.c.format()
+            parts.a.format() + decimals + exponent
+          format(value: Float) String =
+            if value.is_nan() "nan"
+            if value.is_negative_infinity() "-inf"
+            if value.is_infinity() "inf"
+            if value < 0.0 "-" + format_float_finite(0.0 - value)
+              format_float_finite(value)
       code
         format(bool: Bool) String = if bool "true" "false"
         format(o: Ordering) String =
           o %(less "less" equal "equal" greater "greater")
+      code
+        format[A](maybe: Maybe[A], payload_format: fun(A) String) String =
+          maybe %(
+            none "none"
+            some(value) "some(" + payload_format(value) + ")")
+      code
+        format[O, E](
+          result: Result[O, E],
+          ok_format: fun(O) String,
+          error_format: fun(E) String
+          ) String =
+          result %(
+            ok(value) "ok(" + ok_format(value) + ")"
+            error(value) "error(" + error_format(value) + ")")
   chapter UserInterface
     text
       Orchard supports two-dimensional graphics. The coordinate system starts at
@@ -2651,7 +2790,7 @@ chapter Root
                     layouter(
                       index,
                       constraints(
-                        axis, axis_constraints(0.0 .. infinity), cross))))
+                        axis, axis_constraints(0.0 .. unbounded), cross))))
               .to_list()
             if
               not(
@@ -2945,7 +3084,7 @@ chapter Root
           scroll_child_constraints(axis: Axis, outer: Constraints) Constraints =
             constraints(
               axis,
-              axis_constraints(outer.main(axis).min .. infinity),
+              axis_constraints(outer.main(axis).min .. unbounded),
               outer.cross(axis))
           scroll_element[M](
             axis: Axis,
