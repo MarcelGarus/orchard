@@ -4113,59 +4113,172 @@ chapter Root
             widget(button_impl[M](), ButtonWidget(message, color, child))
     chapter Notebook
       text
-        soil ../../martinaise/martinaise.soil compile src/yam.mar
-        soil src/yam.soil src/notebook.yam src/notebook.yam.objects
-        zig build run -- --ui src/notebook.yam.objects
+        A notebook is a tree of chapters. Each chapter has a title and a list
+        of cells. Text and code cells hold strings; a chapter cell holds another
+        chapter, allowing notebooks to nest.
       code
         Chapter = struct { title: String, children: List[Cell] }
         Cell = enum { text: String, code: String, chapter: Chapter }
       code
         chapter(title: String, children: List[Cell]) Chapter =
           Chapter(title, children)
+      text
+        Paths locate a chapter in the tree using a list of cell indices.
       code
-        notebook_widget(chapter: Chapter) Widget[Chapter] =
-          scroll_view(Axis.vertical,
-            center(
-              width_box(300.0,
-                column(list(
-                  height_box(8.0).cast_message[Chapter](),
-                  padding(8.0, 0.0, 8.0, 0.0, text("bread crumbs", 10.0))
-                  . cast_message[Chapter](),
-                  height_box(8.0).cast_message[Chapter](),
-                  padding(8.0, 0.0, 8.0, 0.0,
-                    scale_widget(24.0 / text_line_height,
-                      editable_text(chapter.title)))
-                    . map_message(\ title: String ->
-                      Chapter(title, children = chapter.children)),
-                  column(
-                    chapter.children.iter()
-                    . map_indexed(\ index: Int, cell: Cell ->
-                      column(list(
-                        height_box(8.0).cast_message[Chapter](),
-                        cell_widget(cell).map_message(\ updated: Cell ->
-                          Chapter(title = chapter.title,
-                            children = chapter.children.set(index, updated))))))
-                    . to_list()),
-                  height_box(8.0).cast_message[Chapter]())))))
-        cell_widget(cell: Cell) Widget[Cell] =
+        NotebookPath = struct { indices: List[Int] }
+        notebook_path() NotebookPath = NotebookPath(indices = list[Int]())
+        is_empty(path: NotebookPath) Bool = path.indices.is_empty()
+        first(path: NotebookPath) Int = path.indices.first()
+        without_first(path: NotebookPath) NotebookPath =
+          NotebookPath(indices = path.indices.without_first())
+        push(path: NotebookPath, index: Int) NotebookPath =
+          NotebookPath(indices = path.indices.push(index))
+      code
+        ==(a: NotebookPath, b: NotebookPath) Bool =
+          a.indices.length() == b.indices.length() and
+            zip(a.indices.iter(), b.indices.iter())
+            . all(\ pair: Tuple2[Int, Int] -> pair.a == pair.b)
+      code
+        get(root: Chapter, path: NotebookPath) Chapter =
+          if path.is_empty()
+            root
+            root.children.get(path.first()) %(
+              chapter(child) child.get(path.without_first())
+              default crash("Chapter path points to a non-chapter cell."))
+      code
+        replace_chapter(root: Chapter, path: NotebookPath, updated: Chapter
+          ) Chapter =
+          if path.is_empty()
+            updated
+            identity(
+              index = path.first()
+              child = root.children.get(index) %(
+                chapter(child) child
+                default crash("Chapter path points to a non-chapter cell."))
+              Chapter(
+                title = root.title,
+                children =
+                  root.children.set(
+                    index,
+                    Cell.chapter(child.replace_chapter(
+                      path.without_first(), updated)))))
+      text
+        Next, cells.
+      code
+        CellMessage = enum { changed: Cell, navigate: NotebookPath }
+      code
+        cell_widget(cell: Cell, path: NotebookPath) Widget[CellMessage] =
           cell %(
             text(value)
               padding(8.0, 0.0, 8.0, 0.0,
                 editable_text(value)
-                . map_message(\ updated: String -> Cell.text(updated)))
+                . map_message(\ updated: String ->
+                    CellMessage.changed(Cell.text(updated))))
             code(value)
               rounded_rect(8.0,
                 colored(color("#f9dec8"),
                   width_box(10000.0,
                     padding(8.0,
                       editable_text(value)
-                      . map_message(\ updated: String -> Cell.code(updated))))))
+                      . map_message(\ updated: String ->
+                          CellMessage.changed(Cell.code(updated)))))))
             chapter(child)
-              rounded_rect(8.0,
-                colored(color("#d8edcc"),
-                  width_box(10000.0,
-                    padding(8.0, text(child.title)))))
-              . cast_message[Cell]())
+              on_click(CellMessage.navigate(path),
+                rounded_rect(8.0,
+                  colored(color("#d8edcc"),
+                    width_box(10000.0, padding(8.0, text(child.title)))))
+                . cast_message[CellMessage]()))
+      text
+        Next, chapters.
+      code
+        ChapterMessage = enum { changed: Chapter, navigate: NotebookPath }
+      code
+        chapter_cell_widget(chapter: Chapter, index: Int, path: NotebookPath
+          ) Widget[ChapterMessage] =
+          cell_widget(chapter.children.get(index), path.push(index))
+          . map_message(\ message: CellMessage ->
+              message %(
+                changed(updated)
+                  ChapterMessage.changed(Chapter(
+                    title = chapter.title,
+                    children = chapter.children.set(index, updated)))
+                navigate(destination) ChapterMessage.navigate(destination)))
+      code
+        ChapterBreadcrumb = struct { title: String, path: NotebookPath }
+      code
+        chapter_breadcrumbs(
+          root: Chapter, path: NotebookPath, prefix: NotebookPath
+          ) List[ChapterBreadcrumb] =
+          current = list(ChapterBreadcrumb(title = root.title, path = prefix))
+          if path.is_empty()
+            current
+            identity(
+              child = root.children.get(path.first()) %(
+                chapter(child) child
+                default crash("Chapter path points to a non-chapter cell."))
+              current.push_all(chapter_breadcrumbs(
+                child, path.without_first(), prefix.push(path.first()))))
+      code
+        chapter_widget(chapter: Chapter, breadcrumbs: List[ChapterBreadcrumb]
+          ) Widget[ChapterMessage] =
+          path = breadcrumbs.last().path
+          scroll_view(Axis.vertical,
+            center(
+              width_box(300.0,
+                column(list(
+                  height_box(8.0).cast_message[ChapterMessage](),
+                  padding(8.0, 0.0, 8.0, 0.0,
+                    row(
+                      breadcrumbs.without_last().iter()
+                      . map_indexed(\ index: Int, crumb: ChapterBreadcrumb ->
+                          on_click(ChapterMessage.navigate(crumb.path),
+                            padding(0.0, 0.0, 4.0, 0.0, text(crumb.title, 10.0))
+                            . cast_message[ChapterMessage]()))
+                      . to_list())),
+                  height_box(8.0).cast_message[ChapterMessage](),
+                  padding(8.0, 0.0, 8.0, 0.0,
+                    scale_widget(24.0 / text_line_height,
+                      editable_text(chapter.title)))
+                    . map_message(\ title: String ->
+                      ChapterMessage.changed(
+                        Chapter(title, children = chapter.children))),
+                  column(
+                    chapter.children.iter()
+                    . map_indexed(\ index: Int, cell: Cell ->
+                      column(list(
+                        height_box(8.0).cast_message[ChapterMessage](),
+                        chapter_cell_widget(chapter, index, path))))
+                    . to_list()),
+                  height_box(8.0).cast_message[ChapterMessage]())))))
+      text
+        Next, the entire notebook. It keeps all the navigation state local and
+        only emits updated notebooks.
+      code
+        notebook_widget(notebook: Chapter, path: NotebookPath) Widget[Chapter] =
+          stateful[NotebookPath, Chapter, ChapterMessage](
+            path,
+            \ current_path: NotebookPath, result: ChapterMessage ->
+              result %(
+                changed(updated)
+                  bubble_up[NotebookPath, Chapter](replace_chapter(
+                    notebook, current_path, updated))
+                navigate(destination)
+                  new_state[NotebookPath, Chapter](destination)),
+            \ current_path: NotebookPath ->
+              key_widget(
+                current_path,
+                \ a: NotebookPath, b: NotebookPath -> a == b,
+                chapter_widget(
+                  notebook.get(current_path),
+                  chapter_breadcrumbs(
+                    notebook, current_path, notebook_path()))))
+        notebook_widget(notebook: Chapter) Widget[Chapter] =
+          notebook_widget(notebook, notebook_path())
+      text
+        Running the app:
+        soil ../../martinaise/martinaise.soil compile src/yam.mar
+        soil src/yam.soil src/notebook.yam src/notebook.yam.objects
+        zig build run -- --ui src/notebook.yam.objects
       code
         app = run_app(
           stateful(
