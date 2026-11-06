@@ -1967,47 +1967,76 @@ chapter Root
             widget(key_widget_impl[K, M](equals), KeyWidget(key, child))
           key_widget[M](key: Int, child: Widget[M]) Widget[M] =
             key_widget(key, \ a: Int, b: Int -> a == b, child)
-      chapter CastMessage
+      chapter MapMessage
         text
-          cast_message[M] wraps a Widget[Never] as a Widget[M]. The child keeps
-          its original callbacks and update type; only its event results are
-          adapted. Whole subtrees that emit no messages can be cast together.
+          map_message adapts a child's messages while preserving its element,
+          layout, focus, and hover state. Updating the widget replaces the
+          mapper and updates the existing child.
+          cast_message adapts a Widget[Never] using the same wrapper.
         code
-          cast_message_event[M](
-            result: EventResult[Never, Element[Never]]
-          ) EventResult[M, Element[Never]] =
+          MapMessageWidget[A, B] = struct {
+            child: Widget[A], mapper: fun(A) B }
+          MapMessageElement[A, B] = struct {
+            child: Element[A], mapper: fun(A) B }
+          map_message_child[A, B](
+            e: MapMessageElement[A, B], child: Element[A]
+            ) MapMessageElement[A, B] =
+            MapMessageElement(child, mapper = e.mapper)
+          map_message_event[A, B](
+            e: MapMessageElement[A, B], result: EventResult[A, Element[A]]
+            ) EventResult[B, MapMessageElement[A, B]] =
             result %(
-              not_handled EventResult[M, Element[Never]].not_handled
-              handled(child) EventResult[M, Element[Never]].handled(child)
+              not_handled EventResult[B, MapMessageElement[A, B]].not_handled
+              handled(child)
+                EventResult[B, MapMessageElement[A, B]].handled(
+                  map_message_child(e, child))
               request_focus(child)
-                EventResult[M, Element[Never]].request_focus(child)
-              message unreachable())
-          cast_message_impl[M](
-          ) WidgetImpl[M, Widget[Never], Element[Never]] =
+                EventResult[B, MapMessageElement[A, B]].request_focus(
+                  map_message_child(e, child))
+              message(event)
+                EventResult[B, MapMessageElement[A, B]].message(
+                  ElementMessage(
+                    element = map_message_child(e, event.element),
+                    message = e.mapper(event.message))))
+          map_message_impl[A, B](
+            ) WidgetImpl[B, MapMessageWidget[A, B], MapMessageElement[A, B]] =
             WidgetImpl(
-              new = \ w: Widget[Never], constraints: Constraints ->
-                w.create_element(constraints),
-              update = \ e: Element[Never], w: Widget[Never] -> e.update(w),
-              new_constraints = \ e: Element[Never], constraints: Constraints ->
-                e.new_constraints(constraints),
-              hover = \ e: Element[Never], pos: Position -> e.hover(pos),
-              unhover = \ e: Element[Never] -> e.unhover(),
-              mouse_pressed = \ e: Element[Never], position: Position ->
-                e.mouse_pressed(position).cast_message_event[M](),
-              mouse_released = \ e: Element[Never], position: Position ->
-                e.mouse_released(position).cast_message_event[M](),
+              new = \ w: MapMessageWidget[A, B], constraints: Constraints ->
+                MapMessageElement(
+                  child = w.child.create_element(constraints),
+                  mapper = w.mapper),
+              update =
+                \ e: MapMessageElement[A, B], w: MapMessageWidget[A, B] ->
+                  MapMessageElement(
+                    child = e.child.update(w.child), mapper = w.mapper),
+              new_constraints =
+                \ e: MapMessageElement[A, B], constraints: Constraints ->
+                  map_message_child(e, e.child.new_constraints(constraints)),
+              hover = \ e: MapMessageElement[A, B], pos: Position ->
+                map_message_child(e, e.child.hover(pos)),
+              unhover = \ e: MapMessageElement[A, B] ->
+                map_message_child(e, e.child.unhover()),
+              mouse_pressed = \ e: MapMessageElement[A, B], pos: Position ->
+                map_message_event(e, e.child.mouse_pressed(pos)),
+              mouse_released = \ e: MapMessageElement[A, B], pos: Position ->
+                map_message_event(e, e.child.mouse_released(pos)),
               mouse_scrolled =
-                \ e: Element[Never], position: Position, delta: Offset ->
-                  e.mouse_scrolled(position, delta).cast_message_event[M](),
-              focus = \ e: Element[Never] -> e.focus(),
-              unfocus = \ e: Element[Never] -> e.unfocus(),
-              key_pressed = \ e: Element[Never], key: KeyPressed ->
-                e.key_pressed(key).cast_message_event[M](),
-              char_entered = \ e: Element[Never], char: CharEntered ->
-                e.char_entered(char).cast_message_event[M](),
-              render = \ e: Element[Never] -> e.drawing)
+                \ e: MapMessageElement[A, B], pos: Position, delta: Offset ->
+                  map_message_event(e, e.child.mouse_scrolled(pos, delta)),
+              focus = \ e: MapMessageElement[A, B] ->
+                e.child.focus()
+                . map(\ child: Element[A] -> map_message_child(e, child)),
+              unfocus = \ e: MapMessageElement[A, B] ->
+                map_message_child(e, e.child.unfocus()),
+              key_pressed = \ e: MapMessageElement[A, B], key: KeyPressed ->
+                map_message_event(e, e.child.key_pressed(key)),
+              char_entered = \ e: MapMessageElement[A, B], char: CharEntered ->
+                map_message_event(e, e.child.char_entered(char)),
+              render = \ e: MapMessageElement[A, B] -> e.child.drawing)
+          map_message[A, B](child: Widget[A], mapper: fun(A) B) Widget[B] =
+            widget(map_message_impl[A, B](), MapMessageWidget(child, mapper))
           cast_message[M](child: Widget[Never]) Widget[M] =
-            widget(cast_message_impl[M](), child)
+            map_message[Never, M](child, \ message: Never -> unreachable())
       chapter RunApp
         text
           Running a widget app translates the stateful widget into the lower-
