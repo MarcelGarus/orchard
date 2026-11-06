@@ -4117,6 +4117,68 @@ chapter Root
         soil src/yam.soil src/notebook.yam src/notebook.yam.objects
         zig build run -- --ui src/notebook.yam.objects
       code
+        Chapter = struct { title: String, children: List[Cell] }
+        Cell = enum { text: String, code: String, chapter: Chapter }
+      code
+        chapter(title: String, children: List[Cell]) Chapter =
+          Chapter(title, children)
+      code
+        notebook_widget(chapter: Chapter) Widget[Chapter] =
+          scroll_view(Axis.vertical,
+            center(
+              width_box(300.0,
+                column(list(
+                  height_box(8.0).cast_message[Chapter](),
+                  padding(8.0, 0.0, 8.0, 0.0, text("bread crumbs", 10.0))
+                  . cast_message[Chapter](),
+                  height_box(8.0).cast_message[Chapter](),
+                  padding(8.0, 0.0, 8.0, 0.0,
+                    scale_widget(24.0 / text_line_height,
+                      editable_text(chapter.title)))
+                    . map_message(\ title: String ->
+                      Chapter(title, children = chapter.children)),
+                  column(
+                    chapter.children.iter()
+                    . map_indexed(\ index: Int, cell: Cell ->
+                      column(list(
+                        height_box(8.0).cast_message[Chapter](),
+                        cell_widget(cell).map_message(\ updated: Cell ->
+                          Chapter(title = chapter.title,
+                            children = chapter.children.set(index, updated))))))
+                    . to_list()),
+                  height_box(8.0).cast_message[Chapter]())))))
+        cell_widget(cell: Cell) Widget[Cell] =
+          cell %(
+            text(value)
+              padding(8.0, 0.0, 8.0, 0.0,
+                editable_text(value)
+                . map_message(\ updated: String -> Cell.text(updated)))
+            code(value)
+              rounded_rect(8.0,
+                colored(color("#f9dec8"),
+                  width_box(10000.0,
+                    padding(8.0,
+                      editable_text(value)
+                      . map_message(\ updated: String -> Cell.code(updated))))))
+            chapter(child)
+              rounded_rect(8.0,
+                colored(color("#d8edcc"),
+                  width_box(10000.0,
+                    padding(8.0, text(child.title)))))
+              . cast_message[Cell]())
+      code
+        app = run_app(
+          stateful(
+            chapter("Orchard", list(
+              Cell.text("Hello!"),
+              Cell.code("foo = 3"),
+              Cell.text("Hi!"),
+              Cell.chapter(chapter("more stuff", list(
+                Cell.text("well hello there"),
+                Cell.text("have some inner text")))))),
+            \ state: Chapter, new: Chapter -> new_state[Chapter, Never](new),
+            \ state: Chapter -> notebook_widget(state)))
+      code
         counter() Widget[Never] =
           stateful[Int, Never, Int](
             0,
@@ -4131,13 +4193,13 @@ chapter Root
                 button(1, color("#30a080"),
                   padding(6.0, text("increment")).cast_message[Int]()))))
       code
-        editable_text_example() Widget[Never] =
+        editable_text_example(initial: String) Widget[Never] =
           stateful[String, Never, String](
-            "Edit this text",
+            initial,
             \ value: String, message: String ->
               new_state[String, Never](message),
-            \ value: String -> padding(8.0, editable_text(value)))
-      code
+            \ value: String -> editable_text(value))
+      text
         app = run_app(
           scroll_view(Axis.vertical,
             center(
@@ -4148,12 +4210,14 @@ chapter Root
                   height_box(8.0),
                   padding(8.0, 0.0, 8.0, 0.0, text("Orchard", 24.0)),
                   height_box(8.0),
-                  padding(8.0, 0.0, 8.0, 0.0, text("Hi, this is some code:")),
+                  padding(8.0, 0.0, 8.0, 0.0,
+                    editable_text_example("Hi, this is some code:")),
                   height_box(8.0),
                   rounded_rect(8.0,
                     colored(color("#f9dec8"),
                       width_box(10000.0,
-                        padding(8.0, text("This is a code box."))))),
+                        padding(8.0,
+                          editable_text_example("This is a code box."))))),
                   height_box(8.0),
                   padding(8.0, 0.0, 8.0, 0.0, counter()),
                   height_box(8.0),
@@ -4161,8 +4225,11 @@ chapter Root
                   height_box(8.0),
                   keysink(),
                   height_box(8.0),
-                  editable_text_example(),
-                  text("This is some relatively long example text."),
+                  padding(8.0, 0.0, 8.0, 0.0,
+                    editable_text_example("Edit this text")),
+                  padding(8.0, 0.0, 8.0, 0.0,
+                    editable_text_example(
+                      "This is some relatively long example text.")),
                   height_box(8.0),
                   colored(color("#e07050"), sized_box(100.0, 100.0)),
                   height_box(8.0),
@@ -4176,16 +4243,16 @@ chapter Root
       - type-safe widget update
       - position -> @ ?
       - widgets
-        - button
         - stack
         - icon
         - next/previous focus for keyboard-driven navigation
         - refactor how colors work, replace button shade
       - Notebook
-        - text cell
-        - code cell
-        - chapters
+        - navigate into chapters
+        - add new cells
+        - add new chapters
         - breadcrumbs
+        - compile the code
         - live result
         - custom cells
         - self-host
