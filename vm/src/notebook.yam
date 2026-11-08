@@ -1660,8 +1660,9 @@ chapter Root
           the same constraints as before, it's not updated. If an element
           receives a mouse button event outside its bounds, it is not notified.
           hover receives local coordinates and updates the hovered subtree;
-          unhover clears that state recursively. Hover is recomputed after
-          updates and layout changes, even when the pointer has not moved.
+          unhover clears that state recursively. The app tracks the pointer and
+          recomputes hover after events and layout changes. Element.hovered
+          tracks subtrees which may need unhover.
         code
           # request_focus carries an updated, focused subtree. Containers must
           # unfocus its siblings before forwarding the request to their parent.
@@ -1676,8 +1677,8 @@ chapter Root
             drawing: Drawing,
             focused: Bool,
             hovered: Bool,
-            hover_fun: fun(Position) Element[M],
-            unhover_fun: fun() Element[M],
+            hover_fun: fun(Position) EventResult[M, Element[M]],
+            unhover_fun: fun() EventResult[M, Element[M]],
             update_fun: fun(Widget[M]) Element[M],
             new_constraints_fun: fun(Constraints) Element[M],
             mouse_pressed_fun: fun(Position) EventResult[M, Element[M]],
@@ -1699,8 +1700,8 @@ chapter Root
             new: fun(W, Constraints) E,
             update: fun(E, W) E,
             new_constraints: fun(E, Constraints) E,
-            hover: fun(E, Position) E,
-            unhover: fun(E) E,
+            hover: fun(E, Position) EventResult[M, E],
+            unhover: fun(E) EventResult[M, E],
             mouse_pressed: fun(E, Position) EventResult[M, E],
             mouse_released: fun(E, Position) EventResult[M, E],
             mouse_scrolled: fun(E, Position, Offset) EventResult[M, E],
@@ -1726,48 +1727,48 @@ chapter Root
             state: E,
             constraints: Constraints,
             focused: Bool,
-            pointer: Maybe[Position],
+            hovered: Bool,
           ) Element[M] =
             element = if focused
               impl.focus(state) %(
                 some(next)
-                  widget_element(impl, next, constraints, true, pointer)
-                none widget_element(impl, state, constraints, false, pointer))
-              widget_element(impl, state, constraints, false, pointer)
-            pointer %(none element some(pos) element.hover(pos))
+                  widget_element(impl, next, constraints, true, hovered)
+                none widget_element(impl, state, constraints, false, hovered))
+              widget_element(impl, state, constraints, false, hovered)
+            element
           widget_event[M, W, E](
             impl: WidgetImpl[M, W, E],
             result: EventResult[M, E],
             constraints: Constraints,
             focused: Bool,
-            pointer: Maybe[Position],
+            hovered: Bool,
           ) EventResult[M, Element[M]] =
             result %(
               not_handled EventResult[M, Element[M]].not_handled
               handled(next)
                 EventResult[M, Element[M]].handled(
                   refreshed_widget_element(
-                    impl, next, constraints, focused, pointer))
+                    impl, next, constraints, focused, hovered))
               request_focus(next)
                 impl.focus(next) %(
                   some(accepted)
                     EventResult[M, Element[M]].request_focus(widget_element(
-                      impl, accepted, constraints, true, pointer))
+                      impl, accepted, constraints, true, hovered))
                   none
                     EventResult[M, Element[M]].handled(widget_element(
-                      impl, next, constraints, false, pointer)))
+                      impl, next, constraints, false, hovered)))
               message(event)
                 EventResult[M, Element[M]].message(ElementMessage(
                   message = event.message,
                   element =
                     refreshed_widget_element(
-                      impl, event.element, constraints, focused, pointer))))
+                      impl, event.element, constraints, focused, hovered))))
           widget_element[M, W, E](
             impl: WidgetImpl[M, W, E],
             state: E,
             constraints: Constraints,
             focused: Bool,
-            pointer: Maybe[Position],
+            hovered: Bool,
           ) Element[M] =
             drawing = impl.render(state)
             Element(
@@ -1775,81 +1776,81 @@ chapter Root
               size = drawing.size,
               drawing,
               focused,
-              hovered = pointer is some,
+              hovered,
               hover_fun = \ pos: Position ->
-                widget_element(
+                widget_event(
                   impl,
                   impl.hover(state, pos),
                   constraints,
                   focused,
-                  some(pos)),
+                  true),
               unhover_fun = \ ->
-                widget_element(
+                widget_event(
                   impl,
                   impl.unhover(state),
                   constraints,
                   focused,
-                  none[Position]()),
+                  false),
               focus_fun = \ ->
                 impl.focus(state)
                 . map(\ next: E ->
-                    widget_element(impl, next, constraints, true, pointer)),
+                    widget_element(impl, next, constraints, true, hovered)),
               unfocus_fun = \ ->
                 widget_element(
-                  impl, impl.unfocus(state), constraints, false, pointer),
+                  impl, impl.unfocus(state), constraints, false, hovered),
               key_pressed_fun = \ key: KeyPressed ->
                 widget_event(
                   impl,
                   impl.key_pressed(state, key),
                   constraints,
                   focused,
-                  pointer),
+                  hovered),
               char_entered_fun = \ char: CharEntered ->
                 widget_event(
                   impl,
                   impl.char_entered(state, char),
                   constraints,
                   focused,
-                  pointer),
+                  hovered),
               update_fun = \ next: Widget[M] ->
                 refreshed_widget_element(
                   impl,
                   impl.update(state, next.value.to_static[W]()),
                   constraints,
                   focused,
-                  pointer),
+                  hovered),
               new_constraints_fun = \ next: Constraints ->
                 refreshed_widget_element(
                   impl,
                   impl.new_constraints(state, next),
                   next,
                   focused,
-                  pointer),
+                  hovered),
               mouse_pressed_fun = \ position: Position ->
                 widget_event(
                   impl,
                   impl.mouse_pressed(state, position),
                   constraints,
                   focused,
-                  pointer),
+                  hovered),
               mouse_released_fun = \ position: Position ->
                 widget_event(
                   impl,
                   impl.mouse_released(state, position),
                   constraints,
                   focused,
-                  pointer),
+                  hovered),
               mouse_scrolled_fun = \ position: Position, delta: Offset ->
                 widget_event(
                   impl,
                   impl.mouse_scrolled(state, position, delta),
                   constraints,
                   focused,
-                  pointer))
+                  hovered))
           widget_element[M, W, E](
             impl: WidgetImpl[M, W, E], state: E, constraints: Constraints
             ) Element[M] =
-            widget_element(impl, state, constraints, false, none[Position]())
+            widget_element(impl, state, constraints, false, false)
           widget[M, W, E](impl: WidgetImpl[M, W, E], current: W) Widget[M] =
             Widget(
               value = current.to_dynamic(),
@@ -1868,23 +1869,28 @@ chapter Root
             if element.constraints == next
               element
               element.new_constraints_fun(next)
-          hover[M](element: Element[M], pos: Position) Element[M] =
+          hover[M](element: Element[M], pos: Position
+            ) EventResult[M, Element[M]] =
             if element.bounds().contains(pos)
               element.hover_fun(pos)
               element.unhover()
-          unhover[M](element: Element[M]) Element[M] =
-            if element.hovered element.unhover_fun() element
+          unhover[M](element: Element[M]) EventResult[M, Element[M]] =
+            if element.hovered
+              element.unhover_fun()
+              EventResult[M, Element[M]].not_handled
           mouse_released[M](
             element: Element[M], position: Position
             ) EventResult[M, Element[M]] =
             if element.bounds().contains(position)
-              element.hover(position).mouse_released_fun(position)
+              after_hover(element.hover(position), element,
+                \ next: Element[M] -> next.mouse_released_fun(position))
               EventResult[M, Element[M]].not_handled
           mouse_pressed[M](
             element: Element[M], position: Position
             ) EventResult[M, Element[M]] =
             if element.bounds().contains(position)
-              element.hover(position).mouse_pressed_fun(position)
+              after_hover(element.hover(position), element,
+                \ next: Element[M] -> next.mouse_pressed_fun(position))
               EventResult[M, Element[M]].not_handled
           mouse_scrolled[M](
             element: Element[M], position: Position, delta: Offset
@@ -1937,9 +1943,11 @@ chapter Root
                 \ e: KeyElement[K, M], constraints: Constraints ->
                   key_widget_child(e, e.child.new_constraints(constraints)),
               hover = \ e: KeyElement[K, M], pos: Position ->
-                key_widget_child(e, e.child.hover(pos)),
+                e.child.hover(pos)
+                . map(\ child: Element[M] -> key_widget_child(e, child)),
               unhover = \ e: KeyElement[K, M] ->
-                key_widget_child(e, e.child.unhover()),
+                e.child.unhover()
+                . map(\ child: Element[M] -> key_widget_child(e, child)),
               mouse_pressed = \ e: KeyElement[K, M], pos: Position ->
                 e.child.mouse_pressed(pos)
                 . map(\ child: Element[M] -> key_widget_child(e, child)),
@@ -2013,9 +2021,9 @@ chapter Root
                 \ e: MapMessageElement[A, B], constraints: Constraints ->
                   map_message_child(e, e.child.new_constraints(constraints)),
               hover = \ e: MapMessageElement[A, B], pos: Position ->
-                map_message_child(e, e.child.hover(pos)),
+                map_message_event(e, e.child.hover(pos)),
               unhover = \ e: MapMessageElement[A, B] ->
-                map_message_child(e, e.child.unhover()),
+                map_message_event(e, e.child.unhover()),
               mouse_pressed = \ e: MapMessageElement[A, B], pos: Position ->
                 map_message_event(e, e.child.mouse_pressed(pos)),
               mouse_released = \ e: MapMessageElement[A, B], pos: Position ->
@@ -2044,9 +2052,19 @@ chapter Root
           The root widget handles every message internally, so run_app accepts
           only Widget[Never].
         code
+          app_event_element(
+            result: EventResult[Never, Element[Never]], previous: Element[Never]
+            ) Element[Never] =
+            result %(
+              not_handled previous
+              handled(next) next
+              request_focus(next) next
+              message unreachable())
           run_app(element: Element[Never], pointer: Maybe[Position]) App =
             current =
-              pointer %(none element.unhover() some(pos) element.hover(pos))
+              app_event_element(
+                pointer %(none element.unhover() some(pos) element.hover(pos)),
+                element)
             App(
               render = \ window: Size -> current.drawing.draw,
               handle = \ event: Event ->
@@ -2056,15 +2074,15 @@ chapter Root
                       current.new_constraints(tight_constraints(window)),
                       pointer)
                   mouse_moved(pos) run_app(current, some(pos))
-                  mouse_left run_app(current.unhover(), none[Position]())
+                  mouse_left run_app(current, none[Position]())
                   mouse_pressed(pos)
-                    root = current.hover(pos)
+                    root = app_event_element(current.hover(pos), current)
                     run_app_result(root, root.mouse_pressed(pos), some(pos))
                   mouse_released(pos)
-                    root = current.hover(pos)
+                    root = app_event_element(current.hover(pos), current)
                     run_app_result(root, root.mouse_released(pos), some(pos))
                   mouse_scrolled(event)
-                    root = current.hover(event.position)
+                    root = app_event_element(current.hover(event.position), current)
                     run_app_result(
                       root,
                       root.mouse_scrolled(event.position, event.delta),
@@ -2097,8 +2115,10 @@ chapter Root
               update = \ state: Size, w: Nothing -> state,
               new_constraints = \ state: Size, constraints: Constraints ->
                 constraints.min(),
-              hover = \ state: Size, pos: Position -> state,
-              unhover = \ state: Size -> state,
+              hover = \ state: Size, pos: Position ->
+                EventResult[Never, Size].not_handled,
+              unhover = \ state: Size ->
+                EventResult[Never, Size].not_handled,
               mouse_pressed = \ state: Size, position: Position ->
                 EventResult[Never, Size].not_handled,
               mouse_released = \ state: Size, pos: Position ->
@@ -2135,9 +2155,11 @@ chapter Root
                 ColoredElement(
                   color = e.color, child = e.child.new_constraints(next)),
               hover = \ e: ColoredElement[M], pos: Position ->
-                colored_child(e, e.child.hover(pos)),
+                e.child.hover(pos)
+                . map(\ child: Element[M] -> colored_child(e, child)),
               unhover = \ e: ColoredElement[M] ->
-                colored_child(e, e.child.unhover()),
+                e.child.unhover()
+                . map(\ child: Element[M] -> colored_child(e, child)),
               mouse_pressed = \ e: ColoredElement[M], pos: Position ->
                 e.child.mouse_pressed(pos)
                   .map(\ child: Element[M] -> colored_child(e, child)),
@@ -2222,12 +2244,13 @@ chapter Root
                     radius = e.radius,
                     child = e.child.new_constraints(constraints)),
               hover = \ e: RoundedRectElement[M], pos: Position ->
-                rounded_rect_child(e,
-                  if rounded_rect_contains(e.radius, e.child.size, pos)
-                    e.child.hover(pos)
-                    e.child.unhover()),
+                result = if rounded_rect_contains(e.radius, e.child.size, pos)
+                  e.child.hover(pos)
+                  e.child.unhover()
+                result.map(\ child: Element[M] -> rounded_rect_child(e, child)),
               unhover = \ e: RoundedRectElement[M] ->
-                rounded_rect_child(e, e.child.unhover()),
+                e.child.unhover()
+                . map(\ child: Element[M] -> rounded_rect_child(e, child)),
               mouse_pressed = \ e: RoundedRectElement[M], pos: Position ->
                 if rounded_rect_contains(e.radius, e.child.size, pos)
                   e.child.mouse_pressed(pos)
@@ -2327,9 +2350,11 @@ chapter Root
                   child = e.child.new_constraints(
                     sized_box_child_constraints(e.width, e.height, next))),
               hover = \ e: SizedBoxElement[M], pos: Position ->
-                sized_box_child(e, e.child.hover(pos)),
+                e.child.hover(pos)
+                . map(\ child: Element[M] -> sized_box_child(e, child)),
               unhover = \ e: SizedBoxElement[M] ->
-                sized_box_child(e, e.child.unhover()),
+                e.child.unhover()
+                . map(\ child: Element[M] -> sized_box_child(e, child)),
               mouse_pressed = \ e: SizedBoxElement[M], pos: Position ->
                 e.child.mouse_pressed(pos)
                   .map(\ child: Element[M] -> sized_box_child(e, child)),
@@ -2515,11 +2540,11 @@ chapter Root
                         scale_child_constraints(e.factor, constraints)),
                     constraints),
               hover = \ e: ScaleElement[M], pos: Position ->
-                scale_child(
-                  e,
-                  e.child.hover(position(pos.x / e.factor, pos.y / e.factor))),
+                e.child.hover(position(pos.x / e.factor, pos.y / e.factor))
+                . map(\ child: Element[M] -> scale_child(e, child)),
               unhover = \ e: ScaleElement[M] ->
-                scale_child(e, e.child.unhover()),
+                e.child.unhover()
+                . map(\ child: Element[M] -> scale_child(e, child)),
               mouse_pressed = \ e: ScaleElement[M], pos: Position ->
                 e.child
                 . mouse_pressed(position(pos.x / e.factor, pos.y / e.factor))
@@ -2584,8 +2609,10 @@ chapter Root
               new_constraints = \ e: TextElement, next: Constraints ->
                 TextElement(
                   value = e.value, color = e.color, constraints = next),
-              hover = \ e: TextElement, pos: Position -> e,
-              unhover = \ e: TextElement -> e,
+              hover = \ e: TextElement, pos: Position ->
+                EventResult[Never, TextElement].not_handled,
+              unhover = \ e: TextElement ->
+                EventResult[Never, TextElement].not_handled,
               mouse_pressed = \ e: TextElement, pos: Position ->
                 EventResult[Never, TextElement].not_handled,
               mouse_released = \ e: TextElement, pos: Position ->
@@ -2668,10 +2695,11 @@ chapter Root
                   constraints = next,
                   child = e.child.new_constraints(next.deflate(e.insets))),
               hover = \ e: PaddingElement[M], pos: Position ->
-                padding_child(
-                  e, e.child.hover(pos - offset(e.insets.left, e.insets.top))),
+                e.child.hover(pos - offset(e.insets.left, e.insets.top))
+                . map(\ child: Element[M] -> padding_child(e, child)),
               unhover = \ e: PaddingElement[M] ->
-                padding_child(e, e.child.unhover()),
+                e.child.unhover()
+                . map(\ child: Element[M] -> padding_child(e, child)),
               mouse_pressed = \ e: PaddingElement[M], pos: Position ->
                 local = pos - offset(e.insets.left, e.insets.top)
                 e.child.mouse_pressed(local)
@@ -2917,12 +2945,39 @@ chapter Root
                   e.factors,
                   \ index: Int, c: Constraints ->
                     children.get(index).new_constraints(c)))
-          flex_hover[M](e: FlexElement[M], pos: Position) FlexElement[M] =
-            children = e.children.iter().fold(list[Element[M]](), 0.0,
-              \ children: List[Element[M]], along: Float, child: Element[M] ->
-                tuple(children.push(child.hover(pos - offset(e.axis, along, 0.0))),
-                  along + child.size.main(e.axis))).a
-            flex_children(e, children)
+          flex_hover_children[M](
+            e: FlexElement[M], pos: Maybe[Position], index: Int, along: Float,
+            changed: Bool) EventResult[M, FlexElement[M]] =
+            if index == e.children.length()
+              if changed
+                EventResult[M, FlexElement[M]].handled(e)
+                EventResult[M, FlexElement[M]].not_handled
+              identity(
+                child = e.children.get(index)
+                result = pos %(
+                  some(point) child.hover(point - offset(e.axis, along, 0.0))
+                  none child.unhover())
+                result %(
+                  not_handled
+                    flex_hover_children(e, pos, index + 1,
+                      along + child.size.main(e.axis), changed)
+                  handled(next)
+                    flex_hover_children(
+                      flex_children(e, e.children.set(index, next)), pos,
+                      index + 1, along + next.size.main(e.axis), true)
+                  request_focus(next)
+                    EventResult[M, FlexElement[M]].request_focus(
+                      flex_children(e, e.children.iter().map_indexed(
+                        \ i: Int, child: Element[M] ->
+                          if i == index next child.unfocus()).to_list()))
+                  message(event)
+                    EventResult[M, FlexElement[M]].message(ElementMessage(
+                      message = event.message,
+                      element = flex_children(
+                        e, e.children.set(index, event.element))))))
+          flex_hover[M](e: FlexElement[M], pos: Position
+            ) EventResult[M, FlexElement[M]] =
+            flex_hover_children(e, some(pos), 0, 0.0, false)
           flex_focus[M](e: FlexElement[M]) Maybe[FlexElement[M]] =
             focused =
               e.children.iter().map(\ child: Element[M] -> child.focused).any()
@@ -2982,11 +3037,7 @@ chapter Root
                   children),
               hover = \ e: FlexElement[M], pos: Position -> flex_hover(e, pos),
               unhover = \ e: FlexElement[M] ->
-                flex_children(
-                  e,
-                  e.children.iter()
-                  . map(\ child: Element[M] -> child.unhover())
-                  . to_list()),
+                flex_hover_children(e, none[Position](), 0, 0.0, false),
               mouse_pressed = \ e: FlexElement[M], mouse: Position ->
                 flex_event(e, mouse, \ child: Element[M], pos: Position ->
                   child.mouse_pressed(pos)),
@@ -3162,9 +3213,11 @@ chapter Root
                     .new_constraints(scroll_child_constraints(e.axis, next)),
                   e.scroll),
               hover = \ e: ScrollViewElement[M], pos: Position ->
-                scroll_view_child(e, e.child.hover(pos + offset(e.axis, e.scroll, 0.0))),
+                e.child.hover(pos + offset(e.axis, e.scroll, 0.0))
+                . map(\ child: Element[M] -> scroll_view_child(e, child)),
               unhover = \ e: ScrollViewElement[M] ->
-                scroll_view_child(e, e.child.unhover()),
+                e.child.unhover()
+                . map(\ child: Element[M] -> scroll_view_child(e, child)),
               mouse_pressed = \ e: ScrollViewElement[M], pos: Position ->
                 e.child.mouse_pressed(pos + offset(e.axis, e.scroll, 0.0))
                 . map(\ child: Element[M] -> scroll_view_child(e, child)),
@@ -3261,10 +3314,12 @@ chapter Root
                   child = e.child.new_constraints(next.loosen_min()),
                   constraints = next),
               hover = \ e: AlignElement[M], pos: Position ->
-                align_child(e, e.child.hover(pos - alignment_offset(e.bias,
-                  aligned_size(e.child.size, e.constraints), e.child.size))),
+                e.child.hover(pos - alignment_offset(e.bias,
+                  aligned_size(e.child.size, e.constraints), e.child.size))
+                . map(\ child: Element[M] -> align_child(e, child)),
               unhover = \ e: AlignElement[M] ->
-                align_child(e, e.child.unhover()),
+                e.child.unhover()
+                . map(\ child: Element[M] -> align_child(e, child)),
               mouse_pressed = \ e: AlignElement[M], pos: Position ->
                 shift =
                   alignment_offset(
@@ -3385,9 +3440,9 @@ chapter Root
                 \ e: StatefulElement[S, M, N], constraints: Constraints ->
                   stateful_child(e, e.child.new_constraints(constraints)),
               hover = \ e: StatefulElement[S, M, N], pos: Position ->
-                stateful_child(e, e.child.hover(pos)),
+                stateful_event(e, e.child.hover(pos)),
               unhover = \ e: StatefulElement[S, M, N] ->
-                stateful_child(e, e.child.unhover()),
+                stateful_event(e, e.child.unhover()),
               mouse_pressed =
                 \ e: StatefulElement[S, M, N], position: Position ->
                   stateful_event(e, e.child.mouse_pressed(position)),
@@ -3446,9 +3501,11 @@ chapter Root
                     message = e.message,
                     child = e.child.new_constraints(constraints)),
               hover = \ e: OnClickElement[M], pos: Position ->
-                on_click_child(e, e.child.hover(pos)),
+                e.child.hover(pos)
+                . map(\ child: Element[M] -> on_click_child(e, child)),
               unhover = \ e: OnClickElement[M] ->
-                on_click_child(e, e.child.unhover()),
+                e.child.unhover()
+                . map(\ child: Element[M] -> on_click_child(e, child)),
               mouse_pressed = \ e: OnClickElement[M], pos: Position ->
                 result = e.child.mouse_pressed(pos)
                 result %(
@@ -3853,8 +3910,10 @@ chapter Root
                       active = e.active,
                       constraints)
                     editable_build(e.chars, e.cursor, e.active, constraints),
-              hover = \ e: EditableTextElement, pos: Position -> e,
-              unhover = \ e: EditableTextElement -> e,
+              hover = \ e: EditableTextElement, pos: Position ->
+                EventResult[String, EditableTextElement].not_handled,
+              unhover = \ e: EditableTextElement ->
+                EventResult[String, EditableTextElement].not_handled,
               mouse_pressed =
                 \ e: EditableTextElement, pos: Position ->
                   EventResult[String, EditableTextElement].request_focus(
@@ -3963,9 +4022,9 @@ chapter Root
                     active = false,
                     constraints = e.constraints),
               hover = \ e: KeysinkElement, pos: Position ->
-                e,
+                EventResult[Never, KeysinkElement].not_handled,
               unhover = \ e: KeysinkElement ->
-                e,
+                EventResult[Never, KeysinkElement].not_handled,
               mouse_pressed =
                 \ e: KeysinkElement, pos: Position ->
                   EventResult[Never, KeysinkElement].request_focus(
@@ -4037,6 +4096,18 @@ chapter Root
           button_contains[M](e: ButtonElement[M], pos: Position) Bool =
             rectangle(position(0.0, 0.0), e.child.size).contains(pos)
               and rounded_rect_contains(6.0, e.child.size, pos)
+          button_hover[M](e: ButtonElement[M], pos: Maybe[Position]
+            ) EventResult[M, ButtonElement[M]] =
+            inside = pos %(none false some(point) button_contains(e, point))
+            next = button_state(e, inside, inside and e.pressed)
+            result = pos %(
+              some(point) if inside e.child.hover(point) e.child.unhover()
+              none e.child.unhover())
+            mapped = result.map(\ child: Element[M] -> button_child(next, child))
+            if {mapped is not_handled}
+              and {{next.hovered != e.hovered} or {next.pressed != e.pressed}}
+              EventResult[M, ButtonElement[M]].handled(next)
+              mapped
           button_impl[M]() WidgetImpl[M, ButtonWidget[M], ButtonElement[M]] =
             WidgetImpl(
               new = \ w: ButtonWidget[M], constraints: Constraints ->
@@ -4055,12 +4126,9 @@ chapter Root
                 \ e: ButtonElement[M], constraints: Constraints ->
                   button_child(e, e.child.new_constraints(constraints)),
               hover = \ e: ButtonElement[M], pos: Position ->
-                inside = button_contains(e, pos)
-                next = button_state(e, inside, inside and e.pressed)
-                button_child(
-                  next, if inside e.child.hover(pos) e.child.unhover()),
+                button_hover(e, some(pos)),
               unhover = \ e: ButtonElement[M] ->
-                button_child(button_state(e, false, false), e.child.unhover()),
+                button_hover(e, none[Position]()),
               mouse_pressed = \ e: ButtonElement[M], pos: Position ->
                 if button_contains(e, pos)
                   identity(
