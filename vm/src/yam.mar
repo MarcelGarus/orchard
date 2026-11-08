@@ -4228,10 +4228,12 @@ fun packed_string_expr(
 | value of the entire notebook.
 fun reflected_notebook(state: NotebookState): ObjectId {
   var reflection_types = state.extract_reflection_types()
-  object_expr(reflection.reflect_chapter(root))
+  var root = state.structure.chapter
+    or panic("Notebook reflection requires a chapter at the document root.")
+  object_expr(reflection_types.reflect_chapter(root))
 }
 struct NotebookReflection { chapter: StructDef, cell: EnumDef }
-fun extract_reflection_types(state: NotebookState) NotebookReflection {
+fun extract_reflection_types(state: NotebookState): NotebookReflection {
   var chapter_type = state.types.get_maybe("Chapter")
     or panic("Notebook reflection requires the Chapter type.")
   var chapter = chapter_type.struct_
@@ -4259,8 +4261,6 @@ fun extract_reflection_types(state: NotebookState) NotebookReflection {
   }
   assert({state.types.get("String") is string} and {state.types.get("List") is list},
     "Notebook reflection requires builtin String and List.")
-  var root = state.structure.chapter
-    or panic("Notebook reflection requires a chapter at the document root.")
   NotebookReflection { chapter, cell }
 }
 fun reflect_chapter(reflection: NotebookReflection, chapter: AstChapter): ObjectId {
@@ -4272,12 +4272,21 @@ fun reflect_chapter(reflection: NotebookReflection, chapter: AstChapter): Object
     fields.&.push(if field.name == "title" then leaf(chapter.name) else inner(children))
   inner(fields)
 }
+fun trim_trailing_newline(source: String): String {
+  if source.ends_with("{newline}") then source.without_last(1) else source
+}
+fun replace_newlines_with_spaces(source: String): String {
+  var text = string_builder()
+  for char in source.cell_content().iter() do
+    if char == newline then text.&.write(" ") else text.&.write(char)
+  text.to_string()
+}
 fun reflect_cell(
   reflection: NotebookReflection, structure: AstStructure
 ): ObjectId {
   var variant_and_payload = switch structure
-    case text(text) tuple("text", leaf(text))
-    case code(code) tuple("code", leaf(code.source))
+    case text(text) tuple("text", leaf(text.replace_newlines_with_spaces()))
+    case code(code) tuple("code", leaf(code.source.trim_trailing_newline()))
     case chapter(chapter) tuple("chapter", reflection.reflect_chapter(chapter))
   inner(list(
     leaf(list(reflection.cell.variant_index(variant_and_payload.a))),
