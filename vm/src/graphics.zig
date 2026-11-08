@@ -171,9 +171,29 @@ pub fn init(ally: Ally) !*Graphics {
     return graphics;
 }
 
+fn enqueue_event(ally: Ally, queue: *ArrayList(Event), event: Event) !void {
+    if (queue.items.len != 0) {
+        const last = &queue.items[queue.items.len - 1];
+        switch (event) {
+            .mouse_moved => |position_| if (last.* == .mouse_moved) {
+                last.* = .{ .mouse_moved = position_ };
+                return;
+            },
+            .mouse_scrolled => |scroll| if (last.* == .mouse_scrolled) {
+                last.mouse_scrolled.position = scroll.position;
+                last.mouse_scrolled.delta.x += scroll.delta.x;
+                last.mouse_scrolled.delta.y += scroll.delta.y;
+                return;
+            },
+            else => {},
+        }
+    }
+    try queue.append(ally, event);
+}
+
 fn charCallback(window: ?*gl.GLFWwindow, codepoint: c_uint) callconv(.c) void {
     const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
-    graphics.event_queue.append(graphics.ally, .{
+    enqueue_event(graphics.ally, &graphics.event_queue, .{
         .char_entered = .{ .codepoint = codepoint },
     }) catch @panic("couldn't append event");
 }
@@ -182,7 +202,7 @@ fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_i
     _ = scancode;
     const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
     if (action == gl.GLFW_PRESS or action == gl.GLFW_REPEAT) {
-        graphics.event_queue.append(graphics.ally, .{
+        enqueue_event(graphics.ally, &graphics.event_queue, .{
             .key_pressed = .{
                 .keycode = @intCast(key),
                 .control = mods & gl.GLFW_MOD_CONTROL != 0,
@@ -196,8 +216,9 @@ fn keyCallback(window: ?*gl.GLFWwindow, key: c_int, scancode: c_int, action: c_i
 fn cursorPosCallback(window: ?*gl.GLFWwindow, x: f64, y: f64) callconv(.c) void {
     const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
     const scale: f64 = @floatCast(graphics.scale);
-    graphics.event_queue.append(
+    enqueue_event(
         graphics.ally,
+        &graphics.event_queue,
         .{ .mouse_moved = .{ .x = x / scale, .y = y / scale } },
     ) catch
         @panic("couldn't append event");
@@ -207,7 +228,7 @@ fn cursorPosCallback(window: ?*gl.GLFWwindow, x: f64, y: f64) callconv(.c) void 
 // a downward wheel step increases the vertical scroll position by 32 units.
 fn scrollCallback(window: ?*gl.GLFWwindow, x: f64, y: f64) callconv(.c) void {
     const graphics: *Graphics = @ptrCast(@alignCast(gl.glfwGetWindowUserPointer(window)));
-    graphics.event_queue.append(graphics.ally, .{
+    enqueue_event(graphics.ally, &graphics.event_queue, .{
         .mouse_scrolled = .{
             .position = graphics.get_mouse_position(),
             .delta = .{ .x = -x * 32, .y = -y * 32 },
@@ -224,7 +245,7 @@ fn mouseButtonCallback(window: ?*gl.GLFWwindow, button: c_int, action: c_int, mo
         gl.GLFW_RELEASE => .{ .mouse_released = graphics.get_mouse_position() },
         else => return,
     };
-    graphics.event_queue.append(graphics.ally, event) catch @panic("couldn't append event");
+    enqueue_event(graphics.ally, &graphics.event_queue, event) catch @panic("couldn't append event");
 }
 
 fn cursorEnterCallback(window: ?*gl.GLFWwindow, entered: c_int) callconv(.c) void {
@@ -233,7 +254,7 @@ fn cursorEnterCallback(window: ?*gl.GLFWwindow, entered: c_int) callconv(.c) voi
         .{ .mouse_moved = graphics.get_mouse_position() }
     else
         .mouse_left;
-    graphics.event_queue.append(graphics.ally, event) catch @panic("couldn't append event");
+    enqueue_event(graphics.ally, &graphics.event_queue, event) catch @panic("couldn't append event");
 }
 
 fn windowFocusCallback(window: ?*gl.GLFWwindow, focused: c_int) callconv(.c) void {
