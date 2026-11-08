@@ -2312,7 +2312,7 @@ enum AstStructure {
   code: AstCode,
 }
 struct AstChapter { name: String, children: List[AstStructure] }
-struct AstCode { defs: List[AstDef] }
+struct AstCode { source: String, defs: List[AstDef] }
 enum AstDef {
   builtin: AstBuiltinType,
   function: AstFunctionType,
@@ -3268,7 +3268,7 @@ fun parse_structure(parser: &NotebookParser): Maybe[AstStructure] {
 fun parse_code(parser: &Parser): AstCode {
   var defs = list[AstDef]()
   loop defs.&.push(parser.parse_def() or break)
-  AstCode { defs = defs }
+  AstCode { source = parser.code, defs = defs }
 }
 
 fun parse_type_def(parser: &Parser): Maybe[AstDef] {
@@ -3413,6 +3413,7 @@ fun write[W](writer: W, object: ObjectId) {
 }
 
 struct NotebookState {
+  structure: AstStructure,
   types: Map[String, TypeDef],
   funs: List[FunDef],
   groups: List[FunGroup],
@@ -3436,6 +3437,7 @@ struct EnumDefVariant { name: String, type: Type }
 
 fun compile_notebook(ast: Ast): NotebookState {
   var state = NotebookState {
+    structure = ast.structure,
     types = map[String, TypeDef](),
     funs = list[FunDef](),
     groups = list[FunGroup](),
@@ -4222,6 +4224,67 @@ fun packed_string_expr(
   var words = binary_expr("divide", binary_expr("add", length, int_expr(7)), int_expr(8))
   unary_expr("flatten-to-leaf", linked_array_expr(names, args, words, box(packed)))
 }
+| First checks that the notebook defines the required types and then creates a
+| value of the entire notebook.
+fun reflected_notebook(state: NotebookState): ObjectId {
+  var reflection_types = state.extract_reflection_types()
+  object_expr(reflection.reflect_chapter(root))
+}
+struct NotebookReflection { chapter: StructDef, cell: EnumDef }
+fun extract_reflection_types(state: NotebookState) NotebookReflection {
+  var chapter_type = state.types.get_maybe("Chapter")
+    or panic("Notebook reflection requires the Chapter type.")
+  var chapter = chapter_type.struct_
+    or panic("Notebook reflection requires Chapter to be a struct.")
+  assert(chapter.type_args.is_empty() and chapter.fields.len == 2,
+    "Notebook reflection requires Chapter fields title: String and children: List[Cell].")
+  for field in chapter.fields do {
+    var expected = if field.name == "title" then type("String")
+      else if field.name == "children" then type("List", list(type("Cell")))
+      else panic("Unexpected Chapter field {field.name} for notebook reflection.")
+    assert(state.resolve_type(field.type, set[String]()) == expected,
+      "Invalid type of Chapter.{field.name} for notebook reflection.")
+  }
+  var cell_type = state.types.get_maybe("Cell")
+    or panic("Notebook reflection requires the Cell type.")
+  var cell = cell_type.enum_ or panic("Notebook reflection requires Cell to be an enum.")
+  assert(cell.type_args.is_empty() and cell.variants.len == 3,
+    "Notebook reflection requires Cell variants text: String, code: String, chapter: Chapter.")
+  for variant in cell.variants do {
+    var expected = if variant.name == "chapter" then type("Chapter")
+      else if variant.name == "text" or variant.name == "code" then type("String")
+      else panic("Unexpected Cell variant {variant.name} for notebook reflection.")
+    assert(state.resolve_type(variant.type, set[String]()) == expected,
+      "Invalid type of Cell.{variant.name} for notebook reflection.")
+  }
+  assert({state.types.get("String") is string} and {state.types.get("List") is list},
+    "Notebook reflection requires builtin String and List.")
+  var root = state.structure.chapter
+    or panic("Notebook reflection requires a chapter at the document root.")
+  NotebookReflection { chapter, cell }
+}
+fun reflect_chapter(reflection: NotebookReflection, chapter: AstChapter): ObjectId {
+  var children = list[ObjectId]()
+  for child in chapter.children do
+    children.&.push(reflection.reflect_cell(child))
+  var fields = list[ObjectId]()
+  for field in reflection.chapter.fields do
+    fields.&.push(if field.name == "title" then leaf(chapter.name) else inner(children))
+  inner(fields)
+}
+fun reflect_cell(
+  reflection: NotebookReflection, structure: AstStructure
+): ObjectId {
+  var variant_and_payload = switch structure
+    case text(text) tuple("text", leaf(text))
+    case code(code) tuple("code", leaf(code.source))
+    case chapter(chapter) tuple("chapter", reflection.reflect_chapter(chapter))
+  inner(list(
+    leaf(list(reflection.cell.variant_index(variant_and_payload.a))),
+    variant_and_payload.b,
+  ))
+}
+
 fun builtin(f: AstFun): ObjectId {
   var signature = f.signature()
 
@@ -4835,15 +4898,28 @@ fun write_object[W](writer: W, id: ObjectId, written: &Set[Int]) {
     writer."){newline}"
   }
 }
-| UI notebooks export the App itself. Other notebooks return their named
-| global values as raw Yam objects; no runtime type descriptions are emitted.
+| The main function receives a reflection of the notebook.
 fun program(state: NotebookState): ObjectId {
-  var entries = list[ObjectId]()
-  for entry in state.vars do entries.&.push(new_inner_expr(list(
-    object_expr(leaf(entry.key)), entry.value.object,
-  )))
-  var body = if state.vars.get_maybe("app") is some(app) then app.object
-    else new_inner_expr(entries)
+  var main = none[Int]()
+  for key in 0..state.funs.len do {
+    var f = state.funs.get(key)
+    if f.name == "main" and f.type_args.is_empty() and f.args.len == 1 then
+      if f.args.get(0).type == type("Chapter") then main = some(key)
+  }
+  var body = if main is some(key) then {
+    var f = state.funs.get(key)
+    var group = name_expr("$group{f.group}")
+    var slot = key - state.groups.get(f.group).start
+    inner(list(leaf("call"), binary_expr("load", group, int_expr(slot)),
+      inner(list(state.reflected_notebook(), group))))
+  } else if state.vars.get_maybe("app") is some(app) then app.object
+  else {
+    var entries = list[ObjectId]()
+    for main in state.vars do entries.&.push(new_inner_expr(list(
+      object_expr(leaf(main.key)), main.value.object,
+    )))
+    new_inner_expr(entries)
+  }
   for binding in state.bindings.to_slice().rev_iter() do
     body = let_expr(binding.name, binding.value, body)
   heap_fun(list[String](), body)
