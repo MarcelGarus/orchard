@@ -3222,12 +3222,13 @@ fun parse_structure(parser: &NotebookParser): Maybe[AstStructure] {
   var header = parser(line.content.without_first(line.indentation))
   parser.cursor = parser.cursor + 1
   if header.&.consume_keyword("chapter") then {
-    header.&.consume_whitespace()
-    var name = header.&.parse_name()
-      or panic("Line {line.number}: Chapter without name.")
-    header.&.consume_whitespace()
-    if header.current() != null_char then
-      panic("Line {line.number}: Unexpected text after chapter name.")
+    var rest = header.rest().without_last(1) | exclude parser sentinel
+    var name = if rest.starts_with(" ") then rest.without_first(1)
+      else if rest == "" then ""
+      else panic("Line {line.number}: Expected a space after chapter.")
+    for character in name.iter() do
+      if character == 13.lower_byte().to_char() or character == null_char then
+        panic("Line {line.number}: Chapter titles must be single-line text.")
     var children = list[AstStructure]()
     parser.skip_blank_lines()
     if parser.cursor < parser.lines.len then {
@@ -3413,7 +3414,6 @@ fun write[W](writer: W, object: ObjectId) {
 }
 
 struct NotebookState {
-  structure: AstStructure,
   types: Map[String, TypeDef],
   funs: List[FunDef],
   groups: List[FunGroup],
@@ -3437,7 +3437,6 @@ struct EnumDefVariant { name: String, type: Type }
 
 fun compile_notebook(ast: Ast): NotebookState {
   var state = NotebookState {
-    structure = ast.structure,
     types = map[String, TypeDef](),
     funs = list[FunDef](),
     groups = list[FunGroup](),
@@ -4224,74 +4223,36 @@ fun packed_string_expr(
   var words = binary_expr("divide", binary_expr("add", length, int_expr(7)), int_expr(8))
   unary_expr("flatten-to-leaf", linked_array_expr(names, args, words, box(packed)))
 }
-| First checks that the notebook defines the required types and then creates a
-| value of the entire notebook.
-fun reflected_notebook(state: NotebookState): ObjectId {
-  var reflection_types = state.extract_reflection_types()
-  var root = state.structure.chapter
-    or panic("Notebook reflection requires a chapter at the document root.")
-  object_expr(reflection_types.reflect_chapter(root))
-}
-struct NotebookReflection { chapter: StructDef, cell: EnumDef }
-fun extract_reflection_types(state: NotebookState): NotebookReflection {
+| The host and Yam share this fixed notebook ABI. No source tree or layout
+| metadata is exported: the host parses the current source at launch.
+fun validate_notebook_abi(state: NotebookState) {
   var chapter_type = state.types.get_maybe("Chapter")
-    or panic("Notebook reflection requires the Chapter type.")
-  var chapter = chapter_type.struct_
-    or panic("Notebook reflection requires Chapter to be a struct.")
+    or panic("Notebook ABI requires the Chapter type.")
+  var chapter = chapter_type.struct_ or panic("Notebook ABI requires Chapter to be a struct.")
   assert(chapter.type_args.is_empty() and chapter.fields.len == 2,
-    "Notebook reflection requires Chapter fields title: String and children: List[Cell].")
-  for field in chapter.fields do {
-    var expected = if field.name == "title" then type("String")
-      else if field.name == "children" then type("List", list(type("Cell")))
-      else panic("Unexpected Chapter field {field.name} for notebook reflection.")
-    assert(state.resolve_type(field.type, set[String]()) == expected,
-      "Invalid type of Chapter.{field.name} for notebook reflection.")
+    "Notebook ABI requires Chapter fields title: String, children: List[Cell].")
+  var names = list("title", "children")
+  var types = list(type("String"), type("List", list(type("Cell"))))
+  for i in 0..2 do {
+    var field = chapter.fields.get(i)
+    assert(field.name == names.get(i), "Notebook ABI requires Chapter field order: title, children.")
+    assert(state.resolve_type(field.type, set[String]()) == types.get(i),
+      "Invalid type of Chapter.{field.name} for notebook ABI.")
   }
-  var cell_type = state.types.get_maybe("Cell")
-    or panic("Notebook reflection requires the Cell type.")
-  var cell = cell_type.enum_ or panic("Notebook reflection requires Cell to be an enum.")
+  var cell_type = state.types.get_maybe("Cell") or panic("Notebook ABI requires the Cell type.")
+  var cell = cell_type.enum_ or panic("Notebook ABI requires Cell to be an enum.")
   assert(cell.type_args.is_empty() and cell.variants.len == 3,
-    "Notebook reflection requires Cell variants text: String, code: String, chapter: Chapter.")
-  for variant in cell.variants do {
-    var expected = if variant.name == "chapter" then type("Chapter")
-      else if variant.name == "text" or variant.name == "code" then type("String")
-      else panic("Unexpected Cell variant {variant.name} for notebook reflection.")
-    assert(state.resolve_type(variant.type, set[String]()) == expected,
-      "Invalid type of Cell.{variant.name} for notebook reflection.")
+    "Notebook ABI requires Cell variants text: String, code: String, chapter: Chapter.")
+  var variants = list("text", "code", "chapter")
+  var payloads = list(type("String"), type("String"), type("Chapter"))
+  for i in 0..3 do {
+    var variant = cell.variants.get(i)
+    assert(variant.name == variants.get(i), "Notebook ABI requires Cell variant order: text, code, chapter.")
+    assert(state.resolve_type(variant.type, set[String]()) == payloads.get(i),
+      "Invalid type of Cell.{variant.name} for notebook ABI.")
   }
   assert({state.types.get("String") is string} and {state.types.get("List") is list},
-    "Notebook reflection requires builtin String and List.")
-  NotebookReflection { chapter, cell }
-}
-fun reflect_chapter(reflection: NotebookReflection, chapter: AstChapter): ObjectId {
-  var children = list[ObjectId]()
-  for child in chapter.children do
-    children.&.push(reflection.reflect_cell(child))
-  var fields = list[ObjectId]()
-  for field in reflection.chapter.fields do
-    fields.&.push(if field.name == "title" then leaf(chapter.name) else inner(children))
-  inner(fields)
-}
-fun trim_trailing_newline(source: String): String {
-  if source.ends_with("{newline}") then source.without_last(1) else source
-}
-fun replace_newlines_with_spaces(source: String): String {
-  var text = string_builder()
-  for char in source.cell_content().iter() do
-    if char == newline then text.&.write(" ") else text.&.write(char)
-  text.to_string()
-}
-fun reflect_cell(
-  reflection: NotebookReflection, structure: AstStructure
-): ObjectId {
-  var variant_and_payload = switch structure
-    case text(text) tuple("text", leaf(text.replace_newlines_with_spaces()))
-    case code(code) tuple("code", leaf(code.source.trim_trailing_newline()))
-    case chapter(chapter) tuple("chapter", reflection.reflect_chapter(chapter))
-  inner(list(
-    leaf(list(reflection.cell.variant_index(variant_and_payload.a))),
-    variant_and_payload.b,
-  ))
+    "Notebook ABI requires builtin String and List.")
 }
 
 fun builtin(f: AstFun): ObjectId {
@@ -4907,7 +4868,7 @@ fun write_object[W](writer: W, id: ObjectId, written: &Set[Int]) {
     writer."){newline}"
   }
 }
-| The main function receives a reflection of the notebook.
+| Notebook entry points take the host-parsed Chapter as their sole argument.
 fun program(state: NotebookState): ObjectId {
   var main = none[Int]()
   for key in 0..state.funs.len do {
@@ -4915,12 +4876,15 @@ fun program(state: NotebookState): ObjectId {
     if f.name == "main" and f.type_args.is_empty() and f.args.len == 1 then
       if f.args.get(0).type == type("Chapter") then main = some(key)
   }
+  var params = list[String]()
   var body = if main is some(key) then {
+    state.validate_notebook_abi()
+    params.&.push("$notebook")
     var f = state.funs.get(key)
     var group = name_expr("$group{f.group}")
     var slot = key - state.groups.get(f.group).start
     inner(list(leaf("call"), binary_expr("load", group, int_expr(slot)),
-      inner(list(state.reflected_notebook(), group))))
+      inner(list(name_expr("$notebook"), group))))
   } else if state.vars.get_maybe("app") is some(app) then app.object
   else {
     var entries = list[ObjectId]()
@@ -4931,7 +4895,7 @@ fun program(state: NotebookState): ObjectId {
   }
   for binding in state.bindings.to_slice().rev_iter() do
     body = let_expr(binding.name, binding.value, body)
-  heap_fun(list[String](), body)
+  heap_fun(params, body)
 }
 fun main(): Never {
   var args = get_process_args()

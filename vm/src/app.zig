@@ -5,8 +5,9 @@ const Obj = Heap.Obj;
 const Vm = @import("vm.zig");
 const Graphics = @import("graphics.zig");
 const Self = @This();
+const Notebook = @import("notebook.zig");
 
-// App { render: fun(Size) DrawCommand, handle: fun(Event) App }.
+// App { render: fun(Size) DrawCommand, handle: fun(Event) AppResult }.
 value: Obj,
 
 // Variant order matches the Yam Event enum.
@@ -19,6 +20,8 @@ pub const Event = union(enum(u64)) {
     mouse_scrolled: MouseScrolled,
     mouse_released: Graphics.Position,
     mouse_left: void,
+    save_completed: void,
+    save_failed: []const u8,
 
     pub const MouseScrolled = struct { position: Graphics.Position, delta: Graphics.Offset };
     pub const KeyPressed = struct { keycode: i32, control: bool, shift: bool, alt: bool };
@@ -69,7 +72,8 @@ pub fn event_object(heap: *Heap, event: Event) !Obj {
         .char_entered => |char| try heap.new_inner(&.{try heap.new_leaf(&.{char.codepoint})}),
         .mouse_pressed => |pos| try pair_object(heap, pos.x, pos.y),
         .mouse_released => |pos| try pair_object(heap, pos.x, pos.y),
-        .mouse_left => try heap.new_inner(&.{}),
+        .mouse_left, .save_completed => try heap.new_inner(&.{}),
+        .save_failed => |message| try heap.new_symbol(message),
         .mouse_moved => |pos| try pair_object(heap, pos.x, pos.y),
         .mouse_scrolled => |scroll| try heap.new_inner(&.{
             try pair_object(heap, scroll.position.x, scroll.position.y),
@@ -79,15 +83,43 @@ pub fn event_object(heap: *Heap, event: Event) !Obj {
     return heap.new_inner(&.{ try heap.new_leaf(&.{tag}), payload });
 }
 
-pub fn handle(self: *Self, vm: anytype, event: Event) !void {
-    self.value = try call(vm, self.value.child(1), try event_object(vm.heap, event));
+pub fn handle(self: *Self, vm: anytype, event: Event) !Obj {
+    const result = try call(vm, self.value.child(1), try event_object(vm.heap, event));
+    if (!result.is_inner() or result.size() != 2 or !result.child(1).is_inner())
+        return error.InvalidAppResult;
+    self.value = result.child(0);
+    return result.child(1);
+}
+
+pub fn save_command(io: std.Io, allocator: std.mem.Allocator, command: Obj, source_path: ?[]const u8) !void {
+    if (!command.is_inner() or command.size() != 2 or !command.child(0).is_leaf() or
+        command.child(0).size() != 1 or command.child(0).word(0) != 0)
+        return error.InvalidAppCommand;
+    const path = source_path orelse return error.MissingNotebookSource;
+    const notebook = try Notebook.decode(allocator, command.child(1));
+    try Notebook.save(.cwd(), io, path, allocator, notebook);
+}
+
+pub fn process_event(self: *Self, io: std.Io, allocator: std.mem.Allocator, vm: anytype, event: Event, source_path: ?[]const u8) !void {
+    const commands = try self.handle(vm, event);
+    for (commands.children()) |command| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        save_command(io, arena.allocator(), command, source_path) catch |err| {
+            std.debug.print("Save failed: {s}\n", .{@errorName(err)});
+            _ = try self.handle(vm, .{ .save_failed = @errorName(err) });
+            continue;
+        };
+        std.debug.print("Saved {s}\n", .{source_path.?});
+        _ = try self.handle(vm, .save_completed);
+    }
 }
 
 pub fn render(self: Self, vm: anytype, size: Graphics.Size) !Obj {
     return call(vm, self.value.child(0), try pair_object(vm.heap, size.width, size.height));
 }
 
-pub fn run(ally: std.mem.Allocator, vm: anytype, value: Obj) !void {
+pub fn run(io: std.Io, ally: std.mem.Allocator, vm: anytype, value: Obj, source_path: ?[]const u8) !void {
     var app = Self.init(value);
     var gfx = try Graphics.init(ally);
     defer gfx.deinit();
@@ -99,9 +131,9 @@ pub fn run(ally: std.mem.Allocator, vm: anytype, value: Obj) !void {
         const size = gfx.get_size();
         const resized = size.width != previous_size.width or size.height != previous_size.height;
         const redraw = first_frame or resized or gfx.event_queue.items.len != 0;
-        if (first_frame or resized) try app.handle(vm, .{ .window_resized = size });
-        if (first_frame) try app.handle(vm, .{ .mouse_moved = gfx.get_mouse_position() });
-        for (gfx.event_queue.items) |event| try app.handle(vm, event);
+        if (first_frame or resized) try app.process_event(io, ally, vm, .{ .window_resized = size }, source_path);
+        if (first_frame) try app.process_event(io, ally, vm, .{ .mouse_moved = gfx.get_mouse_position() }, source_path);
+        for (gfx.event_queue.items) |event| try app.process_event(io, ally, vm, event, source_path);
         gfx.event_queue.clearRetainingCapacity();
         previous_size = size;
         first_frame = false;

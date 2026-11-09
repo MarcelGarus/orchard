@@ -1,4 +1,4 @@
-chapter Root
+chapter Orchard
   chapter Philosophy
     text
       I believe programming should be more personal. Currently (2026), software
@@ -16,7 +16,7 @@ chapter Root
       envisioned computers as "personal dynamic media", where every user feels
       comfortable to create, use, and customize tools. Orchard is my attempt at
       creating a personal computing medium.
-  chapter Core
+  chapter Standard library
     chapter Identity
       text
         identity returns its argument unchanged. Wrapping a branch in identity
@@ -30,22 +30,23 @@ chapter Root
         languages as unit or void. From an information theoretical perspective,
         being given an instance of a Nothing type gives you no information
         whatsoever.
+      text
         Nothing is used whenever we don't actually want to provide a useful
         value. Functions that only have side-effects (aka they may crash or hang
         but that's all they do) return Nothing. See the assert function for an
         example.
-        Functions without an explicit return type return Nothing by default.
-        Empty bodies return Nothing. If you really need a Nothing, you can just
-        write curly braces.
       code
         Nothing = struct {}
       code
-        ignore[T](value: T) = {}
+        nothing = Nothing()
+      code
+        ignore[T](value: T) Nothing = nothing
     chapter Never
       text
         Never is a type with zero instances. If you write a function that
         accepts an argument of Never, it can never be called (otherwise, the
         caller would have a Never instance).
+      text
         Why do we need something like this? Some expressions always abort
         control flow, for example `panic("hi")`. These evaluate to the Never
         type. Because Never is never instantiated, it can be assigned to
@@ -53,19 +54,29 @@ chapter Root
       code
         Never = enum {}
     chapter Do
+      text
+        Sometimes, you want to invert the order of expressions. do supports
+        that.
       code
         do[A, B](value: A, doer: fun(A) B) B = doer(value)
+      code
+        foo =
+          big_expression_that_spans_multiple_lines()
+          . do(\ res: Int -> res + 1)
     chapter Dynamic
       text
-        Dynamic holds an object whose type is not tracked by the type system.
-        value.to_dynamic() forgets the static type; dynamic.to_static[T]() treats
-        the object as T. Both conversions return the same heap object without
-        copying it or adding a wrapper.
-        to_static[T]() does not check the object's type. The programmer must
-        supply the correct T; using the wrong type is undefined behavior.
+        Dynamic holds a value whose type is not tracked by the type system.
       code
         Dynamic = ...
+      text
+        value.to_dynamic() forgets the static type; dynamic.to_static[T]()
+        treats the value as T. Both conversions return the same heap object
+        without copying it or adding a wrapper. to_static[T]() does not check
+        the object's type. The programmer must supply the correct T; using the
+        wrong type is undefined behavior (in practice, it probably segfaults).
+      code
         to_dynamic[T](value: T) Dynamic = ...
+      code
         to_static[T](value: Dynamic) T = ...
     chapter Bool
       text
@@ -84,30 +95,16 @@ chapter Root
         not(a: Bool) Bool = if a false true
       code
         ==(a: Bool, b: Bool) Bool = if a b not(b)
+      code
         !=(a: Bool, b: Bool) Bool = not(a == b)
       code
         implies(a: Bool, b: Bool) Bool = if a b true
     chapter AndOr
       text
-        The "and" and "or" keywords allow short-circuiting.
-
-        Here are cases where the control flow short-circuits and the
-        alternatives don't get evaluated:
-
-        false and panic() | this is false
-        true or panic()   | this is true
-        some(2) or 3      | this is 2
-
-        In these cases, the control flow doesn't short-circuit and the
-        alternatives are evaluated as well:
-
-        false or foo      | this is foo
-        true and stuff    | this is stuff
-        none[Int]() or 3  | this is 3
-
-        The keywords turn into calls of left.and() or left.or(), which returns a
-        ControlFlow. This logic flow determines whether the expression
-        short-circuits or not.
+        The "and" and "or" keywords allow short-circuiting so that code like
+        "true or crash("hello")" doesn't crash.  The keywords turn into calls of
+        left.and() or left.or(), which returns a ControlFlow. This control flow
+        determines whether the expression short-circuits or not.
       code
         ControlFlow[A, B] = enum {
           short_circuit: A, evaluate_alternative: B }
@@ -132,44 +129,75 @@ chapter Root
       code
         ==(a: Ordering, b: Ordering) Bool =
           a %(less b is less equal b is equal greater b is greater)
+      code
         flip(ordering: Ordering) Ordering =
           ordering %(
             less Ordering.greater equal Ordering.equal greater Ordering.less)
+      code
         is_less(o: Ordering) Bool = o is less
+      code
         is_equal(o: Ordering) Bool = o is equal
+      code
         is_greater(o: Ordering) Bool = o is greater
+      code
         is_greater_equal(o: Ordering) Bool = not(o is less)
+      code
         is_not_equal(o: Ordering) Bool = not(o is equal)
+      code
         is_less_equal(o: Ordering) Bool = not(o is greater)
     chapter Byte
       text
         A byte represents a number between 0 and 255, inclusive.
-
-        Because Orchard's heap is word-based, a byte is really just a leaf
-        object that takes up two words (header and data). So, for performance,
-        you should store byte sequences as strings instead, only constructing
-        Byte instances on demand (for example, when iterating over the
-        sequence).
+      text
+        Because Orchard's heap is word-based, a byte is a full-blown object and
+        not space-efficient. So, don't use List[Byte] for performance. Instead,
+        store byte sequences as strings, and only construct Bytes on demand (for
+        example, when iterating).
       code
         Byte = ...
       text
         Byte arithmetic wraps into the range 0 to 255.
       code
         +(left: Byte, right: Byte) Byte = ...
+      code
         -(left: Byte, right: Byte) Byte = ...
+      code
         *(left: Byte, right: Byte) Byte = ...
+      code
         /(left: Byte, right: Byte) Byte = ...
+      text
+        Modulo and remainder are tricky and oftentimes confusing: Modulo is the
+        smallest number < right so that there exists an n with n * right +
+        result = left. Remainder is the rest of division – the result of
+        repeatedly adding or subtracting right to get closer to zero without
+        crossing over zero. In languages like C, % is the symbol for remainder.
+      code
         mod(left: Byte, right: Byte) Byte = ...
+      code
         rem(left: Byte, right: Byte) Byte = ...
+      text
+        Next, bitwise operations.
+      code
         &(left: Byte, right: Byte) Byte = ...
+      code
         |(left: Byte, right: Byte) Byte = ...
+      code
         xor(left: Byte, right: Byte) Byte = ...
+      text
+        Then, comparisons.
+      code
         <=>(left: Byte, right: Byte) Ordering = ...
+      code
         ==(a: Byte, b: Byte) Bool = a <=> b is equal
+      code
         <(a: Byte, b: Byte) Bool = a <=> b is less
+      code
         >(a: Byte, b: Byte) Bool = a <=> b is greater
+      code
         !=(a: Byte, b: Byte) Bool = not(a <=> b is equal)
+      code
         >=(a: Byte, b: Byte) Bool = not(a <=> b is less)
+      code
         <=(a: Byte, b: Byte) Bool = not(a <=> b is greater)
     chapter String
       text
@@ -185,15 +213,19 @@ chapter Root
         Crashing stops evaluation with a message.
       code
         crash(message: String) Never = ...
+      code
         crash() Never = crash("crashed")
       code
         unreachable() Never = crash("unreachable")
       code
         todo() Never = crash("todo")
     chapter Assert
+      text
+        Asserts document programmer assumptions throughout the code.
       code
         assert(condition: Bool, message: String) =
-          if not(condition) crash(message) {}
+          if not(condition) crash(message) nothing
+      code
         assert(condition: Bool) = assert(condition, "assert failed")
     chapter Maybe
       text
@@ -201,22 +233,42 @@ chapter Root
         Haskell name.
       code
         Maybe[A] = enum { some: A, none }
+      text
+        Constructors.
       code
         some[A](value: A) Maybe[A] = Maybe.some(value)
+      code
         none[A]() Maybe[A] = Maybe[A].none
+      text
+        And and or.
+      code
+        and[A](maybe: Maybe[A]) ControlFlow[A, Nothing] =
+          maybe %(
+            some(a) ControlFlow[A, Nothing].evaluate_alternative(a)
+            none ControlFlow[A, Nothing].short_circuit(none[A]()))
       code
         or[A](maybe: Maybe[A]) ControlFlow[A, Nothing] =
           maybe %(
             some(a) ControlFlow[A, Nothing].short_circuit(a)
             none ControlFlow[A, Nothing].evaluate_alternative)
+      text
+        Mapping and flattening.
       code
         map[A, B](maybe: Maybe[A], mapper: fun(A) B) Maybe[B] =
           maybe %(some(a) some(mapper(a)) none none[B]())
+      code
         flatten[A](maybe: Maybe[Maybe[A]]) Maybe[A] = maybe or none[A]()
+      code
         flat_map[A, B](maybe: Maybe[A], mapper: fun(A) Maybe[B]) Maybe[B] =
           maybe.map(mapper).flatten()
+      text
+        Unwrapping gives you the payload of the Maybe. If the Maybe is none, it crashes.
+      code
         unwrap[A](maybe: Maybe[A], message: String) A = maybe or crash(message)
+      code
         unwrap[A](maybe: Maybe[A]) A = maybe.unwrap("called none.unwrap")
+      text
+        Equals.
       code
         equals[A](
           a: Maybe[A], b: Maybe[A], payload_equals: fun(A, A) Bool) Bool =
@@ -236,17 +288,35 @@ chapter Root
           result %(
             ok(o) ControlFlow[O, E].short_circuit(o)
             error(e) ControlFlow[O, E].evaluate_alternative(e))
-      code
-        unwrap[O, E](result: Result[O, E], message: String) O =
-          result %(ok(o) o error crash(message))
-        unwrap[O, E](result: Result[O, E]) O =
-          result %(ok(o) o error(e) crash("called error.unwrap"))
+      text
+        Mapping and flattening.
       code
         map[O, E, A](result: Result[O, E], mapper: fun(O) A) Result[A, E] =
           result %(ok(o) ok[A, E](mapper(o)) error(e) error[A, E](e))
+      code
         map_error[O, E, A](
           result: Result[O, E], mapper: fun(E) A) Result[O, A] =
           result %(ok(o) ok[O, A](o) error(e) error[O, A](mapper(e)))
+      code
+        flatten[O, E](result: Result[Result[O, E], E]) Result[O, E] =
+          result %(
+            ok(o) o %(ok(o) o error(e) error[O, E] e)
+            error(e) error[O, E](e))
+      code
+        flat_map[O, E](
+          result: Result[O, E], mapper: fun(O) Result[A, E]) Result[A, E] =
+          result.map(mapper).flatten()
+      text
+        Unwrapping crashes if the Result is error. If it's ok, it results in the
+        payload.
+      code
+        unwrap[O, E](result: Result[O, E], message: String) O =
+          result %(ok(o) o error crash(message))
+      code
+        unwrap[O, E](result: Result[O, E]) O =
+          result %(ok(o) o error(e) crash("called error.unwrap"))
+      text
+        Equals.
       code
         equals[O, E](
           a: Result[O, E], b: Result[O, E],
@@ -260,43 +330,94 @@ chapter Root
         code, it's an Int.
       code
         Int = ...
+      text
+        Arithmetics.
       code
         +(left: Int, right: Int) Int = ...
+      code
         -(left: Int, right: Int) Int = ...
+      code
         *(left: Int, right: Int) Int = ...
+      code
         /(left: Int, right: Int) Int = ...
+      text
+        See mod(Byte, Byte) and rem(Byte, Byte) for an explanation of the
+        difference between modulo and reminder.
+      code
         mod(left: Int, right: Int) Int = ...
+      code
         rem(left: Int, right: Int) Int = ...
+      text
+        Bitwise operations.
+      code
         &(left: Int, right: Int) Int = ...
+      code
         |(left: Int, right: Int) Int = ...
+      code
         xor(left: Int, right: Int) Int = ...
+      text
+        Negation.
+      code
         negate(int: Int) Int = 0 - int
+      text
+        Comparison.
+      code
         <=>(left: Int, right: Int) Ordering = ...
+      code
         ==(a: Int, b: Int) Bool = a <=> b is equal
+      code
         <(a: Int, b: Int) Bool = a <=> b is less
+      code
         >(a: Int, b: Int) Bool = a <=> b is greater
+      code
         !=(a: Int, b: Int) Bool = not(a <=> b is equal)
+      code
         >=(a: Int, b: Int) Bool = not(a <=> b is less)
+      code
         <=(a: Int, b: Int) Bool = not(a <=> b is greater)
+      text
+        Shifting.
+      code
         <<(int: Int, by: Int) Int =
           if by == 0 int int * 2 << {by - 1}
+      code
         >>(int: Int, by: Int) Int =
           if by == 0 int int / 2 << {by - 1}
+      text
+        Absolute value.
+      code
         abs(value: Int) Int = if value >= 0 value 0 - value
-        max(a: Int, b: Int) Int = if a > b a b
+      text
+        Min and max.
+      code
         min(a: Int, b: Int) Int = if a < b a b
+      code
+        max(a: Int, b: Int) Int = if a > b a b
+      text
+        Evenness and oddness.
+      code
         is_even(a: Int) Bool = mod(a, 2) == 0
+      code
         is_odd(a: Int) Bool = mod(a, 2) == 1
+      text
+        Power.
+      code
         pow(base: Int, exponent: Int) Int =
           if exponent == 0 1 base * base.pow(exponent - 1)
+      text
+        Rounding up.
+      code
         round_up_to_multiple_of(number: Int, factor: Int) Int =
           number + factor - 1 / factor * factor
+      code
         round_up_to_power_of(number: Int, base: Int) Int =
           number.round_up_to_power_of_rec(base, 1)
         round_up_to_power_of_rec(number: Int, base: Int, candidate: Int) Int =
           if candidate >= number
             candidate
             number.round_up_to_power_of_rec(base, candidate * base)
+      text
+        Taking the square root.
       code
         sqrt(number: Int) Int =
           _ = assert(
@@ -307,25 +428,40 @@ chapter Root
           next * next <=> number %(
             less sqrt_rec(number, next) equal next greater candidate)
         log_2(value: Int) Int = if value == 1 0 log_2(value / 2) + 1
+      text
+        These helpers really belong more in the Byte chapter, but the Int type
+        didn't exist there yet.
+      text
+        TODO: Can some of them move there? Or swap int and byte?
       code
-        # stuff for bytes
         lower_byte(value: Int) Byte = ...
+      code
         to_int(value: Byte) Int = ...
+      code
         to_byte(value: Int) Byte =
           _ = assert(value >= 0 and value < 256)
           value.lower_byte()
+      code
         <<(byte: Byte, by: Byte) Byte =
           {byte.to_int() << by.to_int()}.lower_byte()
+      code
         >>(byte: Byte, by: Byte) Byte =
           {byte.to_int() >> by.to_int()}.lower_byte()
+      code
         min(a: Byte, b: Byte) Byte = if a < b a b
+      code
         max(a: Byte, b: Byte) Byte = if a > b a b
       text
         format(byte: Byte) String = byte.to_int().format()
+      text
+        Boundaries of ints.
       code
         min_int = -9223372036854775808
+      code
         max_int = 9223372036854775807
+      code
         min_byte = lower_byte(0)
+      code
         max_byte = lower_byte(255)
     chapter Float
       text
@@ -333,85 +469,163 @@ chapter Root
         such as 1.2 in the code, it's a Float.
       code
         Float = ...
-        to_float(value: Int) Float = ...
-        to_int(value: Float) Int = ...
-        +(left: Float, right: Float) Float = ...
-        -(left: Float, right: Float) Float = ...
-        *(left: Float, right: Float) Float = ...
-        /(left: Float, right: Float) Float = ...
-        <=>(left: Float, right: Float) Ordering = ...
-        ==(left: Float, right: Float) Bool = ...
-        !=(left: Float, right: Float) Bool = not(left == right)
-        <(left: Float, right: Float) Bool = ...
-        >(left: Float, right: Float) Bool = ...
-        <=(left: Float, right: Float) Bool = ...
-        >=(left: Float, right: Float) Bool = ...
-        abs(value: Float) Float = if value >= 0.0 value 0.0 - value
-        max(a: Float, b: Float) Float = if a > b a b
-        min(a: Float, b: Float) Float = if a < b a b
       text
-        These conversions reinterpret the IEEE 754 bits without changing them.
-        They let us construct special values and hash their representation.
+        Conversions.
+      code
+        to_float(value: Int) Float = ...
+      code
+        to_int(value: Float) Int = ...
+      text
+        Arithmetics.
+      code
+        +(left: Float, right: Float) Float = ...
+      code
+        -(left: Float, right: Float) Float = ...
+      code
+        *(left: Float, right: Float) Float = ...
+      code
+        /(left: Float, right: Float) Float = ...
+      text
+        Comparison.
+      code
+        <=>(left: Float, right: Float) Ordering = ...
+      code
+        ==(left: Float, right: Float) Bool = ...
+      code
+        !=(left: Float, right: Float) Bool = not(left == right)
+      code
+        <(left: Float, right: Float) Bool = ...
+      code
+        >(left: Float, right: Float) Bool = ...
+      code
+        <=(left: Float, right: Float) Bool = ...
+      code
+        >=(left: Float, right: Float) Bool = ...
+      text
+        Absolute value.
+      code
+        abs(value: Float) Float = if value >= 0.0 value 0.0 - value
+      text
+        Min and max.
+      code
+        min(a: Float, b: Float) Float = if a < b a b
+      code
+        max(a: Float, b: Float) Float = if a > b a b
+      text
+        These conversions reinterpret the bits without changing them. They let
+        us construct special values and hash their representation.
       code
         float_from_bits(bits: Int) Float = ...
+      code
         to_bits(value: Float) Int = ...
       code
         float_infinity_bits = 9218868437227405312
+      text
+        NaN is generally a weird concept. It stands for "Not a Number", which
+        contradicts the type system (where Float stands for floating point
+        number). But apparently NaN is needed for performance?
+      text
+        TODO: Check if I can eradicate NaN (and Infinity?). Basically make the
+        other functions like +, -, *, / crash when the number becomes
+        non-finite. Then, Floats would only stand for actual numbers. However,
+        that breaks with the IEEE 754 convention. Ugh.
+      code
         nan = float_from_bits(9221120237041090560)
+      code
         infinity = float_from_bits(float_infinity_bits)
+      code
         negative_infinity = 0.0 - infinity
       code
         is_nan(value: Float) Bool = {value.to_bits() & max_int} > float_infinity_bits
+      code
         is_infinity(value: Float) Bool = {value.to_bits() & max_int} == float_infinity_bits
+      code
         is_negative_infinity(value: Float) Bool = value == negative_infinity
+      code
         is_finite(value: Float) Bool = {value.to_bits() & max_int} < float_infinity_bits
       text
-        to_maybe_int truncates toward zero, returning none for non-finite or
-        out-of-range values. max_int rounds up to 2^63 when converted to Float,
+        Converts a float to an int, truncating toward zero. Non-finite or
+        out-of-range values return none. max_int rounds up to 2^63 when converted to Float,
         so the upper comparison must be exclusive; the lower one is inclusive.
       code
         to_maybe_int(value: Float) Maybe[Int] =
-          if value.is_finite() and value >= min_int.to_float() and value < max_int.to_float()
-            some(value.to_int()) none[Int]()
+          if
+            value.is_finite()
+              and value >= min_int.to_float()
+              and value < max_int.to_float()
+            some(value.to_int())
+            none[Int]()
     chapter Range
       text
-        Ranges have an inclusive start and an exclusive end.
-        All operators have the same precedence and associate from left to right.
+        Ranges have an inclusive start and an exclusive end. All operators have
+        the same precedence and associate from left to right.
       code
         Range[A] = struct { start: A, end: A }
+      text
+        The constructor is a double dot: "2..4"
+      code
         ..[A](start: A, end: A) Range[A] = Range(start, end)
+      text
+        Int ranges have a few different ways of creating them.
+      code
         ..=(start: Int, end: Int) Range[Int] = start .. {end + 1}
+      code
         ..+(start: Int, length: Int) Range[Int] = start .. {start + length}
+      code
         ..+=(start: Int, length: Int) Range[Int] = start .. {start + length + 1}
+      text
+        Special thanks to Antonius for this constructor.
+      code
         +-(mid: Int, distance: Int) Range[Int] =
           {mid - distance} .. {mid + distance + 1}
+      text
+        Getting the length works for int ranges.
+      text
+        TODO: Why not floats as well?
+      code
         length(range: Range[Int]) Int = range.end - range.start
+      text
+        Containment works for Ints and Floats.
+      code
         contains(range: Range[Int], value: Int) Bool =
           value >= range.start and value < range.end
+      code
         contains(range: Range[Float], value: Float) Bool =
           value >= range.start and value < range.end
+      text
+        Emptiness checks.
+      code
         is_empty(range: Range[Int]) Bool = range.start >= range.end
+      code
         is_not_empty(range: Range[Int]) Bool = not(range.is_empty())
       text
-        Unbounded marks an open range.
+        Unbounded marks an open range: "2..unbounded"
       code
         Unbounded = struct {}
+      code
         unbounded = Unbounded()
       code
         OpenRange[A] = struct { start: A }
+      code
         ..[A](start: A, unbounded: Unbounded) OpenRange[A] = OpenRange(start)
     chapter LinkedList
+      text
+        TODO: Why do I have linked lists? Should I build List on top of this? Or
+        move more builtin functions to working on LinkedList instead?
       code
         LinkedList[A] = enum { empty, more: More[A] }
         More[A] = struct { head: A, tail: LinkedList[A] }
       code
         empty_linked_list[A]() LinkedList[A] = LinkedList[A].empty
+      code
         cons[A](head: A, tail: LinkedList[A]) LinkedList[A] =
           LinkedList.more(More(head, tail))
+      code
         push[A](list: LinkedList[A], item: A) LinkedList[A] =
           list %(
             empty cons(item, empty_linked_list[A]())
             more(more) cons(more.head, more.tail.push(item)))
+      code
         get[A](list: LinkedList[A], index: Int) A =
           list %(
             empty crash("The index is out of bounds.")
@@ -421,156 +635,216 @@ chapter Root
         List[A] is an immutable array.
       code
         List[A] = ...
+      code
         list[T]() List[T] = ...
+      code
         length[T](list: List[T]) Int = ...
+      code
         get[T](list: List[T], index: Int) T = ...
+      text
+        TODO: generate_list, then implemented filled_list in terms of that.
+      code
         filled_list[T](length: Int, fill: T) List[T] = ...
+      code
         push[T](list: List[T], item: T) List[T] = ...
+      text
+        TODO: think more about which builtins I want. maybe concatenate and conversion to/from linked lists?
+      code
         push_all[T](list: List[T], items: List[T]) List[T] = ...
+      code
         slice[T](list: List[T], range: Range[Int]) List[T] = ...
+      code
         set[T](list: List[T], index: Int, item: T) List[T] = ...
+      code
         reversed[T](list: List[T]) List[T] = ...
+      code
         sum(list: List[Int]) Int = ...
       code
         is_empty[A](list: List[A]) Bool = list.length() == 0
+      code
         is_not_empty[A](list: List[A]) Bool = not(list.is_empty())
+      code
         get_maybe[A](list: List[A], index: Int) Maybe[A] =
           if {0..list.length()}.contains(index) some(list.get(index)) none[A]()
-        list[A](a: A) List[A] = list[A]().push(a)
-        list[A](a: A, b: A) List[A] = list(a).push(b)
-        list[A](a: A, b: A, c: A) List[A] = list(a, b).push(c)
-        list[A](a: A, b: A, c: A, d: A) List[A] = list(a, b, c).push(d)
-        list[A](a: A, b: A, c: A, d: A, e: A) List[A] = list(a, b, c, d).push(e)
-        list[A](a: A, b: A, c: A, d: A, e: A, f: A) List[A] =
-          list(a, b, c, d, e).push(f)
-        list[A](a: A, b: A, c: A, d: A, e: A, f: A, g: A) List[A] =
-          list(a, b, c, d, e, f).push(g)
-        list[A](a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A) List[A] =
-          list(a, b, c, d, e, f, g).push(h)
-        list[A](a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A) List[A] =
-          list(a, b, c, d, e, f, g, h).push(i)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A) List[A] =
-          list(a, b, c, d, e, f, g, h, i).push(j)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j).push(k)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A, l: A
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k).push(l)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l).push(m)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m).push(n)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m, n).push(o)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o).push(p)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p).push(q)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A, r: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q).push(r)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r).push(s)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s).push(t)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t)
-            .push(u)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u)
-            .push(v)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
-          w: A,
-          ) List[A] =
-          list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v)
-            .push(w)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
-          w: A, x: A,
-          ) List[A] =
-          list(
-            a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w)
-            .push(x)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
-          w: A, x: A, y: A,
-          ) List[A] =
-          list(
-            a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w,
-            x)
-            .push(y)
-        list[A](
-          a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
-          l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
-          w: A, x: A, y: A, z: A,
-          ) List[A] =
-          list(
-            a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w,
-            x, y)
-            .push(z)
+      chapter More list constructors
+        text
+          Welcome to the ugly corners of the notebook. Because lists are not
+          special syntax-wise, I just have a bunch of overloaded functions for
+          creating lists of different lists. If there's a need for another one,
+          I can just add that.
+        code
+          list[A](a: A) List[A] = list[A]().push(a)
+        code
+          list[A](a: A, b: A) List[A] = list(a).push(b)
+        code
+          list[A](a: A, b: A, c: A) List[A] = list(a, b).push(c)
+        code
+          list[A](a: A, b: A, c: A, d: A) List[A] = list(a, b, c).push(d)
+        code
+          list[A](a: A, b: A, c: A, d: A, e: A) List[A] = list(a, b, c, d).push(e)
+        code
+          list[A](a: A, b: A, c: A, d: A, e: A, f: A) List[A] =
+            list(a, b, c, d, e).push(f)
+        code
+          list[A](a: A, b: A, c: A, d: A, e: A, f: A, g: A) List[A] =
+            list(a, b, c, d, e, f).push(g)
+        code
+          list[A](a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A) List[A] =
+            list(a, b, c, d, e, f, g).push(h)
+        code
+          list[A](a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A) List[A] =
+            list(a, b, c, d, e, f, g, h).push(i)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A) List[A] =
+            list(a, b, c, d, e, f, g, h, i).push(j)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j).push(k)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A, l: A
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k).push(l)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l).push(m)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m).push(n)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m, n).push(o)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o).push(p)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p).push(q)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A, r: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q).push(r)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r).push(s)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s).push(t)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t)
+              .push(u)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u)
+              .push(v)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
+            w: A,
+            ) List[A] =
+            list(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v)
+              .push(w)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
+            w: A, x: A,
+            ) List[A] =
+            list(
+              a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w)
+              .push(x)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
+            w: A, x: A, y: A,
+            ) List[A] =
+            list(
+              a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w,
+              x)
+              .push(y)
+        code
+          list[A](
+            a: A, b: A, c: A, d: A, e: A, f: A, g: A, h: A, i: A, j: A, k: A,
+            l: A, m: A, n: A, o: A, p: A, q: A, r: A, s: A, t: A, u: A, v: A,
+            w: A, x: A, y: A, z: A,
+            ) List[A] =
+            list(
+              a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w,
+              x, y)
+              .push(z)
       code
         first[A](list: List[A]) A = list.get(0)
+      code
         last[A](list: List[A]) A = list.get(list.length() - 1)
+      code
         first[A](list: List[A], amount: Int) List[A] = list.slice(0..amount)
+      code
         last[A](list: List[A], amount: Int) List[A] =
           _ = assert(
             amount >= 0 and amount <= list.length(),
             "List amount out of bounds.")
           list.slice({list.length() - amount}..list.length())
+      code
         without_first[A](list: List[A], amount: Int) List[A] =
           list.slice(amount..list.length())
+      code
         without_first[A](list: List[A]) List[A] = list.without_first(1)
+      code
         without_last[A](list: List[A], amount: Int) List[A] =
           _ = assert(
             amount >= 0 and amount <= list.length(),
             "List amount out of bounds.")
           list.slice(0..{list.length() - amount})
+      code
         without_last[A](list: List[A]) List[A] = list.without_last(1)
+      code
         pop[A](list: List[A]) List[A] =
           _ = assert(list.is_not_empty(), "Cannot pop an empty list.")
           list.without_last()
+      code
         first_maybe[A](list: List[A]) Maybe[A] = list.get_maybe(0)
+      code
         last_maybe[A](list: List[A]) Maybe[A] =
           list.get_maybe(list.length() - 1)
+      code
         insert[A](list: List[A], index: Int, item: A) List[A] =
           list.first(index).push(item).push_all(list.without_first(index))
+      code
         remove[A](list: List[A], range: Range[Int]) List[A] =
           _ = assert(
             0 <= range.start
@@ -578,15 +852,13 @@ chapter Root
               and range.end <= list.length(),
             "List range out of bounds.")
           list.first(range.start).push_all(list.without_first(range.end))
-    chapter StringBytes
+    chapter Converting between strings and bytes
       text
-        bytes returns the string's UTF-8 bytes; string packs a byte list into
-        a String. Packed strings use zero padding, so trailing zero bytes are
-        indistinguishable from padding. Embedded zero bytes are retained.
-        TODO: Instead of eagerly constructing a giant array, make this return an
+        Instead of eagerly constructing a giant array, make this return an
         iterator?
       code
         bytes(value: String) List[Byte] = ...
+      code
         string(bytes: List[Byte]) String = ...
       code
         byte(string: String) Byte =
@@ -615,15 +887,19 @@ chapter Root
     chapter Tuples
       code
         Tuple2[A, B] = struct { a: A, b: B }
+      code
         Tuple3[A, B, C] = struct { a: A, b: B, c: C }
       code
         tuple[A, B](a: A, b: B) Tuple2[A, B] = Tuple2(a, b)
+      code
         tuple[A, B, C](a: A, b: B, c: C) Tuple3[A, B, C] = Tuple3(a, b, c)
     chapter Loop
       code
         Loop[S, R] = enum { continue: S, break: R }
+      code
         loop[S, R](state: S, step: fun(S) Loop[S, R]) R =
           step(state) %(continue(next) loop(next, step) break(result) result)
+      code
         loop[A, B, R](a: A, b: B, step: fun(A, B) Loop[Tuple2[A, B], R]) R =
           loop(tuple(a, b), \ state: Tuple2[A, B] -> step(state.a, state.b))
     chapter Iterators
@@ -701,6 +977,7 @@ chapter Root
         ) Tuple2[A, B] =
           iter.fold(tuple(a, b), \ state: Tuple2[A, B], item: Item ->
             folder(state.a, state.b, item))
+      code
         fold[Item, A, B, C](
           iter: Iter[Item], a: A, b: B, c: C,
           folder: fun(A, B, C, Item) Tuple3[A, B, C],
@@ -981,9 +1258,9 @@ chapter Root
         text
           Well, turns out, writing floats is pretty complicated. This is a
           relatively easy algorithm from
-          https://blog.benoitblanchon.fr/lightweight-float-to-string
-          Ordinary values use decimal notation, magnitudes at least 10^7 or at
-          most 10^-5 use an exponent. It rounds to nine fractional digits after
+          https://blog.benoitblanchon.fr/lightweight-float-to-string Ordinary
+          values use decimal notation, magnitudes at least 10^7 or at most 10^-5
+          use an exponent. It rounds to nine fractional digits after
           normalization and removes trailing zeros. It is a display format, not
           a shortest round-trip representation. Special values print as nan,
           inf, and -inf. both signs of zero print as 0.
@@ -1093,8 +1370,8 @@ chapter Root
             '{color.b.format(16).pad_left(2, "0")}"
     chapter Vec2
       text
-        A mathematical two-dimensional vector with no meaning associated to
-        the components.
+        A mathematical two-dimensional vector with no meaning associated to the
+        components.
       code
         Vec2[A] = struct { x: A, y: A }
         vec[A](x: A, y: A) Vec2[A] = Vec2(x, y)
@@ -1112,8 +1389,8 @@ chapter Root
           Vec2(x = a.x / f, y = a.y / f)
     chapter Offset
       text
-        An offset in a two-dimensional plane.
-        TODO: Do I need Offset when I have position and size?
+        An offset in a two-dimensional plane. TODO: Do I need Offset when I have
+        position and size?
       code
         Offset = struct { x: Float, y: Float }
         offset(x: Float, y: Float) Offset = Offset(x, y)
@@ -1182,10 +1459,10 @@ chapter Root
             none[Rectangle]()
     chapter Drawings
       text
-        When Orchard code is asked to render something for the outside world,
-        it returns draw commands. Think of these similar to the elements you
-        would find in SVGs.
-      chapter HistoricalNote
+        When Orchard code is asked to render something for the outside world, it
+        returns draw commands. Think of these similar to the elements you would
+        find in SVGs.
+      chapter Historical Note: Why not pixels?
         text
           Initially, I tried to communicate with the outside world using pixel
           graphics. However, I believe that's not the right move as pixels are
@@ -1202,7 +1479,7 @@ chapter Root
           This is also similar to how Flutter works: The Dart VM is decently
           fast, but not super fast, so it just emits draw commands that
           the lower-level C++ engine takes and turns into pixels.
-      chapter Transformations
+      chapter Transformation Matrices
         text
           Transformation matrices ... exist. They have this form:
           a b c
@@ -1257,7 +1534,8 @@ chapter Root
           all: List[DrawCommand],
           clip: Clip}
         FillPath = struct { path: Path, color: Color }
-        Transform = struct { by: TransformationMatrix, what: DrawCommand }
+        Transform = struct {
+          by: TransformationMatrix, what: DrawCommand }
         Clip = struct { path: Path, what: DrawCommand }
       code
         draw_nothing() DrawCommand = DrawCommand.nothing
@@ -1282,14 +1560,13 @@ chapter Root
         Drawing = struct { draw: DrawCommand, size: Size }
     chapter TextRendering
       text
-        Layout wraps whole words at spaces and respects explicit newlines.
-        Words wider than the available width overflow instead of being split.
-        Each line is 13 units high, including a trailing empty line after a
-        newline. Empty text has zero size. There is one unit between glyphs.
+        Layout wraps whole words at spaces and respects explicit newlines. Words
+        wider than the available width overflow instead of being split. Each
+        line is 13 units high, including a trailing empty line after a newline.
+        Empty text has zero size. There is one unit between glyphs.
       code
         Glyph = struct { width: Float, paths: List[Path] }
         pixel_glyph(width: Int, pixels: String) Glyph =
-          parsed = pixels.bytes().iter().fold(
             0, 0, list[Path](),
             \ x: Int, y: Int, paths: List[Path], pixel: Byte ->
               if pixel == byte("|")
@@ -1490,10 +1767,18 @@ chapter Root
                       transform_translate(glyph.position.to_vec().to_offset()),
                       draw_glyph(glyph.glyph, color)))
                   .to_list()))
+    chapter NotebookData
+      text
+        The host parses and saves notebook documents. These fields and variants
+        form a fixed ABI shared with Zig; their names, types, and order matter.
+      code
+        Chapter = struct { title: String, children: List[Cell] }
+        Cell = enum { text: String, code: String, chapter: Chapter }
     chapter Apps
       text
-        A notebook exposes its UI as a variable named app. Rendering receives
-        the current window size; handling an event returns the next app.
+        Rendering receives the current window size. Handling an event returns
+        the next app and explicit commands for the host. save_notebook carries a
+        structured document; the host handles serialization and disk access.
       code
         KeyPressed = struct {
           keycode: Int, control: Bool, shift: Bool, alt: Bool}
@@ -1507,8 +1792,12 @@ chapter Root
           mouse_moved: Position,
           mouse_scrolled: MouseScrolled,
           mouse_released: Position,
-          mouse_left}
-        App = struct { render: fun(Size) DrawCommand, handle: fun(Event) App }
+          mouse_left,
+          save_completed,
+          save_failed: String}
+        AppCommand = enum { save_notebook: Chapter }
+        AppResult = struct { app: App, commands: List[AppCommand] }
+        App = struct { render: fun(Size) DrawCommand, handle: fun(Event) AppResult }
     chapter WidgetFramework
       text
         The widget framework works similar to Flutter: You describe your UI by
@@ -1517,13 +1806,12 @@ chapter Root
         with internal state. On the next frame, you rebuild a widget tree and
         the framework updates the element tree accordingly.
       text
-        Previously, I just had functions that return Drawings, for example a
-        row takes some drawings and returns a drawing that show them next to
-        each other.
-        However, having internal state is generally useful and can improve
-        performance significantly. For example, if you have a text in a scroll
-        view, you don't want to re-layout the text every frame, but cache its
-        draw commands. So, I implemented a widget framework.
+        Previously, I just had functions that return Drawings, for example a row
+        takes some drawings and returns a drawing that show them next to each
+        other. However, having internal state is generally useful and can
+        improve performance significantly. For example, if you have a text in a
+        scroll view, you don't want to re-layout the text every frame, but cache
+        its draw commands. So, I implemented a widget framework.
       text
         Each element in the widget tree represents a visual "thing". It has a
         concrete size and concrete draw commands so you can render it. You only
@@ -1534,23 +1822,22 @@ chapter Root
         Layouting works like this: Constraints (min/max width/height) flow down
         the tree and concrete sizes flow up the tree. Parent widgets determine
         how/if/where to render the child widgets, so child widgets never know
-        their absolute position, they only provide draw commands.
-        Constraints always have a min size (it may be 0), but they might omit
-        the max sizes to give children an unlimited amount of space. This
-        communicates to the children "just be your natural size".
-        Example: In a vertical scroll view, you might have a text and a colored
-        sized box that wants to be 300 x 300 in size. Let's say we want to
-        display these widgets in a window of size 200 x 200. After creating the
-        element tree, we can give the scroll view element tight constraints
-        (width 200 to 200, height 200 to 200), which forces the scroll view to
-        be exactly 200 x 200. The scroll view propagates constraints to its
-        children, but loosens the constraints – for example, because it layouts
-        children toward the left and can scroll, it can provide the constraints
-        (width 0 to 200, height 0 to infinity). The text will layout itself to a
-        width of 200 and return a concrete size (like 200 x 140). The sized box
-        will be forced down to 200 in width, so it may decide to be 200 x 300.
-        Because the scroll view only renders part of that 200 x 440 drawing, it
-        can report 200 x 200 as its size.
+        their absolute position, they only provide draw commands. Constraints
+        always have a min size (it may be 0), but they might omit the max sizes
+        to give children an unlimited amount of space. This communicates to the
+        children "just be your natural size". Example: In a vertical scroll
+        view, you might have a text and a colored sized box that wants to be 300
+        x 300 in size. Let's say we want to display these widgets in a window of
+        size 200 x 200. After creating the element tree, we can give the scroll
+        view element tight constraints (width 200 to 200, height 200 to 200),
+        which forces the scroll view to be exactly 200 x 200. The scroll view
+        propagates constraints to its children, but loosens the constraints –
+        for example, because it layouts children toward the left and can scroll,
+        it can provide the constraints (width 0 to 200, height 0 to infinity).
+        The text will layout itself to a width of 200 and return a concrete size
+        (like 200 x 140). The sized box will be forced down to 200 in width, so
+        it may decide to be 200 x 300. Because the scroll view only renders part
+        of that 200 x 440 drawing, it can report 200 x 200 as its size.
       text
         Mouse presses and releases carry a position in the element. Containers
         translate that position into their children's coordinates and route the
@@ -1654,8 +1941,8 @@ chapter Root
           the same widget implementation and configuration type. Wrap branches
           with key_widget and give them different keys when their widget types
           or semantic identities differ, or when their state should reset.
-          create_element builds the initial element. Element functions ending
-          in _fun store implementation callbacks; widgets call the wrappers. The
+          create_element builds the initial element. Element functions ending in
+          _fun store implementation callbacks; widgets call the wrappers. The
           framework does some early return optimizations: If an element receives
           the same constraints as before, it's not updated. If an element
           receives a mouse button event outside its bounds, it is not notified.
@@ -1929,9 +2216,9 @@ chapter Root
           key_widget(key, equals, child) preserves the child's element while the
           key stays the same. A different key creates a fresh element. Use
           different keys for children with different implementations or semantic
-          identities.
-          The key type and comparison function must stay the same across
-          updates. The original comparison function is retained by the element.
+          identities. The key type and comparison function must stay the same
+          across updates. The original comparison function is retained by the
+          element.
         code
           KeyWidget[K, M] = struct { key: K, child: Widget[M] }
           KeyElement[K, M] = struct { key: K, child: Element[M] }
@@ -1991,8 +2278,8 @@ chapter Root
         text
           map_message adapts a child's messages while preserving its element,
           layout, focus, and hover state. Updating the widget replaces the
-          mapper and updates the existing child.
-          cast_message adapts a Widget[Never] using the same wrapper.
+          mapper and updates the existing child. cast_message adapts a
+          Widget[Never] using the same wrapper.
         code
           MapMessageWidget[A, B] = struct {
             child: Widget[A], mapper: fun(A) B }
@@ -2059,63 +2346,77 @@ chapter Root
             map_message[Never, M](child, \ message: Never -> unreachable())
       chapter RunApp
         text
-          Running a widget app translates the stateful widget into the lower-
-          level behavior that the VM expects.
-          The root widget handles every message internally, so run_app accepts
-          only Widget[Never].
+          An app driver handles widget messages and global keyboard shortcuts.
+          The document owner supplies a driver which can save the latest state.
+          Shortcuts run before focused text input. The app refreshes hover after
+          events and layout changes, reusing unchanged drawings.
         code
-          app_event_element(
-            result: EventResult[Never, Element[Never]], previous: Element[Never]
-            ) Element[Never] =
+          AppDriver[M] = struct {
+            message: fun(M, Element[M], Maybe[Position]) AppResult,
+            shortcut: fun(KeyPressed) Maybe[AppCommand] }
+          app_frame[M](element: Element[M], pointer: Maybe[Position],
+            driver: AppDriver[M]) AppResult =
+            AppResult(app = run_app(element, pointer, driver),
+              commands = list[AppCommand]())
+          app_hover_result[M](result: EventResult[M, Element[M]],
+            previous: Element[M], pointer: Maybe[Position], driver: AppDriver[M]
+            ) AppResult =
             result %(
-              not_handled previous
-              handled(next) next
-              request_focus(next) next
-              message unreachable())
-          run_app(element: Element[Never], pointer: Maybe[Position]) App =
-            current =
-              app_event_element(
-                pointer %(none element.unhover() some(pos) element.hover(pos)),
-                element)
+              not_handled app_frame(previous, pointer, driver)
+              handled(next) app_frame(next, pointer, driver)
+              request_focus(next) app_frame(next, pointer, driver)
+              message(event) driver.message(event.message, event.element, pointer))
+          refresh_app[M](element: Element[M], pointer: Maybe[Position],
+            driver: AppDriver[M]) AppResult =
+            app_hover_result(
+              pointer %(none element.unhover() some(pos) element.hover(pos)),
+              element, pointer, driver)
+          run_app_result[M](previous: Element[M],
+            result: EventResult[M, Element[M]], pointer: Maybe[Position],
+            driver: AppDriver[M]) AppResult =
+            result %(
+              not_handled refresh_app(previous, pointer, driver)
+              handled(next) refresh_app(next, pointer, driver)
+              request_focus(next) refresh_app(next, pointer, driver)
+              message(event) driver.message(event.message, event.element, pointer))
+          run_app[M](current: Element[M], pointer: Maybe[Position],
+            driver: AppDriver[M]) App =
             App(
               render = \ window: Size -> current.drawing.draw,
               handle = \ event: Event ->
                 event %(
                   window_resized(window)
-                    run_app(
-                      current.new_constraints(tight_constraints(window)),
-                      pointer)
-                  mouse_moved(pos) run_app(current, some(pos))
-                  mouse_left run_app(current, none[Position]())
+                    refresh_app(current.new_constraints(tight_constraints(window)),
+                      pointer, driver)
+                  mouse_moved(pos)
+                    app_hover_result(current.hover(pos), current, some(pos), driver)
+                  mouse_left
+                    app_hover_result(current.unhover(), current, none[Position](), driver)
                   mouse_pressed(pos)
-                    root = app_event_element(current.hover(pos), current)
-                    run_app_result(root, root.mouse_pressed(pos), some(pos))
+                    run_app_result(current, current.mouse_pressed(pos), some(pos), driver)
                   mouse_released(pos)
-                    root = app_event_element(current.hover(pos), current)
-                    run_app_result(root, root.mouse_released(pos), some(pos))
+                    run_app_result(current, current.mouse_released(pos), some(pos), driver)
                   mouse_scrolled(event)
-                    root = app_event_element(current.hover(event.position), current)
-                    run_app_result(
-                      root,
-                      root.mouse_scrolled(event.position, event.delta),
-                      some(event.position))
+                    run_app_result(current,
+                      after_hover(current.hover(event.position), current,
+                        \ next: Element[M] ->
+                          next.mouse_scrolled(event.position, event.delta)),
+                      some(event.position), driver)
                   key_pressed(key)
-                    run_app_result(current, current.key_pressed(key), pointer)
+                    driver.shortcut(key) %(
+                      some(command) AppResult(
+                        app = run_app(current, pointer, driver), commands = list(command))
+                      none run_app_result(current, current.key_pressed(key), pointer, driver))
                   char_entered(char)
-                    run_app_result(
-                      current, current.char_entered(char), pointer)))
-          run_app_result(
-            previous: Element[Never],
-            result: EventResult[Never, Element[Never]],
-            pointer: Maybe[Position]
-            ) App =
-            result %(
-              not_handled run_app(previous, pointer)
-              handled(next) run_app(next, pointer)
-              request_focus(next) run_app(next, pointer)
-              message unreachable())
+                    run_app_result(current, current.char_entered(char), pointer, driver)
+                  save_completed app_frame(current, pointer, driver)
+                  save_failed app_frame(current, pointer, driver)))
+          unreachable_app_result() AppResult = unreachable()
           run_app(element: Element[Never]) App =
-            run_app(element, none[Position]())
+            run_app(element, none[Position](), AppDriver[Never](
+              message = \ message: Never, element: Element[Never], pointer: Maybe[Position] ->
+                unreachable_app_result(),
+              shortcut = \ key: KeyPressed -> none[AppCommand]()))
           run_app(root: Widget[Never]) App =
             run_app(root.create_element(tight_constraints(size(0.0, 0.0))))
     chapter BasicWidgets
@@ -2203,8 +2504,8 @@ chapter Root
             widget(colored_impl[M](), ColoredWidget(color, child))
       chapter RoundedRect
         text
-          The rounded rect widget clips its child to have circular corners.
-          The radius must be non-negative and is capped at half the smaller
+          The rounded rect widget clips its child to have circular corners. The
+          radius must be non-negative and is capped at half the smaller
           dimension. Events at positions cut off by the corners are ignored.
         code
           RoundedRectWidget[M] = struct { radius: Float, child: Widget[M] }
@@ -2600,9 +2901,9 @@ chapter Root
           Text stores its value, color, and constraints in its element. The
           framework calls render and caches the drawing when created, updated,
           or given new constraints. It wraps to the maximum width and marks text
-          that exceeds the available width or height with overflow stripes.
-          Text does not handle clicks. Its default color is black.
-          The optional font_scale is the requested line height. At the native
+          that exceeds the available width or height with overflow stripes. Text
+          does not handle clicks. Its default color is black. The optional
+          font_scale is the requested line height. At the native
           text_line_height it uses the text widget directly; other sizes use
           scale_widget with font_scale / text_line_height.
         code
@@ -2774,16 +3075,15 @@ chapter Root
         text
           A flex shows multiple children next to or above each other. The axis
           on which they are lined up is called the main axis, the other one the
-          cross axis.
-          Intrinsic children receive unbounded main-axis space. Expanded
-          children divide the remaining space according to their positive flex
-          factors and receive tight main-axis constraints. Expanded children
-          require a bounded main axis; an unbounded main axis is an error.
-          Without expanded children, the flex wraps its children. With expanded
-          children, it fills the main axis. The cross axis wraps the largest
-          child, within the parent's constraints.
-          Children start at the leading edge of the cross axis. Updates preserve
-          child state by index, including when the axis or flex factors change.
+          cross axis. Intrinsic children receive unbounded main-axis space.
+          Expanded children divide the remaining space according to their
+          positive flex factors and receive tight main-axis constraints.
+          Expanded children require a bounded main axis; an unbounded main axis
+          is an error. Without expanded children, the flex wraps its children.
+          With expanded children, it fills the main axis. The cross axis wraps
+          the largest child, within the parent's constraints. Children start at
+          the leading edge of the cross axis. Updates preserve child state by
+          index, including when the axis or flex factors change.
         code
           Axis = enum { horizontal, vertical }
           FlexWidget[M] = struct {axis: Axis, children: List[FlexChild[M]]}
@@ -3143,9 +3443,9 @@ chapter Root
                 .map(\ child: Widget[M] -> intrinsic(child)).to_list())
       chapter Row
         text
-          A row is a horizontal flex. Intrinsic children receive unbounded
-          width and the parent's maximum height. Expanded children share the
-          remaining width and require a bounded width.
+          A row is a horizontal flex. Intrinsic children receive unbounded width
+          and the parent's maximum height. Expanded children share the remaining
+          width and require a bounded width.
         code
           row[M](children: List[Widget[M]]) Widget[M] =
             flex(Axis.horizontal, children)
@@ -3489,8 +3789,8 @@ chapter Root
               StatefulWidget(initial_state, handle, builder))
       chapter OnClick
         text
-          Emits a message on mouse press. Use button for release activation
-          with hover feedback and cancellation on unhover.
+          Emits a message on mouse press. Use button for release activation with
+          hover feedback and cancellation on unhover.
         code
           OnClickWidget[M] = struct { message: M, child: Widget[M] }
           OnClickElement[M] = struct { message: M, child: Element[M] }
@@ -3681,8 +3981,8 @@ chapter Root
             editable_local_state(e, e.cursor, active)
         text
           Moving the cursor clamps its offset to the char list and remembers its
-          horizontal position. Extending a selection preserves the anchor;
-          an ordinary move places both ends at the new offset.
+          horizontal position. Extending a selection preserves the anchor; an
+          ordinary move places both ends at the new offset.
         code
           text_cursor_at(
             e: EditableTextElement, offset: Int, extend: Bool
@@ -3750,8 +4050,8 @@ chapter Root
               if chars.get(index).codepoint == 10 offset
                 text_line_boundary(chars, offset + direction, direction)
         text
-          Key presses use these keycodes to identify keys. Character
-          input arrives separately, so typing text does not depend on keycodes.
+          Key presses use these keycodes to identify keys. Character input
+          arrives separately, so typing text does not depend on keycodes.
         code
           key_a = 65
           key_enter = 257
@@ -3980,8 +4280,6 @@ chapter Root
                 if code >= 32 and code <= 126
                   if key.shift
                     identity(
-                      plain = "1234567890-=[]\\;',./`".bytes()
-                      shifted = "!@#$%^&*()_+\{\}|:\"<>?~".bytes()
                       index = plain.iter()
                         . fold(
                             0,
@@ -4065,7 +4363,6 @@ chapter Root
                 colored(color(if e.active "#d0e8ff" "#eeeeee"),
                   padding(6.0,
                     text(
-                      if e.value.bytes().length() == 0
                         "Click here, then type"
                         e.value)))
                   .create_element(e.constraints).drawing)
@@ -4193,12 +4490,9 @@ chapter Root
             widget(button_impl[M](), ButtonWidget(message, color, child))
     chapter Notebook
       text
-        A notebook is a tree of chapters. Each chapter has a title and a list
-        of cells. Text and code cells hold strings; a chapter cell holds another
+        A notebook is a tree of chapters. Each chapter has a title and a list of
+        cells. Text and code cells hold strings; a chapter cell holds another
         chapter, allowing notebooks to nest.
-      code
-        Chapter = struct { title: String, children: List[Cell] }
-        Cell = enum { text: String, code: String, chapter: Chapter }
       code
         chapter(title: String, children: List[Cell]) Chapter =
           Chapter(title, children)
@@ -4298,6 +4592,13 @@ chapter Root
                 default crash("Chapter path points to a non-chapter cell."))
               current.push_all(chapter_breadcrumbs(
                 child, path.without_first(), prefix.push(path.first()))))
+      text
+        Titles stay on one header line. Strip line breaks around the editor,
+        leaving editable_text itself usable for multiline text and code.
+      code
+        single_line_title(title: String) String =
+          string(title.chars().iter().filter(\ character: Char ->
+            character.codepoint != 10 and character.codepoint != 13).to_list())
       code
         chapter_widget(chapter: Chapter, breadcrumbs: List[ChapterBreadcrumb]
           ) Widget[ChapterMessage] =
@@ -4321,7 +4622,7 @@ chapter Root
                       editable_text(chapter.title)))
                     . map_message(\ title: String ->
                       ChapterMessage.changed(
-                        Chapter(title, children = chapter.children))),
+                        Chapter(title = single_line_title(title), children = chapter.children))),
                   column(
                     chapter.children.iter()
                     . map_indexed(\ index: Int, cell: Cell ->
@@ -4355,14 +4656,25 @@ chapter Root
         notebook_widget(notebook: Chapter) Widget[Chapter] =
           notebook_widget(notebook, notebook_path())
       text
-        The compiler calls main with a snapshot of this notebook.
+        The host loads the source at launch and passes it to main. The document
+        owner supplies the current notebook to Ctrl+S and handles new versions
+        from the widget. Normal edits never issue a save command. Zig serializes
+        the document and replaces the source file atomically, then reports
+        save_completed or save_failed and prints the result in the terminal.
       code
+        notebook_app(notebook: Chapter, element: Element[Chapter],
+          pointer: Maybe[Position]) AppResult =
+          refresh_app(element, pointer, AppDriver[Chapter](
+            message = \ updated: Chapter, element: Element[Chapter], pointer: Maybe[Position] ->
+              notebook_app(updated, element.update(notebook_widget(updated)), pointer),
+            shortcut = \ key: KeyPressed ->
+              if key.control and not(key.alt) and key.keycode == 83
+                some(AppCommand.save_notebook(notebook))
+                none[AppCommand]()))
         main(notebook: Chapter) App =
-          run_app(
-            stateful(
-              notebook,
-              \ state: Chapter, new: Chapter -> new_state[Chapter, Never](new),
-              \ state: Chapter -> notebook_widget(state)))
+          notebook_app(notebook,
+            notebook_widget(notebook).create_element(tight_constraints(size(0.0, 0.0))),
+            none[Position]()).app
       code
         counter() Widget[Never] =
           stateful[Int, Never, Int](
@@ -4378,35 +4690,58 @@ chapter Root
                 button(1, color("#30a080"),
                   padding(6.0, text("increment")).cast_message[Int]()))))
       text
-        Running the app:
-        soil ../../martinaise/martinaise.soil compile src/yam.mar
-        soil src/yam.soil src/notebook.yam src/notebook.yam.objects
-        zig build run -- --ui src/notebook.yam.objects
+        Running the app (Ctrl+S saves the current document): The source path
+        defaults to the .objects path without its final suffix. Use --notebook
+        source.yam to load and save a different file. soil
+        ../../martinaise/martinaise.soil compile src/yam.mar soil src/yam.soil
+        src/notebook.yam src/notebook.yam.objects zig build run -- --ui
+        src/notebook.yam.objects
   chapter Todo
     text
       - type reflection type[T](): Type
+    text
       - memory-safe dynamic casts
+    text
       - type-safe widget update
+    text
       - position -> @ ?
-      - widgets
-        - stack
-        - icon
-        - next/previous focus for keyboard-driven navigation
-        - refactor how colors work, replace button shade
-      - Notebook
-        - focus / keyboard-driven nav
-        - add new cells
-        - add new chapters
-        - compile the code
-        - live result
-        - custom cells
-        - self-host
-        - save to file
-        - values
-        - syntax highlighting
-        - auto-formatting
-      - inside the notebook
-        - see underlying objects of values
-        - (flamegraph-like) tracer
-        - see lowered/optimized functions
+    text
+      - stack
+    text
+      - icon
+    text
+      - next/previous focus for keyboard-driven navigation
+    text
+      - refactor how colors work, replace button shade
+    text
+      - focus / keyboard-driven nav in Notebook
+    text
+      - add new cells
+    text
+      - add new chapters
+    text
+      - compile the code
+    text
+      - live result  
+    text
+      - custom cells
+    text
+      - self-host
+    text
+      - save to file
+    text
+      - values
+    text
+      - syntax highlighting
+    text
+      - auto-formatting
+    text
+      - see underlying objects of values in the Notebook
+    text
+      - (flamegraph-like) tracer
+    text
+      - see lowered/optimized functions
+    text
+      - remove curly braces
+    text
       - revisit syntax
