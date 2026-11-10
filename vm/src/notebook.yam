@@ -1636,215 +1636,258 @@ chapter Orchard
         Drawing = struct { draw: DrawCommand, size: Size }
     chapter Text rendering
       text
-        Layout wraps whole words at spaces and respects explicit newlines. Words
-        wider than the available width overflow instead of being split. Each
-        line is 13 units high, including a trailing empty line after a newline.
-        Empty text has zero size. There is one unit between glyphs.
-      code
-        Glyph = struct { width: Float, paths: List[Path] }
-      code
-        pixel_glyph(width: Int, pixels: String) Glyph =
-          parsed = pixels.bytes().iter().fold(
-            0, 0, list[Path](),
-            \ x: Int, y: Int, paths: List[Path], pixel: Byte ->
-              if pixel == byte("|")
-                tuple(0, y + 1, paths)
-                identity(
-                  _ = assert(x < width, "Pixel glyph row exceeds its width")
-                  _ = assert(
-                    pixel == byte(" ") or pixel == byte("M"),
-                    "Invalid glyph pixel")
-                  px = x.to_float()
-                  py = y.to_float()
-                  tuple(
-                    x + 1,
-                    y,
-                    if pixel == byte(" ")
-                      paths
-                      paths.push(
-                        path()
-                          .move_to(px, py)
-                          .line_to(px + 1.0, py)
-                          .line_to(px + 1.0, py + 1.0)
-                          .line_to(px, py + 1.0)))))
-          _ = assert(parsed.a == 0, "Pixel glyph must end with a row separator")
-          Glyph(width = width.to_float(), paths = parsed.c)
-      code
-        text_line_height = 13.0
-        fallback_glyph = pixel_glyph(5,
-          "M M M| M M|M M M| M M|M M M| M M|M M M| M M|M M M| M M|")
-        # Entries correspond to codepoints 32 through 126, in ASCII order.
-        text_glyphs = list[Glyph]()
-          .push(pixel_glyph(2, "|"))
-          .push(pixel_glyph(2, "|MM|MM|MM|MM|MM|MM||MM|MM|"))
-          .push(pixel_glyph(3, "|M M|M M|M M|"))
-          .push(pixel_glyph(6, "|| M  M|MMMMMM| M  M| M  M| M  M|MMMMMM| M  M|"))
-          .push(pixel_glyph(5, "  M| MMM|M M M|M M|MMM| MMM|  MMM|  M M|M M M| MMM|  M|"))
-          .push(pixel_glyph(9, "| MM   MM|M  M MM|M  M MM| MM MM|   MMM|   MM MM|  MM M  M| MM  M  M| MM   MM|"))
-          .push(pixel_glyph(9, "| MMMMM|MM  MM|MM  MM| MMMM| MMM  MM|MM MM MM|MM  MMM|MM  MMMM| MMMM MM|"))
-          .push(pixel_glyph(1, "|M|M|M|"))
-          .push(pixel_glyph(3, " MM|MM|MM|MM|MM|MM|MM|MM|MM| MM|"))
-          .push(pixel_glyph(3, "MM| MM| MM| MM| MM| MM| MM| MM| MM|MM|"))
-          .push(pixel_glyph(7, "|||MM   MM| MM MM|  MMM| MM MM|MM   MM|"))
-          .push(pixel_glyph(6, "|||  MM|  MM|MMMMMM|  MM|  MM|"))
-          .push(pixel_glyph(2, "|||||||MM|MM| M|M|"))
-          .push(pixel_glyph(5, "|||||MMMMM|"))
-          .push(pixel_glyph(2, "|||||||MM|MM|"))
-          .push(pixel_glyph(5, "   MM|   MM|  MM|  MM|  MM| MM| MM| MM|MM|MM|"))
-          .push(pixel_glyph(6, "| MMMM|MM  MM|MM MMM|MM MMM|MMMMMM|MMM MM|MM  MM|MM  MM| MMMM|"))
-          .push(pixel_glyph(2, "| M|MM|MM|MM|MM|MM|MM|MM|MM|"))
-          .push(pixel_glyph(6, "| MMMM|M   MM|    MM|    MM|   MM|  MM| MM|MM|MMMMMM|"))
-          .push(pixel_glyph(6, "|MMMMMM|   MM|  MM| MMMM|    MM|    MM|    MM|M   MM| MMMM|"))
-          .push(pixel_glyph(7, "|    MM|   MMM|  M MM| M  MM|MM  MM|MMMMMMM|    MM|    MM|    MM|"))
-          .push(pixel_glyph(6, "|MMMMMM|MM|MM|MMMMM|    MM|    MM|    MM|M   MM| MMMM|"))
-          .push(pixel_glyph(6, "|  MMM| MM|MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
-          .push(pixel_glyph(7, "|MMMMMMM|     MM|     MM|    MM|    MM|   MM|   MM|   MM|   MM|"))
-          .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM| MMMM|MM  MM|MM  MM|MM  MM| MMMM|"))
-          .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM|   MM| MMM|"))
-          .push(pixel_glyph(2, "|||MM|MM||||MM|MM|"))
-          .push(pixel_glyph(2, "|||MM|MM||||MM|MM| M|M|"))
-          .push(pixel_glyph(5, "||   MM|  MM| MM|MM| MM|  MM|   MM|"))
-          .push(pixel_glyph(5, "||||MMMMM||MMMMM|"))
-          .push(pixel_glyph(5, "||MM| MM|  MM|   MM|  MM| MM|MM|"))
-          .push(pixel_glyph(6, "| MMMM|   MM|    MM|   MM|  MM|  MM||  MM|  MM|"))
-          .push(pixel_glyph(9, "|  MMMMM| M     M|M  MMM  M|M M  M  M|M M  M  M|M M  M  M|M  MMMMMM| M|  MMMMM|"))
-          .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM|MMMMMM|MM  MM|MM  MM|MM  MM|MM  MM|"))
-          .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MMMM|MM  MM|MM  MM|MM  MM|MMMMM|"))
-          .push(pixel_glyph(6, "| MMMM|MM   M|MM|MM|MM|MM|MM|MM   M| MMMM|"))
-          .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MMMMM|"))
-          .push(pixel_glyph(5, "|MMMMM|MM|MM|MM|MMMMM|MM|MM|MM|MMMMM|"))
-          .push(pixel_glyph(5, "|MMMMM|MM|MM|MM|MMMMM|MM|MM|MM|MM|"))
-          .push(pixel_glyph(6, "| MMMM|MM   M|MM|MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
-          .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM|MM  MM|MMMMMM|MM  MM|MM  MM|MM  MM|MM  MM|"))
-          .push(pixel_glyph(4, "|MMMM| MM| MM| MM| MM| MM| MM| MM|MMMM|"))
-          .push(pixel_glyph(6, "|    MM|    MM|    MM|    MM|    MM|MM  MM|MM  MM|MM  MM| MMMM|"))
-          .push(pixel_glyph(7, "|MM   MM|MM  MM|MM MM|MMMM|MMM|MMMM|MM MM|MM  MM|MM   MM|"))
-          .push(pixel_glyph(5, "|MM|MM|MM|MM|MM|MM|MM|MM|MMMMM|"))
-          .push(pixel_glyph(10, "|M       MM|MM     MMM|MMM   MMMM|MMMM MMMMM|M MMMMMMMM|M  MMMM MM|M   MM  MM|M       MM|M       MM|"))
-          .push(pixel_glyph(7, "|M     M|MM    M|MMM   M|MMMM  M|M MMM M|M  MMMM|M   MMM|M    MM|M     M|"))
-          .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
-          .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MMMMM|MM|MM|MM|MM|"))
-          .push(pixel_glyph(8, "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|    MM|    MMM|"))
-          .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|"))
-          .push(pixel_glyph(5, "| MMM|MM  M|MM|MMM| MMM|  MMM|   MM|M  MM| MMM|"))
-          .push(pixel_glyph(6, "|MMMMMM|  MM|  MM|  MM|  MM|  MM|  MM|  MM|  MM|"))
-          .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
-          .push(pixel_glyph(7, "|MM   MM|MM   MM|MM   MM|MM   MM| MM MM| MM MM|  MMM| MMM|   M|"))
-          .push(pixel_glyph(11, "|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MMMMMMMMMM|"))
-          .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM| MMMM|  MM| MMMM|MM  MM|MM  MM|MM  MM|"))
-          .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|  MM|  MM|  MM|  MM|"))
-          .push(pixel_glyph(6, "|MMMMMM|    MM|   MM|   MM|  MM| MM| MM|MM|MMMMMM|"))
-          .push(pixel_glyph(3, "|MMM|MM|MM|MM|MM|MM|MM|MM|MMM|"))
-          .push(pixel_glyph(5, "|MM|MM| MM| MM| MM|  MM|  MM|  MM|   MM|"))
-          .push(pixel_glyph(3, "|MMM| MM| MM| MM| MM| MM| MM| MM|MMM|"))
-          .push(pixel_glyph(6, "|  MM| MMMM|MM  MM|"))
-          .push(pixel_glyph(6, "|||||||||MMMMMM|"))
-          .push(pixel_glyph(2, "|M| M|"))
-          .push(pixel_glyph(6, "||| MMMM|M   MM|    MM| MMMMM|MM  MM|MM  MM| MMMMM|"))
-          .push(pixel_glyph(6, "|MM|MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MMMMM|"))
-          .push(pixel_glyph(5, "||| MMM|MM  M|MM|MM|MM|MM  M| MMM|"))
-          .push(pixel_glyph(6, "|    MM|    MM| MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|"))
-          .push(pixel_glyph(6, "||| MMMM|MM  MM|MM  MM|MMMMMM|MM|MM   M| MMMM|"))
-          .push(pixel_glyph(5, "|  MMM| MM|MMMM| MM| MM| MM| MM| MM| MM|"))
-          .push(pixel_glyph(6, "||| MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM| M  MM|  MMM|"))
-          .push(pixel_glyph(6, "|MM|MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|"))
-          .push(pixel_glyph(2, "|MM||MM|MM|MM|MM|MM|MM|MM|"))
-          .push(pixel_glyph(4, "|  MM||  MM|  MM|  MM|  MM|  MM|  MM|  MM|  MM|MMM|"))
-          .push(pixel_glyph(6, "|MM|MM|MM  MM|MM MM|MMMM|MM|MMMM|MM MM|MM  MM|"))
-          .push(pixel_glyph(3, "|MM|MM|MM|MM|MM|MM|MM|MM| MM|"))
-          .push(pixel_glyph(10, "|||MMMMM MMM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|"))
-          .push(pixel_glyph(6, "|||MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|"))
-          .push(pixel_glyph(6, "||| MMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
-          .push(pixel_glyph(6, "|||MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MMMMM|MM|MM|"))
-          .push(pixel_glyph(6, "||| MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM|    MM|"))
-          .push(pixel_glyph(5, "|||MM MM|MMMMM|MM|MM|MM|MM|MM|"))
-          .push(pixel_glyph(5, "||| MMM|MM  M|MMM| MMM|  MMM|M  MM| MMM|"))
-          .push(pixel_glyph(5, "| MM| MM|MMMM| MM| MM| MM| MM| MM|  MM|"))
-          .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|"))
-          .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|  MM|"))
-          .push(pixel_glyph(10, "|||MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MMMMMMMM|"))
-          .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|  MM|MM  MM|MM  MM|MM  MM|"))
-          .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM| M  MM|  MMM|"))
-          .push(pixel_glyph(6, "|||MMMMMM|    MM|   MM|  MM| MM|MM|MMMMMM|"))
-          .push(pixel_glyph(4, "  MM| MM| MM| MM| MM|MM| MM| MM| MM| MM|  MM|"))
-          .push(pixel_glyph(2, "MM|MM|MM|MM|MM|MM|MM|MM|MM|MM|MM|"))
-          .push(pixel_glyph(4, "MM| MM| MM| MM| MM|  MM| MM| MM| MM| MM|MM|"))
-          .push(pixel_glyph(7, "||||  MM  M| M  MM|M  M|"))
-      code
-        find_glyph(character: Char) Glyph =
-          codepoint = character.codepoint
-          if codepoint >= 32 and codepoint <= 126
-            text_glyphs.get(codepoint - 32)
-            fallback_glyph
-        PositionedGlyph = struct { glyph: Glyph, position: Position }
-        TextLayout = struct { size: Size, glyphs: List[PositionedGlyph] }
-        TextLayoutState = struct {
-          x: Float,
-          y: Float,
-          width: Float,
-          height: Float,
-          word_start: Bool,
-          glyphs: List[PositionedGlyph]}
-        text_word_width(chars: List[Char], index: Int) Float =
-          if index == chars.length() 0.0 identity(
-            char = chars.get(index)
-            if char.codepoint == 32 or char.codepoint == 10 0.0
-              identity(
-                rest = text_word_width(chars, index + 1)
-                find_glyph(char).width + if rest > 0.0 1.0 + rest 0.0))
-        layout_text(chars: List[Char], max_width: Maybe[Float]) TextLayout =
-          layout = chars.iter().indexed().fold(
-            TextLayoutState(
-              x = 0.0,
-              y = 0.0,
-              width = 0.0,
-              height = 0.0,
-              word_start = true,
-              glyphs = list[PositionedGlyph]()),
-            \ state: TextLayoutState, item: Indexed[Char] ->
-              if item.item.codepoint == 10
+        Text rendering starts with glyph shapes, looks them up in a pixel font,
+        positions them into lines, and turns the resulting layout into drawing
+        commands. The subchapters follow those steps.
+      chapter Glyph shapes
+        text
+          A glyph records its width and the paths which draw its pixels.
+          pixel_glyph reads M as a filled pixel, a space as an empty pixel, and
+          | as the end of a row.
+        code
+          Glyph = struct { width: Float, paths: List[Path] }
+        code
+          pixel_glyph(width: Int, pixels: String) Glyph =
+            parsed = pixels.bytes().iter().fold(
+              0, 0, list[Path](),
+              \ x: Int, y: Int, paths: List[Path], pixel: Byte ->
+                if pixel == byte("|")
+                  tuple(0, y + 1, paths)
+                  identity(
+                    _ = assert(x < width, "Pixel glyph row exceeds its width")
+                    _ = assert(
+                      pixel == byte(" ") or pixel == byte("M"),
+                      "Invalid glyph pixel")
+                    px = x.to_float()
+                    py = y.to_float()
+                    tuple(
+                      x + 1,
+                      y,
+                      if pixel == byte(" ")
+                        paths
+                        paths.push(
+                          path()
+                            .move_to(px, py)
+                            .line_to(px + 1.0, py)
+                            .line_to(px + 1.0, py + 1.0)
+                            .line_to(px, py + 1.0)))))
+            _ = assert(parsed.a == 0, "Pixel glyph must end with a row separator")
+            Glyph(width = width.to_float(), paths = parsed.c)
+      chapter Pixel font
+        text
+          The font uses a line height of 13 units and a fallback shape for
+          characters outside its supported range. The table contains the glyphs
+          for ASCII codepoints 32 through 126, in that order.
+        code
+          text_line_height = 13.0
+          fallback_glyph = pixel_glyph(5,
+            "M M M| M M|M M M| M M|M M M| M M|M M M| M M|M M M| M M|")
+        code
+          # Entries correspond to codepoints 32 through 126, in ASCII order.
+          text_glyphs = list[Glyph]()
+            .push(pixel_glyph(2, "|"))
+            .push(pixel_glyph(2, "|MM|MM|MM|MM|MM|MM||MM|MM|"))
+            .push(pixel_glyph(3, "|M M|M M|M M|"))
+            .push(pixel_glyph(6, "|| M  M|MMMMMM| M  M| M  M| M  M|MMMMMM| M  M|"))
+            .push(pixel_glyph(5, "  M| MMM|M M M|M M|MMM| MMM|  MMM|  M M|M M M| MMM|  M|"))
+            .push(pixel_glyph(9, "| MM   MM|M  M MM|M  M MM| MM MM|   MMM|   MM MM|  MM M  M| MM  M  M| MM   MM|"))
+            .push(pixel_glyph(9, "| MMMMM|MM  MM|MM  MM| MMMM| MMM  MM|MM MM MM|MM  MMM|MM  MMMM| MMMM MM|"))
+            .push(pixel_glyph(1, "|M|M|M|"))
+            .push(pixel_glyph(3, " MM|MM|MM|MM|MM|MM|MM|MM|MM| MM|"))
+            .push(pixel_glyph(3, "MM| MM| MM| MM| MM| MM| MM| MM| MM|MM|"))
+            .push(pixel_glyph(7, "|||MM   MM| MM MM|  MMM| MM MM|MM   MM|"))
+            .push(pixel_glyph(6, "|||  MM|  MM|MMMMMM|  MM|  MM|"))
+            .push(pixel_glyph(2, "|||||||MM|MM| M|M|"))
+            .push(pixel_glyph(5, "|||||MMMMM|"))
+            .push(pixel_glyph(2, "|||||||MM|MM|"))
+            .push(pixel_glyph(5, "   MM|   MM|  MM|  MM|  MM| MM| MM| MM|MM|MM|"))
+            .push(pixel_glyph(6, "| MMMM|MM  MM|MM MMM|MM MMM|MMMMMM|MMM MM|MM  MM|MM  MM| MMMM|"))
+            .push(pixel_glyph(2, "| M|MM|MM|MM|MM|MM|MM|MM|MM|"))
+            .push(pixel_glyph(6, "| MMMM|M   MM|    MM|    MM|   MM|  MM| MM|MM|MMMMMM|"))
+            .push(pixel_glyph(6, "|MMMMMM|   MM|  MM| MMMM|    MM|    MM|    MM|M   MM| MMMM|"))
+            .push(pixel_glyph(7, "|    MM|   MMM|  M MM| M  MM|MM  MM|MMMMMMM|    MM|    MM|    MM|"))
+            .push(pixel_glyph(6, "|MMMMMM|MM|MM|MMMMM|    MM|    MM|    MM|M   MM| MMMM|"))
+            .push(pixel_glyph(6, "|  MMM| MM|MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+            .push(pixel_glyph(7, "|MMMMMMM|     MM|     MM|    MM|    MM|   MM|   MM|   MM|   MM|"))
+            .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM| MMMM|MM  MM|MM  MM|MM  MM| MMMM|"))
+            .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM|   MM| MMM|"))
+            .push(pixel_glyph(2, "|||MM|MM||||MM|MM|"))
+            .push(pixel_glyph(2, "|||MM|MM||||MM|MM| M|M|"))
+            .push(pixel_glyph(5, "||   MM|  MM| MM|MM| MM|  MM|   MM|"))
+            .push(pixel_glyph(5, "||||MMMMM||MMMMM|"))
+            .push(pixel_glyph(5, "||MM| MM|  MM|   MM|  MM| MM|MM|"))
+            .push(pixel_glyph(6, "| MMMM|   MM|    MM|   MM|  MM|  MM||  MM|  MM|"))
+            .push(pixel_glyph(9, "|  MMMMM| M     M|M  MMM  M|M M  M  M|M M  M  M|M M  M  M|M  MMMMMM| M|  MMMMM|"))
+            .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM|MMMMMM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+            .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MMMM|MM  MM|MM  MM|MM  MM|MMMMM|"))
+            .push(pixel_glyph(6, "| MMMM|MM   M|MM|MM|MM|MM|MM|MM   M| MMMM|"))
+            .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MMMMM|"))
+            .push(pixel_glyph(5, "|MMMMM|MM|MM|MM|MMMMM|MM|MM|MM|MMMMM|"))
+            .push(pixel_glyph(5, "|MMMMM|MM|MM|MM|MMMMM|MM|MM|MM|MM|"))
+            .push(pixel_glyph(6, "| MMMM|MM   M|MM|MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+            .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM|MM  MM|MMMMMM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+            .push(pixel_glyph(4, "|MMMM| MM| MM| MM| MM| MM| MM| MM|MMMM|"))
+            .push(pixel_glyph(6, "|    MM|    MM|    MM|    MM|    MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+            .push(pixel_glyph(7, "|MM   MM|MM  MM|MM MM|MMMM|MMM|MMMM|MM MM|MM  MM|MM   MM|"))
+            .push(pixel_glyph(5, "|MM|MM|MM|MM|MM|MM|MM|MM|MMMMM|"))
+            .push(pixel_glyph(10, "|M       MM|MM     MMM|MMM   MMMM|MMMM MMMMM|M MMMMMMMM|M  MMMM MM|M   MM  MM|M       MM|M       MM|"))
+            .push(pixel_glyph(7, "|M     M|MM    M|MMM   M|MMMM  M|M MMM M|M  MMMM|M   MMM|M    MM|M     M|"))
+            .push(pixel_glyph(6, "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+            .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MMMMM|MM|MM|MM|MM|"))
+            .push(pixel_glyph(8, "| MMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|    MM|    MMM|"))
+            .push(pixel_glyph(6, "|MMMMM|MM  MM|MM  MM|MM  MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+            .push(pixel_glyph(5, "| MMM|MM  M|MM|MMM| MMM|  MMM|   MM|M  MM| MMM|"))
+            .push(pixel_glyph(6, "|MMMMMM|  MM|  MM|  MM|  MM|  MM|  MM|  MM|  MM|"))
+            .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+            .push(pixel_glyph(7, "|MM   MM|MM   MM|MM   MM|MM   MM| MM MM| MM MM|  MMM| MMM|   M|"))
+            .push(pixel_glyph(11, "|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MM   MM  MM|MMMMMMMMMM|"))
+            .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM| MMMM|  MM| MMMM|MM  MM|MM  MM|MM  MM|"))
+            .push(pixel_glyph(6, "|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|  MM|  MM|  MM|  MM|"))
+            .push(pixel_glyph(6, "|MMMMMM|    MM|   MM|   MM|  MM| MM| MM|MM|MMMMMM|"))
+            .push(pixel_glyph(3, "|MMM|MM|MM|MM|MM|MM|MM|MM|MMM|"))
+            .push(pixel_glyph(5, "|MM|MM| MM| MM| MM|  MM|  MM|  MM|   MM|"))
+            .push(pixel_glyph(3, "|MMM| MM| MM| MM| MM| MM| MM| MM|MMM|"))
+            .push(pixel_glyph(6, "|  MM| MMMM|MM  MM|"))
+            .push(pixel_glyph(6, "|||||||||MMMMMM|"))
+            .push(pixel_glyph(2, "|M| M|"))
+            .push(pixel_glyph(6, "||| MMMM|M   MM|    MM| MMMMM|MM  MM|MM  MM| MMMMM|"))
+            .push(pixel_glyph(6, "|MM|MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MMMMM|"))
+            .push(pixel_glyph(5, "||| MMM|MM  M|MM|MM|MM|MM  M| MMM|"))
+            .push(pixel_glyph(6, "|    MM|    MM| MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|"))
+            .push(pixel_glyph(6, "||| MMMM|MM  MM|MM  MM|MMMMMM|MM|MM   M| MMMM|"))
+            .push(pixel_glyph(5, "|  MMM| MM|MMMM| MM| MM| MM| MM| MM| MM|"))
+            .push(pixel_glyph(6, "||| MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM| M  MM|  MMM|"))
+            .push(pixel_glyph(6, "|MM|MM|MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+            .push(pixel_glyph(2, "|MM||MM|MM|MM|MM|MM|MM|MM|"))
+            .push(pixel_glyph(4, "|  MM||  MM|  MM|  MM|  MM|  MM|  MM|  MM|  MM|MMM|"))
+            .push(pixel_glyph(6, "|MM|MM|MM  MM|MM MM|MMMM|MM|MMMM|MM MM|MM  MM|"))
+            .push(pixel_glyph(3, "|MM|MM|MM|MM|MM|MM|MM|MM| MM|"))
+            .push(pixel_glyph(10, "|||MMMMM MMM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|"))
+            .push(pixel_glyph(6, "|||MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|"))
+            .push(pixel_glyph(6, "||| MMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|"))
+            .push(pixel_glyph(6, "|||MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MMMMM|MM|MM|"))
+            .push(pixel_glyph(6, "||| MMMMM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM|    MM|"))
+            .push(pixel_glyph(5, "|||MM MM|MMMMM|MM|MM|MM|MM|MM|"))
+            .push(pixel_glyph(5, "||| MMM|MM  M|MMM| MMM|  MMM|M  MM| MMM|"))
+            .push(pixel_glyph(5, "| MM| MM|MMMM| MM| MM| MM| MM| MM|  MM|"))
+            .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|"))
+            .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMM|  MM|"))
+            .push(pixel_glyph(10, "|||MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MM  MM  MM|MMMMMMMM|"))
+            .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|  MM|MM  MM|MM  MM|MM  MM|"))
+            .push(pixel_glyph(6, "|||MM  MM|MM  MM|MM  MM|MM  MM|MM  MM|MM  MM| MMMMM|    MM| M  MM|  MMM|"))
+            .push(pixel_glyph(6, "|||MMMMMM|    MM|   MM|  MM| MM|MM|MMMMMM|"))
+            .push(pixel_glyph(4, "  MM| MM| MM| MM| MM|MM| MM| MM| MM| MM|  MM|"))
+            .push(pixel_glyph(2, "MM|MM|MM|MM|MM|MM|MM|MM|MM|MM|MM|"))
+            .push(pixel_glyph(4, "MM| MM| MM| MM| MM|  MM| MM| MM| MM| MM|MM|"))
+            .push(pixel_glyph(7, "||||  MM  M| M  MM|M  M|"))
+      chapter Glyph lookup
+        text
+          Look up supported characters by their codepoint, and use the fallback
+          glyph for every other character.
+        code
+          find_glyph(character: Char) Glyph =
+            codepoint = character.codepoint
+            if codepoint >= 32 and codepoint <= 126
+              text_glyphs.get(codepoint - 32)
+              fallback_glyph
+      chapter Text layout
+        text
+          Layout wraps whole words at spaces and respects explicit newlines.
+          Words wider than the available width overflow instead of being split.
+          Each line is 13 units high, including a trailing empty line after a
+          newline. Empty text has zero size. There is one unit between glyphs.
+        chapter Layout data
+          text
+            The result stores positioned glyphs and the overall size. During layout,
+            the state also tracks the current pen position and word boundaries.
+          code
+            PositionedGlyph = struct { glyph: Glyph, position: Position }
+            TextLayout = struct { size: Size, glyphs: List[PositionedGlyph] }
+            TextLayoutState = struct {
+              x: Float,
+              y: Float,
+              width: Float,
+              height: Float,
+              word_start: Bool,
+              glyphs: List[PositionedGlyph]}
+        chapter Measuring words
+          text
+            Measure the next word before placing its first glyph, so wrapping can
+            move the entire word to the next line.
+          code
+            text_word_width(chars: List[Char], index: Int) Float =
+              if index == chars.length() 0.0 identity(
+                char = chars.get(index)
+                if char.codepoint == 32 or char.codepoint == 10 0.0
+                  identity(
+                    rest = text_word_width(chars, index + 1)
+                    find_glyph(char).width + if rest > 0.0 1.0 + rest 0.0))
+        chapter Positioning glyphs
+          text
+            Walk the characters in order. Newlines advance the pen to a fresh line;
+            word boundaries decide whether to wrap. Each placed glyph extends the
+            measured bounds.
+          code
+            layout_text(chars: List[Char], max_width: Maybe[Float]) TextLayout =
+              layout = chars.iter().indexed().fold(
                 TextLayoutState(
-                  x = 0.0, y = state.y + text_line_height,
-                  width = state.width, height = state.y + {2.0 * text_line_height},
-                  word_start = true, glyphs = state.glyphs)
-                identity(
-                  wrap = state.word_start and item.item.codepoint != 32 and state.x > 0.0
-                    and
-                      {max_width %(
-                        none false
-                        some(limit)
-                          state.x + text_word_width(chars, item.index) > limit)}
-                  x = if wrap 0.0 state.x
-                  y = if wrap state.y + text_line_height state.y
-                  glyph = find_glyph(item.item)
-                  TextLayoutState(
-                    x = x + glyph.width + 1.0, y,
-                    width = max(state.width, x + glyph.width),
-                    height = max(state.height, y + text_line_height),
-                    word_start = item.item.codepoint == 32,
-                    glyphs = state.glyphs.push(PositionedGlyph(
-                        glyph, position = position(x, y))))))
-          TextLayout(
-            size = size(layout.width, layout.height), glyphs = layout.glyphs)
-        layout_text(chars: List[Char], max_width: Float) TextLayout =
-          layout_text(chars, some(max_width))
-        layout_text(chars: List[Char]) TextLayout = layout_text(chars, none[Float]())
-        draw_glyph(glyph: Glyph, color: Color) DrawCommand =
-          draw_all(
-            glyph.paths.iter()
-              .map(\ path: Path -> draw_filled_path(path, color))
-              .to_list())
-        draw_text(layout: TextLayout, color: Color) Drawing =
-          Drawing(
-            size = layout.size,
-            draw =
-              draw_all(
-                layout.glyphs.iter()
-                  .map(\ glyph: PositionedGlyph ->
-                    draw_transformed(
-                      transform_translate(glyph.position.to_vec().to_offset()),
-                      draw_glyph(glyph.glyph, color)))
-                  .to_list()))
+                  x = 0.0,
+                  y = 0.0,
+                  width = 0.0,
+                  height = 0.0,
+                  word_start = true,
+                  glyphs = list[PositionedGlyph]()),
+                \ state: TextLayoutState, item: Indexed[Char] ->
+                  if item.item.codepoint == 10
+                    TextLayoutState(
+                      x = 0.0, y = state.y + text_line_height,
+                      width = state.width, height = state.y + {2.0 * text_line_height},
+                      word_start = true, glyphs = state.glyphs)
+                    identity(
+                      wrap = state.word_start and item.item.codepoint != 32 and state.x > 0.0
+                        and
+                          {max_width %(
+                            none false
+                            some(limit)
+                              state.x + text_word_width(chars, item.index) > limit)}
+                      x = if wrap 0.0 state.x
+                      y = if wrap state.y + text_line_height state.y
+                      glyph = find_glyph(item.item)
+                      TextLayoutState(
+                        x = x + glyph.width + 1.0, y,
+                        width = max(state.width, x + glyph.width),
+                        height = max(state.height, y + text_line_height),
+                        word_start = item.item.codepoint == 32,
+                        glyphs = state.glyphs.push(PositionedGlyph(
+                            glyph, position = position(x, y))))))
+              TextLayout(
+                size = size(layout.width, layout.height), glyphs = layout.glyphs)
+          code
+            layout_text(chars: List[Char], max_width: Float) TextLayout =
+              layout_text(chars, some(max_width))
+            layout_text(chars: List[Char]) TextLayout = layout_text(chars, none[Float]())
+      chapter Drawing text
+        text
+          Draw each glyph in the requested color, then translate those paths to
+          the positions computed by layout. The Drawing keeps the layout size.
+        code
+          draw_glyph(glyph: Glyph, color: Color) DrawCommand =
+            draw_all(
+              glyph.paths.iter()
+                .map(\ path: Path -> draw_filled_path(path, color))
+                .to_list())
+        code
+          draw_text(layout: TextLayout, color: Color) Drawing =
+            Drawing(
+              size = layout.size,
+              draw =
+                draw_all(
+                  layout.glyphs.iter()
+                    .map(\ glyph: PositionedGlyph ->
+                      draw_transformed(
+                        transform_translate(glyph.position.to_vec().to_offset()),
+                        draw_glyph(glyph.glyph, color)))
+                    .to_list()))
     chapter Notebook data
       text
         The host parses and saves notebook documents. These fields and variants
