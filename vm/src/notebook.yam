@@ -55,7 +55,7 @@ chapter Orchard
         that.
       code
         do[A, B](value: A, doer: fun(A) B) B = doer(value)
-      code
+      text
         foo =
           big_expression_that_spans_multiple_lines()
           . do(\ res: Int -> res + 1)
@@ -238,10 +238,10 @@ chapter Orchard
       text
         And and or.
       code
-        and[A](maybe: Maybe[A]) ControlFlow[A, Nothing] =
+        and[A](maybe: Maybe[A]) ControlFlow[Maybe[A], A] =
           maybe %(
-            some(a) ControlFlow[A, Nothing].evaluate_alternative(a)
-            none ControlFlow[A, Nothing].short_circuit(none[A]()))
+            some(a) ControlFlow[Maybe[A], A].evaluate_alternative(a)
+            none ControlFlow[Maybe[A], A].short_circuit(none[A]()))
       code
         or[A](maybe: Maybe[A]) ControlFlow[A, Nothing] =
           maybe %(
@@ -297,10 +297,10 @@ chapter Orchard
       code
         flatten[O, E](result: Result[Result[O, E], E]) Result[O, E] =
           result %(
-            ok(o) o %(ok(o) o error(e) error[O, E] e)
+            ok(o) o
             error(e) error[O, E](e))
       code
-        flat_map[O, E](
+        flat_map[O, E, A](
           result: Result[O, E], mapper: fun(O) Result[A, E]) Result[A, E] =
           result.map(mapper).flatten()
       text
@@ -883,6 +883,27 @@ chapter Orchard
           if value >= 65 and value <= 70
             value - 65 + 10
             crash("Invalid digit")
+      text
+        Integer formatting is available before iterators so their diagnostics
+        can include an index.
+      code
+        format(int: Int) String = int.format(10)
+        format(int: Int, radix: Int) String =
+          _ = assert(
+            radix >= 2 and radix <= 16,
+            "Radix must be between 2 and 16.")
+          if int < 0
+            "-" + format_negative(int, radix)
+            format_negative(0 - int, radix)
+        # Keep the magnitude negative so min_int never needs to be negated.
+        format_negative(int: Int, radix: Int) String =
+          rest = int / radix
+          digit_value = {rest * radix} - int
+          digit = string(list("0123456789abcdef".bytes().get(digit_value)))
+          if rest == 0 digit format_negative(rest, radix) + digit
+      code
+        format(byte: Byte) String = byte.to_int().format()
+        format(byte: Byte, radix: Int) String = byte.to_int().format(radix)
     chapter Tuples
       code
         Tuple2[A, B] = struct { a: A, b: B }
@@ -1002,9 +1023,11 @@ chapter Orchard
         any(iter: Iter[Bool]) Bool = iter.any(\ value: Bool -> value)
       code
         skip[A](iter: Iter[A], amount: Int) Iter[A] =
-          iter_from_fun(\ ->
-            iter.next().flat_map(\ next: Next[A] ->
-              next.rest.skip(amount - 1).next()))
+          if amount <= 0
+            iter
+            iter_from_fun(\ ->
+              iter.next().flat_map(\ next: Next[A] ->
+                next.rest.skip(amount - 1).next()))
       code
         skip_while[A](iter: Iter[A], checker: fun(A) Bool) Iter[A] =
           iter_from_fun(\ ->
@@ -1056,7 +1079,9 @@ chapter Orchard
                   rest = zip_short(aa.rest, bb.rest)))))
       code
         get_maybe[A](iter: Iter[A], index: Int) Maybe[A] =
-          iter.skip(index).next().map(\ next: Next[A] -> next.item)
+          if index < 0
+            none[A]()
+            iter.skip(index).next().map(\ next: Next[A] -> next.item)
       code
         get[A](iter: Iter[A], index: Int) A =
           iter.get_maybe(index)
@@ -1197,6 +1222,23 @@ chapter Orchard
         string(character: Char) String = string(character.bytes())
         string(chars: List[Char]) String =
           string(chars.iter().flat_map(\ character: Char -> character.bytes().iter()).to_list())
+    chapter String padding
+      text
+        pad_left adds padding before a string until it has the requested number
+        of characters. The padding repeats and is shortened to fit. Strings
+        which are already wide enough stay unchanged.
+      code
+        pad_left(value: String, width: Int, padding: String) String =
+          length = value.chars().length()
+          if width <= length
+            value
+            identity(
+              amount = width - length
+              fill = padding.chars()
+              _ = assert(fill.is_not_empty(), "Padding must not be empty.")
+              prefix = {0..amount}.iter().map(\ index: Int ->
+                fill.get(mod(index, fill.length()))).to_list()
+              string(prefix) + value)
     chapter Hashing
       code
         Hash = struct { value: Int }
@@ -1238,21 +1280,6 @@ chapter Orchard
         hash[A](list: List[A], hash_item: fun(A) Hash) Hash =
           combine(list.length().hash(), list.iter().hash(hash_item))
     chapter Formatting
-      code
-        format(int: Int) String = int.format(10)
-        format(int: Int, radix: Int) String =
-          _ = assert(
-            radix >= 2 and radix <= 16,
-            "Radix must be between 2 and 16.")
-          if int < 0
-            "-" + format_negative(int, radix)
-            format_negative(0 - int, radix)
-        # Keep the magnitude negative so min_int never needs to be negated.
-        format_negative(int: Int, radix: Int) String =
-          rest = int / radix
-          digit_value = {rest * radix} - int
-          digit = string(list("0123456789abcdef".bytes().get(digit_value)))
-          if rest == 0 digit format_negative(rest, radix) + digit
       chapter FloatFormatting
         text
           Well, turns out, writing floats is pretty complicated. This is a
@@ -1617,6 +1644,7 @@ chapter Orchard
         Glyph = struct { width: Float, paths: List[Path] }
       code
         pixel_glyph(width: Int, pixels: String) Glyph =
+          parsed = pixels.bytes().iter().fold(
             0, 0, list[Path](),
             \ x: Int, y: Int, paths: List[Path], pixel: Byte ->
               if pixel == byte("|")
@@ -4338,6 +4366,8 @@ chapter Orchard
                 if code >= 32 and code <= 126
                   if key.shift
                     identity(
+                      plain = "1234567890-=[]\\;',./`".bytes()
+                      shifted = "!@#$%^&*()_+\{\}|:\"<>?~".bytes()
                       index = plain.iter()
                         . fold(
                             0,
@@ -4421,6 +4451,7 @@ chapter Orchard
                 colored(color(if e.active "#d0e8ff" "#eeeeee"),
                   padding(6.0,
                     text(
+                      if e.value.bytes().length() == 0
                         "Click here, then type"
                         e.value)))
                   .create_element(e.constraints).drawing)
