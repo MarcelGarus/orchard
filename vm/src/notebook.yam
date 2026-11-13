@@ -1,12 +1,15 @@
 chapter Orchard
   chapter Introduction
     text
-      I believe programming could be so much more fun. When I work on code, I
-      want my computer to give me immediate feedback about my code's runtime
-      behavior as I type.
+      I believe programming could be so much more fun. Computers are really
+      powerful machines and I sometimes have satisfying moments where I get a
+      visceral feeling of that power -- for example, when I build a game bot
+      that beats me or visualizations that improve my intuition of some problem.
+      When I work on code, I want my computer to give me immediate feedback
+      about my code's runtime behavior as I type.
     text
-      Sadly, this is often not possible: Compiling code is expensive.
-      Destructive side effects mean you have to be careful about what you
+      Sadly, this is often not possible: Compiling code is somewhat expensive.
+      Destructive side effects mean you have to be careful about what code you
       execute.
     text
       Orchard is my attempt at building a computing substrate that gives you
@@ -4765,12 +4768,14 @@ chapter Orchard
     chapter Focus node
       text
         A focus node can focus its child or select the whole item. Its builder
-        draws the selection highlight. Optional activation and move messages let
-        cells, titles, and breadcrumbs share keyboard handling.
+        draws the selection highlight. Optional activation, move, and escape
+        messages let cells, titles, and breadcrumbs share keyboard handling.
+        Escape first leaves the editor; when already selected, it emits the
+        escape message if one is provided.
       code
         FocusNodeWidget[M] = struct {
           builder: fun(Bool) Widget[M], activate: Maybe[M],
-          move: Maybe[fun(Int) M] }
+          move: Maybe[fun(Int) M], escape: Maybe[M] }
         FocusNodeElement[M] = struct {
           widget: FocusNodeWidget[M], child: Element[M], selected: Bool }
         focus_node_child[M](e: FocusNodeElement[M], child: Element[M]
@@ -4787,7 +4792,12 @@ chapter Orchard
             ) EventResult[M, FocusNodeElement[M]] =
             code = key.keycode
             if code == key_escape
-              EventResult[M, FocusNodeElement[M]].handled(focus_node_selected(e, true))
+              if e.selected
+                e.widget.escape %(
+                  some(message)
+                    EventResult[M, FocusNodeElement[M]].message(ElementMessage(element = e, message))
+                  none EventResult[M, FocusNodeElement[M]].not_handled)
+                EventResult[M, FocusNodeElement[M]].handled(focus_node_selected(e, true))
             if e.selected and key.alt and not(key.control) and
                 {code == key_arrow_up or code == key_arrow_down}
               e.widget.move %(
@@ -4854,8 +4864,11 @@ chapter Orchard
                 e.child.char_entered(char).map(\ child: Element[M] -> focus_node_child(e, child)),
               render = \ e: FocusNodeElement[M] -> e.child.drawing)
           focus_node[M](builder: fun(Bool) Widget[M], activate: Maybe[M],
+            move: Maybe[fun(Int) M], escape: Maybe[M]) Widget[M] =
+            widget(focus_node_impl[M](), FocusNodeWidget(builder, activate, move, escape))
+          focus_node[M](builder: fun(Bool) Widget[M], activate: Maybe[M],
             move: Maybe[fun(Int) M]) Widget[M] =
-            widget(focus_node_impl[M](), FocusNodeWidget(builder, activate, move))
+            focus_node(builder, activate, move, none[M]())
           focus_node[M](builder: fun(Bool) Widget[M], activate: Maybe[M]) Widget[M] =
             focus_node(builder, activate, none[fun(Int) M]())
     chapter Counter example
@@ -4898,6 +4911,10 @@ chapter Orchard
         push(path: NotebookPath, index: Int) NotebookPath =
           NotebookPath(indices = path.indices.push(index))
       code
+        parent(path: NotebookPath) Maybe[NotebookPath] =
+          if path.is_empty() none[NotebookPath]()
+            some(NotebookPath(indices = path.indices.without_last()))
+      code
         ==(a: NotebookPath, b: NotebookPath) Bool =
           a.indices.length() == b.indices.length() and
             zip(a.indices.iter(), b.indices.iter())
@@ -4929,7 +4946,8 @@ chapter Orchard
     chapter Cell widget
       text
         A cell can focus its editor or select its entire contents. Clicking text
-        enters the editor; Escape selects the cell. Selected cells have a darker
+        enters the editor; Escape selects the cell, and a second Escape opens
+        the parent chapter when one exists. Selected cells have a darker
         background. Tab and arrows navigate; Enter returns to editing (or opens
         a chapter), and Alt+Up/Down asks the parent to move the cell.
       code
@@ -4966,12 +4984,16 @@ chapter Orchard
         cell_kind(cell: Cell) Int =
           cell %(text 0 code 1 chapter 2)
         cell_widget(cell: Cell, path: NotebookPath, revision: Int) Widget[CellMessage] =
+          escape = path.parent() %(
+            none none[CellMessage]()
+            some(chapter_path)
+              chapter_path.parent().map(\ destination: NotebookPath -> CellMessage.navigate(destination)))
           focus_node(
             \ focused: Bool ->
               key_widget(revision,
                 key_widget(cell_kind(cell), cell_content(cell, path, focused))),
             some(CellMessage.navigate(path)),
-            some(\ step: Int -> CellMessage.move(step)))
+            some(\ step: Int -> CellMessage.move(step)), escape)
         cell_widget(cell: Cell, path: NotebookPath) Widget[CellMessage] =
           cell_widget(cell, path, 0)
     chapter Chapter widget
@@ -5038,6 +5060,7 @@ chapter Orchard
           chapter: Chapter, breadcrumbs: List[ChapterBreadcrumb]
           ) Widget[ChapterMessage] =
           path = breadcrumbs.last().path
+          escape = path.parent().map(\ destination: NotebookPath -> ChapterMessage.navigate(destination))
           scroll_view(Axis.vertical,
             center(
               width_box(400.0,
@@ -5054,7 +5077,8 @@ chapter Orchard
                                   colored(color(if focused "#e5e5e5" "#ffffff"),
                                     padding(2.0, text(crumb.title, 10.0))))
                                   . cast_message[ChapterMessage]()),
-                            some(ChapterMessage.navigate(crumb.path))))
+                            some(ChapterMessage.navigate(crumb.path)),
+                            none[fun(Int) ChapterMessage](), escape))
                       . to_list())),
                   height_box(8.0).cast_message[ChapterMessage](),
                   focus_node(
@@ -5067,7 +5091,7 @@ chapter Orchard
                       . map_message(\ title: String ->
                           ChapterMessage.changed(Chapter(
                             title = single_line_title(title), children = chapter.children))),
-                    none[ChapterMessage]()),
+                    none[ChapterMessage](), none[fun(Int) ChapterMessage](), escape),
                   chapter_cells(chapter, path),
                   height_box(8.0).cast_message[ChapterMessage]())))))
     chapter Notebook widget
