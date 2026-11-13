@@ -1979,6 +1979,11 @@ chapter Orchard
           focus to change: Widget can request the focus. The parent widget can
           then unfocus other sibling widgets and move the focus into the
           element.
+          Events can return a request_focus result, which carries an updated,
+          focused subtree. Containers must unfocus its siblings before
+          forwarding the request to their parent. focus_next and focus_previous
+          ask containers to find an accepting sibling, propagating outward when
+          no sibling accepts focus.
       chapter How hovering works
         text
           Every element knows whether it is hovered. Every element has a hover
@@ -2065,294 +2070,323 @@ chapter Orchard
               s.height.clamp(constraints.height))
       chapter Widget
         text
-          A Widget stores its concrete configuration as Dynamic. Its element
-          callbacks retain the concrete state and implementation, so the casts
-          stay inside widget and widget_element. Updating an element requires
-          the same widget implementation and configuration type. Wrap branches
-          with key_widget and give them different keys when their widget types
-          or semantic identities differ, or when their state should reset.
-          create_element builds the initial element. Element functions ending in
-          _fun store implementation callbacks; widgets call the wrappers. The
-          framework does some early return optimizations: If an element receives
-          the same constraints as before, it's not updated. If an element
-          receives a mouse button event outside its bounds, it is not notified.
-          hover receives local coordinates and updates the hovered subtree;
-          unhover clears that state recursively. The app tracks the pointer and
-          recomputes hover after events and layout changes. Element.hovered
-          tracks subtrees which may need unhover.
-        code
-          # request_focus carries an updated, focused subtree. Containers must
-          # unfocus its siblings before forwarding the request to their parent.
-          # focus_next and focus_previous ask containers to find an accepting
-          # sibling, propagating outward when no sibling accepts focus.
-          # Keyboard and text-input wrappers only invoke focused subtrees.
-          # message carries a message together with the updated element.
-          # Containers map the element; stateful updates it with the new value.
-          Widget[M] = struct {
-            value: Dynamic, new: fun(Constraints) Element[M]}
-          Element[M] = struct {
-            constraints: Constraints,
-            size: Size,
-            drawing: Drawing,
-            focused: Bool,
-            hovered: Bool,
-            hover_fun: fun(Position) EventResult[M, Element[M]],
-            unhover_fun: fun() EventResult[M, Element[M]],
-            update_fun: fun(Widget[M]) Element[M],
-            new_constraints_fun: fun(Constraints) Element[M],
-            mouse_pressed_fun: fun(Position) EventResult[M, Element[M]],
-            mouse_released_fun: fun(Position) EventResult[M, Element[M]],
-            mouse_scrolled_fun:
-              fun(Position, Offset) EventResult[M, Element[M]],
-            focus_fun: fun() Maybe[Element[M]],
-            unfocus_fun: fun() Element[M],
-            key_pressed_fun: fun(KeyPressed) EventResult[M, Element[M]],
-            char_entered_fun: fun(CharEntered) EventResult[M, Element[M]]}
-          EventResult[M, E] = enum {
-            not_handled,
-            handled: E,
-            request_focus: E,
-            focus_next: E,
-            focus_previous: E,
-            message: ElementMessage[M, E]}
-          ElementMessage[M, E] = struct { element: E, message: M }
-        code
-          WidgetImpl[M, W, E] = struct {
-            new: fun(W, Constraints) E,
-            update: fun(E, W) E,
-            new_constraints: fun(E, Constraints) E,
-            hover: fun(E, Position) EventResult[M, E],
-            unhover: fun(E) EventResult[M, E],
-            mouse_pressed: fun(E, Position) EventResult[M, E],
-            mouse_released: fun(E, Position) EventResult[M, E],
-            mouse_scrolled: fun(E, Position, Offset) EventResult[M, E],
-            focus: fun(E) Maybe[E],
-            unfocus: fun(E) E,
-            key_pressed: fun(E, KeyPressed) EventResult[M, E],
-            char_entered: fun(E, CharEntered) EventResult[M, E],
-            render: fun(E) Drawing}
-        code
-          map[M, A, B](
-            result: EventResult[M, A], mapper: fun(A) B) EventResult[M, B] =
-            result %(
-              not_handled EventResult[M, B].not_handled
-              handled(value) EventResult[M, B].handled(mapper(value))
-              request_focus(value)
-                EventResult[M, B].request_focus(mapper(value))
-              focus_next(value) EventResult[M, B].focus_next(mapper(value))
-              focus_previous(value) EventResult[M, B].focus_previous(mapper(value))
-              message(event)
-                EventResult[M, B].message(ElementMessage(
-                  message = event.message, element = mapper(event.element))))
-        code
-          after_hover[M](
-            result: EventResult[M, Element[M]], previous: Element[M],
-            handle: fun(Element[M]) EventResult[M, Element[M]]
-            ) EventResult[M, Element[M]] =
-            result %(
-              not_handled handle(previous)
-              handled(next)
-                result = handle(next)
-                result %(
-                  not_handled EventResult[M, Element[M]].handled(next)
-                  default result)
-              default result)
-          refreshed_widget_element[M, W, E](
-            impl: WidgetImpl[M, W, E],
-            state: E,
-            constraints: Constraints,
-            focused: Bool,
-            hovered: Bool,
-          ) Element[M] =
-            element = if focused
-              impl.focus(state) %(
-                some(next)
-                  widget_element(impl, next, constraints, true, hovered)
-                none widget_element(impl, state, constraints, false, hovered))
-              widget_element(impl, state, constraints, false, hovered)
-            element
-          widget_event[M, W, E](
-            impl: WidgetImpl[M, W, E],
-            result: EventResult[M, E],
-            constraints: Constraints,
-            focused: Bool,
-            hovered: Bool,
-          ) EventResult[M, Element[M]] =
-            result %(
-              not_handled EventResult[M, Element[M]].not_handled
-              handled(next)
-                EventResult[M, Element[M]].handled(
-                  refreshed_widget_element(
-                    impl, next, constraints, focused, hovered))
-              focus_next(next)
-                EventResult[M, Element[M]].focus_next(
-                  refreshed_widget_element(impl, next, constraints, focused, hovered))
-              focus_previous(next)
-                EventResult[M, Element[M]].focus_previous(
-                  refreshed_widget_element(impl, next, constraints, focused, hovered))
-              request_focus(next)
-                impl.focus(next) %(
-                  some(accepted)
-                    EventResult[M, Element[M]].request_focus(widget_element(
-                      impl, accepted, constraints, true, hovered))
-                  none
-                    EventResult[M, Element[M]].handled(widget_element(
-                      impl, next, constraints, false, hovered)))
-              message(event)
-                EventResult[M, Element[M]].message(ElementMessage(
-                  message = event.message,
-                  element =
-                    refreshed_widget_element(
+          Widgets describe configuration; elements attach state, layout, and
+          drawing to that configuration. The subchapters introduce their types,
+          then construction, updates, and input handling.
+        chapter Configuration and results
+          text
+            A Widget stores its concrete configuration and implementation as
+            Dynamic. Results describe whether an update or event changed the
+            attached state.
+          code
+            Widget[M] = struct { value: Dynamic, impl: Dynamic }
+          text
+            An unchanged update preserves the complete existing element,
+            including its cached drawing.
+          code
+            UpdateResult[E] = enum { not_handled, handled: E }
+          text
+            An event can update state, request focus, traverse to another focus
+            target, or emit a message together with its updated state.
+          code
+            ElementMessage[M, E] = struct { element: E, message: M }
+          code
+            EventResult[M, E] = enum {
+              not_handled,
+              handled: E,
+              request_focus: E,
+              focus_next: E,
+              focus_previous: E,
+              message: ElementMessage[M, E]}
+        chapter Implementations and elements
+          text
+            WidgetImpl describes behavior for concrete configuration W and state
+            E. The framework adapts those types to Dynamic when constructing a
+            widget.
+          code
+            WidgetImpl[M, W, E] = struct {
+              new: fun(W, Constraints) E,
+              update: fun(E, W) UpdateResult[E],
+              new_constraints: fun(E, Constraints) E,
+              hover: fun(E, Position) EventResult[M, E],
+              unhover: fun(E) EventResult[M, E],
+              mouse_pressed: fun(E, Position) EventResult[M, E],
+              mouse_released: fun(E, Position) EventResult[M, E],
+              mouse_scrolled: fun(E, Position, Offset) EventResult[M, E],
+              focus: fun(E) Maybe[E],
+              unfocus: fun(E) E,
+              key_pressed: fun(E, KeyPressed) EventResult[M, E],
+              char_entered: fun(E, CharEntered) EventResult[M, E],
+              render: fun(E) Drawing}
+          text
+            An Element keeps the current state and shared implementation beside
+            its layout, drawing, and interaction flags.
+          code
+            Element[M] = struct {
+              constraints: Constraints,
+              size: Size,
+              drawing: Drawing,
+              focused: Bool,
+              hovered: Bool,
+              state: Dynamic,
+              impl: WidgetImpl[M, Dynamic, Dynamic] }
+        chapter Mapping results
+          text
+            Containers map the updated state in a result into their own state.
+            Messages and focus requests keep their meaning while crossing that
+            boundary.
+          code
+            map[A, B](result: UpdateResult[A], mapper: fun(A) B) UpdateResult[B] =
+              result %(
+                not_handled UpdateResult[B].not_handled
+                handled(value) UpdateResult[B].handled(mapper(value)))
+          code
+            map[M, A, B](
+              result: EventResult[M, A], mapper: fun(A) B) EventResult[M, B] =
+              result %(
+                not_handled EventResult[M, B].not_handled
+                handled(value) EventResult[M, B].handled(mapper(value))
+                request_focus(value)
+                  EventResult[M, B].request_focus(mapper(value))
+                focus_next(value) EventResult[M, B].focus_next(mapper(value))
+                focus_previous(value) EventResult[M, B].focus_previous(mapper(value))
+                message(event)
+                  EventResult[M, B].message(ElementMessage(
+                    message = event.message, element = mapper(event.element))))
+        chapter Construction
+          text
+            Typed adapters keep the Dynamic casts in one place. The
+            implementation callbacks receive state explicitly, so they can be
+            shared as elements change.
+          code
+            erase_widget_impl[M, W, E](impl: WidgetImpl[M, W, E]
+              ) WidgetImpl[M, Dynamic, Dynamic] =
+              WidgetImpl(
+                new = \ value: Dynamic, c: Constraints ->
+                  impl.new(value.to_static[W](), c).to_dynamic(),
+                update = \ state: Dynamic, value: Dynamic ->
+                  impl.update(state.to_static[E](), value.to_static[W]())
+                    .map(\ next: E -> next.to_dynamic()),
+                new_constraints = \ state: Dynamic, c: Constraints ->
+                  impl.new_constraints(state.to_static[E](), c).to_dynamic(),
+                hover = \ state: Dynamic, pos: Position ->
+                  impl.hover(state.to_static[E](), pos).map(\ next: E -> next.to_dynamic()),
+                unhover = \ state: Dynamic ->
+                  impl.unhover(state.to_static[E]()).map(\ next: E -> next.to_dynamic()),
+                mouse_pressed = \ state: Dynamic, pos: Position ->
+                  impl.mouse_pressed(state.to_static[E](), pos).map(\ next: E -> next.to_dynamic()),
+                mouse_released = \ state: Dynamic, pos: Position ->
+                  impl.mouse_released(state.to_static[E](), pos).map(\ next: E -> next.to_dynamic()),
+                mouse_scrolled = \ state: Dynamic, pos: Position, delta: Offset ->
+                  impl.mouse_scrolled(state.to_static[E](), pos, delta).map(\ next: E -> next.to_dynamic()),
+                focus = \ state: Dynamic ->
+                  impl.focus(state.to_static[E]()).map(\ next: E -> next.to_dynamic()),
+                unfocus = \ state: Dynamic -> impl.unfocus(state.to_static[E]()).to_dynamic(),
+                key_pressed = \ state: Dynamic, key: KeyPressed ->
+                  impl.key_pressed(state.to_static[E](), key).map(\ next: E -> next.to_dynamic()),
+                char_entered = \ state: Dynamic, char: CharEntered ->
+                  impl.char_entered(state.to_static[E](), char).map(\ next: E -> next.to_dynamic()),
+                render = \ state: Dynamic -> impl.render(state.to_static[E]()))
+          text
+            widget packages a concrete configuration with its adapted
+            implementation.
+          code
+            widget[M, W, E](impl: WidgetImpl[M, W, E], current: W) Widget[M] =
+              Widget[M](value = current.to_dynamic(), impl = erase_widget_impl(impl).to_dynamic())
+          text
+            widget_element renders the attached state and caches the resulting
+            drawing and size. create_element first constructs that state from a
+            widget.
+          code
+            widget_element[M](impl: WidgetImpl[M, Dynamic, Dynamic], state: Dynamic, constraints: Constraints,
+              focused: Bool, hovered: Bool) Element[M] =
+              drawing = impl.render(state)
+              Element[M](constraints, size = drawing.size, drawing, focused, hovered,
+                state, impl)
+          code
+            create_element[M](widget: Widget[M], constraints: Constraints) Element[M] =
+              impl = widget.impl.to_static[WidgetImpl[M, Dynamic, Dynamic]]()
+              state = impl.new(widget.value, constraints)
+              widget_element[M](impl, state, constraints, false, false)
+        chapter Updates and constraints
+          text
+            Updating requires the same implementation and configuration type.
+            Use key_widget around branches whose types or semantic identities
+            differ, or whose state should reset.
+          text
+            Refreshing keeps focus only when the updated state can still accept
+            it.
+          code
+            refreshed_widget_element[M](
+              impl: WidgetImpl[M, Dynamic, Dynamic], state: Dynamic, constraints: Constraints,
+              focused: Bool, hovered: Bool) Element[M] =
+              if focused
+                impl.focus(state) %(
+                  some(next) widget_element[M](impl, next, constraints, true, hovered)
+                  none widget_element[M](impl, state, constraints, false, hovered))
+                widget_element[M](impl, state, constraints, false, hovered)
+          text
+            update exposes whether anything changed. updated resolves that
+            result for compositions which need the current child, preserving the
+            old element when the update is not handled.
+          code
+            update[M](element: Element[M], next: Widget[M]) UpdateResult[Element[M]] =
+              element.impl.update(element.state, next.value)
+                .map(\ state: Dynamic -> refreshed_widget_element[M](
+                  element.impl, state, element.constraints,
+                  element.focused, element.hovered))
+          code
+            updated[M](element: Element[M], next: Widget[M]) Element[M] =
+              element.update(next) %(
+                not_handled element
+                handled(value) value)
+          text
+            Equal constraints skip layout updates.
+          code
+            new_constraints[M](element: Element[M], next: Constraints) Element[M] =
+              if element.constraints == next element
+                refreshed_widget_element[M](element.impl,
+                  element.impl.new_constraints(element.state, next),
+                  next, element.focused, element.hovered)
+        chapter Applying event results
+          text
+            Implementation callbacks return concrete state changes. The
+            framework turns those changes into elements, refreshing their
+            drawing only when the event was handled. A focus request carries a
+            focused subtree; containers must unfocus its siblings before
+            forwarding it.
+          code
+            widget_event[M](
+              impl: WidgetImpl[M, Dynamic, Dynamic], result: EventResult[M, Dynamic],
+              constraints: Constraints, focused: Bool, hovered: Bool
+              ) EventResult[M, Element[M]] =
+              result %(
+                not_handled EventResult[M, Element[M]].not_handled
+                handled(next)
+                  EventResult[M, Element[M]].handled(
+                    refreshed_widget_element[M](impl, next, constraints, focused, hovered))
+                focus_next(next)
+                  EventResult[M, Element[M]].focus_next(
+                    refreshed_widget_element[M](impl, next, constraints, focused, hovered))
+                focus_previous(next)
+                  EventResult[M, Element[M]].focus_previous(
+                    refreshed_widget_element[M](impl, next, constraints, focused, hovered))
+                request_focus(next)
+                  impl.focus(next) %(
+                    some(accepted)
+                      EventResult[M, Element[M]].request_focus(
+                        widget_element[M](impl, accepted, constraints, true, hovered))
+                    none
+                      EventResult[M, Element[M]].handled(
+                        widget_element[M](impl, next, constraints, false, hovered)))
+                message(event)
+                  EventResult[M, Element[M]].message(ElementMessage(
+                    message = event.message,
+                    element = refreshed_widget_element[M](
                       impl, event.element, constraints, focused, hovered))))
-          widget_element[M, W, E](
-            impl: WidgetImpl[M, W, E],
-            state: E,
-            constraints: Constraints,
-            focused: Bool,
-            hovered: Bool,
-          ) Element[M] =
-            drawing = impl.render(state)
-            Element(
-              constraints,
-              size = drawing.size,
-              drawing,
-              focused,
-              hovered,
-              hover_fun = \ pos: Position ->
-                widget_event(
-                  impl,
-                  impl.hover(state, pos),
-                  constraints,
-                  focused,
-                  true),
-              unhover_fun = \ ->
-                widget_event(
-                  impl,
-                  impl.unhover(state),
-                  constraints,
-                  focused,
-                  false),
-              focus_fun = \ ->
-                impl.focus(state)
-                . map(\ next: E ->
-                    widget_element(impl, next, constraints, true, hovered)),
-              unfocus_fun = \ ->
-                widget_element(
-                  impl, impl.unfocus(state), constraints, false, hovered),
-              key_pressed_fun = \ key: KeyPressed ->
-                widget_event(
-                  impl,
-                  impl.key_pressed(state, key),
-                  constraints,
-                  focused,
-                  hovered),
-              char_entered_fun = \ char: CharEntered ->
-                widget_event(
-                  impl,
-                  impl.char_entered(state, char),
-                  constraints,
-                  focused,
-                  hovered),
-              update_fun = \ next: Widget[M] ->
-                refreshed_widget_element(
-                  impl,
-                  impl.update(state, next.value.to_static[W]()),
-                  constraints,
-                  focused,
-                  hovered),
-              new_constraints_fun = \ next: Constraints ->
-                refreshed_widget_element(
-                  impl,
-                  impl.new_constraints(state, next),
-                  next,
-                  focused,
-                  hovered),
-              mouse_pressed_fun = \ position: Position ->
-                widget_event(
-                  impl,
-                  impl.mouse_pressed(state, position),
-                  constraints,
-                  focused,
-                  hovered),
-              mouse_released_fun = \ position: Position ->
-                widget_event(
-                  impl,
-                  impl.mouse_released(state, position),
-                  constraints,
-                  focused,
-                  hovered),
-              mouse_scrolled_fun = \ position: Position, delta: Offset ->
-                widget_event(
-                  impl,
-                  impl.mouse_scrolled(state, position, delta),
-                  constraints,
-                  focused,
-                  hovered))
-          widget_element[M, W, E](
-            impl: WidgetImpl[M, W, E], state: E, constraints: Constraints
-            ) Element[M] =
-            widget_element(impl, state, constraints, false, false)
-          widget[M, W, E](impl: WidgetImpl[M, W, E], current: W) Widget[M] =
-            Widget(
-              value = current.to_dynamic(),
-              new = \ constraints: Constraints ->
-                widget_element(
-                  impl, impl.new(current, constraints), constraints))
-          bounds[M](element: Element[M]) Rectangle =
-            rectangle(0.0, 0.0, element.size.width, element.size.height)
-          create_element[M](
-            widget: Widget[M], constraints: Constraints) Element[M] =
-            widget.new(constraints)
-          update[M](element: Element[M], next: Widget[M]) Element[M] =
-            element.update_fun(next)
-          new_constraints[M](
-            element: Element[M], next: Constraints) Element[M] =
-            if element.constraints == next
-              element
-              element.new_constraints_fun(next)
-          hover[M](element: Element[M], pos: Position
-            ) EventResult[M, Element[M]] =
-            if element.bounds().contains(pos)
-              element.hover_fun(pos)
-              element.unhover()
-          unhover[M](element: Element[M]) EventResult[M, Element[M]] =
-            if element.hovered
-              element.unhover_fun()
-              EventResult[M, Element[M]].not_handled
-          mouse_released[M](
-            element: Element[M], position: Position
-            ) EventResult[M, Element[M]] =
-            if element.bounds().contains(position)
-              after_hover(element.hover(position), element,
-                \ next: Element[M] -> next.mouse_released_fun(position))
-              EventResult[M, Element[M]].not_handled
-          mouse_pressed[M](
-            element: Element[M], position: Position
-            ) EventResult[M, Element[M]] =
-            if element.bounds().contains(position)
-              after_hover(element.hover(position), element,
-                \ next: Element[M] -> next.mouse_pressed_fun(position))
-              EventResult[M, Element[M]].not_handled
-          mouse_scrolled[M](
-            element: Element[M], position: Position, delta: Offset
-            ) EventResult[M, Element[M]] =
-            if element.bounds().contains(position)
-              element.mouse_scrolled_fun(position, delta)
-              EventResult[M, Element[M]].not_handled
-          focus[M](element: Element[M]) Maybe[Element[M]] =
-            if element.focused some(element) element.focus_fun()
-          unfocus[M](element: Element[M]) Element[M] =
-            if element.focused element.unfocus_fun() element
-          key_pressed[M](
-            element: Element[M], key: KeyPressed) EventResult[M, Element[M]] =
-            if element.focused
-              element.key_pressed_fun(key)
-              EventResult[M, Element[M]].not_handled
-          char_entered[M](
-            element: Element[M], char: CharEntered) EventResult[M, Element[M]] =
-            if element.focused
-              element.char_entered_fun(char)
-              EventResult[M, Element[M]].not_handled
+          code
+            widget_event[M](element: Element[M], result: EventResult[M, Dynamic],
+              hovered: Bool) EventResult[M, Element[M]] =
+              widget_event(element.impl, result,
+                element.constraints, element.focused, hovered)
+        chapter Pointer events
+          text
+            Pointer positions are local to each element. Bounds checks, hover
+            refreshes, and event forwarding are shared by all implementations.
+          chapter Bounds and hover
+            text
+              hover updates the hovered subtree; unhover clears it recursively.
+              The app tracks the pointer and refreshes hover after events and
+              layout changes. Element.hovered identifies subtrees which may need
+              unhover.
+            code
+              bounds[M](element: Element[M]) Rectangle =
+                rectangle(0.0, 0.0, element.size.width, element.size.height)
+            code
+              unhover[M](element: Element[M]) EventResult[M, Element[M]] =
+                if element.hovered
+                  widget_event(element, element.impl.unhover(element.state), false)
+                  EventResult[M, Element[M]].not_handled
+            code
+              hover[M](element: Element[M], pos: Position) EventResult[M, Element[M]] =
+                if element.bounds().contains(pos)
+                  widget_event(element,
+                    element.impl.hover(element.state, pos), true)
+                  element.unhover()
+          chapter Mouse buttons and scrolling
+            text
+              Button events refresh hover before reaching the implementation.
+              Events outside the element bounds are not forwarded.
+            code
+              after_hover[M](
+                result: EventResult[M, Element[M]], previous: Element[M],
+                handle: fun(Element[M]) EventResult[M, Element[M]]
+                ) EventResult[M, Element[M]] =
+                result %(
+                  not_handled handle(previous)
+                  handled(next)
+                    result = handle(next)
+                    result %(
+                      not_handled EventResult[M, Element[M]].handled(next)
+                      default result)
+                  default result)
+              # Erase configuration and state types once when making a widget.
+              # The shared callbacks take state explicitly instead of capturing it
+              # afresh whenever an element changes.
+            code
+              mouse_pressed[M](element: Element[M], pos: Position
+                ) EventResult[M, Element[M]] =
+                if element.bounds().contains(pos)
+                  after_hover(element.hover(pos), element, \ next: Element[M] ->
+                    widget_event(next,
+                      next.impl.mouse_pressed(next.state, pos), next.hovered))
+                  EventResult[M, Element[M]].not_handled
+            code
+              mouse_released[M](element: Element[M], pos: Position
+                ) EventResult[M, Element[M]] =
+                if element.bounds().contains(pos)
+                  after_hover(element.hover(pos), element, \ next: Element[M] ->
+                    widget_event(next,
+                      next.impl.mouse_released(next.state, pos), next.hovered))
+                  EventResult[M, Element[M]].not_handled
+            code
+              mouse_scrolled[M](element: Element[M], pos: Position, delta: Offset
+                ) EventResult[M, Element[M]] =
+                if element.bounds().contains(pos)
+                  widget_event(element,
+                    element.impl.mouse_scrolled(element.state, pos, delta), element.hovered)
+                  EventResult[M, Element[M]].not_handled
+        chapter Focus and keyboard input
+          text
+            focus may decline a request. Keyboard and character events only
+            reach focused subtrees; unfocus clears focus recursively through the
+            implementation.
+          code
+            focus[M](element: Element[M]) Maybe[Element[M]] =
+              if element.focused some(element)
+                element.impl.focus(element.state).map(\ state: Dynamic ->
+                  widget_element[M](element.impl, state, element.constraints, true, element.hovered))
+          code
+            unfocus[M](element: Element[M]) Element[M] =
+              if element.focused
+                widget_element[M](element.impl,
+                  element.impl.unfocus(element.state),
+                  element.constraints, false, element.hovered)
+                element
+          code
+            key_pressed[M](element: Element[M], key: KeyPressed
+              ) EventResult[M, Element[M]] =
+              if element.focused
+                widget_event(element,
+                  element.impl.key_pressed(element.state, key), element.hovered)
+                EventResult[M, Element[M]].not_handled
+          code
+            char_entered[M](element: Element[M], char: CharEntered
+              ) EventResult[M, Element[M]] =
+              if element.focused
+                widget_event(element,
+                  element.impl.char_entered(element.state, char), element.hovered)
+                EventResult[M, Element[M]].not_handled
       chapter Key widget
         text
           key_widget(key, equals, child) preserves the child's element while the
@@ -2374,12 +2408,10 @@ chapter Orchard
                 KeyElement(
                   key = w.key, child = w.child.create_element(constraints)),
               update = \ e: KeyElement[K, M], w: KeyWidget[K, M] ->
-                KeyElement(
-                  key = w.key,
-                  child =
-                    if equals(e.key, w.key)
-                      e.child.update(w.child)
-                      w.child.create_element(e.child.constraints)),
+                if equals(e.key, w.key)
+                  e.child.update(w.child).map(\ child: Element[M] -> key_widget_child(e, child))
+                  UpdateResult[KeyElement[K, M]].handled(KeyElement(
+                    key = w.key, child = w.child.create_element(e.child.constraints))),
               new_constraints =
                 \ e: KeyElement[K, M], constraints: Constraints ->
                   key_widget_child(e, e.child.new_constraints(constraints)),
@@ -2460,8 +2492,9 @@ chapter Orchard
                   mapper = w.mapper),
               update =
                 \ e: MapMessageElement[A, B], w: MapMessageWidget[A, B] ->
-                  MapMessageElement(
-                    child = e.child.update(w.child), mapper = w.mapper),
+                  UpdateResult[MapMessageElement[A, B]].handled(
+                    MapMessageElement(
+                      child = e.child.updated(w.child), mapper = w.mapper)),
               new_constraints =
                 \ e: MapMessageElement[A, B], constraints: Constraints ->
                   map_message_child(e, e.child.new_constraints(constraints)),
@@ -2575,7 +2608,8 @@ chapter Orchard
           empty_impl() WidgetImpl[Never, Nothing, Size] =
             WidgetImpl(
               new = \ w: Nothing, constraints: Constraints -> constraints.min(),
-              update = \ state: Size, w: Nothing -> state,
+              update = \ state: Size, w: Nothing ->
+                UpdateResult[Size].not_handled,
               new_constraints = \ state: Size, constraints: Constraints ->
                 constraints.min(),
               hover = \ state: Size, pos: Position ->
@@ -2598,60 +2632,56 @@ chapter Orchard
               render = \ size: Size -> Drawing(draw = draw_nothing(), size))
           empty() Widget[Never] = widget(empty_impl(), Nothing())
           empty_widget = empty()
+      chapter Draw proxy
+        text
+          draw_proxy receives its child's size and draw commands and wraps those
+          commands however it likes. It preserves layout, hit testing, focus,
+          and message routing. Drawing transforms affect painting only; use a
+          geometry-aware widget when pointer coordinates should transform too.
+        code
+          DrawProxyWidget[M] = struct {
+            child: Widget[M], draw: fun(Size, DrawCommand) DrawCommand }
+          DrawProxyElement[M] = struct {
+            child: Element[M], draw: fun(Size, DrawCommand) DrawCommand }
+          draw_proxy_child[M](e: DrawProxyElement[M], child: Element[M]
+            ) DrawProxyElement[M] =
+            DrawProxyElement(child, draw = e.draw)
+          draw_proxy_impl[M](
+            ) WidgetImpl[M, DrawProxyWidget[M], DrawProxyElement[M]] =
+            WidgetImpl(
+              new = \ w: DrawProxyWidget[M], constraints: Constraints ->
+                DrawProxyElement(child = w.child.create_element(constraints), draw = w.draw),
+              update = \ e: DrawProxyElement[M], w: DrawProxyWidget[M] ->
+                UpdateResult[DrawProxyElement[M]].handled(
+                  DrawProxyElement(child = e.child.updated(w.child), draw = w.draw)),
+              new_constraints = \ e: DrawProxyElement[M], constraints: Constraints ->
+                draw_proxy_child(e, e.child.new_constraints(constraints)),
+              hover = \ e: DrawProxyElement[M], pos: Position ->
+                e.child.hover(pos).map(\ child: Element[M] -> draw_proxy_child(e, child)),
+              unhover = \ e: DrawProxyElement[M] ->
+                e.child.unhover().map(\ child: Element[M] -> draw_proxy_child(e, child)),
+              mouse_pressed = \ e: DrawProxyElement[M], pos: Position ->
+                e.child.mouse_pressed(pos).map(\ child: Element[M] -> draw_proxy_child(e, child)),
+              mouse_released = \ e: DrawProxyElement[M], pos: Position ->
+                e.child.mouse_released(pos).map(\ child: Element[M] -> draw_proxy_child(e, child)),
+              mouse_scrolled = \ e: DrawProxyElement[M], pos: Position, delta: Offset ->
+                e.child.mouse_scrolled(pos, delta).map(\ child: Element[M] -> draw_proxy_child(e, child)),
+              focus = \ e: DrawProxyElement[M] ->
+                e.child.focus().map(\ child: Element[M] -> draw_proxy_child(e, child)),
+              unfocus = \ e: DrawProxyElement[M] -> draw_proxy_child(e, e.child.unfocus()),
+              key_pressed = \ e: DrawProxyElement[M], key: KeyPressed ->
+                e.child.key_pressed(key).map(\ child: Element[M] -> draw_proxy_child(e, child)),
+              char_entered = \ e: DrawProxyElement[M], char: CharEntered ->
+                e.child.char_entered(char).map(\ child: Element[M] -> draw_proxy_child(e, child)),
+              render = \ e: DrawProxyElement[M] ->
+                Drawing(size = e.child.size, draw = e.draw(e.child.size, e.child.drawing.draw)))
+          draw_proxy[M](child: Widget[M], draw: fun(Size, DrawCommand) DrawCommand) Widget[M] =
+            widget(draw_proxy_impl[M](), DrawProxyWidget(child, draw))
       chapter ColoredWidget
         code
-          ColoredWidget[M] = struct { color: Color, child: Widget[M] }
-          ColoredElement[M] = struct { color: Color, child: Element[M] }
-          colored_child[M](
-            e: ColoredElement[M], child: Element[M]) ColoredElement[M] =
-            ColoredElement(color = e.color, child)
-          colored_impl[M]() WidgetImpl[M, ColoredWidget[M], ColoredElement[M]] =
-            WidgetImpl(
-              new = \ w: ColoredWidget[M], constraints: Constraints ->
-                ColoredElement(
-                  color = w.color,
-                  child = w.child.create_element(constraints)),
-              update = \ e: ColoredElement[M], w: ColoredWidget[M] ->
-                ColoredElement(
-                  color = w.color, child = e.child.update(w.child)),
-              new_constraints = \ e: ColoredElement[M], next: Constraints ->
-                ColoredElement(
-                  color = e.color, child = e.child.new_constraints(next)),
-              hover = \ e: ColoredElement[M], pos: Position ->
-                e.child.hover(pos)
-                . map(\ child: Element[M] -> colored_child(e, child)),
-              unhover = \ e: ColoredElement[M] ->
-                e.child.unhover()
-                . map(\ child: Element[M] -> colored_child(e, child)),
-              mouse_pressed = \ e: ColoredElement[M], pos: Position ->
-                e.child.mouse_pressed(pos)
-                  .map(\ child: Element[M] -> colored_child(e, child)),
-              mouse_released = \ e: ColoredElement[M], pos: Position ->
-                e.child.mouse_released(pos)
-                  .map(\ child: Element[M] -> colored_child(e, child)),
-              mouse_scrolled =
-                \ e: ColoredElement[M], pos: Position, delta: Offset ->
-                  e.child.mouse_scrolled(pos, delta)
-                    .map(\ child: Element[M] -> colored_child(e, child)),
-              focus = \ e: ColoredElement[M] ->
-                e.child.focus()
-                  .map(\ child: Element[M] -> colored_child(e, child)),
-              unfocus = \ e: ColoredElement[M] ->
-                colored_child(e, e.child.unfocus()),
-              key_pressed = \ e: ColoredElement[M], key: KeyPressed ->
-                e.child.key_pressed(key)
-                  .map(\ child: Element[M] -> colored_child(e, child)),
-              char_entered = \ e: ColoredElement[M], char: CharEntered ->
-                e.child.char_entered(char)
-                  .map(\ child: Element[M] -> colored_child(e, child)),
-              render = \ e: ColoredElement[M] ->
-                Drawing(
-                  draw = draw_all(list(
-                    draw_colored_rect(e.child.size, e.color),
-                    e.child.drawing.draw)),
-                  size = e.child.size))
           colored[M](color: Color, child: Widget[M]) Widget[M] =
-            widget(colored_impl[M](), ColoredWidget(color, child))
+            draw_proxy(child, \ size: Size, drawing: DrawCommand ->
+              draw_all(list(draw_colored_rect(size, color), drawing)))
       chapter RoundedRect
         text
           The rounded rect widget clips its child to have circular corners. The
@@ -2699,8 +2729,9 @@ chapter Orchard
                   radius = w.radius,
                   child = w.child.create_element(constraints)),
               update = \ e: RoundedRectElement[M], w: RoundedRectWidget[M] ->
-                RoundedRectElement(
-                  radius = w.radius, child = e.child.update(w.child)),
+                UpdateResult[RoundedRectElement[M]].handled(
+                  RoundedRectElement(
+                    radius = w.radius, child = e.child.updated(w.child))),
               new_constraints =
                 \ e: RoundedRectElement[M], constraints: Constraints ->
                   RoundedRectElement(
@@ -2796,15 +2827,16 @@ chapter Orchard
                     sized_box_child_constraints(
                       w.width, w.height, constraints))),
               update = \ e: SizedBoxElement[M], w: SizedBoxWidget[M] ->
-                SizedBoxElement(
-                  width = w.width,
-                  height = w.height,
-                  constraints = e.constraints,
-                  child =
-                    e.child.update(w.child)
-                      .new_constraints(
-                        sized_box_child_constraints(
-                          w.width, w.height, e.constraints))),
+                UpdateResult[SizedBoxElement[M]].handled(
+                  SizedBoxElement(
+                    width = w.width,
+                    height = w.height,
+                    constraints = e.constraints,
+                    child =
+                      e.child.updated(w.child)
+                        .new_constraints(
+                          sized_box_child_constraints(
+                            w.width, w.height, e.constraints)))),
               new_constraints = \ e: SizedBoxElement[M], next: Constraints ->
                 SizedBoxElement(
                   width = e.width,
@@ -2987,13 +3019,14 @@ chapter Orchard
                       scale_child_constraints(w.factor, constraints)),
                   constraints),
               update = \ e: ScaleElement[M], w: ScaleWidget[M] ->
-                ScaleElement(
-                  factor = w.factor,
-                  child =
-                    e.child.new_constraints(
-                      scale_child_constraints(w.factor, e.constraints))
-                      .update(w.child),
-                  constraints = e.constraints),
+                UpdateResult[ScaleElement[M]].handled(
+                  ScaleElement(
+                    factor = w.factor,
+                    child =
+                      e.child.new_constraints(
+                        scale_child_constraints(w.factor, e.constraints))
+                        .updated(w.child),
+                    constraints = e.constraints)),
               new_constraints =
                 \ e: ScaleElement[M], constraints: Constraints ->
                   ScaleElement(
@@ -3065,10 +3098,13 @@ chapter Orchard
               new = \ w: TextWidget, constraints: Constraints ->
                 TextElement(value = w.value, color = w.color, constraints),
               update = \ e: TextElement, w: TextWidget ->
-                TextElement(
-                  value = w.value,
-                  color = w.color,
-                  constraints = e.constraints),
+                same = e.color.r == w.color.r and e.color.g == w.color.g and e.color.b == w.color.b
+                  and e.value.bytes().length() == w.value.bytes().length()
+                  and zip(e.value.bytes().iter(), w.value.bytes().iter()).all(
+                    \ pair: Tuple2[Byte, Byte] -> pair.a == pair.b)
+                if same UpdateResult[TextElement].not_handled
+                  UpdateResult[TextElement].handled(TextElement(
+                    value = w.value, color = w.color, constraints = e.constraints)),
               new_constraints = \ e: TextElement, next: Constraints ->
                 TextElement(
                   value = e.value, color = e.color, constraints = next),
@@ -3147,11 +3183,12 @@ chapter Orchard
                   constraints,
                   child = w.child.create_element(constraints.deflate(w.insets))),
               update = \ e: PaddingElement[M], w: PaddingWidget[M] ->
-                PaddingElement(
-                  insets = w.insets,
-                  constraints = e.constraints,
-                  child = e.child.update(w.child).new_constraints(
-                      e.constraints.deflate(w.insets))),
+                UpdateResult[PaddingElement[M]].handled(
+                  PaddingElement(
+                    insets = w.insets,
+                    constraints = e.constraints,
+                    child = e.child.updated(w.child).new_constraints(
+                        e.constraints.deflate(w.insets)))),
               new_constraints = \ e: PaddingElement[M], next: Constraints ->
                 PaddingElement(
                   insets = e.insets,
@@ -3503,21 +3540,22 @@ chapter Orchard
                     w.children.get(index).widget().create_element(c))
                 FlexElement(axis = w.axis, constraints, factors, children),
               update = \ e: FlexElement[M], w: FlexWidget[M] ->
-                factors = w.children.factors()
-                children = layout_flex(
-                  w.axis,
-                  e.constraints,
-                  factors,
-                  \ index: Int, c: Constraints ->
-                    widget = w.children.get(index).widget()
-                    if index < e.children.length()
-                      e.children.get(index).new_constraints(c).update(widget)
-                      widget.create_element(c))
-                FlexElement(
-                  axis = w.axis,
-                  constraints = e.constraints,
-                  factors,
-                  children),
+                UpdateResult[FlexElement[M]].handled(
+                  factors = w.children.factors()
+                  children = layout_flex(
+                    w.axis,
+                    e.constraints,
+                    factors,
+                    \ index: Int, c: Constraints ->
+                      widget = w.children.get(index).widget()
+                      if index < e.children.length()
+                        e.children.get(index).new_constraints(c).updated(widget)
+                        widget.create_element(c))
+                  FlexElement(
+                    axis = w.axis,
+                    constraints = e.constraints,
+                    factors,
+                    children)),
               new_constraints = \ e: FlexElement[M], next: Constraints ->
                 children = layout_flex(
                   e.axis,
@@ -3690,16 +3728,17 @@ chapter Orchard
                     scroll_child_constraints(w.axis, constraints)),
                   0.0),
               update = \ e: ScrollViewElement[M], w: ScrollViewWidget[M] ->
-                scroll_element(
-                  w.axis,
-                  e.constraints,
-                  e.child
-                    .new_constraints(
-                      scroll_child_constraints(w.axis, e.constraints))
-                    .update(w.child),
-                  if e.axis is horizontal
-                    if w.axis is horizontal e.scroll 0.0
-                    if w.axis is vertical e.scroll 0.0),
+                UpdateResult[ScrollViewElement[M]].handled(
+                  scroll_element(
+                    w.axis,
+                    e.constraints,
+                    e.child
+                      .new_constraints(
+                        scroll_child_constraints(w.axis, e.constraints))
+                      .updated(w.child),
+                    if e.axis is horizontal
+                      if w.axis is horizontal e.scroll 0.0
+                      if w.axis is vertical e.scroll 0.0)),
               new_constraints = \ e: ScrollViewElement[M], next: Constraints ->
                 scroll_element(
                   e.axis,
@@ -3805,10 +3844,11 @@ chapter Orchard
                   child = w.child.create_element(constraints.loosen_min()),
                   constraints),
               update = \ e: AlignElement[M], w: AlignWidget[M] ->
-                AlignElement(
-                  bias = w.bias,
-                  child = e.child.update(w.child),
-                  constraints = e.constraints),
+                UpdateResult[AlignElement[M]].handled(
+                  AlignElement(
+                    bias = w.bias,
+                    child = e.child.updated(w.child),
+                    constraints = e.constraints)),
               new_constraints = \ e: AlignElement[M], next: Constraints ->
                 AlignElement(
                   bias = e.bias,
@@ -3927,12 +3967,12 @@ chapter Orchard
                 EventResult[M, StatefulElement[S, M, N]].handled(
                   StatefulElement(
                     state, handle = e.handle, builder = e.builder,
-                    child = child.update(e.builder(state))))
+                    child = child.updated(e.builder(state))))
               bubble_up(message)
                 EventResult[M, StatefulElement[S, M, N]].message(ElementMessage(
                   element = stateful_child(e, child), message))
               bubble_up_and_focus(event)
-                updated = child.update(e.builder(event.state))
+                updated = child.updated(e.builder(event.state))
                 # Use the same traversal as Tab after rebuilding local state,
                 # before the owner applies the emitted document change.
                 result = updated.key_pressed(KeyPressed(
@@ -3959,11 +3999,12 @@ chapter Orchard
                     w.builder(w.initial_state).create_element(constraints)),
               update =
                 \ e: StatefulElement[S, M, N], w: StatefulWidget[S, M, N] ->
-                  StatefulElement(
-                    state = e.state,
-                    handle = w.handle,
-                    builder = w.builder,
-                    child = e.child.update(w.builder(e.state))),
+                  UpdateResult[StatefulElement[S, M, N]].handled(
+                    StatefulElement(
+                      state = e.state,
+                      handle = w.handle,
+                      builder = w.builder,
+                      child = e.child.updated(w.builder(e.state)))),
               new_constraints =
                 \ e: StatefulElement[S, M, N], constraints: Constraints ->
                   stateful_child(e, e.child.new_constraints(constraints)),
@@ -4021,8 +4062,9 @@ chapter Orchard
                   message = w.message,
                   child = w.child.create_element(constraints)),
               update = \ e: OnClickElement[M], w: OnClickWidget[M] ->
-                OnClickElement(
-                  message = w.message, child = e.child.update(w.child)),
+                UpdateResult[OnClickElement[M]].handled(
+                  OnClickElement(
+                    message = w.message, child = e.child.updated(w.child))),
               new_constraints =
                 \ e: OnClickElement[M], constraints: Constraints ->
                   OnClickElement(
@@ -4429,7 +4471,8 @@ chapter Orchard
                 same = e.chars.length() == chars.length() and
                   zip(e.chars.iter(), chars.iter()).all(
                     \ pair: Tuple2[Char, Char] -> pair.a == pair.b)
-                if same e e.update_chars(chars, e.cursor),
+                if same UpdateResult[EditableTextElement].not_handled
+                  UpdateResult[EditableTextElement].handled(e.update_chars(chars, e.cursor)),
               new_constraints =
                 \ e: EditableTextElement, constraints: Constraints ->
                   if constraints.width == e.constraints.width
@@ -4536,7 +4579,8 @@ chapter Orchard
                 \ w: Nothing, constraints: Constraints ->
                   KeysinkElement(value = "", active = false, constraints),
               update =
-                \ e: KeysinkElement, w: Nothing -> e,
+                \ e: KeysinkElement, w: Nothing ->
+                  UpdateResult[KeysinkElement].not_handled,
               new_constraints =
                 \ e: KeysinkElement, constraints: Constraints ->
                   KeysinkElement(
@@ -4650,10 +4694,11 @@ chapter Orchard
                   hovered = false,
                   pressed = false),
               update = \ e: ButtonElement[M], w: ButtonWidget[M] ->
-                ButtonElement(message = w.message, color = w.color,
-                  child = e.child.update(w.child),
-                  hovered = e.hovered,
-                  pressed = e.pressed),
+                UpdateResult[ButtonElement[M]].handled(
+                  ButtonElement(message = w.message, color = w.color,
+                    child = e.child.updated(w.child),
+                    hovered = e.hovered,
+                    pressed = e.pressed)),
               new_constraints =
                 \ e: ButtonElement[M], constraints: Constraints ->
                   button_child(e, e.child.new_constraints(constraints)),
@@ -4784,7 +4829,7 @@ chapter Orchard
           ) FocusNodeElement[M] =
           child = if selected e.child.unfocus() e.child
           FocusNodeElement(widget = e.widget, selected,
-            child = child.update(e.widget.builder(selected)))
+            child = child.updated(e.widget.builder(selected)))
       chapter Keyboard selection
         code
           focus_node_key[M](e: FocusNodeElement[M], key: KeyPressed
@@ -4828,8 +4873,9 @@ chapter Orchard
                 FocusNodeElement(widget = w, selected = false,
                   child = w.builder(false).create_element(constraints)),
               update = \ e: FocusNodeElement[M], w: FocusNodeWidget[M] ->
-                FocusNodeElement(widget = w, selected = e.selected,
-                  child = e.child.update(w.builder(e.selected))),
+                UpdateResult[FocusNodeElement[M]].handled(
+                  FocusNodeElement(widget = w, selected = e.selected,
+                    child = e.child.updated(w.builder(e.selected)))),
               new_constraints = \ e: FocusNodeElement[M], constraints: Constraints ->
                 focus_node_child(e, e.child.new_constraints(constraints)),
               hover = \ e: FocusNodeElement[M], pos: Position ->
@@ -5048,7 +5094,7 @@ chapter Orchard
                 element: Element[Chapter],
                 pointer: Maybe[Position]
                 ->
-                notebook_app(updated, element.update(notebook_widget(updated)), pointer),
+                notebook_app(updated, element.updated(notebook_widget(updated)), pointer),
             shortcut = \ key: KeyPressed ->
               if key.control and not(key.alt) and key.keycode == 83
                 some(AppCommand.save_notebook(notebook))
