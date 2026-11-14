@@ -2097,6 +2097,14 @@ chapter Orchard
         code
           UpdateResult[E] = enum { not_handled, handled: E }
         text
+          Named focus requests address a node directly. Containers forward the
+          request; a matching focus_node selects itself or focuses its editor.
+        code
+          FocusRequest = struct { target: List[Int], editing: Bool }
+          same_focus_target(a: List[Int], b: List[Int]) Bool =
+            a.length() == b.length() and zip(a.iter(), b.iter()).all(
+              \ pair: Tuple2[Int, Int] -> pair.a == pair.b)
+        text
           An event can update state, request focus, traverse to another focus
           target, or emit a message together with its updated state.
         code
@@ -2124,7 +2132,7 @@ chapter Orchard
             mouse_pressed: fun(E, Position) EventResult[M, E],
             mouse_released: fun(E, Position) EventResult[M, E],
             mouse_scrolled: fun(E, Position, Offset) EventResult[M, E],
-            focus: fun(E) Maybe[E],
+            focus: fun(E, Maybe[FocusRequest]) Maybe[E],
             unfocus: fun(E) E,
             key_pressed: fun(E, KeyPressed) EventResult[M, E],
             char_entered: fun(E, CharEntered) EventResult[M, E],
@@ -2190,8 +2198,8 @@ chapter Orchard
                 impl.mouse_released(state.to_static[E](), pos).map(\ next: E -> next.to_dynamic()),
               mouse_scrolled = \ state: Dynamic, pos: Position, delta: Offset ->
                 impl.mouse_scrolled(state.to_static[E](), pos, delta).map(\ next: E -> next.to_dynamic()),
-              focus = \ state: Dynamic ->
-                impl.focus(state.to_static[E]()).map(\ next: E -> next.to_dynamic()),
+              focus = \ state: Dynamic, request: Maybe[FocusRequest] ->
+                impl.focus(state.to_static[E](), request).map(\ next: E -> next.to_dynamic()),
               unfocus = \ state: Dynamic -> impl.unfocus(state.to_static[E]()).to_dynamic(),
               key_pressed = \ state: Dynamic, key: KeyPressed ->
                 impl.key_pressed(state.to_static[E](), key).map(\ next: E -> next.to_dynamic()),
@@ -2232,7 +2240,7 @@ chapter Orchard
             impl: WidgetImpl[M, Dynamic, Dynamic], state: Dynamic, constraints: Constraints,
             focused: Bool, hovered: Bool) Element[M] =
             if focused
-              impl.focus(state) %(
+              impl.focus(state, none[FocusRequest]()) %(
                 some(next) widget_element[M](impl, next, constraints, true, hovered)
                 none widget_element[M](impl, state, constraints, false, hovered))
               widget_element[M](impl, state, constraints, false, hovered)
@@ -2282,7 +2290,7 @@ chapter Orchard
                 EventResult[M, Element[M]].focus_previous(
                   refreshed_widget_element[M](impl, next, constraints, focused, hovered))
               request_focus(next)
-                impl.focus(next) %(
+                impl.focus(next, none[FocusRequest]()) %(
                   some(accepted)
                     EventResult[M, Element[M]].request_focus(
                       widget_element[M](impl, accepted, constraints, true, hovered))
@@ -2368,14 +2376,10 @@ chapter Orchard
                 EventResult[M, Element[M]].not_handled
       chapter Focus and keyboard input
         text
-          focus may decline a request. Keyboard and character events only reach
-          focused subtrees; unfocus clears focus recursively through the
-          implementation.
-        code
-          focus[M](element: Element[M]) Maybe[Element[M]] =
-            if element.focused some(element)
-              element.impl.focus(element.state).map(\ state: Dynamic ->
-                widget_element[M](element.impl, state, element.constraints, true, element.hovered))
+          Ordinary focus chooses the first accepting child. focus(request)
+          searches this subtree for a named node and can select it or enter its
+          editor directly. A missing target returns none without changing the
+          original tree. Keyboard events only reach focused subtrees.
         code
           unfocus[M](element: Element[M]) Element[M] =
             if element.focused
@@ -2383,6 +2387,15 @@ chapter Orchard
                 element.impl.unfocus(element.state),
                 element.constraints, false, element.hovered)
               element
+        code
+          focus[M](element: Element[M], request: Maybe[FocusRequest]) Maybe[Element[M]] =
+            if element.focused and {request is none} some(element)
+              element.impl.focus(element.state, request).map(\ state: Dynamic ->
+                widget_element[M](element.impl, state, element.constraints, true, element.hovered))
+          focus[M](element: Element[M]) Maybe[Element[M]] =
+            element.focus(none[FocusRequest]())
+          focus[M](element: Element[M], request: FocusRequest) Maybe[Element[M]] =
+            element.unfocus().focus(some(request))
         code
           key_pressed[M](element: Element[M], key: KeyPressed
             ) EventResult[M, Element[M]] =
@@ -2441,8 +2454,8 @@ chapter Orchard
               \ e: KeyElement[K, M], pos: Position, delta: Offset ->
                 e.child.mouse_scrolled(pos, delta)
                 . map(\ child: Element[M] -> key_widget_child(e, child)),
-            focus = \ e: KeyElement[K, M] ->
-              e.child.focus()
+            focus = \ e: KeyElement[K, M], request: Maybe[FocusRequest] ->
+              e.child.focus(request)
               . map(\ child: Element[M] -> key_widget_child(e, child)),
             unfocus = \ e: KeyElement[K, M] ->
               key_widget_child(e, e.child.unfocus()),
@@ -2519,8 +2532,8 @@ chapter Orchard
             mouse_scrolled =
               \ e: MapMessageElement[A, B], pos: Position, delta: Offset ->
                 map_message_event(e, e.child.mouse_scrolled(pos, delta)),
-            focus = \ e: MapMessageElement[A, B] ->
-              e.child.focus()
+            focus = \ e: MapMessageElement[A, B], request: Maybe[FocusRequest] ->
+              e.child.focus(request)
               . map(\ child: Element[A] -> map_message_child(e, child)),
             unfocus = \ e: MapMessageElement[A, B] ->
               map_message_child(e, e.child.unfocus()),
@@ -2633,7 +2646,7 @@ chapter Orchard
             mouse_scrolled =
               \ state: Size, position: Position, delta: Offset ->
                 EventResult[Never, Size].not_handled,
-            focus = \ state: Size -> none[Size](),
+            focus = \ state: Size, request: Maybe[FocusRequest] -> none[Size](),
             unfocus = \ state: Size -> state,
             key_pressed = \ state: Size, key: KeyPressed ->
               EventResult[Never, Size].not_handled,
@@ -2676,8 +2689,8 @@ chapter Orchard
               e.child.mouse_released(pos).map(\ child: Element[M] -> draw_proxy_child(e, child)),
             mouse_scrolled = \ e: DrawProxyElement[M], pos: Position, delta: Offset ->
               e.child.mouse_scrolled(pos, delta).map(\ child: Element[M] -> draw_proxy_child(e, child)),
-            focus = \ e: DrawProxyElement[M] ->
-              e.child.focus().map(\ child: Element[M] -> draw_proxy_child(e, child)),
+            focus = \ e: DrawProxyElement[M], request: Maybe[FocusRequest] ->
+              e.child.focus(request).map(\ child: Element[M] -> draw_proxy_child(e, child)),
             unfocus = \ e: DrawProxyElement[M] -> draw_proxy_child(e, e.child.unfocus()),
             key_pressed = \ e: DrawProxyElement[M], key: KeyPressed ->
               e.child.key_pressed(key).map(\ child: Element[M] -> draw_proxy_child(e, child)),
@@ -2771,8 +2784,8 @@ chapter Orchard
                   e.child.mouse_scrolled(pos, delta)
                   . map(\ child: Element[M] -> rounded_rect_child(e, child))
                   EventResult[M, RoundedRectElement[M]].not_handled,
-            focus = \ e: RoundedRectElement[M] ->
-              e.child.focus()
+            focus = \ e: RoundedRectElement[M], request: Maybe[FocusRequest] ->
+              e.child.focus(request)
               . map(\ child: Element[M] -> rounded_rect_child(e, child)),
             unfocus = \ e: RoundedRectElement[M] ->
               rounded_rect_child(e, e.child.unfocus()),
@@ -2870,8 +2883,8 @@ chapter Orchard
               \ e: SizedBoxElement[M], pos: Position, delta: Offset ->
                 e.child.mouse_scrolled(pos, delta)
                   .map(\ child: Element[M] -> sized_box_child(e, child)),
-            focus = \ e: SizedBoxElement[M] ->
-              e.child.focus()
+            focus = \ e: SizedBoxElement[M], request: Maybe[FocusRequest] ->
+              e.child.focus(request)
                 .map(\ child: Element[M] -> sized_box_child(e, child)),
             unfocus = \ e: SizedBoxElement[M] ->
               sized_box_child(e, e.child.unfocus()),
@@ -3065,8 +3078,8 @@ chapter Orchard
                     position(pos.x / e.factor, pos.y / e.factor),
                     delta / e.factor)
                 . map(\ child: Element[M] -> scale_child(e, child)),
-            focus = \ e: ScaleElement[M] ->
-              e.child.focus()
+            focus = \ e: ScaleElement[M], request: Maybe[FocusRequest] ->
+              e.child.focus(request)
               . map(\ child: Element[M] -> scale_child(e, child)),
             unfocus =
               \ e: ScaleElement[M] -> scale_child(e, e.child.unfocus()),
@@ -3127,7 +3140,7 @@ chapter Orchard
               EventResult[Never, TextElement].not_handled,
             mouse_scrolled = \ e: TextElement, pos: Position, delta: Offset ->
               EventResult[Never, TextElement].not_handled,
-            focus = \ e: TextElement -> none[TextElement](),
+            focus = \ e: TextElement, request: Maybe[FocusRequest] -> none[TextElement](),
             unfocus = \ e: TextElement -> e,
             key_pressed =
               \ e: TextElement, key: KeyPressed ->
@@ -3223,8 +3236,8 @@ chapter Orchard
                 e.child.mouse_scrolled(local, delta)
                 . map(\ child: Element[M] -> padding_child(e, child)),
             focus =
-              \ e: PaddingElement[M] ->
-                e.child.focus()
+              \ e: PaddingElement[M], request: Maybe[FocusRequest] ->
+                e.child.focus(request)
                 . map(\ child: Element[M] -> padding_child(e, child)),
             unfocus =
               \ e: PaddingElement[M] -> padding_child(e, e.child.unfocus()),
@@ -3519,14 +3532,14 @@ chapter Orchard
                       flex_children(e, e.children.iter().map_indexed(
                         \ i: Int, child: Element[M] ->
                           if i == index next child.unfocus()).to_list())))))
-        flex_focus[M](e: FlexElement[M]) Maybe[FlexElement[M]] =
+        flex_focus[M](e: FlexElement[M], request: Maybe[FocusRequest]) Maybe[FlexElement[M]] =
           focused =
             e.children.iter().map(\ child: Element[M] -> child.focused).any()
-          if focused some(e)
+          if focused and {request is none} some(e)
             loop(0, \ index: Int ->
               if index == e.children.length()
                 Loop[Int, Maybe[FlexElement[M]]].break(none[FlexElement[M]]())
-                e.children.get(index).focus() %(
+                e.children.get(index).focus(request) %(
                   none Loop[Int, Maybe[FlexElement[M]]].continue(index + 1)
                   some(focused) Loop[Int, Maybe[FlexElement[M]]].break(some(
                     flex_children(
@@ -3593,7 +3606,7 @@ chapter Orchard
                   mouse,
                   \ child: Element[M], pos: Position ->
                     child.mouse_scrolled(pos, delta)),
-            focus = \ e: FlexElement[M] -> flex_focus(e),
+            focus = \ e: FlexElement[M], request: Maybe[FocusRequest] -> flex_focus(e, request),
             unfocus =
               \ e: FlexElement[M] ->
                 flex_children(
@@ -3798,8 +3811,8 @@ chapter Orchard
                     if next.scroll == e.scroll
                       EventResult[M, ScrollViewElement[M]].not_handled
                       EventResult[M, ScrollViewElement[M]].handled(next)),
-            focus = \ e: ScrollViewElement[M] ->
-              e.child.focus().map(\ child: Element[M] -> scroll_view_child(e, child)),
+            focus = \ e: ScrollViewElement[M], request: Maybe[FocusRequest] ->
+              e.child.focus(request).map(\ child: Element[M] -> scroll_view_child(e, child)),
             unfocus = \ e: ScrollViewElement[M] -> scroll_view_child(e, e.child.unfocus()),
             key_pressed = \ e: ScrollViewElement[M], key: KeyPressed ->
               e.child.key_pressed(key)
@@ -3894,8 +3907,8 @@ chapter Orchard
                 e.child.mouse_scrolled(pos - shift, delta)
                 . map(\ child: Element[M] -> align_child(e, child)),
             focus =
-              \ e: AlignElement[M] ->
-                e.child.focus()
+              \ e: AlignElement[M], request: Maybe[FocusRequest] ->
+                e.child.focus(request)
                 . map(\ child: Element[M] -> align_child(e, child)),
             unfocus =
               \ e: AlignElement[M] -> align_child(e, e.child.unfocus()),
@@ -3924,7 +3937,9 @@ chapter Orchard
         Stateful widgets turn internal child messages into either new state or
         an external message for their parent. bubble_up_and_focus rebuilds local
         state and traverses to a neighboring focus target before emitting its
-        external message.
+        external message. bubble_up_and_request_focus applies a named request
+        after the parent supplies its updated configuration, so a newly inserted
+        node exists before the request is resolved.
       code
         StatefulWidget[S, M, N] = struct {
           initial_state: S,
@@ -3934,11 +3949,13 @@ chapter Orchard
           state: S,
           handle: fun(S, N) StatefulResult[S, M],
           builder: fun(S) Widget[N],
-          child: Element[N]}
+          child: Element[N], pending_focus: Maybe[FocusRequest]}
         StatefulFocusMessage[S, M] = struct { state: S, message: M, step: Int }
+        StatefulFocusRequest[S, M] = struct { state: S, message: M, focus: FocusRequest }
         StatefulResult[S, M] = enum {
           new_state: S, bubble_up: M,
-          bubble_up_and_focus: StatefulFocusMessage[S, M] }
+          bubble_up_and_focus: StatefulFocusMessage[S, M],
+          bubble_up_and_request_focus: StatefulFocusRequest[S, M] }
       code
         new_state[S, M](state: S) StatefulResult[S, M] =
           StatefulResult[S, M].new_state(state)
@@ -3946,12 +3963,16 @@ chapter Orchard
           StatefulResult[S, M].bubble_up(message)
         bubble_up_and_focus[S, M](state: S, message: M, step: Int) StatefulResult[S, M] =
           StatefulResult[S, M].bubble_up_and_focus(StatefulFocusMessage(state, message, step))
+        bubble_up_and_request_focus[S, M](state: S, message: M, focus: FocusRequest
+          ) StatefulResult[S, M] =
+          StatefulResult[S, M].bubble_up_and_request_focus(StatefulFocusRequest(state, message, focus))
       code
         stateful_child[S, M, N](
           e: StatefulElement[S, M, N], child: Element[N]
         ) StatefulElement[S, M, N] =
           StatefulElement(
-            state = e.state, handle = e.handle, builder = e.builder, child)
+            state = e.state, handle = e.handle, builder = e.builder, child,
+            pending_focus = e.pending_focus)
         stateful_event[S, M, N](
           e: StatefulElement[S, M, N], result: EventResult[N, Element[N]]
         ) EventResult[M, StatefulElement[S, M, N]] =
@@ -3976,7 +3997,7 @@ chapter Orchard
               EventResult[M, StatefulElement[S, M, N]].handled(
                 StatefulElement(
                   state, handle = e.handle, builder = e.builder,
-                  child = child.updated(e.builder(state))))
+                  child = child.updated(e.builder(state)), pending_focus = e.pending_focus))
             bubble_up(message)
               EventResult[M, StatefulElement[S, M, N]].message(ElementMessage(
                 element = stateful_child(e, child), message))
@@ -3994,7 +4015,14 @@ chapter Orchard
                 default updated)
               EventResult[M, StatefulElement[S, M, N]].message(ElementMessage(
                 element = StatefulElement(state = event.state,
-                  handle = e.handle, builder = e.builder, child = next),
+                  handle = e.handle, builder = e.builder, child = next,
+                  pending_focus = e.pending_focus),
+                message = event.message))
+            bubble_up_and_request_focus(event)
+              EventResult[M, StatefulElement[S, M, N]].message(ElementMessage(
+                element = StatefulElement(state = event.state,
+                  handle = e.handle, builder = e.builder, child,
+                  pending_focus = some(event.focus)),
                 message = event.message)))
         stateful_impl[S, M, N](
         ) WidgetImpl[M, StatefulWidget[S, M, N], StatefulElement[S, M, N]] =
@@ -4005,15 +4033,17 @@ chapter Orchard
                 handle = w.handle,
                 builder = w.builder,
                 child =
-                  w.builder(w.initial_state).create_element(constraints)),
+                  w.builder(w.initial_state).create_element(constraints),
+                pending_focus = none[FocusRequest]()),
             update =
               \ e: StatefulElement[S, M, N], w: StatefulWidget[S, M, N] ->
-                UpdateResult[StatefulElement[S, M, N]].handled(
-                  StatefulElement(
-                    state = e.state,
-                    handle = w.handle,
-                    builder = w.builder,
-                    child = e.child.updated(w.builder(e.state)))),
+                child = e.child.updated(w.builder(e.state))
+                focused = e.pending_focus %(
+                  none child
+                  some(request) child.focus(request) %(none child some(next) next))
+                UpdateResult[StatefulElement[S, M, N]].handled(StatefulElement(
+                  state = e.state, handle = w.handle, builder = w.builder,
+                  child = focused, pending_focus = none[FocusRequest]())),
             new_constraints =
               \ e: StatefulElement[S, M, N], constraints: Constraints ->
                 stateful_child(e, e.child.new_constraints(constraints)),
@@ -4032,8 +4062,8 @@ chapter Orchard
                 ->
                 stateful_event(e, e.child.mouse_scrolled(position, delta)),
             focus =
-              \ e: StatefulElement[S, M, N] ->
-                e.child.focus()
+              \ e: StatefulElement[S, M, N], request: Maybe[FocusRequest] ->
+                e.child.focus(request)
                 . map(\ child: Element[N] -> stateful_child(e, child)),
             unfocus =
               \ e: StatefulElement[S, M, N] ->
@@ -4100,8 +4130,8 @@ chapter Orchard
               \ e: OnClickElement[M], pos: Position, delta: Offset ->
                 e.child.mouse_scrolled(pos, delta)
                 . map(\ child: Element[M] -> on_click_child(e, child)),
-            focus = \ e: OnClickElement[M] ->
-              e.child.focus()
+            focus = \ e: OnClickElement[M], request: Maybe[FocusRequest] ->
+              e.child.focus(request)
               . map(\ child: Element[M] -> on_click_child(e, child)),
             unfocus =
               \ e: OnClickElement[M] -> on_click_child(e, e.child.unfocus()),
@@ -4508,7 +4538,9 @@ chapter Orchard
             mouse_scrolled =
               \ e: EditableTextElement, pos: Position, delta: Offset ->
                 EventResult[String, EditableTextElement].not_handled,
-            focus = \ e: EditableTextElement -> some(e.update_focus(true)),
+            focus = \ e: EditableTextElement, request: Maybe[FocusRequest] ->
+              if request is some none[EditableTextElement]()
+                some(e.update_focus(true)),
             unfocus = \ e: EditableTextElement -> e.update_focus(false),
             key_pressed =
               \ e: EditableTextElement, key: KeyPressed ->
@@ -4595,11 +4627,12 @@ chapter Orchard
                 KeysinkElement(
                   value = e.value, active = e.active, constraints),
             focus =
-              \ e: KeysinkElement ->
-                some(KeysinkElement(
-                  value = e.value,
-                  active = true,
-                  constraints = e.constraints)),
+              \ e: KeysinkElement, request: Maybe[FocusRequest] ->
+                if request is some none[KeysinkElement]()
+                  some(KeysinkElement(
+                    value = e.value,
+                    active = true,
+                    constraints = e.constraints)),
             unfocus =
               \ e: KeysinkElement ->
                 KeysinkElement(
@@ -4738,7 +4771,11 @@ chapter Orchard
               \ e: ButtonElement[M], pos: Position, delta: Offset ->
                 e.child.mouse_scrolled(pos, delta)
                 . map(\ child: Element[M] -> button_child(e, child)),
-            focus = \ e: ButtonElement[M] -> some(e),
+            focus = \ e: ButtonElement[M], request: Maybe[FocusRequest] ->
+              request %(
+                none some(e)
+                some
+                  e.child.focus(request).map(\ child: Element[M] -> button_child(e, child))),
             unfocus = \ e: ButtonElement[M] ->
               button_child(
                 button_state(e, e.hovered, false), e.child.unfocus()),
@@ -4771,11 +4808,14 @@ chapter Orchard
         draws the selection highlight. Optional activation, move, and escape
         messages let cells, titles, and breadcrumbs share keyboard handling.
         Escape first leaves the editor; when already selected, it emits the
-        escape message if one is provided.
+        escape message if one is provided. Optional shortcuts work while either
+        the node or its editor is focused. A target names the node for explicit
+        focus requests independently of its position in the layout tree.
       code
         FocusNodeWidget[M] = struct {
           builder: fun(Bool) Widget[M], activate: Maybe[M],
-          move: Maybe[fun(Int) M], escape: Maybe[M] }
+          move: Maybe[fun(Int) M], escape: Maybe[M],
+          shortcut: fun(KeyPressed) Maybe[M], target: Maybe[List[Int]] }
         FocusNodeElement[M] = struct {
           widget: FocusNodeWidget[M], child: Element[M], selected: Bool }
         focus_node_child[M](e: FocusNodeElement[M], child: Element[M]
@@ -4791,6 +4831,10 @@ chapter Orchard
           focus_node_key[M](e: FocusNodeElement[M], key: KeyPressed
             ) EventResult[M, FocusNodeElement[M]] =
             code = key.keycode
+            shortcut = e.widget.shortcut(key)
+            if shortcut is some
+              EventResult[M, FocusNodeElement[M]].message(ElementMessage(
+                element = e, message = shortcut.unwrap()))
             if code == key_escape
               if e.selected
                 e.widget.escape %(
@@ -4855,8 +4899,18 @@ chapter Orchard
                 e.child.mouse_released(pos).map(\ child: Element[M] -> focus_node_child(e, child)),
               mouse_scrolled = \ e: FocusNodeElement[M], pos: Position, delta: Offset ->
                 e.child.mouse_scrolled(pos, delta).map(\ child: Element[M] -> focus_node_child(e, child)),
-              focus = \ e: FocusNodeElement[M] ->
-                some(if e.child.focused e focus_node_selected(e, true)),
+              focus = \ e: FocusNodeElement[M], request: Maybe[FocusRequest] ->
+                request %(
+                  none some(if e.child.focused e focus_node_selected(e, true))
+                  some(wanted)
+                    matches = e.widget.target %(
+                      none false some(target) same_focus_target(target, wanted.target))
+                    if matches
+                      if wanted.editing
+                        next = focus_node_selected(e, false)
+                        next.child.focus().map(\ child: Element[M] -> focus_node_child(next, child))
+                        some(focus_node_selected(e, true))
+                      e.child.focus(request).map(\ child: Element[M] -> focus_node_child(e, child))),
               unfocus = \ e: FocusNodeElement[M] ->
                 focus_node_selected(focus_node_child(e, e.child.unfocus()), false),
               key_pressed = \ e: FocusNodeElement[M], key: KeyPressed -> focus_node_key(e, key),
@@ -4864,8 +4918,13 @@ chapter Orchard
                 e.child.char_entered(char).map(\ child: Element[M] -> focus_node_child(e, child)),
               render = \ e: FocusNodeElement[M] -> e.child.drawing)
           focus_node[M](builder: fun(Bool) Widget[M], activate: Maybe[M],
+            move: Maybe[fun(Int) M], escape: Maybe[M],
+            shortcut: fun(KeyPressed) Maybe[M], target: Maybe[List[Int]]) Widget[M] =
+            widget(focus_node_impl[M](), FocusNodeWidget(builder, activate, move, escape, shortcut, target))
+          focus_node[M](builder: fun(Bool) Widget[M], activate: Maybe[M],
             move: Maybe[fun(Int) M], escape: Maybe[M]) Widget[M] =
-            widget(focus_node_impl[M](), FocusNodeWidget(builder, activate, move, escape))
+            focus_node(builder, activate, move, escape,
+              \ key: KeyPressed -> none[M](), none[List[Int]]())
           focus_node[M](builder: fun(Bool) Widget[M], activate: Maybe[M],
             move: Maybe[fun(Int) M]) Widget[M] =
             focus_node(builder, activate, move, none[M]())
@@ -4943,6 +5002,20 @@ chapter Orchard
                     index,
                     Cell.chapter(child.replace_chapter(
                       path.without_first(), updated)))))
+    chapter Creating cells
+      text
+        Ctrl+T inserts text, Ctrl+N inserts code, and Ctrl+K inserts a chapter.
+        Insertion is below the current cell, or first when the title has focus.
+        New text and code cells open in their editor. A new chapter opens with
+        its title editor active. Focus requests identify the destination node
+        directly rather than simulating keyboard navigation.
+      code
+        new_cell_shortcut(key: KeyPressed) Maybe[Cell] =
+          if not(key.control) or key.alt or key.shift none[Cell]()
+          if key.keycode == 84 some(Cell.text(""))
+          if key.keycode == 78 some(Cell.code(""))
+          if key.keycode == 75 some(Cell.chapter(Chapter(title = "", children = list[Cell]())))
+          none[Cell]()
     chapter Cell widget
       text
         A cell can focus its editor or select its entire contents. Clicking text
@@ -4952,7 +5025,7 @@ chapter Orchard
         a chapter), and Alt+Up/Down asks the parent to move the cell.
       code
         CellMessage = enum {
-          changed: Cell, navigate: NotebookPath, move: Int }
+          changed: Cell, navigate: NotebookPath, move: Int, insert: Cell }
       chapter Cell contents
         code
           cell_content(cell: Cell, path: NotebookPath, focused: Bool
@@ -4993,14 +5066,18 @@ chapter Orchard
               key_widget(revision,
                 key_widget(cell_kind(cell), cell_content(cell, path, focused))),
             some(CellMessage.navigate(path)),
-            some(\ step: Int -> CellMessage.move(step)), escape)
+            some(\ step: Int -> CellMessage.move(step)), escape,
+            \ key: KeyPressed -> new_cell_shortcut(key).map(\ cell: Cell -> CellMessage.insert(cell)),
+            some(path.indices))
         cell_widget(cell: Cell, path: NotebookPath) Widget[CellMessage] =
           cell_widget(cell, path, 0)
     chapter Chapter widget
       text
         Next, chapters.
       code
-        ChapterMessage = enum { changed: Chapter, navigate: NotebookPath }
+        CellInsertion = struct { index: Int, cell: Cell }
+        ChapterMessage = enum {
+          changed: Chapter, navigate: NotebookPath, insert: CellInsertion }
       chapter Cell list
         text
           The list is a column of cell widgets. Swapping changes the document
@@ -5018,6 +5095,8 @@ chapter Orchard
                   changed(cell)
                     bubble_up[Int, ChapterMessage](ChapterMessage.changed(Chapter(
                       title = chapter.title, children = chapter.children.set(index, cell))))
+                  insert(cell)
+                    bubble_up[Int, ChapterMessage](ChapterMessage.insert(CellInsertion(index = index + 1, cell)))
                   move(step)
                     target = index + step
                     if target < 0 or target >= chapter.children.length()
@@ -5091,7 +5170,10 @@ chapter Orchard
                       . map_message(\ title: String ->
                           ChapterMessage.changed(Chapter(
                             title = single_line_title(title), children = chapter.children))),
-                    none[ChapterMessage](), none[fun(Int) ChapterMessage](), escape),
+                    none[ChapterMessage](), none[fun(Int) ChapterMessage](), escape,
+                    \ key: KeyPressed -> new_cell_shortcut(key).map(
+                      \ cell: Cell -> ChapterMessage.insert(CellInsertion(index = 0, cell))),
+                    some(path.indices.push(-1))),
                   chapter_cells(chapter, path),
                   height_box(8.0).cast_message[ChapterMessage]())))))
     chapter Notebook widget
@@ -5108,7 +5190,20 @@ chapter Orchard
                   bubble_up[NotebookPath, Chapter](replace_chapter(
                     notebook, current_path, updated))
                 navigate(destination)
-                  new_state[NotebookPath, Chapter](destination)),
+                  new_state[NotebookPath, Chapter](destination)
+                insert(request)
+                  current = notebook.get(current_path)
+                  updated = Chapter(title = current.title,
+                    children = current.children.insert(request.index, request.cell))
+                  document = notebook.replace_chapter(current_path, updated)
+                  destination = current_path.push(request.index)
+                  request.cell %(
+                    chapter
+                      bubble_up_and_request_focus(destination, document,
+                        FocusRequest(target = destination.indices.push(-1), editing = true))
+                    default
+                      bubble_up_and_request_focus(current_path, document,
+                        FocusRequest(target = destination.indices, editing = true)))),
             \ current_path: NotebookPath ->
               key_widget(
                 current_path,
@@ -5172,10 +5267,6 @@ chapter Orchard
       - refactor how colors work, replace button shade
     text
       - focus / keyboard-driven nav in Notebook
-    text
-      - add new cells
-    text
-      - add new chapters
     text
       - hover effect for chapters
     text
