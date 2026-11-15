@@ -1163,6 +1163,14 @@ chapter Orchard
           Char(codepoint)
         ==(a: Char, b: Char) Bool = a.codepoint == b.codepoint
       text
+        Character lists are equal when they have the same length and
+        corresponding characters agree. This will let content updates reuse an
+        existing cache.
+      code
+        ==(a: List[Char], b: List[Char]) Bool =
+          a.length() == b.length() and
+            zip(a.iter(), b.iter()).all(\ pair: Tuple2[Char, Char] -> pair.a == pair.b)
+      text
         chars decodes a string into characters. Invalid UTF-8 bytes become
         replacement characters, advancing one byte at a time so decoding can
         continue. char(text) expects exactly one decoded character.
@@ -1440,6 +1448,11 @@ chapter Orchard
         +(a: Offset, b: Offset) Offset = {a.to_vec() + b.to_vec()}.to_offset()
       code
         -(a: Offset, b: Offset) Offset = {a.to_vec() - b.to_vec()}.to_offset()
+      text
+        Negating an offset reverses its direction, for example when moving a
+        drawing opposite to the scroll position.
+      code
+        negate(delta: Offset) Offset = offset(0.0 - delta.x, 0.0 - delta.y)
       code
         *(f: Float, a: Offset) Offset = {f * a.to_vec()}.to_offset()
       code
@@ -1627,6 +1640,22 @@ chapter Orchard
               .bezier_to(x - k, y + radius, x - radius, y + k, x - radius, y)
               .bezier_to(x - radius, y - k, x - k, y - radius, x, y - radius)
               .bezier_to(x + k, y - radius, x + radius, y - k, x + radius, y)
+        code
+          rectangle_path(extent: Size) Path =
+            path().move_to(0.0, 0.0).line_to(extent.width, 0.0)
+              .line_to(extent.width, extent.height).line_to(0.0, extent.height)
+        code
+          rounded_rect_path(radius: Float, extent: Size) Path =
+            r = max(0.0, min(radius, min(extent.width, extent.height) / 2.0))
+            c = r * 0.4477152501692064
+            path().move_to(r, 0.0).line_to(extent.width - r, 0.0)
+              .bezier_to(extent.width - c, 0.0, extent.width, c, extent.width, r)
+              .line_to(extent.width, extent.height - r)
+              .bezier_to(extent.width, extent.height - c,
+                extent.width - c, extent.height, extent.width - r, extent.height)
+              .line_to(r, extent.height)
+              .bezier_to(c, extent.height, 0.0, extent.height - c, 0.0, extent.height - r)
+              .line_to(0.0, r).bezier_to(0.0, c, c, 0.0, r, 0.0)
       code
         DrawCommand = enum {
           nothing,
@@ -1647,21 +1676,38 @@ chapter Orchard
         draw_transformed(
           by: TransformationMatrix, what: DrawCommand) DrawCommand =
           DrawCommand.transform(Transform(by, what))
+      text
+        Translation moves a drawing without changing its shape. An offset
+        supplies the horizontal and vertical displacement together.
+      code
+        draw_translated(by: Offset, what: DrawCommand) DrawCommand =
+          draw_transformed(transform_translate(by), what)
+      text
+        When the two coordinates are already available, pass them directly.
+      code
+        draw_translated(x: Float, y: Float, what: DrawCommand) DrawCommand =
+          draw_translated(offset(x, y), what)
       code
         draw_clipped(path: Path, what: DrawCommand) DrawCommand =
           DrawCommand.clip(Clip(path, what))
+      text
+        A rectangular clip uses the rectangle's actual position, retaining only
+        the part of the drawing inside its four edges.
+      code
+        draw_clipped(bounds: Rectangle, what: DrawCommand) DrawCommand =
+          draw_clipped(path().move_to(bounds.top_left()).line_to(bounds.top_right())
+            .line_to(bounds.bottom_right()).line_to(bounds.bottom_left()), what)
+      text
+        A size describes a rectangular viewport starting at the origin.
+      code
+        draw_clipped(extent: Size, what: DrawCommand) DrawCommand =
+          draw_clipped(rectangle(position(0.0, 0.0), extent), what)
       code
         draw_all(commands: List[DrawCommand]) DrawCommand =
           DrawCommand.all(commands)
       code
         draw_colored_rect(size: Size, color: Color) DrawCommand =
-          draw_filled_path(
-            path()
-              .move_to(0.0, 0.0)
-              .line_to(size.width, 0.0)
-              .line_to(size.width, size.height)
-              .line_to(0.0, size.height),
-            color)
+          draw_filled_path(rectangle_path(size), color)
       code
         Drawing = struct { draw: DrawCommand, size: Size }
     chapter Text rendering
@@ -1915,8 +1961,7 @@ chapter Orchard
                 draw_all(
                   layout.glyphs.iter()
                     .map(\ glyph: PositionedGlyph ->
-                      draw_transformed(
-                        transform_translate(glyph.position.to_vec().to_offset()),
+                      draw_translated(glyph.position.x, glyph.position.y,
                         draw_glyph(glyph.glyph, color)))
                     .to_list()))
   chapter Host interaction
@@ -1942,11 +1987,26 @@ chapter Orchard
         Rendering receives the current window size. Handling an event returns
         the next app and explicit commands for the host. save_notebook carries a
         structured document; the host handles serialization and disk access.
+      text
+        Key presses identify a physical key and its modifier flags. Text input
+        will arrive in a separate event.
       code
         KeyPressed = struct {
           keycode: Int, control: Bool, shift: Bool, alt: Bool}
+      text
+        A character event carries one Unicode scalar value, independent of the
+        key that produced it.
+      code
         CharEntered = struct { codepoint: Int }
+      text
+        Wheel events include the pointer position and a scroll delta in logical
+        drawing units.
+      code
         MouseScrolled = struct { position: Position, delta: Offset }
+      text
+        These are the inputs the host can deliver: window changes, keyboard and
+        pointer input, and feedback from saving.
+      code
         Event = enum {
           window_resized: Size,
           key_pressed: KeyPressed,
@@ -1958,28 +2018,581 @@ chapter Orchard
           mouse_left,
           save_completed,
           save_failed: String}
+      text
+        An app requests a save by returning the complete structured document.
+        The host owns serialization and disk access.
+      code
         AppCommand = enum { save_notebook: Chapter }
+      text
+        An event handler returns the next app together with its explicit
+        effects. App and AppResult refer to one another, so their definitions
+        share a code cell.
+      code
         AppResult = struct { app: App, commands: List[AppCommand] }
         App = struct { render: fun(Size) DrawCommand, handle: fun(Event) AppResult }
+  chapter Components
+    text
+      Components are ordinary values with concrete state. Their functions return
+      updated values; the app owns those values and decides where events go.
+      There is no element lifecycle or shared dynamic widget interface.
+    chapter Cached text
+      text
+        Text eagerly decodes, lays out, and draws its string. render only
+        returns the cached Drawing. Updates with unchanged content or
+        constraints reuse the existing value. Widths are in the font's native
+        drawing units.
+      text
+        A width limit controls word wrapping. An absent limit lets text keep its
+        natural width. For a bounded width, the limit has to be positive.
+      code
+        TextConstraints = struct { max_width: Maybe[Float] }
+      code
+        text_constraints(width: Float) TextConstraints =
+          TextConstraints(max_width = some(max(1.0, width)))
+      code
+        ==(a: TextConstraints, b: TextConstraints) Bool =
+          a.max_width %(
+            none b.max_width is none
+            some(aa) b.max_width %(none false some(bb) aa == bb))
+      text
+        Keep the source string and decoded characters alongside the layout and
+        drawing. Every cache describes the same version of the text.
+      code
+        Text = struct {
+          value: String,
+          chars: List[Char],
+          constraints: TextConstraints,
+          layout: TextLayout,
+          drawing: Drawing }
+      text
+        There are several constructors you can choose from, depending on how
+        much of the text layouting you want you want to constrain. Whatever you
+        provide, the text will eagerly map the characters to glyphs, position
+        the glyphs, then turn that layout into drawing commands.
+      code
+        text(value: String, chars: List[Char], constraints: TextConstraints) Text =
+          layout = layout_text(chars, constraints.max_width)
+          Text(value, chars, constraints, layout,
+            drawing = layout.draw_text(color("#18212b")))
+      code
+        text(value: String, constraints: TextConstraints) Text =
+          text(value, value.chars(), constraints)
+      code
+        text(value: String, width: Float) Text = text(value, text_constraints(width))
+      code
+        text(value: String) Text = text(value, TextConstraints(max_width = none[Float]()))
+      text
+        Updates compute only the changed parts of the text.
+      code
+        update(t: Text, value: String) Text =
+          chars = value.chars()
+          if t.chars == chars t text(value, chars, t.constraints)
+      code
+        update(t: Text, constraints: TextConstraints) Text =
+          if t.constraints == constraints
+            t
+            text(t.value, t.chars, constraints)
+      text
+        Rendering is now just a field lookup; the expensive work happened during
+        construction or update.
+      code
+        render(t: Text) Drawing = t.drawing
+    chapter Editable text
+      text
+        EditableText is similar to Text, but with a character cursor and
+        selection. Focus belongs to the parent, which chooses whether to draw
+        the selection.
+      chapter Cursor and selection
+        text
+          A cursor has two character offsets: the selection anchor and its
+          moving end. desired_x remembers a horizontal target when moving
+          through lines of different lengths.
+        code
+          TextCursor = struct { anchor: Int, active: Int, desired_x: Float }
+        text
+          Selections can run backwards. The smaller character offset is the
+          start, the bigger one is the end.
+        code
+          start(cursor: TextCursor) Int = min(cursor.anchor, cursor.active)
+        code
+          end(cursor: TextCursor) Int = max(cursor.anchor, cursor.active)
+      chapter Editor state
+        text
+          Combine cached Text with a list of all possible cursor positions and a
+          cursor. A revision counts content changes, letting the parent
+          recognize an edit without comparing strings.
+        code
+          EditableText = struct {
+            text: Text,
+            positions: List[Position],
+            cursor: TextCursor,
+            revision: Int }
+      chapter Insertion positions
+        text
+          While finding insertion positions, track the next glyph and the pen
+          position. Newlines consume characters but do not consume glyphs.
+        code
+          TextCursorLayout = struct {
+            glyph_index: Int, position: Position, positions: List[Position] }
+        text
+          Record the position before every character and one final position
+          after the text. At a soft wrap, use the next glyph's new line so
+          clicking and cursor drawing agree.
+        code
+          text_cursor_positions(chars: List[Char], layout: TextLayout) List[Position] =
+            glyphs = layout.glyphs
+            result = chars.iter().fold(
+              TextCursorLayout(
+                glyph_index = 0,
+                position = position(0.0, 0.0),
+                positions = list[Position]()),
+              \ state: TextCursorLayout, character: Char ->
+                is_newline = character.codepoint == 10
+                before =
+                  if is_newline state.position glyphs.get(state.glyph_index).position
+                next =
+                  if is_newline
+                    position(0.0, before.y + text_line_height)
+                    identity(
+                      glyph = glyphs.get(state.glyph_index)
+                      position(before.x + glyph.glyph.width + 1.0, before.y))
+                TextCursorLayout(
+                  glyph_index = state.glyph_index + if is_newline 0 1,
+                  position = next,
+                  positions = state.positions.push(before)))
+            result.positions.push(result.position)
+        text
+          A click first chooses the nearest line, then the nearest horizontal
+          insertion position on that line.
+        code
+          text_cursor_pick(positions: List[Position], target: Position) Int =
+            positions.iter().indexed()
+            . fold(
+                0,
+                \ best: Int, item: Indexed[Position] ->
+                  previous = positions.get(best)
+                  dy = abs(item.item.y - target.y)
+                  best_dy = abs(previous.y - target.y)
+                  if
+                    dy < best_dy
+                      or {dy == best_dy
+                        and abs(item.item.x - target.x)
+                          < abs(previous.x - target.x)}
+                    item.index
+                    best)
+      chapter Creating and updating text
+        text
+          Start with cached text, its insertion positions, and a collapsed
+          cursor at the beginning.
+        code
+          editable_text(value: String, constraints: TextConstraints) EditableText =
+            t = text(value, constraints)
+            EditableText(
+              text = t,
+              positions = text_cursor_positions(t.chars, t.layout),
+              cursor = TextCursor(anchor = 0, active = 0, desired_x = 0.0),
+              revision = 0)
+        text
+          A new width can move insertion positions even though the characters
+          stay the same. Rebuild that geometry only when the constraints change.
+        code
+          update(e: EditableText, constraints: TextConstraints) EditableText =
+            if e.text.constraints == constraints
+              e
+              identity(
+                t = e.text.update(constraints)
+                EditableText(
+                  text = t,
+                  positions = text_cursor_positions(t.chars, t.layout),
+                  cursor = e.cursor,
+                  revision = e.revision))
+        text
+          Moving a cursor shares all text caches and leaves the content revision
+          unchanged.
+        code
+          update(e: EditableText, cursor: TextCursor) EditableText =
+            EditableText(text = e.text, positions = e.positions, cursor, revision = e.revision)
+        text
+          Clamp a requested character offset and remember its horizontal
+          position. Extending preserves the anchor; an ordinary move collapses
+          the selection.
+        code
+          text_cursor_at(e: EditableText, offset: Int, extend: Bool) EditableText =
+            active = max(0, min(offset, e.text.chars.length()))
+            e.update(TextCursor(
+              anchor = if extend e.cursor.anchor active,
+              active,
+              desired_x = e.positions.get(active).x))
+        text
+          Convert a mouse click into a cursor move. Comparing against line
+          centers gives each rendered line a natural clickable area.
+        code
+          pick(e: EditableText, pos: Position, extend: Bool) EditableText =
+            e.text_cursor_at(
+              text_cursor_pick(
+                e.positions,
+                position(pos.x, max(0.0, pos.y - {text_line_height / 2.0}))),
+              extend)
+        text
+          Every content edit replaces a character range. Rebuild the text caches
+          together, increment the revision, and place the cursor after the
+          inserted characters.
+        code
+          replace(e: EditableText, start: Int, end: Int, inserted: List[Char]) EditableText =
+            chars =
+              e.text.chars.first(start).push_all(inserted)
+              . push_all(e.text.chars.without_first(end))
+            if chars == e.text.chars
+              e
+              identity(
+                t = text(string(chars), chars, e.text.constraints)
+                next = EditableText(
+                  text = t,
+                  positions = text_cursor_positions(chars, t.layout),
+                  cursor = e.cursor,
+                  revision = e.revision + 1)
+                next.text_cursor_at(start + inserted.length(), false))
+      chapter Word and line boundaries
+        text
+          Word movement groups letters, digits, underscores, and non-ASCII
+          characters separately from spaces and punctuation.
+        code
+          is_text_word_char(character: Char) Bool =
+            code = character.codepoint
+            {code >= 65 and code <= 90} or {code >= 97 and code <= 122}
+              or {code >= 48 and code <= 57} or code == 95 or code >= 128
+        text
+          Count a run of one character category while walking forwards or
+          backwards. The ends of the string stop the scan.
+        code
+          text_word_skip(chars: List[Char], index: Int, direction: Int, kind: Int) Int =
+            if index < 0 or index >= chars.length()
+              0
+              identity(
+                code = chars.get(index).codepoint
+                current =
+                  if code == 32 0 if chars.get(index).is_text_word_char() 1 2
+                if current != kind
+                  0
+                  1 + text_word_skip(chars, index + direction, direction, kind))
+        text
+          Control-modified movement first skips spaces, then crosses a word or
+          punctuation group.
+        code
+          text_word_distance(chars: List[Char], index: Int, direction: Int) Int =
+            if index < 0 or index >= chars.length() 0
+              identity(
+                code = chars.get(index).codepoint
+                if code == 32
+                  1 + text_word_distance(chars, index + direction, direction)
+                  if chars.get(index).is_text_word_char()
+                    text_word_skip(chars, index, direction, 1)
+                    identity(
+                      punctuation = text_word_skip(chars, index, direction, 2)
+                      if punctuation > 1
+                        punctuation
+                        1 + text_word_skip(chars, index + direction, direction, 1)))
+        text
+          Home and End follow explicit newline boundaries, independently of
+          visual wrapping.
+        code
+          text_line_boundary(chars: List[Char], offset: Int, direction: Int) Int =
+            index = if direction < 0 offset - 1 offset
+            if index < 0 or index >= chars.length() offset
+              if chars.get(index).codepoint == 10 offset
+                text_line_boundary(chars, offset + direction, direction)
+      chapter Key codes
+        code
+          key_a = 65
+        code
+          key_escape = 256
+        code
+          key_tab = 258
+        code
+          key_enter = 257
+        code
+          key_backspace = 259
+        code
+          key_delete = 261
+        code
+          key_arrow_right = 262
+        code
+          key_arrow_left = 263
+        code
+          key_arrow_down = 264
+        code
+          key_arrow_up = 265
+        code
+          key_home = 268
+        code
+          key_end = 269
+      chapter Keyboard editing
+        text
+          Keyboard editing combines range replacement with cursor movement.
+          Shift extends a selection, Control moves by words, and vertical
+          movement preserves the desired horizontal position.
+        code
+          editable_key(e: EditableText, key: KeyPressed
+            ) EditableText =
+            chars = e.text.chars
+            start = e.cursor.start()
+            end = e.cursor.end()
+            selected = start != end
+            code = key.keycode
+            if key.alt e
+            if key.control and code == key_a
+              identity(
+                text_cursor_at(text_cursor_at(e, 0, false), chars.length(), true))
+            if code == key_enter and not(key.shift)
+              identity(
+                offset = text_line_boundary(chars, e.cursor.active, 1)
+                if key.control replace(e, offset, offset, list(char(10)))
+                  replace(e, start, end, list(char(10))))
+            if {code == key_backspace or code == key_delete} and not(key.shift)
+              identity(
+                from = if selected start
+                  if code == key_backspace
+                    if key.control
+                      e.cursor.active
+                        - text_word_distance(chars, e.cursor.active - 1, -1)
+                      max(0, e.cursor.active - 1)
+                    e.cursor.active
+                to = if selected end
+                  if code == key_delete
+                    if key.control
+                      e.cursor.active
+                        + text_word_distance(chars, e.cursor.active, 1)
+                      min(chars.length(), e.cursor.active + 1)
+                    e.cursor.active
+                if from == to identity(e)
+                  replace(e, from, to, list[Char]()))
+            if code == key_arrow_right or code == key_arrow_left
+              identity(
+                right = code == key_arrow_right
+                offset =
+                  if key.control
+                    if right
+                      e.cursor.active
+                        + text_word_distance(chars, e.cursor.active, 1)
+                      e.cursor.active
+                        - text_word_distance(chars, e.cursor.active - 1, -1)
+                    if selected and not(key.shift) {if right end start}
+                      e.cursor.active + if right 1 {0 - 1}
+                identity(
+                  text_cursor_at(e, offset, key.shift)))
+            if code == key_home or code == key_end
+              identity(
+                offset = if key.control {if code == key_home 0 chars.length()}
+                  text_line_boundary(
+                    chars, e.cursor.active, if code == key_home {0 - 1} 1)
+                identity(
+                  text_cursor_at(e, offset, key.shift)))
+            if {code == key_arrow_down or code == key_arrow_up}
+                and not(key.control)
+              identity(
+                positions = e.positions
+                current = positions.get(e.cursor.active)
+                y =
+                  current.y
+                    + if code == key_arrow_down
+                        text_line_height
+                        0.0 - text_line_height
+                offset = if y < 0.0 0
+                  if y > positions.get(positions.length() - 1).y chars.length()
+                    text_cursor_pick(positions, position(e.cursor.desired_x, y))
+                next = text_cursor_at(e, offset, key.shift)
+                identity(
+                  e.update(TextCursor(
+                    anchor = next.cursor.anchor,
+                    active = next.cursor.active,
+                    desired_x = e.cursor.desired_x))))
+            e
+        text
+          Character input arrives separately from key presses. Accept printable
+          Unicode scalar values and replace the current selection with the
+          entered character.
+        code
+          editable_character(e: EditableText, code: Int) EditableText =
+            if code < 32 or code == 127 or code > 1114111
+              or {code >= 55296 and code <= 57343} e
+              replace(e, e.cursor.start(), e.cursor.end(), list(char(code)))
+      chapter Drawing the selection
+        text
+          A small colored rectangle can represent either a caret or one piece of
+          a selection.
+        code
+          selection_rect(pos: Position, width: Float) DrawCommand =
+            draw_translated(pos.x, pos.y,
+              draw_colored_rect(size(max(1.0, width), text_line_height), color("#a9d0ff")))
+        text
+          A collapsed selection draws a thin caret. Otherwise, highlight each
+          selected character span, filling to the available width when the span
+          crosses a line.
+        code
+          render_selection(e: EditableText) DrawCommand =
+            from = e.cursor.start()
+            to = e.cursor.end()
+            width = e.text.constraints.max_width or {e.text.layout.size.width + 2.0}
+            if from == to selection_rect(e.positions.get(from), 1.0)
+              draw_all({from..to}.iter().map(\ index: Int ->
+                before = e.positions.get(index)
+                after = e.positions.get(index + 1)
+                selection_rect(before,
+                  if after.y > before.y width - before.x after.x - before.x)).to_list())
+        text
+          The parent decides whether this editor is focused. Add its selection
+          behind the cached text only while focused, and reserve a line of space
+          even for empty input.
+        code
+          render(e: EditableText, focused: Bool) Drawing =
+            cached = e.text.render()
+            Drawing(
+              size =
+                size(
+                  max(2.0, cached.size.width + 2.0),
+                  max(text_line_height, cached.size.height)),
+              draw = draw_all(list(if focused e.render_selection() draw_nothing(), cached.draw)))
+    chapter Column layout
+      text
+        Column layout computes bounds independently of rendering and input.
+        Callers use the same bounds for drawing, picking, and focus visibility.
+        A per-item gap allows breadcrumbs to touch while cells have breathing
+        room.
+      text
+        Each column item supplies its measured size and the gap that should
+        follow it.
+      code
+        ColumnItem = struct { size: Size, gap: Float }
+      text
+        The result stores one rectangle per item and the overall extent. Drawing
+        and hit testing will share these rectangles.
+      code
+        ColumnLayout = struct { bounds: List[Rectangle], size: Size }
+      text
+        Place each item below the previous one, accumulating height and
+        retaining the widest item.
+      code
+        column_layout(items: List[ColumnItem]) ColumnLayout =
+          items.iter().fold(
+            ColumnLayout(bounds = list[Rectangle](), size = size(0.0, 0.0)),
+            \ layout: ColumnLayout, item: ColumnItem ->
+              ColumnLayout(
+                bounds = layout.bounds.push(rectangle(position(0.0, layout.size.height), item.size)),
+                size =
+                  size(
+                    max(layout.size.width, item.size.width),
+                    layout.size.height + item.size.height + item.gap)))
+      text
+        Hit testing returns the first item whose rectangle contains the pointer.
+        Gaps belong to no item.
+      code
+        pick(layout: ColumnLayout, pos: Position) Maybe[Int] =
+          layout.bounds.iter().indexed()
+          . filter(\ item: Indexed[Rectangle] -> item.item.contains(pos))
+          . get_maybe(0)
+          . map(\ item: Indexed[Rectangle] -> item.index)
+    chapter Scrolling
+      text
+        Scroll stores only geometry and offsets. Scrolling translates and clips
+        cached commands. reveal makes keyboard focus visible without scrolling a
+        tall cell past its beginning.
+      text
+        Scrolling needs the current offset, the visible viewport, and the size
+        of the content.
+      code
+        Scroll = struct { viewport: Size, content: Size, offset: Offset }
+      text
+        Constrain offsets to the part of the content outside the viewport.
+        Content smaller than the viewport stays at zero.
+      code
+        clamp_scroll(delta: Offset, viewport: Size, content: Size) Offset =
+          offset(
+            max(0.0, min(delta.x, content.width - viewport.width)),
+            max(0.0, min(delta.y, content.height - viewport.height)))
+      text
+        Construct a scroll state with an already valid offset.
+      code
+        scroll(viewport: Size, content: Size, offset: Offset) Scroll =
+          Scroll(
+            viewport,
+            content,
+            offset = offset.clamp_scroll(viewport, content))
+      text
+        When the viewport or content changes size, retain the old offset
+        wherever it still fits.
+      code
+        update(s: Scroll, viewport: Size, content: Size) Scroll =
+          scroll(viewport, content, s.offset)
+      text
+        Wheel movement adds a delta and clamps the result at the content edges.
+      code
+        move(s: Scroll, delta: Offset) Scroll = scroll(s.viewport, s.content, s.offset + delta)
+      text
+        Keyboard focus can request that a rectangle become visible. If it is
+        taller or wider than the viewport, reveal its beginning.
+      code
+        reveal(s: Scroll, bounds: Rectangle) Scroll =
+          y = if bounds.top < s.offset.y bounds.top
+            if bounds.bottom > {s.offset.y + s.viewport.height}
+              min(bounds.top, bounds.bottom - s.viewport.height) s.offset.y
+          x = if bounds.left < s.offset.x bounds.left
+            if bounds.right > {s.offset.x + s.viewport.width}
+              min(bounds.left, bounds.right - s.viewport.width) s.offset.x
+          scroll(s.viewport, s.content, offset(x, y))
+      text
+        Translate the supplied drawing by the negative scroll offset and clip it
+        to the viewport.
+      code
+        render(s: Scroll, content: DrawCommand) DrawCommand =
+          draw_clipped(s.viewport,
+            draw_translated(s.offset.negate(), content))
   chapter Path Editor
     text
       A small canvas experiment using plain drawing and event-handling
       functions. Drag any of the three points freely over the grid. All state,
       including the grabbed point and the pointer offset, belongs to the app.
     chapter State and canvas bounds
+      text
+        Remember which point was grabbed and the pointer's offset from its
+        center. Dragging should preserve that offset instead of making the point
+        jump.
       code
         KnobDrag = struct { index: Int, grab: Offset }
+      text
+        The app owns its three points, an optional drag, and the last known
+        canvas size.
+      code
         PathEditor = struct {
           knobs: List[Position], dragging: Maybe[KnobDrag], window: Maybe[Size] }
+      text
+        Use a 24-unit grid as a visual reference; points remain free to move
+        between grid lines.
+      code
         path_grid_spacing = 24.0
+      text
+        The visible blue dot has a radius of six units.
+      code
         path_knob_radius = 6.0
+      text
+        Leave room around each dot for its white border and active halo.
+      code
         path_knob_margin = 14.0
+      text
+        A larger picking radius makes the small visible dots easier to grab.
+      code
         path_knob_hit_radius = 12.0
+      text
+        Keep each point inside the canvas with room for its halo. In a very
+        small window, reduce the margin to half the available dimension.
       code
         clamp_knob(pos: Position, window: Size) Position =
           mx = min(path_knob_margin, max(0.0, window.width) / 2.0)
           my = min(path_knob_margin, max(0.0, window.height) / 2.0)
           pos.clamp(rectangle(mx, my, window.width - mx, window.height - my))
+      text
+        Place three initial points relative to the canvas size so the experiment
+        starts near the center of any window.
+      code
         path_editor_state(window: Size) PathEditor =
           PathEditor(
             knobs = list(
@@ -1987,6 +2600,9 @@ chapter Orchard
               clamp_knob(position(window.width * 0.5, window.height * 0.6), window),
               clamp_knob(position(window.width * 0.75, window.height * 0.4), window)),
             dragging = none[KnobDrag](), window = some(window))
+      text
+        The first usable window size establishes the initial positions. Later
+        resizes clamp existing points and cancel any active drag.
       code
         resize(editor: PathEditor, window: Size) PathEditor =
           if window.width <= 0.0 or window.height <= 0.0
@@ -2000,6 +2616,9 @@ chapter Orchard
     chapter Drawing the grid
       text
         Draw a light grid with a stronger line every five intervals.
+      text
+        Build vertical and horizontal lines over a pale background. Every fifth
+        line is stronger to make distances easier to judge.
       code
         draw_grid(extent: Size, grid: Float) Drawing =
           _ = assert(grid > 0.0, "Grid spacing must be positive")
@@ -2007,18 +2626,21 @@ chapter Orchard
           rows = {max(0.0, extent.height) / grid}.to_int() + 1
           vertical = {0..columns}.iter().map(\ index: Int ->
             major = mod(index, 5) == 0
-            draw_transformed(transform_translate(offset(index.to_float() * grid, 0.0)),
+            draw_translated(index.to_float() * grid, 0.0,
               draw_colored_rect(size(if major 1.0 0.5, extent.height),
                 color(if major "#d5dde7" "#e8edf3")))).to_list()
           horizontal = {0..rows}.iter().map(\ index: Int ->
             major = mod(index, 5) == 0
-            draw_transformed(transform_translate(offset(0.0, index.to_float() * grid)),
+            draw_translated(0.0, index.to_float() * grid,
               draw_colored_rect(size(extent.width, if major 1.0 0.5),
                 color(if major "#d5dde7" "#e8edf3")))).to_list()
           Drawing(size = extent, draw = draw_all(list(
             draw_colored_rect(extent, color("#f9fbfd")),
             draw_all(vertical), draw_all(horizontal))))
     chapter Drawing the points
+      text
+        Draw a white rim and blue center, with a larger halo while the point is
+        being dragged.
       code
         draw_knob(active: Bool) Drawing =
           center = position(path_knob_margin, path_knob_margin)
@@ -2030,24 +2652,31 @@ chapter Orchard
               draw_filled_path(circle_path(center, path_knob_radius + 3.0), color("#ffffff")),
               draw_filled_path(circle_path(center, path_knob_radius),
                 color(if active "#174dc9" "#2563eb")))))
+      text
+        The default dot drawing is the inactive version.
+      code
         draw_knob() Drawing = draw_knob(false)
+      text
+        Translate each dot to its app-owned position, compose it over the grid,
+        and clip the result to the canvas.
       code
         draw(editor: PathEditor, extent: Size) Drawing =
           knobs = editor.knobs.iter().map_indexed(\ index: Int, point: Position ->
             active = editor.dragging %(none false some(drag) drag.index == index)
-            draw_transformed(transform_translate(offset(
-              point.x - path_knob_margin, point.y - path_knob_margin)),
+            draw_translated(
+              point.x - path_knob_margin, point.y - path_knob_margin,
               draw_knob(active).draw)).to_list()
           Drawing(size = extent,
-            draw = draw_clipped(path().move_to(0.0, 0.0)
-              .line_to(extent.width, 0.0).line_to(extent.width, extent.height)
-              .line_to(0.0, extent.height),
+            draw = draw_clipped(extent,
               draw_all(list(draw_grid(extent, path_grid_spacing).draw, draw_all(knobs)))))
     chapter Picking and dragging
       text
         Picking uses a slightly larger circle than the visible dot. The nearest
         point wins; ties prefer the last-painted point. Keeping the grab offset
         prevents the point from jumping when it is picked up near its edge.
+      text
+        Among points within the picking radius, choose the nearest. Ties favor
+        the last-painted point so overlapping dots remain predictable.
       code
         pick_knob(editor: PathEditor, pos: Position) Maybe[Int] =
           editor.knobs.iter().indexed().fold(none[Int](),
@@ -2059,15 +2688,26 @@ chapter Orchard
                   some(previous)
                     if distance <= distance_squared(editor.knobs.get(previous), pos)
                       some(item.index) best))
+      text
+        Ending a drag keeps the points and window size and clears only the grab
+        state.
       code
         release(editor: PathEditor) PathEditor =
           PathEditor(knobs = editor.knobs, dragging = none[KnobDrag](), window = editor.window)
+      text
+        Pressing near a point records the grab without moving the point yet.
+        Pressing elsewhere clears any drag.
+      code
         mouse_pressed(editor: PathEditor, pos: Position) PathEditor =
           selected = editor.pick_knob(pos)
           dragging = selected.map(\ index: Int ->
             point = editor.knobs.get(index)
             KnobDrag(index, grab = offset(pos.x - point.x, pos.y - point.y)))
           PathEditor(knobs = editor.knobs, dragging, window = editor.window)
+      text
+        Only a grabbed point follows the pointer. Subtract the original grab
+        offset, then clamp the resulting center to the canvas.
+      code
         mouse_moved(editor: PathEditor, pos: Position) PathEditor =
           editor.dragging %(
             none editor
@@ -2076,6 +2716,10 @@ chapter Orchard
               bounded = editor.window %(none point some(window) clamp_knob(point, window))
               PathEditor(knobs = editor.knobs.set(drag.index, bounded),
                 dragging = editor.dragging, window = editor.window))
+      text
+        Apply the final pointer position before ending the drag, even when
+        release happens away from the dot.
+      code
         mouse_released(editor: PathEditor, pos: Position) PathEditor =
           editor.mouse_moved(pos).release()
     chapter Run app
@@ -2084,6 +2728,9 @@ chapter Orchard
         a new app after each event. Releasing outside a dot still ends the drag;
         leaving the window or resizing also cancels it. No widget framework or
         internal element state is involved.
+      text
+        Route canvas events to the corresponding state functions. Leaving the
+        window also ends a drag.
       code
         handle(editor: PathEditor, event: Event) PathEditor =
           event %(
@@ -2093,49 +2740,655 @@ chapter Orchard
             mouse_released(pos) editor.mouse_released(pos)
             mouse_left editor.release()
             default editor)
+      text
+        Adapt the concrete state to the host App interface with two closures:
+        one for drawing and one for returning the next app.
+      code
         path_editor(editor: PathEditor) App =
           App(render = \ extent: Size -> editor.draw(extent).draw,
             handle = \ event: Event ->
               AppResult(app = path_editor(editor.handle(event)), commands = list[AppCommand]()))
+      text
+        Before the first resize event, supply three fallback positions and no
+        active drag.
+      code
         path_editor() App =
           path_editor(PathEditor(
             knobs = list(position(96.0, 96.0), position(192.0, 168.0), position(288.0, 96.0)),
             dragging = none[KnobDrag](), window = none[Size]()))
-      code
-        main(notebook: Chapter) App = path_editor()
     text
-      From vm, compile with soil src/yam.soil src/notebook.yam
-      src/notebook.yam.objects and run zig build run -- --ui
-      src/notebook.yam.objects.
+      To run this experiment, change main to return path_editor(). From vm,
+      compile with soil src/yam.soil src/notebook.yam src/notebook.yam.objects
+      and run zig build run -- --ui src/notebook.yam.objects.
+  chapter Notebook
+    text
+      The host supplies the document to main. NotebookEditor owns that document,
+      the current path, and a concrete ChapterView. Only the visible chapter has
+      text caches. Editing one row keeps every other row's cached Text intact.
+    chapter Paths through the document
+      text
+        A path locates a chapter through child-cell indices. Each index must
+        select a chapter cell at that level.
+      code
+        NotebookPath = struct { indices: List[Int] }
+      text
+        An empty path refers to the notebook's root chapter.
+      code
+        notebook_path() NotebookPath = NotebookPath(indices = list[Int]())
+      text
+        Testing for the root needs only the path's length.
+      code
+        is_empty(path: NotebookPath) Bool = path.indices.is_empty()
+      text
+        Append a child index to descend one level into the document.
+      code
+        push(path: NotebookPath, index: Int) NotebookPath = NotebookPath(indices = path.indices.push(index))
+      text
+        Moving up removes the final index. The root has no parent.
+      code
+        parent(path: NotebookPath) Maybe[NotebookPath] =
+          if path.is_empty() none[NotebookPath]()
+            some(NotebookPath(indices = path.indices.without_last()))
+      text
+        Resolve a path one chapter at a time. Reaching a text or code cell means
+        the path is invalid.
+      code
+        get(root: Chapter, path: NotebookPath) Chapter =
+          if path.is_empty() root
+            root.children.get(path.indices.first()) %(
+              chapter(child) child.get(NotebookPath(indices = path.indices.without_first()))
+              default crash("Expected a chapter at the notebook path."))
+      text
+        To replace a nested chapter, rebuild its ancestors along the path.
+        Unchanged sibling cells remain shared with the original document.
+      code
+        replace_chapter(root: Chapter, path: NotebookPath, updated: Chapter) Chapter =
+          if path.is_empty() updated
+            identity(
+              index = path.indices.first()
+              child = root.children.get(index) %(
+                chapter(child) child
+                default crash("Expected a chapter at the notebook path."))
+              Chapter(title = root.title, children = root.children.set(index,
+                Cell.chapter(child.replace_chapter(NotebookPath(indices = path.indices.without_first()), updated)))))
+    chapter Rows and chapter layout
+      text
+        A row is a breadcrumb, the chapter title, or one cell. All rows use the
+        same concrete editable-text cache, even when the row is only a link.
+        Breadcrumbs contain ancestors only and have no spacing between them.
+      chapter Representing a row
+        text
+          A visible row can be an ancestor link, the current title, or a cell.
+          Links carry the path they should open.
+        code
+          NotebookRowKind = enum {
+            breadcrumb: NotebookPath, title, text, code, chapter: NotebookPath }
+        text
+          Every row keeps a concrete editable-text cache and a display scale.
+          The parent decides whether that cache is currently editable.
+        code
+          NotebookRow = struct { kind: NotebookRowKind, editor: EditableText, scale: Float }
+      chapter Measuring rows
+        text
+          Keep a margin around the content and cap its width so prose remains
+          readable in a wide window.
+        code
+          notebook_width(window: Size) Float = max(32.0, min(400.0, window.width - 48.0))
+        text
+          Center the content column in wide windows. Narrow windows retain at
+          least 24 units of padding on each side.
+        code
+          notebook_left(window: Size) Float =
+            max(24.0, {window.width - notebook_width(window)} / 2.0)
+        text
+          Include the centered margins in the scrollable extent. Long unbroken
+          text can still extend the horizontal scroll range.
+        code
+          notebook_content_size(layout: ColumnLayout, window: Size) Size =
+            size(layout.size.width + {2.0 * notebook_left(window)},
+              layout.size.height + 48.0)
+        text
+          All row contents start eight units from the left edge. Text cells have
+          four units of vertical padding; breadcrumbs have two, and the other
+          rows have eight.
+        code
+          row_padding(kind: NotebookRowKind) Offset =
+            offset(8.0, kind %(breadcrumb 2.0 text 4.0 default 8.0))
+        text
+          A row uses the padding associated with its kind.
+        code
+          row_padding(row: NotebookRow) Offset = row.kind.row_padding()
+        text
+          Text cells request half the usual space around them. Neighboring rows
+          share the gap between them, while breadcrumbs stay together.
+        code
+          row_gap(row: NotebookRow) Float = row.kind %(breadcrumb 0.0 text 5.0 default 10.0)
+        text
+          Subtract padding and divide by the display scale to express the
+          available width in the text layout's native units.
+        code
+          row_constraints(row: NotebookRow, width: Float) TextConstraints =
+            text_constraints({width - {2.0 * row.row_padding().x}} / row.scale)
+        text
+          Construct the text cache at the row's final width immediately,
+          avoiding a second layout just to apply its padding.
+        code
+          notebook_row(kind: NotebookRowKind, value: String, scale: Float, width: Float) NotebookRow =
+            padding = kind.row_padding()
+            NotebookRow(kind, scale, editor = editable_text(value,
+              text_constraints({width - {2.0 * padding.x}} / scale)))
+        text
+          Measure the scaled text and include its padding. An empty row still
+          has a line of height, while long unbroken text can extend the
+          scrollable width.
+        code
+          column_item(row: NotebookRow, width: Float) ColumnItem =
+            measured = row.editor.text.render().size
+            padding = 2.0 * row.row_padding()
+            ColumnItem(size = size(max(width, {measured.width + 2.0} * row.scale + padding.x),
+              max(text_line_height, measured.height) * row.scale + padding.y), gap = row.row_gap())
+        text
+          Turn the measured rows into a column, averaging the spacing requested
+          by neighboring rows. Breadcrumbs have no following gap. This reads
+          cached text sizes and does not lay out glyphs again.
+        code
+          notebook_layout(rows: List[NotebookRow], width: Float) ColumnLayout =
+            column_layout(rows.iter().map_indexed(\ index: Int, row: NotebookRow ->
+              item = row.column_item(width)
+              next_gap = rows.get_maybe(index + 1)
+                .map(\ next: NotebookRow -> next.row_gap()) or row.row_gap()
+              gap = if row.kind is breadcrumb 0.0 {row.row_gap() + next_gap} / 2.0
+              ColumnItem(size = item.size, gap)).to_list())
+      chapter Building chapter rows
+        text
+          Walk towards the visible chapter, adding each ancestor as a link. Stop
+          before adding the current chapter, whose name will appear in the large
+          title.
+        code
+          breadcrumb_rows(root: Chapter, remaining: NotebookPath, prefix: NotebookPath,
+            width: Float) List[NotebookRow] =
+            if remaining.is_empty() list[NotebookRow]()
+              identity(
+                index = remaining.indices.first()
+                child = root.children.get(index) %(chapter(child) child
+                  default crash("Expected a breadcrumb chapter."))
+                list(notebook_row(NotebookRowKind.breadcrumb(prefix), root.title, 1.0, width))
+                  .push_all(breadcrumb_rows(child, NotebookPath(indices = remaining.indices.without_first()),
+                    prefix.push(index), width)))
+        text
+          Text and code cells display their contents at the same scale. A
+          chapter cell displays only its title and remembers the path to its
+          subtree.
+        code
+          cell_row(cell: Cell, path: NotebookPath, width: Float) NotebookRow =
+            cell %(
+              text(value) notebook_row(NotebookRowKind.text, value, 1.0, width)
+              code(value) notebook_row(NotebookRowKind.code, value, 1.0, width)
+              chapter(child) notebook_row(NotebookRowKind.chapter(path), child.title, 1.0, width))
+        text
+          After inserting, deleting, or moving cells, chapter-link indices may
+          change. Refresh those paths while preserving every row's text cache.
+        code
+          retarget_rows(rows: List[NotebookRow], path: NotebookPath) List[NotebookRow] =
+            rows.iter().map_indexed(\ index: Int, row: NotebookRow ->
+              NotebookRow(editor = row.editor, scale = row.scale, kind = row.kind %(
+                chapter NotebookRowKind.chapter(path.push(index - path.indices.length() - 1))
+                default row.kind))).to_list()
+        text
+          Assemble a chapter in reading order: ancestor breadcrumbs, its own
+          title, then its child cells.
+        code
+          chapter_rows(root: Chapter, path: NotebookPath, width: Float) List[NotebookRow] =
+            current = root.get(path)
+            breadcrumb_rows(root, path, notebook_path(), width)
+              .push(notebook_row(NotebookRowKind.title, current.title, 2.0, width))
+              .push_all(current.children.iter().map_indexed(\ index: Int, cell: Cell ->
+                cell_row(cell, path.push(index), width)).to_list())
+      chapter Chapter view state
+        text
+          A chapter view combines its rows and layout with scrolling, selected
+          row, editing mode, and pointer-drag state.
+        code
+          ChapterView = struct {
+            rows: List[NotebookRow], layout: ColumnLayout, scroll: Scroll,
+            focus: Int, editing: Bool, dragging: Bool }
+        text
+          Build caches for the visible chapter, measure its rows, and select its
+          title. Content margins are included in the scrollable extent.
+        code
+          chapter_view(root: Chapter, path: NotebookPath, window: Size) ChapterView =
+            width = notebook_width(window)
+            rows = chapter_rows(root, path, width)
+            layout = notebook_layout(rows, width)
+            ChapterView(rows, layout, scroll = scroll(window, notebook_content_size(layout, window), offset(0.0, 0.0)),
+              focus = path.indices.length(), editing = false, dragging = false)
+    chapter Editor state
+      text
+        The complete editor adds the host-supplied document, its current path, a
+        cached status message, and the latest pointer position to the chapter
+        view. Hover is derived from that position and the current layout.
+      code
+        NotebookEditor = struct {
+          notebook: Chapter, path: NotebookPath, view: ChapterView, status: Text,
+          pointer: Maybe[Position] }
+    chapter Updating view state
+      text
+        Focus and scroll changes share the row caches. A changed row recomputes
+        column bounds but leaves other text layouts and drawings untouched.
+        Resizing updates widths eagerly; equal widths reuse the caches.
+      text
+        A view-only change keeps the document, path, and status message
+        untouched.
+      code
+        with_view(e: NotebookEditor, view: ChapterView) NotebookEditor =
+          NotebookEditor(notebook = e.notebook, path = e.path, view, status = e.status, pointer = e.pointer)
+      text
+        Pointer updates share the document and every text cache. Keeping the
+        position instead of a row index lets hover follow scrolling and edits.
+      code
+        with_pointer(e: NotebookEditor, pointer: Maybe[Position]) NotebookEditor =
+          NotebookEditor(notebook = e.notebook, path = e.path, view = e.view,
+            status = e.status, pointer)
+      text
+        Select a valid row and reveal it. Entering editing mode is an explicit
+        choice, and changing focus ends a pointer selection drag.
+      code
+        with_focus(view: ChapterView, index: Int, editing: Bool) ChapterView =
+          focus = max(0, min(index, view.rows.length() - 1))
+          bounds = view.layout.bounds.get(focus)
+          left = notebook_left(view.scroll.viewport)
+          ChapterView(rows = view.rows, layout = view.layout,
+            scroll = view.scroll.reveal(rectangle(bounds.left + left, bounds.top + 24.0,
+              bounds.right + left, bounds.bottom + 48.0)),
+            focus, editing, dragging = false)
+      text
+        Changing scroll state shares all row caches, bounds, and focus
+        information.
+      code
+        with_scroll(view: ChapterView, scroll: Scroll) ChapterView =
+          ChapterView(rows = view.rows, layout = view.layout, scroll,
+            focus = view.focus, editing = view.editing, dragging = view.dragging)
+      text
+        Track whether pointer movement should extend the current text selection.
+      code
+        with_dragging(view: ChapterView, dragging: Bool) ChapterView =
+          ChapterView(rows = view.rows, layout = view.layout, scroll = view.scroll,
+            focus = view.focus, editing = view.editing, dragging)
+      text
+        Replace one cached row. Cursor movement retains the existing column
+        bounds; a content revision triggers fresh measurements from cached text
+        sizes.
+      code
+        update_row(view: ChapterView, index: Int, row: NotebookRow) ChapterView =
+          rows = view.rows.set(index, row)
+          layout = if row.editor.revision == view.rows.get(index).editor.revision
+            view.layout notebook_layout(rows, notebook_width(view.scroll.viewport))
+          ChapterView(rows, layout,
+            scroll = view.scroll.update(view.scroll.viewport,
+              notebook_content_size(layout, view.scroll.viewport)),
+            focus = view.focus, editing = view.editing, dragging = view.dragging)
+      text
+        A changed width updates each row's text constraints eagerly. Height-
+        only changes reuse the text caches and clamp the scroll offset.
+      code
+        resize(view: ChapterView, window: Size) ChapterView =
+          if window.width == view.scroll.viewport.width and window.height == view.scroll.viewport.height view
+            identity(
+              width = notebook_width(window)
+              rows = view.rows.iter().map(\ row: NotebookRow ->
+                NotebookRow(kind = row.kind, scale = row.scale,
+                  editor = row.editor.update(row.row_constraints(width)))).to_list()
+              layout = notebook_layout(rows, width)
+              ChapterView(rows, layout, scroll = view.scroll.update(window,
+                notebook_content_size(layout, window)),
+                focus = view.focus, editing = view.editing, dragging = false))
+      text
+        Reveal the active insertion point rather than the whole cell. This lets
+        editing continue through a tall cell and leaves room above the status
+        line.
+      code
+        reveal_cursor(view: ChapterView) ChapterView =
+          row = view.rows.get(view.focus)
+          bounds = view.layout.bounds.get(view.focus)
+          pos = row.editor.positions.get(row.editor.cursor.active)
+          x = bounds.left + notebook_left(view.scroll.viewport) + row.row_padding().x + {pos.x * row.scale}
+          y = bounds.top + 24.0 + row.row_padding().y + {pos.y * row.scale}
+          view.with_scroll(view.scroll.reveal(rectangle(position(x, y),
+            size(2.0 * row.scale, {text_line_height * row.scale} + 24.0))))
+      text
+        Opening a chapter constructs its view from the current document. The
+        caller chooses whether to start editing its title.
+      code
+        navigate(e: NotebookEditor, path: NotebookPath, editing: Bool) NotebookEditor =
+          view = chapter_view(e.notebook, path, e.view.scroll.viewport)
+          NotebookEditor(notebook = e.notebook, path,
+            view = view.with_focus(path.indices.length(), editing), status = e.status, pointer = e.pointer)
+      text
+        On returning to a parent, select the chapter cell that was just left. At
+        the root, there is nowhere further to go.
+      code
+        parent_chapter(e: NotebookEditor) NotebookEditor =
+          e.path.parent() %(none e some(path)
+            identity(
+              next = e.navigate(path, false)
+              next.with_view(next.view.with_focus(
+                path.indices.length() + 1 + e.path.indices.last(), false))))
+      text
+        Status updates reuse the document and chapter view and update only their
+        own Text cache.
+      code
+        set_status(e: NotebookEditor, value: String) NotebookEditor =
+          NotebookEditor(notebook = e.notebook, path = e.path, view = e.view,
+            status = e.status.update(value), pointer = e.pointer)
+    chapter Editing the document
+      text
+        The document and visible text cache change together. Chapter titles
+        remain single-line. Cursor-only edits replace only that row's state.
+      text
+        Commit the updated row and inspect its revision. Cursor-only changes
+        stop there; content changes also replace the corresponding title or cell
+        in the document tree.
+      code
+        commit_editor(e: NotebookEditor, editor: EditableText) NotebookEditor =
+          row = e.view.rows.get(e.view.focus)
+          next_view = e.view.update_row(e.view.focus,
+            NotebookRow(kind = row.kind, scale = row.scale, editor))
+          if editor.revision == row.editor.revision e.with_view(next_view.reveal_cursor())
+            identity(
+              current = e.notebook.get(e.path)
+              value = editor.text.value
+              index = e.view.focus - e.path.indices.length() - 1
+              updated = row.kind %(
+                title Chapter(title = value, children = current.children)
+                text Chapter(title = current.title, children = current.children.set(index, Cell.text(value)))
+                code Chapter(title = current.title, children = current.children.set(index, Cell.code(value)))
+                default current)
+              NotebookEditor(notebook = e.notebook.replace_chapter(e.path, updated), path = e.path,
+                view = next_view.reveal_cursor(), status = e.status.update("Unsaved changes"), pointer = e.pointer))
+      text
+        Character events affect only an active text editor. Whole-cell selection
+        alone does not insert text.
+      code
+        edit_character(e: NotebookEditor, code: Int) NotebookEditor =
+          if not(e.view.editing) e
+            e.commit_editor(e.view.rows.get(e.view.focus).editor.editable_character(code))
+      text
+        Activating a link navigates to its chapter. Activating an editable row
+        instead places it in text-editing mode.
+      code
+        activate(e: NotebookEditor) NotebookEditor =
+          e.view.rows.get(e.view.focus).kind %(
+            breadcrumb(path) e.navigate(path, false)
+            chapter(path) e.navigate(path, false)
+            default e.with_view(e.view.with_focus(e.view.focus, true).reveal_cursor()))
+    chapter Inserting, deleting, and moving cells
+      text
+        Ctrl+T inserts text and Ctrl+N inserts code, directly in editing mode.
+        Ctrl+K creates a chapter and opens its title editor. Insertions follow
+        the current cell, or go first when the title or breadcrumbs are
+        selected. Delete removes a selected cell, including a chapter's entire
+        subtree. Alt+Up/Down swaps cells and keeps the moved cell selected.
+      text
+        Insert after the selected cell, or at the beginning from a title or
+        breadcrumb. New text and code cells enter editing immediately; a new
+        chapter opens its title editor.
+      code
+        insert_cell(e: NotebookEditor, cell: Cell) NotebookEditor =
+          current = e.notebook.get(e.path)
+          index = max(0, e.view.focus - e.path.indices.length())
+          updated = Chapter(title = current.title, children = current.children.insert(index, cell))
+          root = e.notebook.replace_chapter(e.path, updated)
+          width = notebook_width(e.view.scroll.viewport)
+          rows = e.view.rows.insert(e.path.indices.length() + 1 + index,
+            cell_row(cell, e.path.push(index), width)).retarget_rows(e.path)
+          layout = notebook_layout(rows, width)
+          view = ChapterView(rows, layout, scroll = e.view.scroll.update(e.view.scroll.viewport,
+            notebook_content_size(layout, e.view.scroll.viewport)),
+            focus = e.view.focus, editing = false, dragging = false)
+          next = NotebookEditor(notebook = root, path = e.path, view,
+            status = e.status.update("Unsaved changes"), pointer = e.pointer)
+          cell %(
+            chapter next.navigate(e.path.push(index), true)
+            default next.with_view(next.view.with_focus(e.path.indices.length() + 1 + index, true)))
+      text
+        Delete only child-cell rows, preserving the title and breadcrumbs.
+        Removing a chapter cell drops its subtree and repairs the remaining
+        chapter-link paths.
+      code
+        delete_cell(e: NotebookEditor) NotebookEditor =
+          index = e.view.focus - e.path.indices.length() - 1
+          if index < 0 e
+            identity(
+              current = e.notebook.get(e.path)
+              updated = Chapter(title = current.title,
+                children = current.children.remove(index..{index + 1}))
+              root = e.notebook.replace_chapter(e.path, updated)
+              rows = e.view.rows.remove(e.view.focus..{e.view.focus + 1}).retarget_rows(e.path)
+              layout = notebook_layout(rows, notebook_width(e.view.scroll.viewport))
+              view = ChapterView(rows, layout, scroll = e.view.scroll.update(e.view.scroll.viewport,
+                notebook_content_size(layout, e.view.scroll.viewport)),
+                focus = min(e.view.focus, rows.length() - 1), editing = false, dragging = false)
+              NotebookEditor(notebook = root, path = e.path,
+                view = view.with_focus(view.focus, false), status = e.status.update("Unsaved changes"), pointer = e.pointer))
+      text
+        Swap a cell with a valid neighbor, carry its text state along, and keep
+        the moved row selected. Titles and breadcrumbs cannot move.
+      code
+        move_cell(e: NotebookEditor, direction: Int) NotebookEditor =
+          index = e.view.focus - e.path.indices.length() - 1
+          other = index + direction
+          current = e.notebook.get(e.path)
+          if index < 0 or other < 0 or other >= current.children.length() e
+            identity(
+              updated = Chapter(title = current.title, children = current.children.swap(index, other))
+              root = e.notebook.replace_chapter(e.path, updated)
+              rows = e.view.rows.swap(e.view.focus, e.view.focus + direction).retarget_rows(e.path)
+              layout = notebook_layout(rows, notebook_width(e.view.scroll.viewport))
+              view = ChapterView(rows, layout, scroll = e.view.scroll.update(e.view.scroll.viewport,
+                notebook_content_size(layout, e.view.scroll.viewport)),
+                focus = e.view.focus + direction, editing = false, dragging = false)
+              NotebookEditor(notebook = root, path = e.path,
+                view = view.with_focus(view.focus, false), status = e.status.update("Unsaved changes"), pointer = e.pointer))
+    chapter Pointer and keyboard input
+      text
+        Undo scrolling, the outer margin, the row position, padding, and scale
+        to convert a window coordinate into text-layout coordinates.
+      code
+        row_local(view: ChapterView, index: Int, pos: Position) Position =
+          row = view.rows.get(index)
+          bounds = view.layout.bounds.get(index)
+          position({pos.x + view.scroll.offset.x - notebook_left(view.scroll.viewport) - bounds.left - row.row_padding().x} / row.scale,
+            {pos.y + view.scroll.offset.y - 24.0 - bounds.top - row.row_padding().y} / row.scale)
+      text
+        Use column bounds to pick a row. Links navigate immediately; clicking
+        text enters editing and establishes the start of a pointer selection.
+      code
+        mouse_pressed(e: NotebookEditor, pos: Position) NotebookEditor =
+          point = pos + e.view.scroll.offset - offset(notebook_left(e.view.scroll.viewport), 24.0)
+          e.view.layout.pick(point) %(none e some(index)
+            identity(
+              row = e.view.rows.get(index)
+              selected = e.with_view(e.view.with_focus(index, false))
+              row.kind %(
+                breadcrumb(path) selected.navigate(path, false)
+                chapter(path) selected.navigate(path, false)
+                default
+                  identity(
+                    editor = row.editor.pick(e.view.row_local(index, pos), false)
+                    view = e.view.update_row(index, NotebookRow(kind = row.kind, scale = row.scale, editor))
+                    selected.with_view(ChapterView(rows = view.rows, layout = view.layout,
+                      scroll = view.scroll, focus = index, editing = true, dragging = true))))))
+      text
+        Remember the pointer for hover without touching text caches. During an
+        active drag, the same motion also extends the text selection.
+      code
+        mouse_moved(e: NotebookEditor, pos: Position) NotebookEditor =
+          next = e.with_pointer(some(pos))
+          if not(next.view.dragging) next
+            identity(
+              row = next.view.rows.get(next.view.focus)
+              next.commit_editor(row.editor.pick(next.view.row_local(next.view.focus, pos), true)))
+      text
+        Escape leaves editing before navigating to a parent. Tab changes rows;
+        arrows either move a text cursor or select a neighbor, depending on
+        editing mode.
+      code
+        notebook_edit_key(e: NotebookEditor, key: KeyPressed) NotebookEditor =
+          code = key.keycode
+          if code == key_escape
+            if e.view.editing e.with_view(e.view.with_focus(e.view.focus, false))
+              e.parent_chapter()
+          if code == key_tab and not(key.control) and not(key.alt)
+            e.with_view(e.view.with_focus(e.view.focus + if key.shift {0 - 1} 1, false))
+          if e.view.editing
+            identity(
+              row = e.view.rows.get(e.view.focus)
+              if code == key_enter and {row.kind is title}
+                e.with_view(e.view.with_focus(e.view.focus, false))
+                e.commit_editor(row.editor.editable_key(key)))
+          if key.alt and {code == key_arrow_up or code == key_arrow_down}
+            e.move_cell(if code == key_arrow_up {0 - 1} 1)
+          if code == key_arrow_down or code == key_arrow_up
+            e.with_view(e.view.with_focus(e.view.focus + if code == key_arrow_up {0 - 1} 1, false))
+          if code == key_enter e.activate()
+          if code == key_delete e.delete_cell()
+          e
+      text
+        Handle notebook-wide creation shortcuts first, then delegate ordinary
+        navigation and editing keys.
+      code
+        notebook_key(e: NotebookEditor, key: KeyPressed) NotebookEditor =
+          code = key.keycode
+          if key.control and not(key.alt) and not(key.shift)
+            identity(
+              if code == 84 e.insert_cell(Cell.text(""))
+              if code == 78 e.insert_cell(Cell.code(""))
+              if code == 75 e.insert_cell(Cell.chapter(chapter("", list[Cell]())))
+              notebook_edit_key(e, key))
+            notebook_edit_key(e, key)
+    chapter Drawing the visible chapter
+      text
+        Drawing walks only visible rows. Text commands are already cached; focus
+        adds a background and editing adds a selection overlay. A scroll event
+        updates only Scroll. Hover changes the background while reusing the text
+        drawing.
+      text
+        Find the row under the pointer using the same bounds as clicking.
+        Recomputing this from the current scroll offset avoids stale hover when
+        content moves beneath a stationary pointer. The status line is excluded.
+      code
+        hovered_row(e: NotebookEditor) Maybe[Int] =
+          e.pointer.flat_map(\ pos: Position ->
+            window = e.view.scroll.viewport
+            if pos.x < 0.0 or pos.x >= window.width or pos.y < 0.0
+              or pos.y >= {window.height - 20.0} none[Int]()
+              e.view.layout.pick(pos + e.view.scroll.offset
+                - offset(notebook_left(window), 24.0)))
+      text
+        Draw a row background to show its kind and selection, then place and
+        scale its cached text. Only the active editor adds a text-selection
+        overlay.
+      code
+        render(row: NotebookRow, width: Float, focused: Bool, hovered: Bool, editing: Bool) DrawCommand =
+          extent = row.column_item(width).size
+          background = row.kind %(
+            chapter color(if focused or hovered "#b8dcb2" "#d9efd3")
+            code color(if focused "#f5e6a8" "#fff6cf")
+            default color(if focused "#e6edf5" "#ffffff"))
+          padding = row.row_padding()
+          draw_all(list(
+            draw_filled_path(rounded_rect_path(6.0, extent), background),
+            draw_translated(padding,
+              draw_transformed(transform_scale(row.scale), row.editor.render(editing).draw))))
+      text
+        Cull rows outside the viewport, translate the visible ones into place,
+        and apply scrolling. Finally, draw the status line over the bottom of
+        the window.
+      code
+        render(e: NotebookEditor, extent: Size) DrawCommand =
+          view = e.view
+          width = notebook_width(view.scroll.viewport)
+          hovered = e.hovered_row()
+          commands = view.rows.iter().indexed().filter(\ item: Indexed[NotebookRow] ->
+            bounds = view.layout.bounds.get(item.index)
+            bounds.bottom + 24.0 >= view.scroll.offset.y
+              and bounds.top + 24.0 <= {view.scroll.offset.y + extent.height})
+            .map(\ item: Indexed[NotebookRow] ->
+              bounds = view.layout.bounds.get(item.index)
+              draw_translated(notebook_left(view.scroll.viewport), bounds.top + 24.0,
+                item.item.render(width, item.index == view.focus,
+                  hovered %(none false some(index) index == item.index),
+                  view.editing and item.index == view.focus))).to_list()
+          draw_all(list(draw_colored_rect(extent, color("#ffffff")),
+            view.scroll.render(draw_all(commands)),
+            draw_translated(12.0, max(0.0, extent.height - 20.0),
+              draw_all(list(draw_colored_rect(size(extent.width, 20.0), color("#ffffff")),
+                e.status.render().draw)))))
+    chapter Running and saving
+      text
+        Ctrl+S sends the current structured notebook to the host. Saving never
+        happens on keystrokes. Success and failure events update the status
+        line. The path editor remains available by changing main to
+        path_editor().
+      text
+        Start at the root chapter with its title selected and a short guide to
+        the main keyboard shortcuts.
+      code
+        notebook_editor(root: Chapter, window: Size) NotebookEditor =
+          NotebookEditor(notebook = root, path = notebook_path(),
+            view = chapter_view(root, notebook_path(), window),
+            status = text("Ctrl+S save  |  Ctrl+T text  Ctrl+N code  Ctrl+K chapter  |  Esc select / parent"), pointer = none[Position]())
+      text
+        Dispatch host events to the concrete editor functions. Wheel events
+        change only scroll state, and save feedback updates only the status
+        message.
+      code
+        handle(e: NotebookEditor, event: Event) NotebookEditor =
+          event %(
+            window_resized(window) e.with_view(e.view.resize(window))
+            mouse_pressed(pos) e.mouse_pressed(pos).with_pointer(some(pos))
+            mouse_moved(pos) e.mouse_moved(pos)
+            mouse_released(pos)
+              next = e.mouse_moved(pos)
+              next.with_view(next.view.with_dragging(false))
+            mouse_left e.with_view(e.view.with_dragging(false)).with_pointer(none[Position]())
+            mouse_scrolled(scroll) e.with_view(e.view.with_scroll(e.view.scroll.move(scroll.delta))).with_pointer(some(scroll.position))
+            key_pressed(key) e.notebook_key(key)
+            char_entered(character) e.edit_character(character.codepoint)
+            save_completed e.set_status("Saved")
+            save_failed(error) e.set_status("Save failed: " + error))
+      text
+        Connect editor state to the host. Ctrl+S emits the current structured
+        document as an explicit save command; other events return the next app
+        without saving.
+      code
+        notebook_app(e: NotebookEditor) App =
+          App(render = \ window: Size -> e.render(window),
+            handle = \ event: Event ->
+              save = event %(key_pressed(key) key.control and not(key.alt) and key.keycode == 83 default false)
+              if save
+                AppResult(app = notebook_app(e.set_status("Saving...")),
+                  commands = list(AppCommand.save_notebook(e.notebook)))
+                AppResult(app = notebook_app(e.handle(event)), commands = list[AppCommand]()))
+      text
+        The entry point receives the live document from the host and opens the
+        notebook editor. Returning path_editor() here runs the smaller canvas
+        experiment instead.
+      code
+        main(notebook: Chapter) App = notebook_app(notebook_editor(notebook, size(800.0, 600.0)))
   chapter Future work
     text
       - type reflection type[T](): Type
     text
       - memory-safe dynamic casts
     text
-      - type-safe widget update
-    text
-      - stack
-    text
-      - icon
-    text
       - refactor how colors work, replace button shade
-    text
-      - focus / keyboard-driven nav in Notebook
-    text
-      - add new cells
-    text
-      - add new chapters
-    text
-      - hover effect for chapters
     text
       - compile the code
     text
       - live result  
     text
       - custom cells
-    text
-      - make texts stretch from side to side
     text
       - font editor
     text
