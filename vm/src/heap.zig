@@ -154,13 +154,12 @@ pub const Obj = packed struct {
     }
 };
 
-pub fn is_same(a: Obj, b: Obj) bool {
-    if (a.is_inner() != b.is_inner()) return false;
-    if (a.size() != b.size()) return false;
-    if (a.is_inner()) {
-        for (a.children(), b.children()) |ac, bc| if (!is_same(ac, bc)) return false;
-    } else {
-        for (a.words(), b.words()) |aw, bw| if (aw != bw) return false;
+pub fn equals(a: Obj, b: Obj) bool {
+    if (a.address == b.address) return true;
+    if (a.is_inner() != b.is_inner() or a.size() != b.size()) return false;
+    if (a.is_leaf()) return std.mem.eql(Word, a.words(), b.words());
+    for (a.children(), b.children()) |ac, bc| {
+        if (!equals(ac, bc)) return false;
     }
     return true;
 }

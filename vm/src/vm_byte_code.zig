@@ -159,6 +159,7 @@ pub const Instruction = union(enum) {
     size, // Pops an address. Returns the size of the object.
 
     load, // addr offset -> ... Loads a word at the offset from the object.
+    obj_equals, // Pops two objects and pushes their deep representation equality.
 
     heap_size,
     // Pushes the size of the heap onto the stack. Can be used as a checkpoint
@@ -400,6 +401,14 @@ fn compile_expr(ally: std.mem.Allocator, root: Vm.Fun, expr: Vm.Expr, stack: *st
             try compile_expr(ally, root, load.object, stack, instrs);
             try compile_expr(ally, root, load.index, stack, instrs);
             try instrs.append(ally, .load);
+            _ = stack.pop();
+            _ = stack.pop();
+            try stack.append(ally, "");
+        },
+        .obj_equals => |args| {
+            try compile_expr(ally, root, args.left, stack, instrs);
+            try compile_expr(ally, root, args.right, stack, instrs);
+            try instrs.append(ally, .obj_equals);
             _ = stack.pop();
             _ = stack.pop();
             try stack.append(ally, "");
@@ -672,6 +681,11 @@ fn run(self: *Self, instructions: []const Instruction) !void {
                 const base = self.data_stack.pop_obj();
                 const word: usize = if (base.is_inner()) base.child(offset).address else base.word(offset);
                 try self.data_stack.push(word);
+            },
+            .obj_equals => {
+                const b = self.data_stack.pop_obj();
+                const a = self.data_stack.pop_obj();
+                try self.data_stack.push(if (Heap.equals(a, b)) 1 else 0);
             },
             .heap_size => {
                 const checkpoint = self.heap.checkpoint();

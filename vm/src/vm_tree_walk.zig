@@ -500,6 +500,15 @@ fn eval(self: *Self, expr: Vm.Expr, env: *Env, current_fun: Vm.Fun, fuel: *usize
             else
                 .{ .word = obj.word(idx) } };
         },
+        .obj_equals => |args| {
+            const l = try self.eval(args.left, env, current_fun, fuel);
+            const left = l.ok() orelse return l;
+            const r = try self.eval(args.right, env, current_fun, fuel);
+            const right = r.ok() orelse return r;
+            const a = try self.expect_object(left, "obj-equals left");
+            const b = try self.expect_object(right, "obj-equals right");
+            return .{ .returned = .{ .word = if (Heap.equals(a, b)) 1 else 0 } };
+        },
         .collect_garbage => |arg| {
             const checkpoint = self.heap.checkpoint();
             const arg_result = try self.eval(arg, env, current_fun, fuel);

@@ -108,6 +108,7 @@ pub const Expr = struct {
         points: Expr,
         size: Expr,
         load: Load,
+        obj_equals: LeftRight,
         call: Call,
         call_indirect: CallIndirect,
         rec: []const Expr,
@@ -350,6 +351,11 @@ pub const Expr = struct {
                 try writer.print("load\n", .{});
                 try load.object.format_indented(writer, indentation + 1);
                 try load.index.format_indented(writer, indentation + 1);
+            },
+            .obj_equals => |args| {
+                try writer.print("obj-equals\n", .{});
+                try args.left.format_indented(writer, indentation + 1);
+                try args.right.format_indented(writer, indentation + 1);
             },
             .collect_garbage => |arg| {
                 try writer.print("gc\n", .{});

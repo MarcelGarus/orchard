@@ -306,8 +306,8 @@ fn generate_expr(
 fn compatible_results(a: Vm.Result, b: Vm.Result) bool {
     if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
     return switch (a) {
-        .returned => |ao| Heap.is_same(ao, b.returned),
-        .crashed => |ao| Heap.is_same(ao, b.crashed),
+        .returned => |ao| Heap.equals(ao, b.returned),
+        .crashed => |ao| Heap.equals(ao, b.crashed),
         .out_of_fuel, .out_of_memory => true,
     };
 }

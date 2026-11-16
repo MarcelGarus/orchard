@@ -302,8 +302,9 @@ pub fn init_sized(heap: *Heap, ally: Ally, data_stack_words: usize, call_stack_w
         },
     };
 }
-pub fn deinit(_: *Self) !void {
-    // TODO: std.linux.munmap() the cache
+pub fn deinit(vm: *Self) !void {
+    vm.discard_code_after(0);
+    vm.jit_cache.deinit(vm.ally);
 }
 
 pub fn call(vm: *Self, fun: Vm.Fun, args: []const Obj, fuel: *usize) !Vm.Result {
@@ -440,6 +441,7 @@ const Tag = enum(u8) {
     points, // child
     size, // child
     load, // object, index
+    obj_equals, // left, right
     load_imm, // index (usize), object
     call, // [rest = num args] arg 0, arg1, ..., fun
     call_imm, // [rest = num args] fun (heap obj), arg 0, arg 1, ...
@@ -496,6 +498,7 @@ fn dump_node(slots: []const u64, at: *Index, indent: usize, writer: *std.Io.Writ
         .f_divide,
         .f_compare,
         .load,
+        .obj_equals,
         .call_indirect,
         .sandbox,
         .use_fuel,
@@ -629,6 +632,7 @@ fn parse_node(vm: *Self, ally: Ally, slots: *ArrayList(u64), expr: Vm.Expr) erro
                 try parse_node(vm, ally, slots, load.index);
             }
         },
+        .obj_equals => |args| try parse_binop(vm, ally, slots, .obj_equals, args),
         .call => |c| {
             const fun_kind = try c.fun.kind();
             if (fun_kind == .object) {
@@ -742,6 +746,11 @@ fn compute_node_regs(slots: []u64, at: *Index) u8 {
             compute_node_regs(slots, at),
             1 +| compute_node_regs(slots, at),
         ),
+        .obj_equals => blk: {
+            _ = compute_node_regs(slots, at);
+            _ = compute_node_regs(slots, at);
+            break :blk STACK;
+        },
         .load_imm => also(
             eat_slot(slots, at),
             compute_node_regs(slots, at),
@@ -1749,6 +1758,32 @@ fn emit_expr_to_stack(sink: anytype, slots: []const u64, at: *Index, resolver: *
             resolver.pop_stack();
             try resolver.push_anon(ally);
         },
+        .obj_equals => {
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try emit_expr_to_stack(sink, slots, at, resolver);
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 0, .rdi });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 8, .rsp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 16, .rbp });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 24, .rcx });
+            try sink.emit("mov [{reg} + {i32}], {reg}", .{ .rbx, 32, .rsi });
+            try sink.emit("mov {reg}, {reg}", .{ .rsp, .rdx });
+            try sink.emit("push {reg}", .{.rdx});
+            try sink.emit("mov {reg}, {reg}", .{ .rdi, .rbx });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rdx, 0 });
+            try sink.emit("mov {reg}, {u64}", .{ .rax, @as(u64, @intFromPtr(&hook_obj_equals)) });
+            try sink.emit("call {reg}", .{.rax});
+            try sink.emit("pop {reg}", .{.rdx});
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbx, .rdx, 8 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rdi, .rbx, 0 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rbp, .rbx, 16 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rcx, .rbx, 24 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsi, .rbx, 32 });
+            try sink.emit("mov {reg}, [{reg} + {i32}]", .{ .rsp, .rbx, 8 });
+            resolver.pop_stack();
+            resolver.pop_stack();
+            try resolver.push_anon(ally);
+        },
         .load_imm => {
             const imm = eat_slot(slots, at);
             try emit_expr_to_stack(sink, slots, at, resolver);
@@ -2336,6 +2371,7 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
             try sink.emit("add {reg}, {reg}", .{ dst, dst.next() });
             try sink.emit("mov {reg}, [{reg} + {i32}]", .{ dst, dst, 0 });
         },
+        .obj_equals => unreachable,
         .load_imm => {
             const imm = eat_slot(slots, at);
             try emit_expr_to_reg(sink, slots, at, resolver, dst);
@@ -2375,16 +2411,35 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
 // beginning of the heap and no longer affected by garbage collection,
 // preventing unnecessary recompiles.
 
+fn discard_code_after(vm: *Self, address: Word) void {
+    var i: usize = 0;
+    while (i < vm.jit_cache.entries.items.len) {
+        const entry = vm.jit_cache.entries.items[i];
+        if (entry.key.address >= address) {
+            // Each compiled function owns its executable mapping. Live editing
+            // creates many short-lived functions; dropping only the cache entry
+            // would leak all of their machine code.
+            if (entry.value.len != 0) {
+                const result = std.os.linux.munmap(@constCast(entry.value.ptr), entry.value.len);
+                std.debug.assert(result == 0);
+            }
+            _ = vm.jit_cache.entries.swapRemove(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
 pub fn garbage_collect(vm: *Self, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
     const result = try vm.heap.garbage_collect(vm.ally, checkpoint, keep);
-    vm.jit_cache.remove_everything_after(result.stable_until);
+    vm.discard_code_after(result.stable_until);
     return result.keep;
 }
 
 pub fn deduplicate(vm: *Self, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
     var map = try vm.heap.deduplicate(vm.ally, checkpoint);
     defer map.deinit();
-    vm.jit_cache.remove_everything_after(checkpoint.address);
+    vm.discard_code_after(checkpoint.address);
     return map.get(obj) orelse obj;
 }
 
@@ -2412,4 +2467,15 @@ fn hook_compile(vm_state: *VmState, zig_state: *ZigState, callee_addr: u64) call
     const callee = Vm.Fun{ .obj = .{ .address = callee_addr } };
     const machine_code = vm.compile(callee) catch @panic("hook_compile: compile failed");
     return machine_code.ptr;
+}
+
+// Deep equality operates on generic objects and never exposes their identity.
+fn hook_obj_equals(vm_state: *VmState, zig_state: *ZigState) callconv(.c) void {
+    const vm = zig_state.vm;
+    vm_state.store_to_vm(vm);
+    defer vm_state.load_from_vm(vm);
+    const right = Obj{ .address = vm.data_stack.pop() };
+    const left = Obj{ .address = vm.data_stack.pop() };
+    const equal = Heap.equals(left, right);
+    vm.data_stack.push(if (equal) 1 else 0) catch @panic("obj-equals stack overflow");
 }
