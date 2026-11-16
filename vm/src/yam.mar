@@ -2985,7 +2985,7 @@ fun parse_expr_suffix_call(parser: &Parser, current: AstExpr): Maybe[AstExpr] {
     parser.consume_prefix(",") or break
   }
   parser.consume_prefix(")") or panic(
-    "Expected closing parenthesis of the call. Args: {args.len}")
+    "Expected closing parenthesis of the call. Args: {args.len}. Near: {parser.rest().substr(0..min(180, parser.rest().len))}")
   some(current.call(type_args, args))
 }
 
@@ -3273,11 +3273,7 @@ fun parse_code(parser: &Parser): AstCode {
 }
 
 fun parse_type_def(parser: &Parser): Maybe[AstDef] {
-  var legacy = parser.consume_keyword("type")
-  var name = parser.parse_upper_name() or {
-    if legacy then panic("Expected an uppercase type name.")
-    return none[AstDef]()
-  }
+  var name = parser.parse_upper_name() or return none[AstDef]()
   var type_args = parser.parse_type_params() or list[String]()
   parser.consume_prefix("=") or panic("Expected an equals sign after the type name.")
   if parser.consume_prefix("...") then
@@ -3418,6 +3414,10 @@ struct NotebookState {
   funs: List[FunDef],
   groups: List[FunGroup],
   lowering_group: Maybe[Int],
+  mono_work: List[MonoFunction],
+  mono_slots: Map[String, Int],
+  mono_substitutions: Map[String, Type],
+  mono_vars: Map[String, TypedObject],
   capture_slots: Map[String, Int],
   capture_values: List[ObjectId],
   bindings: List[ProgramBinding],
@@ -3441,6 +3441,8 @@ fun compile_notebook(ast: Ast): NotebookState {
     funs = list[FunDef](),
     groups = list[FunGroup](),
     lowering_group = none[Int](),
+    mono_work = list[MonoFunction](), mono_slots = map[String, Int](),
+    mono_substitutions = map[String, Type](), mono_vars = map[String, TypedObject](),
     capture_slots = map[String, Int](),
     capture_values = list[ObjectId](),
     bindings = list[ProgramBinding](),
@@ -3543,6 +3545,7 @@ fun compile_structure(state: &NotebookState, path: String, ast: AstStructure) {
   }
 }
 
+struct MonoFunction { key: Int, substitutions: Map[String, Type] }
 struct FunGroup { start: Int, length: Int }
 struct FunDef {
   group: Int,
@@ -3551,6 +3554,7 @@ struct FunDef {
   args: List[FunArg],
   returns: Type,
   kind: FunKind,
+  globals: Map[String, TypedObject],
 }
 struct FunArg { name: String, type: Type }
 enum FunKind { pending: List[AstExpr], builtin: ObjectId, body: TypedExpr }
@@ -4045,7 +4049,7 @@ fun declare_fun(state: &NotebookState, f: AstFun, group: Int): FunDef {
   var kind = switch f.kind
     case builtin FunKind.builtin(builtin(f))
     case body(body) FunKind.pending(body)
-  FunDef { group, name = f.name, type_args = f.type_args, args, returns, kind }
+  FunDef { group, name = f.name, type_args = f.type_args, args, returns, kind, globals = copy_map(state.vars) }
 }
 | Ignore parameter names, return types and generic parameter spelling when
 | identifying duplicate signatures. Aliases were resolved during declaration.
@@ -4255,9 +4259,57 @@ fun validate_notebook_abi(state: NotebookState) {
     "Notebook ABI requires builtin String and List.")
 }
 
+fun mono_key(key: Int, substitutions: Map[String, Type], f: FunDef): String {
+  var types = list[Type]()
+  for param in f.type_args do types.&.push(substitutions.get(param))
+  "{key}[{comma_separated(types)}]"
+}
+fun mono_slot(state: &NotebookState, key: Int, substitutions: Map[String, Type]): Int {
+  var f = state.funs.get(key)
+  var name = mono_key(key, substitutions, f)
+  if state.mono_slots.get_maybe(name) is some(slot) then return slot
+  if state.mono_work.len > 4096 then panic("Monomorphization limit exceeded (polymorphic recursion?).")
+  var slot = state.mono_work.len
+  state.mono_slots.&.put(name, slot)
+  state.mono_work.&.push(MonoFunction { key, substitutions })
+  slot
+}
 fun builtin(f: AstFun): ObjectId {
   var signature = f.signature()
 
+  if signature == "to_list[T](Iter[T])" then {
+    assert(f.returns == type("List", list(type("T"))), "to_list must return List[T].")
+    var iterator = name_expr("$iterator")
+    var closure = binary_expr("load", iterator, int_expr(0))
+    var next_call = inner(list(leaf("call"), binary_expr("load", closure, int_expr(0)),
+      inner(list(binary_expr("load", closure, int_expr(1))))))
+    var next = name_expr("$next")
+    var payload = binary_expr("load", next, int_expr(1))
+    var body = let_expr("$next", next_call,
+      conditional(flag_expr(1, binary_expr("load", next, int_expr(0)), int_expr(0)),
+        new_inner_expr(list(binary_expr("load", payload, int_expr(0)),
+          rec_expr(list(binary_expr("load", payload, int_expr(1)))))),
+        object_expr(inner(list[ObjectId]()))))
+    var collector = heap_fun(list("$iterator"), body)
+    return unary_expr("flatten-to-inner", call_expr(collector, list(name_expr(f.args.get(0).name))))
+  }
+  if signature == "==(String, String)" then {
+    assert(f.returns == type("Bool"), "String equality must return Bool.")
+    var left = name_expr("$left")
+    var right = name_expr("$right")
+    var index = name_expr("$index")
+    var same_word = flag_expr(1, box(raw_binary("load", left, unbox(index))),
+      box(raw_binary("load", right, unbox(index))))
+    var again = rec_expr(list(left, right, binary_expr("add", index, int_expr(1))))
+    var body = conditional(flag_expr(1, index, size_expr(left)), int_expr(1),
+      conditional(same_word, again, int_expr(0)))
+    var compare_words = heap_fun(list("$left", "$right", "$index"), body)
+    left = name_expr(f.args.get(0).name)
+    right = name_expr(f.args.get(1).name)
+    var equal = conditional(flag_expr(1, size_expr(left), size_expr(right)),
+      call_expr(compare_words, list(left, right, int_expr(0))), int_expr(0))
+    return new_inner_expr(list(equal, object_expr(leaf(list[Int]()))))
+  }
   if signature == "bytes(String)" then {
     assert(f.returns == type("List", list(type("Byte"))), "bytes must return List[Byte].")
     var input = name_expr(f.args.get(0).name)
@@ -4695,7 +4747,7 @@ fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId
   case string(value) object_expr(leaf(value))
   case name(name) name_expr(name)
   case global(name) {
-    var ref = state.vars.get(name).object
+    var ref = (if state.lowering_group is some then state.mono_vars else state.vars).get(name).object
     var key = ref.get().inner.unwrap().get(1).get().leaf.unwrap().to_string()
     state.capture(key, ref)
   }
@@ -4741,13 +4793,17 @@ fun lower(state: &NotebookState, expr: TypedExpr, params: Set[String]): ObjectId
   case call(call) {
     var f = state.funs.get(call.key)
     var group = name_expr("$group")
-    if state.lowering_group != some(f.group) then
+    var slot = call.key - state.groups.get(f.group).start
+    if f.type_args.is_not_empty() then {
+      var substitutions = map[String, Type]()
+      for entry in call.substitutions do substitutions.&.put(entry.key, entry.value.specialize(state.mono_substitutions).unwrap())
+      slot = state.mono_slot(call.key, substitutions)
+    } else if state.lowering_group != some(f.group) then
       group = state.capture("$group{f.group}", name_expr("$group{f.group}"))
     var args = list[ObjectId]()
     for arg in call.args do args.&.push(state.lower(arg, params))
     args.&.push(group)
-    var slot = call.key - state.groups.get(f.group).start
-    inner(list(leaf("call"), binary_expr("load", group, int_expr(slot)), inner(args)))
+    inner(list(leaf("call"), binary_expr("load", binary_expr("load", group, int_expr(0)), int_expr(slot)), inner(args)))
   }
   case make_enum(make) new_inner_expr(list(
     object_expr(leaf(list(make.index))), state.lower(make.arg.*, params),
@@ -4794,7 +4850,15 @@ fun lower_block(state: &NotebookState, exprs: Slice[TypedExpr], params: Set[Stri
   binary_expr("also", code, state.lower_block(exprs.without_first(), params))
 }
 fun compile(state: &NotebookState, expr: TypedExpr, params: Set[String]): CompiledCode {
-  CompiledCode { type = expr.type, object = state.lower(expr, params) }
+  if state.lowering_group is some then return CompiledCode { type = expr.type, object = state.lower(expr, params) }
+  var group = state.groups.len
+  var key = state.funs.len
+  state.funs.&.push(FunDef { group, name = "$initializer", type_args = list[String](), args = list[FunArg](), returns = expr.type, kind = FunKind.body(expr), globals = copy_map(state.vars) })
+  state.groups.&.push(FunGroup { start = key, length = 1 })
+  var code = state.compile_group(group)
+  var ref = name_expr("$initializer_group")
+  var invoke = inner(list(leaf("call"), binary_expr("load", binary_expr("load", ref, int_expr(0)), int_expr(0)), inner(list(ref))))
+  CompiledCode { type = expr.type, object = let_expr("$initializer_group", code, invoke) }
 }
 | A group holds constant function bodies followed by runtime captures. Bodies
 | access their group through a hidden parameter, so there are no cyclic objects.
@@ -4806,16 +4870,33 @@ fun capture(state: &NotebookState, name: String, value: ObjectId): ObjectId {
     state.capture_values.&.push(value)
     slot
   }
-  binary_expr("load", name_expr("$group"), int_expr(state.groups.get(group).length + slot))
+  binary_expr("load", binary_expr("load", name_expr("$group"), int_expr(1)), int_expr(slot))
 }
 fun compile_group(state: &NotebookState, key: Int): ObjectId {
   var group = state.groups.get(key)
   state.lowering_group = some(key)
   state.capture_slots = map[String, Int]()
   state.capture_values = list[ObjectId]()
-  var bodies = list[ObjectId]()
+  state.mono_work = list[MonoFunction]()
+  state.mono_slots = map[String, Int]()
   for index in group.start..{group.start + group.length} do {
     var f = state.funs.get(index)
+    state.mono_work.&.push(MonoFunction { key = index, substitutions = map[String, Type]() })
+    if f.type_args.is_empty() then state.mono_slots.&.put(mono_key(index, map[String, Type](), f), index - group.start)
+  }
+  var bodies = list[ObjectId]()
+  var at = 0
+  loop {
+    if at == state.mono_work.len then break
+    var instance = state.mono_work.get(at)
+    var f = state.funs.get(instance.key)
+    at = at + 1
+    if f.type_args.is_not_empty() and instance.substitutions.is_empty() then {
+      bodies.&.push(object_expr(inner(list[ObjectId]())))
+      continue
+    }
+    state.mono_substitutions = instance.substitutions
+    state.mono_vars = f.globals
     var names = list[String]()
     for arg in f.args do names.&.push(arg.name)
     names.&.push("$group")
@@ -4826,9 +4907,8 @@ fun compile_group(state: &NotebookState, key: Int): ObjectId {
     bodies.&.push(object_expr(heap_fun(names, body)))
   }
   state.lowering_group = none[Int]()
-  for value in state.capture_values do bodies.&.push(value)
-  var code = new_inner_expr(bodies)
-  code
+  state.mono_substitutions = map[String, Type]()
+  new_inner_expr(list(new_inner_expr(bodies), new_inner_expr(state.capture_values)))
 }
 
 
@@ -4869,7 +4949,8 @@ fun write_object[W](writer: W, id: ObjectId, written: &Set[Int]) {
   }
 }
 | Notebook entry points take the host-parsed Chapter as their sole argument.
-fun program(state: NotebookState): ObjectId {
+fun program(state: &NotebookState): ObjectId {
+  state.validate_runtime_abi()
   var main = none[Int]()
   for key in 0..state.funs.len do {
     var f = state.funs.get(key)
@@ -4907,7 +4988,7 @@ fun main(): Never {
   if input == output then panic("Input and output paths must differ.")
   var source = read_file(input).unwrap().to_string()
   var state = compile_notebook(parse(source))
-  var root = state.program()
+  var root = state.&.program()
   var buffer = string_builder()
   buffer.&.write_objects(root)
   write_file(output, buffer.to_string().bytes()).unwrap()
