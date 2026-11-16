@@ -38,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
     };
     const ally = if (ui) init.gpa else init.arena.allocator();
     const code = try std.Io.Dir.cwd().readFileAlloc(init.io, input, ally, .unlimited);
-    var heap = try Heap.init(ally, if (ui) 600_000_000 else 32_000_000);
+    var heap = try Heap.init(ally, 1_000_000_000);
     const root = try object_loader.load(ally, &heap, code);
     if (!root.is_inner() or root.size() != 2 or !root.child(0).is_inner() or root.child(0).size() != 0)
         return error.ExpectedParameterlessFunction;
