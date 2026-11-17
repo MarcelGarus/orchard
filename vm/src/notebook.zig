@@ -5,7 +5,7 @@ const Obj = Heap.Obj;
 const Allocator = std.mem.Allocator;
 
 pub const Chapter = struct { title: []const u8, children: []const Cell };
-pub const Cell = union(enum) { text: []const u8, code: []const u8, chapter: Chapter };
+pub const Cell = union(enum) { text: []const u8, code: []const u8, chapter: Chapter, eval: []const u8 };
 pub const Notebook = struct { root: Chapter };
 const max_depth = 512;
 const Error = Allocator.Error || error{ InvalidNotebook, InvalidTitle, InvalidNotebookObject, NotebookTooDeep };
@@ -44,7 +44,8 @@ const Parser = struct {
                 try children.append(self.allocator, .{ .chapter = try self.chapter(depth + 1) });
             } else {
                 const is_text = std.mem.eql(u8, std.mem.trimEnd(u8, child_header, " \t"), "text");
-                if (!is_text and !std.mem.eql(u8, std.mem.trimEnd(u8, child_header, " \t"), "code")) return error.InvalidNotebook;
+                const is_eval = std.mem.eql(u8, std.mem.trimEnd(u8, child_header, " \t"), "eval");
+                if (!is_text and !is_eval and !std.mem.eql(u8, std.mem.trimEnd(u8, child_header, " \t"), "code")) return error.InvalidNotebook;
                 self.at += 1;
                 const start = self.at;
                 var indentation: usize = std.math.maxInt(usize);
@@ -64,7 +65,7 @@ const Parser = struct {
                 if (is_text) for (body.items) |*byte| {
                     if (byte.* == '\n') byte.* = ' ';
                 };
-                try children.append(self.allocator, if (is_text) .{ .text = body.items } else .{ .code = body.items });
+                try children.append(self.allocator, if (is_text) .{ .text = body.items } else if (is_eval) .{ .eval = body.items } else .{ .code = body.items });
             }
             self.skipBlank();
         }
@@ -135,10 +136,10 @@ fn serializeChapter(out: *std.ArrayList(u8), allocator: Allocator, chapter: Chap
     try out.append(allocator, '\n');
     for (chapter.children) |cell| switch (cell) {
         .chapter => |child| try serializeChapter(out, allocator, child, depth + 1),
-        .text, .code => |content| {
+        .text, .code, .eval => |content| {
             if (std.mem.indexOfScalar(u8, content, 0) != null) return error.InvalidNotebook;
             try indent(out, allocator, depth + 1);
-            try out.appendSlice(allocator, if (cell == .text) "text\n" else "code\n");
+            try out.appendSlice(allocator, if (cell == .text) "text\n" else if (cell == .eval) "eval\n" else "code\n");
             if (content.len != 0) {
                 var lines = std.mem.splitScalar(u8, content, '\n');
                 while (lines.next()) |line| {
@@ -161,7 +162,7 @@ pub fn serialize(allocator: Allocator, notebook: Notebook) Error![]u8 {
     return output.toOwnedSlice(allocator);
 }
 
-/// Chapter = [title, children]; Cell = [tag, payload], tags text/code/chapter = 0/1/2.
+/// Chapter = [title, children]; Cell = [tag, payload], tags text/code/chapter/eval = 0/1/2/3.
 pub fn encode(allocator: Allocator, heap: *Heap, chapter: Chapter) Error!Obj {
     return encodeChapter(allocator, heap, chapter, 0);
 }
@@ -176,9 +177,10 @@ fn encodeChapter(allocator: Allocator, heap: *Heap, chapter: Chapter, depth: usi
             .text => 0,
             .code => 1,
             .chapter => 2,
+            .eval => 3,
         };
         const payload = switch (cell) {
-            .text, .code => |content| try heap.new_symbol(content),
+            .text, .code, .eval => |content| try heap.new_symbol(content),
             .chapter => |child| try encodeChapter(allocator, heap, child, depth + 1),
         };
         try children.append(allocator, try heap.new_inner(&.{ try heap.new_leaf(&.{tag}), payload }));
@@ -213,6 +215,7 @@ fn decodeChapter(allocator: Allocator, obj: Obj, depth: usize) Error!Chapter {
             0 => .{ .text = try string(allocator, value.child(1)) },
             1 => .{ .code = try string(allocator, value.child(1)) },
             2 => .{ .chapter = try decodeChapter(allocator, value.child(1), depth + 1) },
+            3 => .{ .eval = try string(allocator, value.child(1)) },
             else => return error.InvalidNotebookObject,
         };
     }

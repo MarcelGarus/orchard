@@ -61,21 +61,6 @@ chapter Orchard
       text
         foo =   big_expression_that_spans_multiple_lines()   . do(\ res: Int ->
         res + 1)
-    chapter Dynamic
-      text
-        Dynamic holds a value whose type is not tracked by the type system.
-      code
-        Dynamic = ...
-      text
-        value.to_dynamic() forgets the static type; dynamic.to_static[T]()
-        treats the value as T. Both conversions return the same heap object
-        without copying it or adding a wrapper. to_static[T]() does not check
-        the object's type. The programmer must supply the correct T; using the
-        wrong type is undefined behavior (in practice, it probably segfaults).
-      code
-        to_dynamic[T](value: T) Dynamic = ...
-      code
-        to_static[T](value: Dynamic) T = ...
     chapter Bool
       text
         After the Never type with zero instances and the Nothing type with one
@@ -1381,6 +1366,99 @@ chapter Orchard
           result %(
             ok(value) "ok(" + ok_format(value) + ")"
             error(value) "error(" + error_format(value) + ")")
+    chapter Runtime types and functions
+      text
+        Using reflection, you can write code that looks at arbitrary values or
+        looks at the type system. You can also create new types, values, and
+        functions during runtime.
+      chapter Type
+        text
+          A Type is an opaque snapshot of a type and its dependencies.
+        code
+          Type = ...
+        text
+          The type functions takes no value arguments, only a type argument. It
+          returns you a runtime representation of thattype.
+        code
+          type[T]() Type = ...
+        text
+          Passing a value lets the compiler infer the type argument. This
+          overload simply calls the parameterless builtin with that type.
+        code
+          type[T](value: T) Type = type[T]()
+        text
+          Type equality is a nuanced topic. Usually, programming languages use
+          either of these forms of equality:
+        text
+          Nominal typing means that types have an identity. If you define two
+          types with the same fields, they are still different and values of one
+          type can't be assigned to variables of the other type.
+        text
+          Structural typing means types have no identity. They are entirely
+          summarized by their structure definition. Essentially, every type
+          definition is only an alias.
+        text
+          In Orchard, types are generally nominal. If you define multiple struct
+          types with the same fields, they will be different. However, the code
+          you write can evolve over time -- you might create a Point, then
+          change the definition of the Point type, and then continue on. So,
+          type equality checking compares the (nominal) name as well as the
+          (structural) definition.
+        code
+          ==(left: Type, right: Type) Bool = ...
+        text
+          Every type has a name.
+        code
+          name(type: Type) String = ...
+        text
+          Field and variant order is part of a type's representation.
+        code
+          FunctionType = struct { arguments: List[Type], returns: Type }
+        code
+          TypeInfo = enum {
+            int,
+            float,
+            byte,
+            string,
+            list: Type,
+            dynamic,
+            type,
+            struct: StructType,
+            enum: EnumType,
+            function: FunctionType,
+            opaque }
+          StructType = struct { fields: List[FieldType] }
+          FieldType = struct { name: String, type: Type }
+          EnumType = struct { variants: List[FieldType] }
+          # TODO: have a separate VariantType
+        code
+          info(type: Type) TypeInfo = ...
+        text
+          A named lookup reuses a snapshot too. If a function combines different
+          versions of one name, lookup is ambiguous; traverse its argument or
+          result Type directly to select the precise version.
+        code
+          lookup_type(snapshot: Type, name: String) Maybe[Type] = ...
+        chapter Describing new types
+          text
+            A finite table can describe new types, including mutually recursive
+            records and enums. Edges are type names. Construction validates
+            names, field uniqueness, and every reference before returning an
+            opaque Type. A description never relabels an existing value.
+          code
+            TypeFieldDefinition = struct { name: String, type: String }
+          code
+            FunctionTypeDefinition = struct { arguments: List[String], returns: String }
+          code
+            TypeShape = enum {
+              int,
+              float, byte, string, list: String, dynamic, type,
+              struct: List[TypeFieldDefinition], enum: List[TypeFieldDefinition],
+              function: FunctionTypeDefinition, opaque }
+          code
+            TypeDefinition = struct { name: String, shape: TypeShape }
+          code
+            type_snapshot(definitions: List[TypeDefinition], name: String) Type = ...
   chapter User interface
     text
       Orchard supports two-dimensional graphics. The coordinate system starts at

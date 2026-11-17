@@ -14,10 +14,11 @@ The most interesting bits:
 - **Olive** (Optimizable Lisp Implementing Various Expressions):
   A Lisp where the focus is to be easy to optimize.
   [vm/src/bootstrap.objects](vm/src/bootstrap.objects) contains an Olive compiler written in raw objects.
-  [vm/src/bootstrap.olive](vm/src/bootstrap.olive) contians an optimizing Olive compiler written in Olive.
-- **Pear**:
-  A memory-safe functional programming language with Lisp syntax.  
-  [vm/src/bootstrap.pear](vm/src/bootstrap.pear) contains Pear code.
+  [vm/src/bootstrap.olive](vm/src/bootstrap.olive) contains an optimizing Olive compiler and a Yam notebook compiler.
+- **Yam**:
+  A typed language organized into editable notebooks.
+  [vm/src/notebook.yam](vm/src/notebook.yam) contains the standard library, compiler, and live notebook editor.
+  [vm/BOOTSTRAP.md](vm/BOOTSTRAP.md) describes the bootstrap pipeline.
 - **Ground**:
   A low-level stack-based byte code.  
   [ground/readme.md](ground/readme.md) contains the specification.  
