@@ -99,11 +99,25 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
+    const bootstrap = b.addExecutable(.{
+        .name = "orchard-bootstrap",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bootstrap.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    const run_bootstrap = b.addRunArtifact(bootstrap);
+    run_bootstrap.addFileArg(b.path("src/bootstrap.objects"));
+    run_bootstrap.addFileArg(b.path("src/bootstrap.olive"));
+    const compiler_image = run_bootstrap.addOutputFileArg("bootstrap.olive.objects");
+
     const orchard = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = .ReleaseSafe,
     });
+    orchard.addAnonymousImport("compiler_image", .{ .root_source_file = compiler_image });
     orchard.addImport("orchardvg", orchardvg);
 
     if (!target.result.cpu.arch.isWasm()) {

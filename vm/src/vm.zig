@@ -50,6 +50,22 @@ pub const Result = union(enum) {
     }
 };
 
+pub fn call_for_value(vm: anytype, function: Obj, arguments: []const Obj) !Obj {
+    var fuel: usize = max_fuel;
+    return switch (try vm.call(.{ .obj = function }, arguments, &fuel)) {
+        .returned => |value| value,
+        .crashed => |message| {
+            if (message.is_leaf())
+                std.debug.print("VM crashed: {s}\n", .{get_symbol(message)})
+            else
+                std.debug.print("VM crashed: {f}\n", .{message});
+            return error.VmCrashed;
+        },
+        .out_of_memory => error.VmOutOfMemory,
+        .out_of_fuel => error.VmOutOfFuel,
+    };
+}
+
 pub const Fun = struct {
     obj: Obj,
 

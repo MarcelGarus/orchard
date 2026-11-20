@@ -32,11 +32,12 @@ pub fn init(value: Obj) Self {
     return .{ .value = value };
 }
 
-// A Yam closure contains its VM function and captured environment. The
-// environment is passed after the function's explicit argument.
+// A Yam function pairs a raw descriptor with its captured environment. The
+// descriptor keeps executable code in slot 4, after its reflected metadata.
+// Captures are passed after the function's explicit argument.
 fn call(vm: anytype, closure: Obj, arg: Obj) !Obj {
     var fuel: usize = Vm.max_fuel;
-    return switch (try vm.call(.{ .obj = closure.child(0) }, &.{ arg, closure.child(1) }, &fuel)) {
+    return switch (try vm.call(.{ .obj = closure.child(0).child(4) }, &.{ arg, closure.child(1) }, &fuel)) {
         .returned => |value| value,
         .crashed => |message| {
             std.debug.print("App crashed: {f}\n", .{message});

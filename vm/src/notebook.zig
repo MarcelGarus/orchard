@@ -1,6 +1,8 @@
-//! Host-owned notebook document and its fixed Yam ABI.
+//! Host-owned notebook documents and their Yam runtime interface.
 const std = @import("std");
 const Heap = @import("heap.zig");
+const Vm = @import("vm.zig");
+const loader = @import("object_loader.zig");
 const Obj = Heap.Obj;
 const Allocator = std.mem.Allocator;
 
@@ -9,6 +11,33 @@ pub const Cell = union(enum) { text: []const u8, code: []const u8, chapter: Chap
 pub const Notebook = struct { root: Chapter };
 const max_depth = 512;
 const Error = Allocator.Error || error{ InvalidNotebook, InvalidTitle, InvalidNotebookObject, NotebookTooDeep };
+
+/// Compiler libraries are lists of [name, function] entries.
+pub fn lookup(library: Obj, name: []const u8) !Obj {
+    if (!library.is_inner()) return error.InvalidCompilerLibrary;
+    for (library.children()) |entry| {
+        if (!entry.is_inner() or entry.size() != 2 or !entry.child(0).is_leaf())
+            return error.InvalidCompilerLibrary;
+        if (std.mem.eql(u8, Heap.get_symbol(entry.child(0)), name))
+            return entry.child(1);
+    }
+    return error.MissingCompilerExport;
+}
+
+pub fn run_notebook(vm: anytype, compiler_image: []const u8, source: []const u8) !Obj {
+    var arena = std.heap.ArenaAllocator.init(vm.ally);
+    defer arena.deinit();
+    const ally = arena.allocator();
+    const notebook = try parse(ally, source);
+    const document = try encode(ally, vm.heap, notebook.root);
+    const checkpoint = vm.heap.checkpoint();
+    const library = try loader.load(ally, vm.heap, compiler_image);
+    const entry = try Vm.call_for_value(vm, try lookup(library, "compile_yam"), &.{document});
+    const compiled = try vm.garbage_collect(checkpoint, entry);
+    const app = try Vm.call_for_value(vm, compiled, &.{document});
+    if (!app.is_inner() or app.size() != 2) return error.ExpectedApp;
+    return vm.garbage_collect(checkpoint, app);
+}
 
 const Line = struct {
     text: []const u8,
