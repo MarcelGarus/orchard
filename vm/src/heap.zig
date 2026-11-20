@@ -292,15 +292,28 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Obj, Obj) {
 pub const GcResult = struct { keep: Obj, stable_until: Word };
 
 pub fn garbage_collect(heap: *Heap, ally: Ally, boundary: Checkpoint, keep: Obj) !GcResult {
-    mark(keep, boundary);
+    try mark(ally, keep, boundary);
     return try heap.sweep(ally, keep, boundary);
 }
-fn mark(obj: Obj, boundary: Checkpoint) void {
-    if (obj.address < boundary.address) return;
-    const header: *Header = @ptrFromInt(obj.address);
-    if (header.marked == 1) return;
-    header.marked = 1;
-    if (header.is_inner == 1) for (obj.children()) |child| mark(child, boundary);
+fn mark(ally: Ally, root: Obj, boundary: Checkpoint) !void {
+    var pending = std.ArrayList(Obj).empty;
+    defer pending.deinit(ally);
+    try pending.append(ally, root);
+    while (pending.pop()) |obj| {
+        if (obj.address < boundary.address or obj.header().marked == 1) continue;
+        obj.header().marked = 1;
+        if (obj.is_inner()) {
+            // Visit the first child first. In particular, a linked list's head
+            // is finished before its tail, keeping the work list small.
+            var i = obj.size();
+            while (i > 0) {
+                i -= 1;
+                const child = obj.child(i);
+                if (child.address >= boundary.address and child.header().marked == 0)
+                    try pending.append(ally, child);
+            }
+        }
+    }
 }
 fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !GcResult {
     var read = boundary.address;
@@ -403,7 +416,7 @@ fn file_out_rec(obj: Obj, ally: Ally, writer: *std.Io.Writer, name_generator: *N
 }
 
 pub fn copy_to_other_heap(from: *Heap, ally: Ally, to: *Heap, object: Obj) !Obj {
-    mark(object, .{ .address = @intFromPtr(from.memory.ptr) });
+    try mark(ally, object, .{ .address = @intFromPtr(from.memory.ptr) });
     var mapping = ObjMap(Obj).empty;
     defer mapping.deinit(ally);
     var cursor = Obj{ .address = @intFromPtr(from.memory.ptr) };
