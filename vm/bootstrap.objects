@@ -1,0 +1,692 @@
+# "From a small seed, an Orchard grows.
+
+   I believe programming should be more personal. Currently (2026), software
+   tools are mostly developed by a few people in a central place and then used
+   by many more people. However, you very rarely modify or customize your
+   software tools. Even experienced programmers using open-source tools rarely
+   look at the source code.
+
+   The current state is practical: It takes a lot of effort to build software,
+   so naturally you need to bundle resources to create big projects. I like that
+   this necessity to collaborate fosters social relationships and gets people to
+   explore problem spaces together. However, I believe there is also a place for
+   more personal, customized, specialized, smaller software. This vision existed
+   since the earliest days of computing: Alan Kay envisioned computers as
+   'personal dynamic media', where every user feels comfortable to create, use,
+   and customize tools. Orchard is my attempt at creating a personal computing
+   medium."
+
+
+# "The Heap
+
+   I started by thinking about how I want my data and computation to look and
+   feel like. To be honest, I'm intruiged by functional programming. Not in the
+   spend-hours-thinking-about-types kind of way, but in a more practical 'data
+   is immutable' way.
+
+   So, I built a heap that can manage (and garbage-collect) immutable objects.
+   In my heap, there are two kinds of objects:
+
+   - Leaf objects contain 64-bit words.
+   - Inner objects contain 64-bit words, which are the addresses of previously
+     created objects.
+
+   Once you create an object, there's no way to modify its contents.
+
+   In fact, this file contains only object literals. It consits of alternating
+   names and values (first a name, then a value, repeated). Every name-value
+   pair binds a value to a name. This text is actually a leaf object containing
+   the bytes of this string and is bound to the name #."
+
+# "Number literals create new leaf objects with one word of payload. This code
+   creates an object:"
+foo 1
+
+# "String literals create a leaf object with words that encode the characters
+   (a string with up to 8 bytes only has a single payload word, a string up to
+   16 bytes has two words, etc). The lowest bits of the first word (word & 0xff)
+   are the first character, so on little-endian machines, the bytes in memory
+   match the string contents exactly. Because not every string has a size that
+   is a multiple of 8 bytes, strings are padded with zeros at the end as
+   necessary."
+bar "a string"
+
+# "Parentheses create inner objects that point to the enclosed,
+   whitespace-separated objects."
+baz (1 2)
+
+# "Names refer to previously defined objects. Here, flup is an inner object that
+   points to the previously defined objects foo, bar, and baz."
+flup (foo bar baz)
+
+# "The value named 'export' is the result of this entire file."
+
+
+# "The VM
+
+   Just having data is not enough. I want to be able to express computations on
+   that data. The programs I create should be portable across CPU architectures
+   and programmatically inspectable and creatable (similar to most Lisps, where
+   'code is data' is part of the philosophy). So, I created a simple virtual
+   machine.
+
+   The standard text-book approach would be to design a byte code for a
+   stack-based virtual machine. That's what I've done previously in other
+   projects (https://marcelgarus.dev/soil). However, byte code is too low level
+   and more painful than necessary for things I'd like to do:
+
+   - Generating byte code is difficult. In my word-based heap of immutable
+     objects, generating byte code is more difficult than if you have a mutable
+     byte array.
+   - Byte code is difficult to optimize. In byte code, data flow is not obvious
+     because it's only implied in the structure of the byte code.
+   - Byte code is difficult to JIT compile to efficient machine code. I've
+     written JIT compilers that compile the individual byte code instructions
+     into machine code. But as soon as you want to efficient use register or
+     emit instructions such as 'add rax, 42', you are fighting the low-levelness
+     of the byte code.
+
+   So, instead of byte code, I chose to encode computations as object trees
+   where the individual nodes are operations with operands as their children.
+   For example, an addition is represented as the object ('add' <expr> <expr>).
+   This is quite a high-level encoding of the intent. The data flow is obvious.
+
+   Every expression is an inner object that starts with a leaf object that tells
+   us what the expression does and what the other children mean (expressions are
+   essentially associated enums).
+ 
+   Functions are the unit of computation. Functions are individually
+   JIT-compiled. Really, a function is just an object with two children:
+
+   - the arguments (an object containing leaf objects with the names of arguments)
+   - the body (an expression)
+ 
+   That's enough information dumping! Let's look at some actual code:"
+
+false 0
+true 1
+not (("a") ("subtract" ("word" 1) ("name" "a")))
+
+# "You can see that a function is really just a heap object. You can probably
+   guess what the expressions 'word', 'name', and 'subtract' do. Generally,
+   every expression evaluates to a single word (which sometimes is an address).
+   Here's a list of all expressions:
+ 
+   - ('word' word): Assumes that word is a leaf object with a single word as
+     payload. Results in that word. 
+   - ('object' object): Results in the address of the object. Arithmetic with
+     addresses is undefined behavior, so treat them as opaque tokens.
+   - ('name' name): Assumes that the name is a leaf object. Results in the value
+     of the name that is in scope, either through being available as a function
+     argument, or using a let-expression.
+   - ('let' name definition body): Assumes that the name is a leaf object and
+     that definition and body are expressions. Runs the definition. Then runs
+     the body with the result of definition being available as the name.
+   - ('also' ignored body): Assumes that ignored and body are expressions. Runs
+     ignored. Then runs the body and returns its result. Useful to have
+     side-effects of the ignored expression (non-terimation, crashes) without
+     binding it to a name.
+   - ('add' a b): Assumes that a and b are expressions. Runs a, runs b. Adds
+     them (overflow wraps around).
+   - ('subtract' a b): Analogous.
+   - ('multiply' a b): Analogous.
+   - ('divide' a b): Assumes that a and b are expressions. Assumes that the
+     result of b is not 0. Analogous.
+   - ('modulo' a b): Assumes that a and b are expressions. Assumes that the
+     result of b is not 0. Analogous.
+   - ('shift-left' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Shifts a left by b.
+   - ('shift-right' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Shifts a right by b.
+   - ('and' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Bitwise-ands them.
+   - ('or' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Bitwise-ors them.
+   - ('xor' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Bitwise-xors them.
+   - ('compare' a b): Assumes that a and b are expressions. Runs a, runs b.
+     Compares them as i64s. If a = b, results in 1. If a > b, results in 2. If
+     a < b, results in 4. Because the result is always a power of two, it's
+     pretty easy to use the result with bit shifts to do branchless comparisons.
+   - ('if' condition then else): Assumes that condition, then, and else are
+     expressions. Runs the condition. If it's non-zero, runs then. Else, else.
+   - ('new-leaf' children): Assumes that children is an inner object that points
+     to expressions. Runs them in order. Then creates a new inner object of the
+     results.
+   - ('new-inner' children): Assumes that children is an inner object that
+     points to expressions that evaluate to addresses of leaf objects, each
+     containing a single word. Runs the children in order, then creates a leaf
+     object with the resulting words.
+   - ('flatten-to-leaf' list): Assumes that list is an expression that evaluates
+     to a linked list: It's either an empty object or a two-word object of an
+     item and the rest of the list. Assumes that all items are single-word leaf
+     objects. Walks that linked list and puts all those objects into a single
+     leaf object.
+   - ('flatten-to-inner' list): Analogous.
+   - ('points' obj): Assumes that obj is an expression that evaluates to an
+     address. If it's a leaf object, results in 0. If it's an inner object,
+     results in 1.
+   - ('size' obj): Assumes that obj is an expression that evaluates to an
+     address. Results in the number of payload words inside the object.
+   - ('load' obj index): Assumes that obj, and index and expressions and that
+     obj results in an address. Runs obj, then index. Assumes that the index
+     result is between 0 (inclusive) and the size of the obj result (exclusive).
+     Results in the index'th word of the object.
+   - ('obj-equals' a b): Deeply compares two object expressions. Results in 1
+     for equal representations and 0 otherwise. Internally, the VM skips shared
+     subtrees, so this is cheap if it's the same object, even if it's big.
+   - ('call' function arguments): Assumes that fun is an expression and
+     arguments is an inner object that contains other expressions. Runs the
+     function expression, then the arguments in order. Assumes that the function
+     address points to a function (an object containing arguments and a body).
+     Assumes that the number of function arguments matches the number of call
+     arguments. Evaluates the function body with the call arguments bound to the
+     function arguments.
+   - ('rec' arguments): Analogous to 'call', but calls the current function.
+   - ('gc' expr): Assumes that expr is an expression. Runs it. Assumes that the
+     result is an address. Then does a garbage collection, where it frees all
+     allocations made while evaluating the expression that are not referenced by
+     its result.
+   - ('sandbox' fuel body): Assumes that fuel and body are expressions, that
+     fuel evaluates to a word, and that body evaluates to an object. Evaluates
+     the fuel. Then evaluates the body.
+     If the body runs through successfully, results in heap object [0, result].
+     If the body crashes, results in a heap object [1, error].
+     If the body runs out of fuel, results in a heap object [2].
+   - ('use-fuel' amount body): Assumes that the amount and body are expressions.
+     Evaluates the amount and conceptually consumes that much fuel from all
+     surrounding sandboxes, including in other functions. If one (or multiple)
+     sandboxes run out of fuel, unwinds to the outermost sandbox and makes it
+     return [2].
+   - ('crash' error): Assumes that error is an expression. Runs it. Then crashes
+     with the error. Unwinds to the surrounding sandbox, including in other
+     functions, and makes it return [1, error].
+   - ('unreachable'): Assumes that this expression is unreachable.
+
+   All the assumptions in the descriptions are undefined behavior if not
+   fulfilled. This enables the VM implementation / a JIT-compiler to do more
+   optimizations.
+
+   TODO: Write a safe VM that catches all undefined behavior."
+
+# "The not function was painful to write though. So many strings!
+   To make my life easier for the rest of this file, I first define a couple of
+   string literals."
+_ "_"
+a "a"
+add "add"
+and "and"
+b "b"
+c "c"
+call "call"
+compare "compare"
+crash "crash"
+divide "divide"
+flatten-to-inner "flatten-to-inner"
+flatten-to-leaf "flatten-to-leaf"
+globals "globals"
+i "i"
+if "if"
+let "let"
+list "list"
+load "load"
+locals "locals"
+mode "mode"
+multiply "multiply"
+name "name"
+new-inner "new-inner"
+new-leaf "new-leaf"
+object "object"
+or "or"
+rec "rec"
+shift-left "shift-left"
+shift-right "shift-right"
+size "size"
+subtract "subtract"
+tag "tag"
+unreachable "unreachable"
+word "word"
+xor "xor"
+
+# "In the code below, we often need expressions that evaluate to word literals.
+   To make that more concise, I define number literals."
+:0 (word 0)
+:1 (word 1)
+:2 (word 2)
+:3 (word 3)
+:4 (word 4)
+:8 (word 8)
+:10 (word 10)
+:16 (word 16)
+:24 (word 24)
+:32 (word 32)
+:40 (word 40)
+:48 (word 48)
+:56 (word 56)
+:64 (word 64)
+:255 (word 255)
+
+# "Same for names."
+:a (name a)
+:b (name b)
+:c (name c)
+:globals (name globals)
+:i (name i)
+:list (name list)
+:locals (name locals)
+:mode (name mode)
+:name (name name)
+:size (name size)
+:tag (name tag)
+:word (name word)
+
+# "Comparisons.
+   Reminder: The compare expression returns 1 (equal), 2 (greater), or 4 (less).
+   I use shifts so that everything is branchless."
+= ((a b) (and (compare :a :b) :1))
+!= ((a b) (subtract :1 (and (compare :a :b) :1)))
+>= ((a b) (subtract :1 (and (shift-right (compare :a :b) :2) :1)))
+<= ((a b) (subtract :1 (and (shift-right (compare :a :b) :1) :1)))
+
+# "Nil is just an empty object."
+nil ()
+nil? ((a) (call (object =) (:0 (size :a))))
+
+# "List stuff.
+   A list is either an empty object (nil) or an object with two children, the
+   item and the rest (another list)."
+array-to-list-rec ((a i)
+ (if (call (object =) (:i (size :a)))
+  (object nil)
+  (new-inner ((load :a :i) (rec (:a (add :i :1)))))))
+array-to-list ((a) (call (object array-to-list-rec) (:a :0)))
+list-to-array flatten-to-inner
+list-to-leaf flatten-to-leaf
+
+# "String stuff.
+   Because strings are stored as leaf objects of words, I need to cross the
+   abstraction from byte-based addressing to word-based storage. Comparisons
+   become faster because we compare 8 bytes at once. For converting characters
+   to strings however, there's a lot of heavy work I need to do."
+str=-rec ((a b i size)
+ (if (call (object =) (:i :size))
+  (word true)
+  (if (call (object =) ((load :a :i) (load :b :i)))
+   (rec (:a :b (add :i :1) :size))
+   (word false))))
+str= ((a b)
+ (if (call (object =) ((size :a) (size :b)))
+  (call (object str=-rec) (:a :b :0 (size :a)))
+  (word false)))
+chars-to-str-pack-rec ((c b a)
+ (if (call (object >=) (:b :64))
+  (new-inner ((new-leaf (:a)) :c))
+  (if (call (object nil?) (:c))
+   (new-inner ((new-leaf (:a)) :c))
+   (rec (
+    (load :c :1)
+    (add :b :8)
+    (add :a (multiply (load (load :c :0) :0) (shift-left :1 :b))))))))
+chars-to-str-rec ((c)
+ (if (call (object nil?) (:c))
+  (object nil)
+  (let a (call (object chars-to-str-pack-rec) (:c :0 :0))
+   (new-inner ((load :a :0) (rec ((load :a :1))))))))
+chars-to-str ((c) (list-to-leaf (call (object chars-to-str-rec) (:c))))
+str-to-chars-rec ((a size i)
+ (if (call (object =) (:i :size))
+  (object nil)
+  (let word (load :a :i)
+   (let c (and :word :255)
+    (if (call (object =) (:c :0))
+     (object nil)
+     (new-inner (
+      (new-leaf (:c))
+      (let c (and (shift-right :word :8) :255)
+       (if (call (object =) (:c :0))
+        (object nil)
+        (new-inner (
+         (new-leaf (:c))
+         (let c (and (shift-right :word :16) :255)
+          (if (call (object =) (:c :0))
+           (object nil)
+           (new-inner (
+            (new-leaf (:c))
+            (let c (and (shift-right :word :24) :255)
+             (if (call (object =) (:c :0))
+              (object nil)
+              (new-inner (
+               (new-leaf (:c))
+               (let c (and (shift-right :word :32) :255)
+                (if (call (object =) (:c :0))
+                 (object nil)
+                 (new-inner (
+                  (new-leaf (:c))
+                  (let c (and (shift-right :word :40) :255)
+                   (if (call (object =) (:c :0))
+                    (object nil)
+                    (new-inner (
+                     (new-leaf (:c))
+                     (let c (and (shift-right :word :48) :255)
+                      (if (call (object =) (:c :0))
+                       (object nil)
+                       (new-inner (
+                        (new-leaf (:c))
+                        (let c (and (shift-right :word :56) :255)
+                         (if (call (object =) (:c :0))
+                          (object nil)
+                          (new-inner (
+                           (new-leaf (:c))
+                           (rec (
+                            :a
+                            :size
+                            (add :i :1))))))))))))))))))))))))))))))))))))))
+str-to-chars ((a) (call (object str-to-chars-rec) (:a (size :a) :0)))
+
+# "A couple of characters."
+ascii-newline 10
+ascii-space 32
+ascii-quote 34
+ascii-open-paren 40
+ascii-close-paren 41
+ascii-0 48
+ascii-9 57
+ascii-backslash 92
+ascii-n 110
+
+# "The Olive Compiler
+
+   What am I even doing here? You might have noticed that writing code is pretty
+   verbose: Every function call has literally the word 'call' in the code. In
+   order to keep my sanity, the first (and only) computation I write manually
+   using heap objects is a compiler for a higher-level language.
+   
+   Mind you, the language I'm creating is not 'high-level'. It deals with memory
+   allocations and has no memory safety guardrails whatsoever. Believe me, I've
+   dealt with enough segmentation faults for a lifetime. But it's better than
+   creating heap objects by hand."
+
+# "Parsing."
+is-digit ((c)
+ (and
+  (call (object >=) (:c (word ascii-0)))
+  (call (object <=) (:c (word ascii-9)))))
+is-name ((c)
+ (and (call (object !=) (:c (word ascii-newline)))
+  (and (call (object !=) (:c (word ascii-space)))
+   (and (call (object !=) (:c (word ascii-open-paren)))
+    (and (call (object !=) (:c (word ascii-close-paren)))
+     (call (object !=) (:c (word ascii-quote))))))))
+consume-whitespace ((i)
+ (if (call (object nil?) (:i))
+  (object nil)
+  (let c (load (load :i :0) :0)
+   (if
+    (or
+     (call (object =) (:c (word ascii-newline)))
+     (call (object =) (:c (word ascii-space))))
+    (rec ((load :i :1)))
+    :i))))
+parse-string-rec ((i)
+ (if (call (object nil?) (:i))
+  (crash (object "A string doesn't end."))
+  (let c (load (load :i :0) :0)
+   (if (call (object =) (:c (word ascii-quote)))
+    (new-inner ((load :i :1) (object nil)))
+    (if (call (object =) (:c (word ascii-backslash)))
+     (let a (load :i :1)
+      (if (call (object nil?) (:a))
+       (crash (object "I expected an escape char after a backslash."))
+       (let b (load (load :a :0) :0)
+        (let b
+         (if (call (object =) (:b (word ascii-backslash)))
+          (word ascii-backslash)
+          (if (call (object =) (:b (word ascii-quote)))
+           (word ascii-quote)
+           (if (call (object =) (:b (word ascii-n)))
+            (word ascii-newline)
+            (crash (object "An escape char is nonsense.")))))
+         (let c (rec ((load :a :1)))
+          (new-inner ((load :c :0) (new-inner ((new-leaf (:b)) (load :c :1))))))))))
+     (let a (rec ((load :i :1)))
+      (new-inner (
+       (load :a :0)
+       (new-inner ((new-leaf (:c)) (load :a :1)))))))))))
+parse-int-rec ((i a)
+ (if (call (object nil?) (:i))
+  (new-inner ((object nil) :a))
+  (let c (load (load :i :0) :0)
+   (if (call (object is-digit) (:c))
+    (rec ((load :i :1) (add (multiply :a :10) (subtract :c (word ascii-0)))))
+    (new-inner (:i (new-leaf (:a))))))))
+parse-name-rec ((i)
+ (if (call (object nil?) (:i))
+  (new-inner ((object nil) (object nil)))
+  (let c (load (load :i :0) :0)
+   (if (call (object is-name) (:c))
+    (let a (rec ((load :i :1)))
+     (new-inner ((load :a :0) (new-inner ((new-leaf (:c)) (load :a :1))))))
+    (new-inner (:i (object nil)))))))
+single 0
+multiple 1
+cases 2
+parse ((mode i)
+ (if (call (object =) (:mode (word multiple)))
+  (let a (rec ((word single) :i))
+   (if (call (object nil?) (:a))
+    (new-inner (:i (object nil)))
+    (let b (rec ((word multiple) (load :a :0)))
+     (new-inner ((load :b :0) (new-inner ((load :a :1) (load :b :1))))))))
+  (let i (call (object consume-whitespace) (:i))
+   (if (call (object nil?) (:i))
+    (object nil)
+    (let c (load (load :i :0) :0)
+     (if (call (object is-digit) (:c))
+      (let a (call (object parse-int-rec) (:i :0))
+       (new-inner (
+        (load :a :0)
+        (new-inner ((object "int") (load :a :1))))))
+      (if (call (object =) (:c (word ascii-quote)))
+       (let a (call (object parse-string-rec) ((load :i :1)))
+        (new-inner (
+         (load :a :0)
+         (new-inner (
+          (object "string")
+          (call (object chars-to-str) ((load :a :1))))))))
+       (if (call (object =) (:c (word ascii-open-paren)))
+        (let a (rec ((word multiple) (load :i :1)))
+         (let i (call (object consume-whitespace) ((load :a :0)))
+          (if
+           (call (object =) ((load (load :i :0) :0) (word ascii-close-paren)))
+           (new-inner (
+            (load :i :1)
+            (new-inner ((object "group") (list-to-array (load :a :1))))))
+           (crash (object "expected closing paren")))))
+        (if (call (object =) (:c (word ascii-close-paren)))
+         (object nil)
+         (let a (call (object parse-name-rec) (:i))
+          (new-inner (
+           (load :a :0)
+           (new-inner (
+            (object "name")
+            (call (object chars-to-str) ((load :a :1)))))))))))))))))
+
+# "Olive Semantics"
+extract-args ((i)
+ (if (call (object nil?) (:i))
+  (object nil)
+  (new-inner (
+   (let name (load :i :0)
+    (if (call (object str=) ((load :name :0) (object "name")))
+     (load :name :1)
+     (crash (object "Arguments must be names."))))
+   (rec ((load :i :1)))))))
+list-has? ((list name)
+ (if (call (object nil?) (:list))
+  (word false)
+  (if (call (object str=) ((load :list :0) :name))
+   (word true)
+   (rec ((load :list :1) :name)))))
+globals-lookup ((globals name)
+ (if (call (object nil?) (:globals))
+  (crash (new-inner ((object "You refer to an unknown name.") :name)))
+  (let a (load :globals :0)
+   (if (call (object str=) ((load :a :0) :name))
+    (load :a :1)
+    (rec ((load :globals :1) :name))))))
+compile-olive-expr ((mode locals globals i)
+ (if (call (object =) (:mode (word multiple)))
+  (if (call (object nil?) (:i))
+   (object nil)
+   (new-inner (
+    (rec ((word single) :locals :globals (load :i :0)))
+    (rec ((word multiple) :locals :globals (load :i :1))))))
+  (if (call (object =) (:mode (word cases)))
+   (if (call (object nil?) (:i))
+    (object (crash (object "Reached end of cond.")))
+    (new-inner (
+     (object "if")
+     (new-inner (
+      (object "load")
+      (rec ((word single) :locals :globals (load :i :0)))
+      (object :0)))
+     (rec ((word single) :locals :globals (load (load :i :1) :0)))
+     (rec ((word cases) :locals :globals (load (load :i :1) :1))))))
+   (let tag (load :i :0)
+    (if (call (object str=) (:tag (object "group")))
+     (let c (load :i :1)
+      (if (call (object =) ((size :c) :0))
+       (crash (object "There's an empty group."))
+       (if (call (object str=) ((load (load :c :0) :0) (object "name")))
+        (let name (load (load :c :0) :1)
+         (if (call (object str=) (:name (object ":")))
+          (if (call (object !=) ((size :c) :4))
+           (crash (object "A let is bad."))
+           (let name
+            (let a (load :c :1)
+             (if (call (object str=) ((load :a :0) (object "name")))
+              (load :a :1)
+              (crash (object "A let is bad."))))
+            (new-inner (
+             (object "let")
+             :name
+             (rec ((word single) :locals :globals (load :c :2)))
+             (rec (
+              (word single)
+              (new-inner (:name :locals))
+              :globals
+              (load :c :3)))))))
+          (if (call (object str=) (:name (object "if")))
+           (if (call (object !=) ((size :c) :4))
+            (crash (object "An if is bad."))
+            (new-inner (
+             (object "if")
+             (new-inner (
+              (object "load")
+              (rec ((word single) :locals :globals (load :c :1)))
+              (object :0)))
+             (rec ((word single) :locals :globals (load :c :2)))
+             (rec ((word single) :locals :globals (load :c :3))))))
+           (if (call (object str=) (:name (object "cond")))
+            (if (and (size :c) :1)
+             (rec (
+              (word cases)
+              :locals
+              :globals
+              (load (call (object array-to-list) (:c)) :1)))
+             (crash (object "A cond is bad.")))
+            (if (call (object str=) (:name (object "#")))
+             (new-inner (
+              (object "new-inner")
+              (list-to-array
+               (rec (
+                (word multiple)
+                :locals
+                :globals
+                (load (call (object array-to-list) (:c)) :1))))))
+             (if (call (object str=) (:name (object "\\")))
+              (new-inner (
+               (object "object")
+               (let a
+                (let a (load :c :1)
+                 (if (call (object str=) ((load :a :0) (object "group")))
+                   (call (object extract-args) (
+                    (call (object array-to-list) ((load :a :1)))))
+                   (crash (object "Some args are bad."))))
+                (new-inner (
+                 (list-to-array :a)
+                 (rec ((word single) :a :globals (load :c :2))))))))
+              (if (call (object str=) (:name (object "rec")))
+               (new-inner (
+                (object "rec")
+                (list-to-array
+                 (rec (
+                  (word multiple)
+                  :locals
+                  :globals
+                  (load (call (object array-to-list) (:c)) :1))))))
+               (new-inner (
+                (object "call")
+                (rec ((word single) :locals :globals (load :c :0)))
+                (list-to-array
+                 (rec (
+                  (word multiple)
+                  :locals
+                  :globals
+                  (load (call (object array-to-list) (:c)) :1)))))))))))))
+        (new-inner (
+         (object "call")
+         (rec ((word single) :locals :globals (load :c :0)))
+         (list-to-array
+          (rec (
+           (word multiple)
+           :locals
+           :globals
+           (load (call (object array-to-list) (:c)) :1)))))))))
+     (if (call (object str=) (:tag (object "name")))
+      (let name (load :i :1)
+       (if (call (object list-has?) (:locals :name))
+        (new-inner ((object "name") :name))
+        (let a (call (object globals-lookup) (:globals :name))
+         (new-inner ((object "object") :a)))))
+      (if (call (object str=) (:tag (object "int")))
+       (new-inner ((object "object") (load :i :1)))
+       (if (call (object str=) (:tag (object "string")))
+        (new-inner ((object "object") (load :i :1)))
+        (crash
+         (new-inner (
+          (object "I don't know what to do with a node.")
+          :i)))))))))))
+compile-olive ((globals i)
+ (if (call (object nil?) (:i))
+  (call (object globals-lookup) (:globals (object "export")))
+  (let name
+   (let name (load :i :0)
+    (if (call (object str=) ((load :name :0) (object "name")))
+     (load :name :1)
+     (crash (object "I expected a definition name."))))
+   (let a (load :i :1)
+    (if (call (object nil?) (:a))
+     (crash (object "I expected a definition."))
+     (let b
+      (call (object compile-olive-expr) (
+       (word single)
+       (object nil)
+       :globals
+       (load :a :0)))
+      (let c (call (new-inner ((new-inner ()) :b)) ())
+       (rec ((new-inner ((new-inner (:name :c)) :globals)) (load :a :1))))))))))
+
+export (
+ ("function"
+  (a)
+  nil
+  ((a _)
+   (call (object compile-olive) (
+    (object nil)
+    (load
+     (call (object parse) (
+      (word multiple)
+      (call (object str-to-chars) ((load :a :1)))))
+     :1)))))
+ (("struct")))
