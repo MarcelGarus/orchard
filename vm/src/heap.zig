@@ -355,64 +355,69 @@ fn sweep(heap: *Heap, ally: Ally, keep: Obj, boundary: Checkpoint) !GcResult {
     };
 }
 
-pub fn file_out(obj: Obj, ally: Ally, writer: *std.Io.Writer) !void {
-    var name_generator = NameGenerator{};
-    var mapping = ObjMap([]const u8).empty;
-    try file_out_rec(obj, ally, writer, &name_generator, &mapping);
-    try writer.print("export {s}\n", .{mapping.get(obj).?});
+/// Export the objects reachable from obj, preserving shared children.
+pub fn export_objects(obj: Obj, ally: Ally, writer: *Writer) !void {
+    var exported: ObjMap(usize) = .empty;
+    defer exported.deinit(ally);
+    const name = try export_object(obj, ally, writer, &exported);
+    try writer.writeAll("export ");
+    try write_export_name(writer, name);
+    try writer.writeByte('\n');
     try writer.flush();
 }
-const NameGenerator = struct {
-    count: usize = 0,
-    fn generate(gen: *NameGenerator, ally: Ally) ![]const u8 {
-        var buffer: [10]u8 = undefined;
-        var i: i64 = @intCast(gen.count);
-        var j = buffer.len;
-        while (i >= 0) {
-            j -= 1;
-            buffer[j] = @intCast('a' + @mod(i, 26));
-            i = @divTrunc(i, 26) - 1;
-        }
-        const name = buffer[j..];
-        const copy = try ally.alloc(u8, name.len);
-        std.mem.copyForwards(u8, copy, name);
-        gen.count += 1;
-        return copy;
+
+fn write_export_name(writer: *Writer, index: usize) !void {
+    // Fourteen base-26 digits suffice for a 64-bit object index.
+    var buffer: [14]u8 = undefined;
+    var first_digit = buffer.len;
+    var remaining = index;
+    while (true) {
+        first_digit -= 1;
+        buffer[first_digit] = 'a' + @as(u8, @intCast(remaining % 26));
+        if (remaining < 26) break;
+        remaining = remaining / 26 - 1;
     }
-};
-fn file_out_rec(obj: Obj, ally: Ally, writer: *std.Io.Writer, name_generator: *NameGenerator, exported: *ObjMap([]const u8)) !void {
-    if (exported.get(obj)) |_| return;
-    if (obj.is_leaf()) {
-        const name = try name_generator.generate(ally);
-        try exported.put(ally, obj, name);
-        try writer.print("{s} \"", .{name});
-        var bytes: []const u8 = @ptrCast(obj.words());
-        for (0..7) |_| {
-            if (bytes.len > 0 and bytes[bytes.len - 1] == 0) bytes.len -= 1;
+    try writer.writeAll(buffer[first_digit..]);
+}
+
+fn export_object(obj: Obj, ally: Ally, writer: *Writer, exported: *ObjMap(usize)) !usize {
+    if (exported.get(obj)) |name| return name;
+    if (obj.is_inner()) {
+        for (obj.children()) |child| {
+            _ = try export_object(child, ally, writer, exported);
         }
-        for (bytes) |byte| {
+    }
+    const name = exported.entries.count();
+    try exported.put(ally, obj, name);
+    try write_export_name(writer, name);
+    try writer.writeByte(' ');
+    if (obj.is_inner()) {
+        try writer.writeByte('(');
+        for (obj.children(), 0..) |child, i| {
+            if (i != 0) try writer.writeByte(' ');
+            try write_export_name(writer, exported.get(child).?);
+        }
+        try writer.writeByte(')');
+    } else {
+        try writer.writeByte('"');
+        const bytes = std.mem.sliceAsBytes(obj.words());
+        // The loader zero-pads to a whole word. Keep enough bytes to preserve the word count.
+        const min_len = bytes.len -| (@sizeOf(Word) - 1);
+        var len = bytes.len;
+        while (len > min_len and bytes[len - 1] == 0) len -= 1;
+        for (bytes[0..len]) |byte| {
             switch (byte) {
-                '\\' => try writer.print("\\\\", .{}),
-                '"' => try writer.print("\\\"", .{}),
-                '\n' => try writer.print("\\n", .{}),
-                ' '...'!', '#'...'[', ']'...'~' => try writer.print("{c}", .{byte}),
-                else => try writer.print("\\{x:02}", .{byte}),
+                '\\' => try writer.writeAll("\\\\"),
+                '"' => try writer.writeAll("\\\""),
+                '\n' => try writer.writeAll("\\n"),
+                ' '...'!', '#'...'[', ']'...'~' => try writer.writeByte(byte),
+                else => try writer.print("\\{x:0>2}", .{byte}),
             }
         }
-        try writer.print("\"\n", .{});
-    } else {
-        for (obj.children()) |child| {
-            try file_out_rec(child, ally, writer, name_generator, exported);
-        }
-        const name = try name_generator.generate(ally);
-        try exported.put(ally, obj, name);
-        try writer.print("{s} (", .{name});
-        for (obj.children(), 0..) |child, i| {
-            if (i > 0) try writer.print(" ", .{});
-            try writer.print("{s}", .{exported.get(child).?});
-        }
-        try writer.print(")\n", .{});
+        try writer.writeByte('"');
     }
+    try writer.writeByte('\n');
+    return name;
 }
 
 pub fn copy_to_other_heap(from: *Heap, ally: Ally, to: *Heap, object: Obj) !Obj {
