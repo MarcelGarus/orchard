@@ -2412,18 +2412,19 @@ fn emit_expr_to_reg(sink: anytype, slots: []const u64, at: *Index, resolver: *Re
 // preventing unnecessary recompiles.
 
 fn discard_code_after(vm: *Self, address: Word) void {
+    const entries = &vm.jit_cache.entries;
     var i: usize = 0;
-    while (i < vm.jit_cache.entries.items.len) {
-        const entry = vm.jit_cache.entries.items[i];
-        if (entry.key.address >= address) {
+    while (i < entries.count()) {
+        if (entries.keys()[i] >= address) {
             // Each compiled function owns its executable mapping. Live editing
             // creates many short-lived functions; dropping only the cache entry
             // would leak all of their machine code.
-            if (entry.value.len != 0) {
-                const result = std.os.linux.munmap(@constCast(entry.value.ptr), entry.value.len);
+            const machine_code = entries.values()[i];
+            if (machine_code.len != 0) {
+                const result = std.os.linux.munmap(@constCast(machine_code.ptr), machine_code.len);
                 std.debug.assert(result == 0);
             }
-            _ = vm.jit_cache.entries.swapRemove(i);
+            entries.swapRemoveAt(i);
         } else {
             i += 1;
         }
