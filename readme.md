@@ -1,34 +1,27 @@
 # Orchard
 
 Hi!
-In this repository, I tinker with different programming language ideas.
-I explore languages with different language complexity vs. efficiency vs. ergonomics tradeoffs.
+This repository contains Orchard, a live notebook.
+Orchard stands for "Orchard, a recursive computing habitat for art, research, and development".
 
-The most interesting bits:
+To run the notebook provided with this repo, run:
 
-- **VM**:
-  A virtual machine for a stack-based byte code that operates on a heap of immutable objects.  
-  [vm/](vm/) contains the VM, written in Zig.  
-  [vm/src/vm_interpreter.zig](vm/src/vm_interpreter.zig) contains the core interpreter.  
-  [vm/src/vm_x86_64.zig](vm/src/vm_x86_64.zig) contains a JIT compiler.  
-- **Olive** (Optimizable Lisp Implementing Various Expressions):
-  A Lisp where the focus is to be easy to optimize.
-  [vm/src/bootstrap.objects](vm/src/bootstrap.objects) contains an Olive compiler written in raw objects.
-  [vm/src/bootstrap.olive](vm/src/bootstrap.olive) contains an optimizing Olive compiler and a Yam notebook compiler.
-- **Yam**:
-  A typed language organized into editable notebooks.
-  [vm/src/notebook.yam](vm/src/notebook.yam) contains the standard library, compiler, and live notebook editor.
-  [vm/BOOTSTRAP.md](vm/BOOTSTRAP.md) describes the bootstrap pipeline.
-- **Ground**:
-  A low-level stack-based byte code.  
-  [ground/readme.md](ground/readme.md) contains the specification.  
-  I wrote a Ground interpreter in Zig, but that's private for now.
-- **Grass** (Ground Assembly):
-  An assembly language for crafting binary files.  
-  [grass/readme.md](grass/readme.md) contains more info.  
-  [grass/grass.grass](grass/grass.grass) contains a self-hosted Grass compiler that is not yet finished.
-- **Plum** (Programming Language Used by Marcel):
-  A high-level functional programming language with immutable data structures, pure functions, and garbage collection.  
-  [plum/readme.md](plum/readme.md) contains more info.  
-  [martinaise/plum](martinaise/plum) contains a Plum compiler written in [Martinaise](https://github.com/MarcelGarus/martinaise), another programming language I created.  
-  [plum/core](plum/core) contains the Plum standard library.
+```
+zig build run -- notebook.orchard
+```
+
+This will start a window, where you see the notebook.
+If you edit code cells, you'll see that they immediately show their result below.
+
+![a notebook with code cells that you can edit](notebook.png)
+
+## A guide to this repo
+
+[vm/](vm/) contains the virtual machine.
+I recommend first looking at how objects are stored in an immutable heap ([heap.zig](vm/heap.zig)).
+Code running in the VM is actually just a tree of objects that represents a computation.
+There's a tree walking interpreter ([vm_tree_walk.zig](vm/vm_tree_walk.zig)), a byte code interpreter ([vm_byte_code.zig](vm/vm_byte_code.zig)), and a JIT compiler ([vm_x86_64.zig](vm/vm_x86_64.zig)).
+The VM only understands low-level operations.
+Using those low-level operations, I created a compiler for a slightly higher-level language ([bootstrap.objects](vm/bootstrap.objects)) I call Olive (Optimizable Lisp Implementing Various Expressions).
+In Olive, I created another compiler that can optimize code, compile (and optimize) itself, and compile notebooks ([bootstrap.olive](vm/bootstrap.olive)).
+When you `zig build` the project for the first time, this bootstrapping process takes place and produces an optimizing notebook compiler that is then baked into the final orchard executable.

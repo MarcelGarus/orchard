@@ -102,18 +102,18 @@ pub fn build(b: *std.Build) void {
     const bootstrap = b.addExecutable(.{
         .name = "orchard-bootstrap",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/bootstrap.zig"),
+            .root_source_file = b.path("vm/bootstrap.zig"),
             .target = b.graph.host,
             .optimize = .ReleaseSafe,
         }),
     });
     const run_bootstrap = b.addRunArtifact(bootstrap);
-    run_bootstrap.addFileArg(b.path("src/bootstrap.objects"));
-    run_bootstrap.addFileArg(b.path("src/bootstrap.olive"));
+    run_bootstrap.addFileArg(b.path("vm/bootstrap.objects"));
+    run_bootstrap.addFileArg(b.path("vm/bootstrap.olive"));
     const compiler_image = run_bootstrap.addOutputFileArg("bootstrap.olive.objects");
 
     const orchard = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("vm/main.zig"),
         .target = target,
         .optimize = .ReleaseSafe,
     });
