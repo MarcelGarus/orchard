@@ -774,7 +774,7 @@ fn run(self: *Self, instructions: []const Instruction) !void {
 
 pub fn deduplicate(self: *Self, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
     var map = try self.heap.deduplicate(self.ally, checkpoint);
-    defer map.deinit();
+    defer map.deinit(self.ally);
     self.compiled_cache.remove_everything_after(checkpoint.address);
     return map.get(obj) orelse obj;
 }

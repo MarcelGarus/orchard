@@ -129,7 +129,7 @@ pub fn garbage_collect(self: *Self, checkpoint: Heap.Checkpoint, keep: Obj) !Obj
 
 pub fn deduplicate(self: *Self, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
     var map = try self.heap.deduplicate(self.ally, checkpoint);
-    defer map.deinit();
+    defer map.deinit(self.ally);
     return map.get(obj) orelse obj;
 }
 

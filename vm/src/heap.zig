@@ -248,7 +248,8 @@ pub fn restore(heap: *Heap, checkpoint_: Checkpoint) void {
 pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Obj, Obj) {
     var read = from.address;
     var write = from.address;
-    var map = Map(Obj, Obj).init(ally);
+    var map: Map(Obj, Obj) = .empty;
+    errdefer map.deinit(ally);
     const heap_end = heap.checkpoint().address;
     while (read < heap_end) {
         // Adjust the pointers using the mapping so far.
@@ -271,7 +272,7 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Obj, Obj) {
                 @as([*]Word, @ptrFromInt(read))[0..size],
                 @as([*]Word, @ptrFromInt(candidate.address))[0..size],
             )) {
-                try map.put(@bitCast(read), candidate);
+                try map.put(ally, @bitCast(read), candidate);
                 break;
             }
         } else {
@@ -280,7 +281,7 @@ pub fn deduplicate(heap: *Heap, ally: Ally, from: Checkpoint) !Map(Obj, Obj) {
                 for (0..size) |i|
                     @as(*Word, @ptrFromInt(write + 8 * i)).* = @as(*Word, @ptrFromInt(read + 8 * i)).*;
             }
-            try map.put(@bitCast(read), @bitCast(write));
+            try map.put(ally, @bitCast(read), @bitCast(write));
             write += 8 * size;
         }
         read += 8 * size;

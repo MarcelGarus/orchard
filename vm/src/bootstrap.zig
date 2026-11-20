@@ -24,6 +24,7 @@ pub fn main(init: std.process.Init) !void {
     try Heap.export_objects(library, ally, &image.writer);
 
     // Exercise the same serialized library that Orchard will load.
+    const checkpoint = heap.checkpoint();
     const reloaded = try loader.load(init.arena.allocator(), &heap, image.written());
     _ = try Notebook.lookup(reloaded, "compile_yam");
     const compile_olive = try Notebook.lookup(reloaded, "compile_olive");
@@ -33,6 +34,11 @@ pub fn main(init: std.process.Init) !void {
     if (!Heap.equals(reloaded, rebuilt))
         return error.SelfHostedCompilerMismatch;
 
+    // Keep the verified library and discard the verification pass's allocations.
+    const verified = try vm.garbage_collect(checkpoint, reloaded);
+    const deduplicated = try vm.deduplicate(checkpoint, verified);
+    image.clearRetainingCapacity();
+    try Heap.export_objects(deduplicated, ally, &image.writer);
     try dir.writeFile(init.io, .{ .sub_path = args[3], .data = image.written() });
 }
 

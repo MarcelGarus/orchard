@@ -2439,7 +2439,7 @@ pub fn garbage_collect(vm: *Self, checkpoint: Heap.Checkpoint, keep: Obj) !Obj {
 
 pub fn deduplicate(vm: *Self, checkpoint: Heap.Checkpoint, obj: Obj) !Obj {
     var map = try vm.heap.deduplicate(vm.ally, checkpoint);
-    defer map.deinit();
+    defer map.deinit(vm.ally);
     vm.discard_code_after(checkpoint.address);
     return map.get(obj) orelse obj;
 }
